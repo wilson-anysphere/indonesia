@@ -18,6 +18,7 @@ similar = "2.4"
 thiserror = "1.0"
 nova-db = { path = "../nova-db" }
 nova-hir = { path = "../nova-hir" }
+nova-flow = { path = "../nova-flow" }
 nova-jdk = { path = "../nova-jdk" }
 nova-resolve = { path = "../nova-resolve" }
 

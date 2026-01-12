@@ -414,3 +414,119 @@ class C {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_multi_statement_with_declared_return_value() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        /*start*/int tmp = a + 1;
+        System.out.println(tmp);/*end*/
+        System.out.println(tmp + 2);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "initTmp".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int a) {
+        int tmp = initTmp(a);
+        System.out.println(tmp + 2);
+    }
+
+    private int initTmp(int a) {
+        int tmp = a + 1;
+        System.out.println(tmp);
+        return tmp;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_rejects_break_when_target_is_outside_selection() {
+    let fixture = r#"
+class C {
+    void m() {
+        while (true) {
+            /*start*/break;/*end*/
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "bad".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
+    assert!(err.contains("IllegalControlFlow"), "unexpected error: {err}");
+    assert!(err.contains("Break"), "unexpected error: {err}");
+}
+
+#[test]
+fn extract_method_liveness_through_loop_condition() {
+    let fixture = r#"
+class C {
+    void m() {
+        int i = 0;
+        while (i < 3) {
+            /*start*/i = i + 1;/*end*/
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "inc".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int i = 0;
+        while (i < 3) {
+            i = inc(i);
+        }
+    }
+
+    private int inc(int i) {
+        i = i + 1;
+        return i;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}

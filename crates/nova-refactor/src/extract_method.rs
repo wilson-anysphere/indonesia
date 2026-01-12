@@ -2,8 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use nova_core::Name;
+use nova_flow::build_cfg_with;
+use nova_hir::body::{Body, ExprId, ExprKind, LocalId, LocalKind, StmtId, StmtKind};
+use nova_hir::body_lowering::lower_flow_body_with;
 use nova_syntax::ast::{self, AstNode};
 use nova_syntax::{parse_java, SyntaxKind};
+use nova_types::Span;
 
 use crate::edit::{FileId, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit};
 
@@ -60,6 +65,7 @@ pub enum ControlFlowHazard {
     Break,
     Continue,
     Throw,
+    Yield,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +161,7 @@ impl ExtractMethod {
             }
         }
 
-        let Some(selected_stmts) = find_selected_statements(source, &method_body, selection) else {
+        let Some(selection_info) = find_statement_selection(&method_body, selection) else {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
@@ -167,82 +173,36 @@ impl ExtractMethod {
             });
         };
 
-        let hazards = collect_control_flow_hazards(&selected_stmts);
+        let mut hazards = Vec::new();
+        collect_control_flow_hazards(&selection_info.statements, selection, &mut hazards, &mut issues);
 
-        for hazard in &hazards {
-            match hazard {
-                ControlFlowHazard::Throw => {
-                    // Allowed; would be modeled as `throws` in the future.
-                }
-                _ => issues.push(ExtractMethodIssue::IllegalControlFlow { hazard: *hazard }),
-            }
-        }
+        let type_map = collect_declared_types(source, &method, &method_body);
 
-        // Collect locals and parameters for the enclosing method.
-        let (param_types, local_types, declared_in_selection) =
-            collect_locals_and_params(source, &method, &method_body, selection);
-
-        let known: HashSet<String> = param_types
-            .keys()
-            .chain(local_types.keys())
-            .cloned()
-            .collect();
+        let flow_params = collect_method_param_spans(&method);
+        let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
 
         let (reads_in_selection, writes_in_selection) =
-            collect_reads_writes_in_statements(&selected_stmts, &known);
+            collect_reads_writes_in_flow_selection(&flow_body, selection);
 
-        let reads_after = collect_reads_after_offset(&method_body, selection.end, &known);
+        let live_after_selection = live_locals_after_selection(&flow_body, selection);
 
-        let mut return_candidates: Vec<String> = writes_in_selection
-            .iter()
-            .filter(|name| reads_after.contains(*name))
-            .cloned()
-            .collect();
-        return_candidates.sort();
-        return_candidates.dedup();
+        let return_value = compute_return_value(
+            &flow_body,
+            &type_map,
+            selection,
+            &writes_in_selection,
+            &live_after_selection,
+            &mut issues,
+        );
 
-        let return_value = match return_candidates.as_slice() {
-            [] => None,
-            [name] => {
-                let ty = param_types
-                    .get(name)
-                    .or_else(|| local_types.get(name))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        issues.push(ExtractMethodIssue::UnknownType { name: name.clone() });
-                        "Object".to_string()
-                    });
-                Some(ReturnValue {
-                    name: name.clone(),
-                    ty,
-                    declared_in_selection: declared_in_selection.contains(name),
-                })
-            }
-            names => {
-                issues.push(ExtractMethodIssue::MultipleReturnValues {
-                    names: names.to_vec(),
-                });
-                None
-            }
-        };
-
-        // Determine parameters in order of first appearance in the selected statement.
+        // Determine parameters in order of first appearance in the selection.
         let mut parameters = Vec::new();
-        let mut seen = HashSet::new();
-        for (name, _range) in reads_in_selection {
-            if declared_in_selection.contains(&name) {
+        for local in reads_in_selection {
+            if local_declared_in_selection(&flow_body, local, selection) {
                 continue;
             }
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            let Some(ty) = param_types
-                .get(&name)
-                .or_else(|| local_types.get(&name))
-                .cloned()
-            else {
-                continue;
-            };
+            let name = flow_body.locals()[local.index()].name.as_str().to_string();
+            let ty = type_for_local(&flow_body, &type_map, local, &mut issues);
             parameters.push(Parameter { name, ty });
         }
 
@@ -422,6 +382,44 @@ impl EnclosingMethod {
     }
 }
 
+fn slice_syntax<'a>(source: &'a str, node: &nova_syntax::SyntaxNode) -> Option<&'a str> {
+    let range = syntax_range(node);
+    source.get(range.start..range.end)
+}
+
+fn non_trivia_range(node: &nova_syntax::SyntaxNode) -> Option<TextRange> {
+    let mut start: Option<usize> = None;
+    let mut end: Option<usize> = None;
+    for tok in node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| !tok.kind().is_trivia())
+    {
+        let tok_range = tok.text_range();
+        if start.is_none() {
+            start = Some(u32::from(tok_range.start()) as usize);
+        }
+        end = Some(u32::from(tok_range.end()) as usize);
+    }
+    Some(TextRange::new(start?, end?))
+}
+
+fn span_of_token(token: &nova_syntax::SyntaxToken) -> Span {
+    let range = token.text_range();
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn span_within_range(span: Span, range: TextRange) -> bool {
+    range.start <= span.start && span.end <= range.end
+}
+
+fn span_intersects_range(span: Span, range: TextRange) -> bool {
+    span.start < range.end && range.start < span.end
+}
+
 fn find_enclosing_method(
     root: nova_syntax::SyntaxNode,
     selection: TextRange,
@@ -466,79 +464,59 @@ fn find_enclosing_method(
     best.map(|(_, m, b)| (m, b))
 }
 
-fn find_statement_exact(source: &str, body: &ast::Block, selection: TextRange) -> Option<ast::Statement> {
-    body.syntax()
-        .descendants()
-        .filter_map(ast::Statement::cast)
-        .find(|stmt| trim_range(source, syntax_range(stmt.syntax())) == selection)
+#[derive(Debug, Clone)]
+struct StatementSelection {
+    #[allow(dead_code)]
+    block: ast::Block,
+    statements: Vec<ast::Statement>,
 }
 
-fn find_selected_statements(
-    source: &str,
-    body: &ast::Block,
-    selection: TextRange,
-) -> Option<Vec<ast::Statement>> {
-    find_statement_sequence_in_block(source, body, selection)
-        .or_else(|| find_statement_exact(source, body, selection).map(|stmt| vec![stmt]))
-}
+/// Resolve a trimmed selection to a contiguous sequence of complete statements.
+///
+/// Finds the *innermost* [`ast::Block`] whose direct child statements contain a
+/// slice `[i..=j]` such that:
+/// - `selection.start == start(stmts[i])`
+/// - `selection.end == end(stmts[j])`
+/// - all statements between `i` and `j` are fully covered (contiguous).
+fn find_statement_selection(method_body: &ast::Block, selection: TextRange) -> Option<StatementSelection> {
+    let mut best: Option<(usize, StatementSelection)> = None;
+    let blocks = std::iter::once(method_body.clone())
+        .chain(method_body.syntax().descendants().filter_map(ast::Block::cast));
 
-fn find_statement_sequence_in_block(
-    source: &str,
-    body: &ast::Block,
-    selection: TextRange,
-) -> Option<Vec<ast::Statement>> {
-    for block in std::iter::once(body.clone()).chain(body.syntax().descendants().filter_map(ast::Block::cast))
-    {
+    for block in blocks {
         let stmts: Vec<_> = block.statements().collect();
         if stmts.is_empty() {
             continue;
         }
 
-        for start_idx in 0..stmts.len() {
-            let start_range = trim_range(source, syntax_range(stmts[start_idx].syntax()));
-            if start_range.start != selection.start {
-                continue;
-            }
-
-            let mut selected = Vec::new();
-            for stmt in stmts[start_idx..].iter() {
-                let range = trim_range(source, syntax_range(stmt.syntax()));
-                if range.end > selection.end {
-                    break;
-                }
-                selected.push(stmt.clone());
-                if range.end == selection.end {
-                    return Some(selected);
-                }
-            }
+        let start_idx = stmts.iter().position(|stmt| {
+            non_trivia_range(stmt.syntax())
+                .is_some_and(|range| range.start == selection.start)
+        });
+        let end_idx = stmts.iter().position(|stmt| {
+            non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end)
+        });
+        let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) else {
+            continue;
+        };
+        if start_idx > end_idx {
+            continue;
         }
-    }
-    None
-}
 
-fn collect_control_flow_hazards(stmts: &[ast::Statement]) -> Vec<ControlFlowHazard> {
-    let mut hazards = Vec::new();
-    for stmt in stmts {
-        for inner_stmt in std::iter::once(stmt.clone())
-            .chain(stmt.syntax().descendants().filter_map(ast::Statement::cast))
+        let span = syntax_range(block.syntax()).len();
+        let sel = StatementSelection {
+            block: block.clone(),
+            statements: stmts[start_idx..=end_idx].to_vec(),
+        };
+        if best
+            .as_ref()
+            .is_none_or(|(best_span, _)| span < *best_span)
         {
-            let hazard = match inner_stmt {
-                ast::Statement::ReturnStatement(_) => Some(ControlFlowHazard::Return),
-                ast::Statement::BreakStatement(_) => Some(ControlFlowHazard::Break),
-                ast::Statement::ContinueStatement(_) => Some(ControlFlowHazard::Continue),
-                ast::Statement::ThrowStatement(_) => Some(ControlFlowHazard::Throw),
-                _ => None,
-            };
-            let Some(hazard) = hazard else {
-                continue;
-            };
-            if hazards.contains(&hazard) {
-                continue;
-            }
-            hazards.push(hazard);
+            best = Some((span, sel));
         }
     }
-    hazards
+
+    best.map(|(_, sel)| sel)
 }
 
 fn class_has_method_named(class_decl: &ast::ClassDeclaration, name: &str) -> bool {
@@ -554,37 +532,154 @@ fn class_has_method_named(class_decl: &ast::ClassDeclaration, name: &str) -> boo
     found
 }
 
-fn collect_locals_and_params(
-    source: &str,
-    method: &EnclosingMethod,
-    body: &ast::Block,
+fn collect_control_flow_hazards(
+    selection_statements: &[ast::Statement],
     selection: TextRange,
-) -> (
-    HashMap<String, String>,
-    HashMap<String, String>,
-    HashSet<String>,
+    hazards: &mut Vec<ControlFlowHazard>,
+    issues: &mut Vec<ExtractMethodIssue>,
 ) {
-    let mut param_types = HashMap::new();
+    for stmt in selection_statements {
+        let stmts = std::iter::once(stmt.clone())
+            .chain(stmt.syntax().descendants().filter_map(ast::Statement::cast));
+        for nested in stmts {
+            match nested {
+                ast::Statement::ReturnStatement(_) => {
+                    push_hazard(hazards, ControlFlowHazard::Return);
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Return,
+                    });
+                }
+                ast::Statement::YieldStatement(_) => {
+                    push_hazard(hazards, ControlFlowHazard::Yield);
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Yield,
+                    });
+                }
+                ast::Statement::ThrowStatement(_) => {
+                    // Allowed (best-effort): would be modeled as `throws` in the future.
+                    push_hazard(hazards, ControlFlowHazard::Throw);
+                }
+                ast::Statement::BreakStatement(brk) => {
+                    push_hazard(hazards, ControlFlowHazard::Break);
+
+                    if brk.label_token().is_some() {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Break,
+                        });
+                        continue;
+                    }
+
+                    let Some(target) = nearest_break_target(brk.syntax()) else {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Break,
+                        });
+                        continue;
+                    };
+                    let target_range = syntax_range(target.syntax());
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Break,
+                        });
+                    }
+                }
+                ast::Statement::ContinueStatement(cont) => {
+                    push_hazard(hazards, ControlFlowHazard::Continue);
+
+                    if cont.label_token().is_some() {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Continue,
+                        });
+                        continue;
+                    }
+
+                    let Some(target) = nearest_continue_target(cont.syntax()) else {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Continue,
+                        });
+                        continue;
+                    };
+                    let target_range = syntax_range(target.syntax());
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Continue,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn push_hazard(hazards: &mut Vec<ControlFlowHazard>, hazard: ControlFlowHazard) {
+    if !hazards.contains(&hazard) {
+        hazards.push(hazard);
+    }
+}
+
+fn nearest_break_target(from: &nova_syntax::SyntaxNode) -> Option<ast::Statement> {
+    from.ancestors().find_map(|node| {
+        let stmt = ast::Statement::cast(node)?;
+        match stmt {
+            ast::Statement::WhileStatement(_)
+            | ast::Statement::DoWhileStatement(_)
+            | ast::Statement::ForStatement(_)
+            | ast::Statement::SwitchStatement(_) => Some(stmt),
+            _ => None,
+        }
+    })
+}
+
+fn nearest_continue_target(from: &nova_syntax::SyntaxNode) -> Option<ast::Statement> {
+    from.ancestors().find_map(|node| {
+        let stmt = ast::Statement::cast(node)?;
+        match stmt {
+            ast::Statement::WhileStatement(_)
+            | ast::Statement::DoWhileStatement(_)
+            | ast::Statement::ForStatement(_) => Some(stmt),
+            _ => None,
+        }
+    })
+}
+
+fn collect_method_param_spans(method: &EnclosingMethod) -> Vec<(Name, Span)> {
+    let mut out = Vec::new();
     if let Some(params) = method.parameter_list() {
         for param in params.parameters() {
-            let Some(name) = param.name_token() else {
+            let Some(name_tok) = param.name_token() else {
                 continue;
             };
-            let Some(ty) = param.ty() else {
+            out.push((
+                Name::new(name_tok.text().to_string()),
+                span_of_token(&name_tok),
+            ));
+        }
+    }
+    out
+}
+
+/// Best-effort mapping from a local/param *name token* span to its declared type text.
+///
+/// This is used to recover type strings for extracted method parameters/return values. Using spans
+/// (rather than just names) lets us handle shadowing more correctly.
+fn collect_declared_types(
+    source: &str,
+    method: &EnclosingMethod,
+    method_body: &ast::Block,
+) -> HashMap<Span, String> {
+    let mut out = HashMap::new();
+
+    if let Some(params) = method.parameter_list() {
+        for param in params.parameters() {
+            let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
                 continue;
             };
-            let ty_text = source
-                .get(syntax_range(ty.syntax()).start..syntax_range(ty.syntax()).end)
-                .unwrap_or("Object")
-                .trim()
-                .to_string();
-            param_types.insert(name.text().to_string(), ty_text);
+            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            out.insert(span_of_token(&name_tok), ty_text);
         }
     }
 
-    let mut local_types = HashMap::new();
-    let mut declared_in_selection = HashSet::new();
-    for stmt in body
+    for stmt in method_body
         .syntax()
         .descendants()
         .filter_map(ast::LocalVariableDeclarationStatement::cast)
@@ -592,173 +687,490 @@ fn collect_locals_and_params(
         let Some(ty) = stmt.ty() else {
             continue;
         };
-        let ty_text = source
-            .get(syntax_range(ty.syntax()).start..syntax_range(ty.syntax()).end)
-            .unwrap_or("Object")
-            .trim()
-            .to_string();
+        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
         let Some(list) = stmt.declarator_list() else {
             continue;
         };
         for decl in list.declarators() {
-            let Some(name) = decl.name_token() else {
+            let Some(name_tok) = decl.name_token() else {
                 continue;
             };
-            local_types.insert(name.text().to_string(), ty_text.clone());
-            let decl_range = syntax_range(decl.syntax());
-            if selection.start <= decl_range.start && decl_range.end <= selection.end {
-                declared_in_selection.insert(name.text().to_string());
-            }
+            out.insert(span_of_token(&name_tok), ty_text.clone());
         }
     }
 
-    (param_types, local_types, declared_in_selection)
-}
-
-fn collect_ident_tokens(
-    node: &nova_syntax::SyntaxNode,
-    known: &HashSet<String>,
-) -> Vec<(String, TextRange)> {
-    let mut out = Vec::new();
-    for tok in node
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-    {
-        if !tok.kind().is_identifier_like() {
-            continue;
-        }
-        let name = tok.text().to_string();
-        if !known.contains(&name) {
-            continue;
-        }
-        let range = tok.text_range();
-        out.push((
-            name,
-            TextRange::new(
-                u32::from(range.start()) as usize,
-                u32::from(range.end()) as usize,
-            ),
-        ));
-    }
-    out.sort_by(|a, b| {
-        a.1.start
-            .cmp(&b.1.start)
-            .then_with(|| a.1.end.cmp(&b.1.end))
-    });
     out
 }
 
-fn collect_reads_writes_in_statement(
-    stmt: &ast::Statement,
-    known: &HashSet<String>,
-) -> (Vec<(String, TextRange)>, HashSet<String>) {
-    let mut writes: HashSet<String> = HashSet::new();
-    let mut reads: Vec<(String, TextRange)> = Vec::new();
+fn collect_reads_writes_in_flow_selection(
+    body: &Body,
+    selection: TextRange,
+) -> (Vec<LocalId>, HashSet<LocalId>) {
+    let mut reads: Vec<(LocalId, Span)> = Vec::new();
+    let mut writes: HashSet<LocalId> = HashSet::new();
 
-    match stmt {
-        ast::Statement::LocalVariableDeclarationStatement(local_decl) => {
-            if let Some(list) = local_decl.declarator_list() {
-                for decl in list.declarators() {
-                    let Some(name) = decl.name_token() else {
-                        continue;
-                    };
-                    let name = name.text().to_string();
-                    if known.contains(&name) {
-                        writes.insert(name);
-                    }
-                }
-            }
-            reads.extend(collect_ident_tokens(local_decl.syntax(), known));
-        }
-        ast::Statement::ExpressionStatement(expr_stmt) => {
-            let Some(expr) = expr_stmt.expression() else {
-                return (reads, writes);
-            };
-            match expr {
-                ast::Expression::AssignmentExpression(assign) => {
-                    if let Some(lhs) = assign.lhs() {
-                        if let ast::Expression::NameExpression(name_expr) = lhs {
-                            if let Some(tok) = name_expr
-                                .syntax()
-                                .descendants_with_tokens()
-                                .filter_map(|el| el.into_token())
-                                .find(|t| t.kind().is_identifier_like())
-                            {
-                                let name = tok.text().to_string();
-                                if known.contains(&name) {
-                                    writes.insert(name);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(rhs) = assign.rhs() {
-                        reads.extend(collect_ident_tokens(rhs.syntax(), known));
-                    }
-                }
-                _ => reads.extend(collect_ident_tokens(expr.syntax(), known)),
-            }
-        }
-        ast::Statement::ReturnStatement(ret) => {
-            if let Some(expr) = ret.expression() {
-                reads.extend(collect_ident_tokens(expr.syntax(), known));
-            }
-        }
-        _ => reads.extend(collect_ident_tokens(stmt.syntax(), known)),
-    }
+    collect_reads_writes_in_stmt(body, body.root(), selection, &mut reads, &mut writes);
 
-    // Stable order + dedup by first occurrence.
+    // Dedup reads by local id, in first-use order (expression span start).
     reads.sort_by(|a, b| {
         a.1.start
             .cmp(&b.1.start)
             .then_with(|| a.1.end.cmp(&b.1.end))
     });
-    let mut seen = HashSet::new();
-    reads.retain(|(name, _)| seen.insert(name.clone()));
+    let mut seen: HashSet<LocalId> = HashSet::new();
+    let reads = reads
+        .into_iter()
+        .filter(|(local, _)| seen.insert(*local))
+        .map(|(local, _)| local)
+        .collect();
 
     (reads, writes)
 }
 
-fn collect_reads_writes_in_statements(
-    stmts: &[ast::Statement],
-    known: &HashSet<String>,
-) -> (Vec<(String, TextRange)>, HashSet<String>) {
-    let mut reads = Vec::new();
-    let mut writes = HashSet::new();
-    for stmt in stmts {
-        let (stmt_reads, stmt_writes) = collect_reads_writes_in_statement(stmt, known);
-        reads.extend(stmt_reads);
-        writes.extend(stmt_writes);
+fn collect_reads_writes_in_stmt(
+    body: &Body,
+    stmt_id: StmtId,
+    selection: TextRange,
+    reads: &mut Vec<(LocalId, Span)>,
+    writes: &mut HashSet<LocalId>,
+) {
+    let stmt = body.stmt(stmt_id);
+    if !span_intersects_range(stmt.span, selection) {
+        return;
     }
-    reads.sort_by(|a, b| {
-        a.1.start
-            .cmp(&b.1.start)
-            .then_with(|| a.1.end.cmp(&b.1.end))
-    });
-    let mut seen = HashSet::new();
-    reads.retain(|(name, _)| seen.insert(name.clone()));
-    (reads, writes)
+    let contained = span_within_range(stmt.span, selection);
+
+    match &stmt.kind {
+        StmtKind::Block(stmts) => {
+            for child in stmts {
+                collect_reads_writes_in_stmt(body, *child, selection, reads, writes);
+            }
+        }
+        StmtKind::Let { local, initializer } => {
+            if contained {
+                writes.insert(*local);
+                if let Some(init) = initializer {
+                    collect_reads_in_expr(body, *init, selection, reads);
+                }
+            }
+        }
+        StmtKind::Assign { target, value } => {
+            if contained {
+                writes.insert(*target);
+                collect_reads_in_expr(body, *value, selection, reads);
+            }
+        }
+        StmtKind::Expr(expr) => {
+            if contained {
+                collect_reads_in_expr(body, *expr, selection, reads);
+            }
+        }
+        StmtKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            if contained {
+                collect_reads_in_expr(body, *condition, selection, reads);
+            }
+            collect_reads_writes_in_stmt(body, *then_branch, selection, reads, writes);
+            if let Some(else_branch) = else_branch {
+                collect_reads_writes_in_stmt(body, *else_branch, selection, reads, writes);
+            }
+        }
+        StmtKind::While { condition, body: inner } => {
+            if contained {
+                collect_reads_in_expr(body, *condition, selection, reads);
+            }
+            collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
+        }
+        StmtKind::DoWhile { body: inner, condition } => {
+            collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
+            if contained {
+                collect_reads_in_expr(body, *condition, selection, reads);
+            }
+        }
+        StmtKind::For {
+            init,
+            condition,
+            update,
+            body: inner,
+        } => {
+            if let Some(init) = init {
+                collect_reads_writes_in_stmt(body, *init, selection, reads, writes);
+            }
+            if contained {
+                if let Some(cond) = condition {
+                    collect_reads_in_expr(body, *cond, selection, reads);
+                }
+            }
+            if let Some(update) = update {
+                collect_reads_writes_in_stmt(body, *update, selection, reads, writes);
+            }
+            collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
+        }
+        StmtKind::Switch { expression, arms } => {
+            if contained {
+                collect_reads_in_expr(body, *expression, selection, reads);
+                // Best-effort: include locals referenced in case labels.
+                for arm in arms {
+                    for value in &arm.values {
+                        collect_reads_in_expr(body, *value, selection, reads);
+                    }
+                }
+            }
+            for arm in arms {
+                collect_reads_writes_in_stmt(body, arm.body, selection, reads, writes);
+            }
+        }
+        StmtKind::Try { body: inner, catches, finally } => {
+            collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
+            for catch in catches {
+                collect_reads_writes_in_stmt(body, *catch, selection, reads, writes);
+            }
+            if let Some(finally) = finally {
+                collect_reads_writes_in_stmt(body, *finally, selection, reads, writes);
+            }
+        }
+        StmtKind::Return(expr) => {
+            if contained {
+                if let Some(expr) = expr {
+                    collect_reads_in_expr(body, *expr, selection, reads);
+                }
+            }
+        }
+        StmtKind::Throw(expr) => {
+            if contained {
+                collect_reads_in_expr(body, *expr, selection, reads);
+            }
+        }
+        StmtKind::Break | StmtKind::Continue | StmtKind::Nop => {}
+    }
 }
 
-fn collect_reads_after_offset(
-    body: &ast::Block,
-    offset: usize,
-    known: &HashSet<String>,
-) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for expr in body
-        .syntax()
-        .descendants()
-        .filter_map(ast::Expression::cast)
-    {
-        let range = syntax_range(expr.syntax());
-        if range.start < offset {
-            continue;
+fn collect_reads_in_expr(body: &Body, expr_id: ExprId, selection: TextRange, reads: &mut Vec<(LocalId, Span)>) {
+    let expr = body.expr(expr_id);
+    if !span_within_range(expr.span, selection) {
+        return;
+    }
+
+    match &expr.kind {
+        ExprKind::Local(local) => reads.push((*local, expr.span)),
+        ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                collect_reads_in_expr(body, *arg, selection, reads);
+            }
         }
-        for (name, _) in collect_ident_tokens(expr.syntax(), known) {
-            out.insert(name);
+        ExprKind::Unary { expr, .. } => collect_reads_in_expr(body, *expr, selection, reads),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_reads_in_expr(body, *lhs, selection, reads);
+            collect_reads_in_expr(body, *rhs, selection, reads);
+        }
+        ExprKind::FieldAccess { receiver, .. } => collect_reads_in_expr(body, *receiver, selection, reads),
+        ExprKind::Call { receiver, args, .. } => {
+            if let Some(recv) = receiver {
+                collect_reads_in_expr(body, *recv, selection, reads);
+            }
+            for arg in args {
+                collect_reads_in_expr(body, *arg, selection, reads);
+            }
+        }
+        ExprKind::Invalid { children } => {
+            for child in children {
+                collect_reads_in_expr(body, *child, selection, reads);
+            }
+        }
+    }
+}
+
+fn local_declared_in_selection(body: &Body, local: LocalId, selection: TextRange) -> bool {
+    let local_data = &body.locals()[local.index()];
+    local_data.kind == LocalKind::Local
+        && selection.start <= local_data.span.start
+        && local_data.span.end <= selection.end
+}
+
+fn type_for_local(
+    body: &Body,
+    types: &HashMap<Span, String>,
+    local: LocalId,
+    issues: &mut Vec<ExtractMethodIssue>,
+) -> String {
+    let local_data = &body.locals()[local.index()];
+    types
+        .get(&local_data.span)
+        .cloned()
+        .unwrap_or_else(|| {
+            let name = local_data.name.as_str().to_string();
+            issues.push(ExtractMethodIssue::UnknownType { name });
+            "Object".to_string()
+        })
+}
+
+fn compute_return_value(
+    body: &Body,
+    types: &HashMap<Span, String>,
+    selection: TextRange,
+    writes_in_selection: &HashSet<LocalId>,
+    live_after_selection: &HashSet<LocalId>,
+    issues: &mut Vec<ExtractMethodIssue>,
+) -> Option<ReturnValue> {
+    let mut candidates: Vec<LocalId> = writes_in_selection
+        .iter()
+        .copied()
+        .filter(|local| live_after_selection.contains(local))
+        .collect();
+
+    // Keep behavior deterministic.
+    candidates.sort_by(|a, b| {
+        let a_name = body.locals()[a.index()].name.as_str();
+        let b_name = body.locals()[b.index()].name.as_str();
+        a_name.cmp(b_name).then_with(|| a.index().cmp(&b.index()))
+    });
+
+    match candidates.as_slice() {
+        [] => None,
+        [local] => {
+            let name = body.locals()[local.index()].name.as_str().to_string();
+            let ty = type_for_local(body, types, *local, issues);
+            Some(ReturnValue {
+                name,
+                ty,
+                declared_in_selection: local_declared_in_selection(body, *local, selection),
+            })
+        }
+        many => {
+            let mut names: Vec<String> = many
+                .iter()
+                .map(|local| body.locals()[local.index()].name.as_str().to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            issues.push(ExtractMethodIssue::MultipleReturnValues { names });
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StmtLocation {
+    InBlock { block: nova_flow::BlockId, index: usize },
+    Terminator { block: nova_flow::BlockId },
+}
+
+fn live_locals_after_selection(body: &Body, selection: TextRange) -> HashSet<LocalId> {
+    let cfg = build_cfg_with(body, &mut || {});
+    let (_live_in, live_out) = compute_cfg_liveness(body, &cfg);
+    let stmt_locations = collect_stmt_locations(&cfg);
+
+    let Some(last_stmt) = last_stmt_in_selection(body, selection, &stmt_locations) else {
+        return HashSet::new();
+    };
+    let Some(location) = stmt_locations.get(&last_stmt).copied() else {
+        return HashSet::new();
+    };
+
+    live_after_stmt(body, &cfg, &live_out, location)
+        .unwrap_or_else(HashSet::new)
+}
+
+fn collect_stmt_locations(cfg: &nova_flow::ControlFlowGraph) -> HashMap<StmtId, StmtLocation> {
+    let mut out = HashMap::new();
+    for (idx, bb) in cfg.blocks.iter().enumerate() {
+        let bb_id = nova_flow::BlockId(idx);
+        for (pos, stmt) in bb.stmts.iter().enumerate() {
+            out.entry(*stmt)
+                .or_insert(StmtLocation::InBlock { block: bb_id, index: pos });
+        }
+        if let Some(from) = bb.terminator.from_stmt() {
+            out.entry(from)
+                .or_insert(StmtLocation::Terminator { block: bb_id });
         }
     }
     out
+}
+
+fn last_stmt_in_selection(
+    body: &Body,
+    selection: TextRange,
+    locations: &HashMap<StmtId, StmtLocation>,
+) -> Option<StmtId> {
+    let mut best: Option<(usize, usize, usize, StmtId)> = None; // (end, start, stmt_idx, id)
+
+    for stmt_id in locations.keys().copied() {
+        let span = body.stmt(stmt_id).span;
+        if !span_within_range(span, selection) {
+            continue;
+        }
+        let key = (span.end, span.start, stmt_id.index());
+        if best
+            .as_ref()
+            .is_none_or(|(end, start, idx, _)| key > (*end, *start, *idx))
+        {
+            best = Some((key.0, key.1, key.2, stmt_id));
+        }
+    }
+
+    best.map(|(_, _, _, id)| id)
+}
+
+fn compute_cfg_liveness(
+    body: &Body,
+    cfg: &nova_flow::ControlFlowGraph,
+) -> (Vec<HashSet<LocalId>>, Vec<HashSet<LocalId>>) {
+    let n = cfg.blocks.len();
+    let mut live_in: Vec<HashSet<LocalId>> = vec![HashSet::new(); n];
+    let mut live_out: Vec<HashSet<LocalId>> = vec![HashSet::new(); n];
+
+    loop {
+        let mut changed = false;
+
+        // Backward analysis (iterate blocks in reverse order for faster convergence).
+        for idx in (0..n).rev() {
+            let bb_id = nova_flow::BlockId(idx);
+
+            // out[bb] = union(in[succ])
+            let mut out = HashSet::new();
+            for succ in cfg.successors(bb_id) {
+                out.extend(live_in[succ.index()].iter().copied());
+            }
+
+            // in[bb] = transfer(bb, out)
+            let mut live = out.clone();
+            add_terminator_uses(body, &cfg.block(bb_id).terminator, &mut live);
+
+            for stmt in cfg.block(bb_id).stmts.iter().rev() {
+                transfer_stmt_liveness(body, *stmt, &mut live);
+            }
+
+            if live != live_in[idx] {
+                live_in[idx] = live;
+                changed = true;
+            }
+            if out != live_out[idx] {
+                live_out[idx] = out;
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    (live_in, live_out)
+}
+
+fn live_after_stmt(
+    body: &Body,
+    cfg: &nova_flow::ControlFlowGraph,
+    live_out: &[HashSet<LocalId>],
+    location: StmtLocation,
+) -> Option<HashSet<LocalId>> {
+    match location {
+        StmtLocation::InBlock { block, index } => {
+            let bb = cfg.block(block);
+            let mut live = live_out.get(block.index())?.clone();
+            add_terminator_uses(body, &bb.terminator, &mut live);
+
+            // Walk statements *after* the selected one backwards.
+            for stmt in bb.stmts.iter().skip(index + 1).rev() {
+                transfer_stmt_liveness(body, *stmt, &mut live);
+            }
+
+            Some(live)
+        }
+        StmtLocation::Terminator { block } => live_out.get(block.index()).cloned(),
+    }
+}
+
+fn transfer_stmt_liveness(body: &Body, stmt: StmtId, live: &mut HashSet<LocalId>) {
+    match &body.stmt(stmt).kind {
+        StmtKind::Let { local, initializer } => {
+            live.remove(local);
+            if let Some(init) = initializer {
+                add_expr_uses(body, *init, live);
+            }
+        }
+        StmtKind::Assign { target, value } => {
+            live.remove(target);
+            add_expr_uses(body, *value, live);
+        }
+        StmtKind::Expr(expr) => {
+            add_expr_uses(body, *expr, live);
+        }
+        StmtKind::Nop => {}
+        // Control-flow statements do not appear in `BasicBlock.stmts`.
+        other => {
+            debug_assert!(
+                matches!(
+                    other,
+                    StmtKind::Block(_)
+                        | StmtKind::If { .. }
+                        | StmtKind::While { .. }
+                        | StmtKind::DoWhile { .. }
+                        | StmtKind::For { .. }
+                        | StmtKind::Switch { .. }
+                        | StmtKind::Try { .. }
+                        | StmtKind::Return(_)
+                        | StmtKind::Throw(_)
+                        | StmtKind::Break
+                        | StmtKind::Continue
+                ),
+                "unexpected statement in basic block: {other:?}"
+            );
+        }
+    }
+}
+
+fn add_terminator_uses(body: &Body, term: &nova_flow::Terminator, live: &mut HashSet<LocalId>) {
+    match term {
+        nova_flow::Terminator::If { condition, .. } => add_expr_uses(body, *condition, live),
+        nova_flow::Terminator::Switch { expression, .. } => add_expr_uses(body, *expression, live),
+        nova_flow::Terminator::Return { value, .. } => {
+            if let Some(value) = value {
+                add_expr_uses(body, *value, live);
+            }
+        }
+        nova_flow::Terminator::Throw { exception, .. } => add_expr_uses(body, *exception, live),
+        nova_flow::Terminator::Goto { .. }
+        | nova_flow::Terminator::Multi { .. }
+        | nova_flow::Terminator::Exit => {}
+    }
+}
+
+fn add_expr_uses(body: &Body, expr: ExprId, live: &mut HashSet<LocalId>) {
+    match &body.expr(expr).kind {
+        ExprKind::Local(local) => {
+            live.insert(*local);
+        }
+        ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                add_expr_uses(body, *arg, live);
+            }
+        }
+        ExprKind::Unary { expr, .. } => add_expr_uses(body, *expr, live),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            add_expr_uses(body, *lhs, live);
+            add_expr_uses(body, *rhs, live);
+        }
+        ExprKind::FieldAccess { receiver, .. } => add_expr_uses(body, *receiver, live),
+        ExprKind::Call { receiver, args, .. } => {
+            if let Some(recv) = receiver {
+                add_expr_uses(body, *recv, live);
+            }
+            for arg in args {
+                add_expr_uses(body, *arg, live);
+            }
+        }
+        ExprKind::Invalid { children } => {
+            for child in children {
+                add_expr_uses(body, *child, live);
+            }
+        }
+    }
 }
 
 fn insertion_offset_end_of_class(source: &str, class_decl: &ast::ClassDeclaration) -> usize {

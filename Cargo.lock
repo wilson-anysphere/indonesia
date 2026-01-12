@@ -4157,6 +4157,7 @@ dependencies = [
  "lsp-types",
  "nova-core",
  "nova-db",
+ "nova-flow",
  "nova-format",
  "nova-hir",
  "nova-index",
