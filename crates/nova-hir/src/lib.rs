@@ -29,7 +29,15 @@ pub enum ImportDecl {
         alias: Option<Name>,
     },
     TypeStar {
-        package: PackageName,
+        /// `import X.*;` where `X` is a `PackageOrTypeName` (JLS 7.5.2).
+        ///
+        /// `X` can refer to either:
+        /// - a package (`import java.util.*;`), or
+        /// - a type (`import java.util.Map.*;`), in which case member types can be imported.
+        ///
+        /// Callers can interpret this via `TypeIndex::package_exists` and/or by resolving `X`
+        /// as a type name.
+        path: QualifiedName,
     },
     StaticSingle {
         ty: QualifiedName,
