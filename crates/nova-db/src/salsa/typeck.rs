@@ -5724,6 +5724,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         &q,
                     ) {
                         let binary_name = resolved.as_str().to_string();
+                        // Preserve workspace defs: a fully-qualified name expression can collide
+                        // with a classpath type of the same binary name. If we call
+                        // `ExternalTypeLoader::ensure_class` directly, it can overwrite an
+                        // already-defined workspace `ClassDef` with the external stub.
                         if let Some(id) = self
                             .ensure_workspace_class(loader, &binary_name)
                             .or_else(|| loader.ensure_class(&binary_name))
