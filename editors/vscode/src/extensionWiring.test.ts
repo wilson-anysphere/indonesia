@@ -16,7 +16,7 @@ describe('extension wiring', () => {
     // route requests through the allowMethodFallback wrapper so the view can catch method-not-found
     // errors and render an "unsupported" placeholder node.
     expect(contents).toMatch(
-      /const\s+requestWithFallback[\s\S]*?sendNovaRequest(?:<[^>]+>)?\(\s*method\s*,\s*params\s*,\s*\{\s*allowMethodFallback:\s*true\s*\}\s*\)/s,
+      /const\s+requestWithFallback[\s\S]*?sendNovaRequest(?:<[^>]+>)?\(\s*method\s*,\s*params\s*,\s*\{\s*allowMethodFallback:\s*true\s*(?:,\s*token:\s*opts\?\.\s*token\s*)?\}\s*\)/s,
     );
     expect(contents).toMatch(/registerNovaProjectExplorer\(\s*context\s*,\s*requestWithFallback\s*,/);
   });

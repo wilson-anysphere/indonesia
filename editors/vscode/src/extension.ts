@@ -267,8 +267,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
-  const requestWithFallback = <R>(method: string, params?: unknown): Promise<R | undefined> => {
-    return sendNovaRequest<R>(method, params, { allowMethodFallback: true });
+  const requestWithFallback = <R>(
+    method: string,
+    params?: unknown,
+    opts?: { allowMethodFallback?: boolean; token?: vscode.CancellationToken },
+  ): Promise<R | undefined> => {
+    return sendNovaRequest<R>(method, params, { allowMethodFallback: true, token: opts?.token });
   };
   const projectModelCache = new ProjectModelCache(requestWithFallback);
 
