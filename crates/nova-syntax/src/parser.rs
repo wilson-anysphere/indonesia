@@ -4186,7 +4186,23 @@ impl<'a> Parser<'a> {
                             {
                                 return false;
                             }
-                            return can_start_expression(next.kind);
+                            if can_start_expression(next.kind) {
+                                return true;
+                            }
+                            // Expressions that can begin with type arguments (`<T>foo()`,
+                            // `<T>this`, ...) or primitive type class literals (`int.class`,
+                            // `int[]::new`) are not included in `can_start_expression`, but they are
+                            // valid cast operands.
+                            if next.kind == SyntaxKind::Less {
+                                return at_type_arguments_expression_start(&self.tokens, j);
+                            }
+                            if is_primitive_type(next.kind) {
+                                if next.kind == SyntaxKind::VoidKw {
+                                    return at_primitive_class_literal_start(&self.tokens, j);
+                                }
+                                return at_primitive_type_suffix_start(&self.tokens, j);
+                            }
+                            return false;
                         }
                         return false;
                     }
@@ -4848,6 +4864,38 @@ fn skip_type_arguments(tokens: &VecDeque<Token>, mut idx: usize) -> usize {
         }
     }
     idx
+}
+
+fn at_type_arguments_expression_start(tokens: &VecDeque<Token>, idx: usize) -> bool {
+    if tokens.get(idx).map(|t| t.kind) != Some(SyntaxKind::Less) {
+        return false;
+    }
+    let lookahead = skip_trivia(tokens, skip_type_arguments(tokens, idx));
+    match tokens.get(lookahead).map(|t| t.kind) {
+        Some(kind) if kind.is_identifier_like() => true,
+        Some(SyntaxKind::ThisKw) | Some(SyntaxKind::SuperKw) => true,
+        _ => false,
+    }
+}
+
+fn at_primitive_class_literal_start(tokens: &VecDeque<Token>, idx: usize) -> bool {
+    let after_dims = skip_reference_type_array_suffix(tokens, idx.saturating_add(1));
+    let dot = skip_trivia(tokens, after_dims);
+    if tokens.get(dot).map(|t| t.kind) != Some(SyntaxKind::Dot) {
+        return false;
+    }
+    let class_kw = skip_trivia(tokens, dot + 1);
+    tokens.get(class_kw).map(|t| t.kind) == Some(SyntaxKind::ClassKw)
+}
+
+fn at_primitive_method_reference_start(tokens: &VecDeque<Token>, idx: usize) -> bool {
+    let after_dims = skip_reference_type_array_suffix(tokens, idx.saturating_add(1));
+    let colons = skip_trivia(tokens, after_dims);
+    tokens.get(colons).map(|t| t.kind) == Some(SyntaxKind::DoubleColon)
+}
+
+fn at_primitive_type_suffix_start(tokens: &VecDeque<Token>, idx: usize) -> bool {
+    at_primitive_class_literal_start(tokens, idx) || at_primitive_method_reference_start(tokens, idx)
 }
 
 fn skip_reference_type_array_suffix(tokens: &VecDeque<Token>, mut idx: usize) -> usize {

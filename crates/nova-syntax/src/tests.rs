@@ -4693,6 +4693,33 @@ fn parse_java_expression_cast_with_annotation_args_is_cast_expression() {
 }
 
 #[test]
+fn parse_java_expression_cast_followed_by_explicit_generic_invocation_is_cast_expression() {
+    let result = parse_java_expression("(Object) <String>foo()");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
+fn parse_java_expression_cast_followed_by_primitive_class_literal_is_cast_expression() {
+    let result = parse_java_expression("(Object) int.class");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
+fn parse_java_expression_cast_followed_by_void_class_literal_is_cast_expression() {
+    let result = parse_java_expression("(Object) void.class");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
 fn parse_java_expression_method_call_with_dotted_name() {
     let result = parse_java_expression("foo.bar(1,2)");
     assert_eq!(result.errors, Vec::new());
