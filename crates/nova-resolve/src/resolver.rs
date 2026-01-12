@@ -49,6 +49,24 @@ pub enum TypeLookup {
     NotFound,
 }
 
+/// Result of resolving a simple name in the *type namespace*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeNameResolution {
+    Resolved(TypeResolution),
+    Unresolved,
+    Ambiguous(Vec<TypeResolution>),
+}
+
+impl TypeNameResolution {
+    #[must_use]
+    pub fn into_option(self) -> Option<TypeResolution> {
+        match self {
+            TypeNameResolution::Resolved(res) => Some(res),
+            TypeNameResolution::Unresolved | TypeNameResolution::Ambiguous(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticLookup {
     Found(StaticMemberId),
@@ -143,6 +161,21 @@ impl<'a> Resolver<'a> {
             self.workspace
                 .and_then(|workspace| workspace.type_name(item).cloned())
         })
+    }
+
+    /// Convert a [`TypeResolution`] to a concrete [`TypeName`], when possible.
+    ///
+    /// This is lossy for unresolved source items (when the workspace map does not know the fully
+    /// qualified name), but allows higher layers to report diagnostics that include candidates.
+    pub fn type_name_for_resolution(
+        &self,
+        scopes: &ScopeGraph,
+        resolution: &TypeResolution,
+    ) -> Option<TypeName> {
+        match resolution {
+            TypeResolution::External(name) => Some(name.clone()),
+            TypeResolution::Source(item) => self.type_name_for_source(scopes, *item),
+        }
     }
 
     fn static_member_resolution_from_id(&self, member: StaticMemberId) -> StaticMemberResolution {
@@ -516,60 +549,82 @@ impl<'a> Resolver<'a> {
     ///
     /// This intentionally ignores the value namespace (locals/params/fields/
     /// methods) to match Java's name resolution rules in type contexts (JLS 6.5).
+    ///
+    /// Import-scope lookup follows the same precedence as [`Resolver::resolve_import_detailed`]:
+    /// 1) Single-type imports
+    /// 2) Same-package types
+    /// 3) Type-import-on-demand (`.*`) imports, including the implicit `java.lang.*`
+    ///
+    /// If the on-demand import set yields multiple distinct candidates (including `java.lang`),
+    /// the reference is ambiguous and this returns `None`. Use
+    /// [`Resolver::resolve_type_name_detailed`] to preserve ambiguity information for
+    /// diagnostics.
     pub fn resolve_type_name(
         &self,
         scopes: &ScopeGraph,
         scope: ScopeId,
         name: &Name,
     ) -> Option<TypeResolution> {
+        self.resolve_type_name_detailed(scopes, scope, name).into_option()
+    }
+
+    /// Like [`Resolver::resolve_type_name`], but preserves ambiguity.
+    pub fn resolve_type_name_detailed(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> TypeNameResolution {
         let mut current = Some(scope);
         while let Some(id) = current {
             let data = scopes.scope(id);
 
             if let Some(ty) = data.types.get(name) {
-                return Some(ty.clone());
+                return TypeNameResolution::Resolved(ty.clone());
             }
 
             match &data.kind {
                 ScopeKind::Import { imports, package } => {
-                    // Type name lookup order mirrors `resolve_import_detailed`:
-                    // 1) single-type imports
-                    // 2) same-package types
-                    // 3) on-demand imports (star imports; ambiguity is reported)
-                    // 4) implicit `java.lang.*` (preferred over a unique `.*` match)
                     match self.resolve_single_type_imports_detailed(imports, name) {
                         TypeLookup::Found(ty) => {
-                            return Some(self.type_resolution_from_name(ty));
+                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
                         }
-                        TypeLookup::Ambiguous(_) => return None,
+                        TypeLookup::Ambiguous(types) => {
+                            return TypeNameResolution::Ambiguous(
+                                types
+                                    .into_iter()
+                                    .map(|ty| self.type_resolution_from_name(ty))
+                                    .collect(),
+                            );
+                        }
                         TypeLookup::NotFound => {}
                     }
 
                     if let Some(pkg) = package {
                         if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
-                            return Some(self.type_resolution_from_name(ty));
+                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
                         }
                     }
 
-                    let mut star_match = None;
-                    match self.resolve_star_type_imports_detailed(imports, name) {
-                        TypeLookup::Found(ty) => star_match = Some(ty),
-                        TypeLookup::Ambiguous(_) => return None,
+                    match self.resolve_on_demand_type_imports_detailed(imports, name) {
+                        TypeLookup::Found(ty) => {
+                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
+                        }
+                        TypeLookup::Ambiguous(types) => {
+                            return TypeNameResolution::Ambiguous(
+                                types
+                                    .into_iter()
+                                    .map(|ty| self.type_resolution_from_name(ty))
+                                    .collect(),
+                            );
+                        }
                         TypeLookup::NotFound => {}
-                    }
-
-                    if let Some(ty) = self.resolve_type_in_java_lang(name) {
-                        return Some(self.type_resolution_from_name(ty));
-                    }
-
-                    if let Some(ty) = star_match {
-                        return Some(self.type_resolution_from_name(ty));
                     }
                 }
                 ScopeKind::Universe => {
                     // `java.lang.*` is always implicitly available.
                     if let Some(ty) = self.resolve_type_in_java_lang(name) {
-                        return Some(self.type_resolution_from_name(ty));
+                        return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
                     }
                 }
                 _ => {}
@@ -578,7 +633,7 @@ impl<'a> Resolver<'a> {
             current = data.parent;
         }
 
-        None
+        TypeNameResolution::Unresolved
     }
 
     /// Like [`Resolver::resolve_qualified_type_in_scope`], but preserves whether

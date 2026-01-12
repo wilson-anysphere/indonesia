@@ -11,7 +11,7 @@ use std::ops::Range;
 use nova_core::{Name, QualifiedName};
 use nova_types::{lub, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
-use crate::{Resolution, Resolver, ScopeGraph, ScopeId, TypeResolution};
+use crate::{Resolution, Resolver, ScopeGraph, ScopeId, TypeNameResolution, TypeResolution};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
@@ -315,19 +315,89 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
 
         let dotted = segments.join(".");
-        let qname = QualifiedName::from_dotted(&dotted);
+        if segments.len() == 1 {
+            let ident = Name::from(segments[0].as_str());
+            match self
+                .resolver
+                .resolve_type_name_detailed(self.scopes, self.scope, &ident)
+            {
+                TypeNameResolution::Resolved(resolution) => {
+                    if let Some(type_name) =
+                        self.resolver
+                            .type_name_for_resolution(self.scopes, &resolution)
+                    {
+                        let resolved_name = type_name.as_str();
+                        if let Some(class_id) = self.env.lookup_class(resolved_name) {
+                            return Type::class(class_id, args);
+                        }
+                        // No class definition in the env; drop args (best effort).
+                        return Type::Named(resolved_name.to_string());
+                    }
+                }
+                TypeNameResolution::Ambiguous(candidates) => {
+                    let mut candidate_names: Vec<String> = candidates
+                        .iter()
+                        .filter_map(|c| {
+                            self.resolver
+                                .type_name_for_resolution(self.scopes, c)
+                                .map(|n| n.as_str().to_string())
+                        })
+                        .collect();
+                    candidate_names.sort();
+                    candidate_names.dedup();
 
-        if let Some(type_name) =
-            self.resolver
-                .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
-        {
-            let resolved_name = type_name.as_str();
-            if let Some(class_id) = self.env.lookup_class(resolved_name) {
-                return Type::class(class_id, args);
+                    let mut msg = format!("ambiguous type `{}`", segments[0]);
+                    if !candidate_names.is_empty() {
+                        msg.push_str(": ");
+                        msg.push_str(&candidate_names.join(", "));
+                    }
+
+                    self.diagnostics.push(Diagnostic::error(
+                        "ambiguous-type",
+                        msg,
+                        self.anchor_span(name_range.clone()),
+                    ));
+
+                    // Best-effort: prefer `java.lang.*` if present, otherwise pick the first
+                    // candidate. This keeps behavior stable while still surfacing diagnostics.
+                    let best = candidate_names
+                        .iter()
+                        .find(|c| c.starts_with("java.lang."))
+                        .or_else(|| candidate_names.first())
+                        .cloned();
+
+                    if let Some(best) = best {
+                        if let Some(class_id) = self.env.lookup_class(&best) {
+                            return Type::class(class_id, args);
+                        }
+                        return Type::Named(best);
+                    }
+
+                    // If we failed to compute any candidate names, fall back to a stable best-effort
+                    // resolution without also reporting an unresolved-type diagnostic (we already
+                    // know the reference is ambiguous).
+                    let java_lang = format!("java.lang.{}", segments[0]);
+                    if let Some(class_id) = self.env.lookup_class(&java_lang) {
+                        return Type::class(class_id, args);
+                    }
+                    return Type::Named(dotted.clone());
+                }
+                TypeNameResolution::Unresolved => {}
             }
+        } else {
+            let qname = QualifiedName::from_dotted(&dotted);
+            if let Some(type_name) =
+                self.resolver
+                    .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
+            {
+                let resolved_name = type_name.as_str();
+                if let Some(class_id) = self.env.lookup_class(resolved_name) {
+                    return Type::class(class_id, args);
+                }
 
-            // No class definition in the env; drop args (best effort).
-            return Type::Named(resolved_name.to_string());
+                // No class definition in the env; drop args (best effort).
+                return Type::Named(resolved_name.to_string());
+            }
         }
 
         // If the resolver can't map the name (usually because the external index
