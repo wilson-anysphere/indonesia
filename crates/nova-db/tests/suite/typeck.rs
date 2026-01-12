@@ -1463,6 +1463,51 @@ class C {
 }
 
 #[test]
+fn constructor_reference_is_typed_from_target() {
+    let src = r#"
+interface Maker { String make(); }
+class C {
+    void m() {
+        Maker x = String::new;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String::new")
+        .expect("snippet should contain constructor reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
+
+#[test]
+fn constructor_reference_is_typed_from_call_argument_target() {
+    let src = r#"
+interface Maker { String make(); }
+class C {
+    static void take(Maker m) {}
+    void m() {
+        C.take(String::new);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String::new")
+        .expect("snippet should contain constructor reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
+
+#[test]
 fn class_literal_is_typed_as_java_lang_class() {
     let src = r#"
 class C { void m(){ Object x = String.class; } }

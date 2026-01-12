@@ -4745,6 +4745,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let _ = self.infer_expr(loader, *receiver);
 
                 if let Some(expected) = expected {
+                    self.ensure_type_loaded(loader, expected);
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
                         ExprInfo {
@@ -4779,6 +4780,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let _ = self.infer_expr(loader, *receiver);
 
                 if let Some(expected) = expected {
+                    self.ensure_type_loaded(loader, expected);
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
                         ExprInfo {
