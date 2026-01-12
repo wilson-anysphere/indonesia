@@ -771,6 +771,7 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
                 .to_string(),
             )
         }
+        ast::Expression::InstanceofExpression(_) => Some("boolean".to_string()),
         ast::Expression::CastExpression(cast) => {
             let ty = cast.ty()?;
             if let Some(primitive) = ty.primitive() {
