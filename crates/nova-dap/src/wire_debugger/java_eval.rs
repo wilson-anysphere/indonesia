@@ -196,7 +196,10 @@ impl Debugger {
             ))
         })?;
 
-        let compiled = match compile_java_to_dir(cancel, javac, &source_path, &output_dir).await {
+        // If we don't have a resolved build-system language level, default to a conservative
+        // `--release 8` so the injected helper class can load on older debuggee JVMs.
+        let javac = crate::javac::apply_stream_eval_defaults(javac);
+        let compiled = match compile_java_to_dir(cancel, &javac, &source_path, &output_dir).await {
             Ok(classes) => classes,
             Err(err) => {
                 if cancel.is_cancelled() {

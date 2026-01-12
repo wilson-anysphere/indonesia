@@ -58,6 +58,25 @@ pub(crate) async fn resolve_hot_swap_javac_config(
     config
 }
 
+/// Apply stream-eval-specific defaults to a base `javac` configuration.
+///
+/// Stream debug compiles and injects a helper class into the debuggee JVM. When we're attaching
+/// without a resolved build configuration (no `projectRoot` or no build tool metadata), `javac`
+/// defaults to the host toolchain language level and can emit classfiles that the debuggee JVM
+/// cannot load (e.g. compiling with JDK 21 against a JDK 8 debuggee).
+///
+/// Streams require Java 8+, so we default to `--release 8` only when no explicit language level is
+/// available (no `--release` / `--source` / `--target` and preview is disabled).
+pub(crate) fn apply_stream_eval_defaults(base: &HotSwapJavacConfig) -> HotSwapJavacConfig {
+    let mut config = base.clone();
+    let has_explicit_language_level =
+        config.release.is_some() || config.source.is_some() || config.target.is_some();
+    if !has_explicit_language_level && !config.enable_preview {
+        config.release = Some("8".to_string());
+    }
+    config
+}
+
 pub(crate) async fn resolve_vm_classpath(
     cancel: &CancellationToken,
     jdwp: &JdwpClient,
@@ -303,6 +322,32 @@ pub(crate) async fn compile_java_to_dir(
     }
 
     Ok(classes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_stream_eval_defaults_sets_release_8_when_no_build_level() {
+        let base = HotSwapJavacConfig {
+            javac: "javac".to_string(),
+            ..HotSwapJavacConfig::default()
+        };
+        let cfg = apply_stream_eval_defaults(&base);
+        assert_eq!(cfg.release.as_deref(), Some("8"));
+    }
+
+    #[test]
+    fn apply_stream_eval_defaults_does_not_override_explicit_release() {
+        let base = HotSwapJavacConfig {
+            javac: "javac".to_string(),
+            release: Some("21".to_string()),
+            ..HotSwapJavacConfig::default()
+        };
+        let cfg = apply_stream_eval_defaults(&base);
+        assert_eq!(cfg.release.as_deref(), Some("21"));
+    }
 }
 
 pub(crate) fn hot_swap_temp_dir() -> std::io::Result<PathBuf> {
