@@ -197,8 +197,10 @@ impl RefactorJavaDatabase {
             file_ids.insert(file.clone(), id);
             texts_by_id.insert(id, text.clone());
 
-            salsa.set_file_text(id, text.to_string());
+            // Set `file_rel_path` before `set_file_text` so `set_file_text` doesn't synthesize and
+            // then discard a default `file-123.java` rel-path.
             salsa.set_file_rel_path(id, Arc::new(file.0.clone()));
+            salsa.set_file_text(id, text.to_string());
         }
 
         let project_files: Vec<DbFileId> = file_ids.values().copied().collect();

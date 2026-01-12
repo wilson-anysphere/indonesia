@@ -4729,8 +4729,10 @@ class Foo {
 
         let project = ProjectId::from_raw(0);
         let file = FileId::from_raw(1);
-        db.set_file_text(file, "class Foo { int x; }");
         db.set_file_rel_path(file, Arc::new("src/Foo.java".to_string()));
+        // Set `file_rel_path` before `set_file_text` so `set_file_text` doesn't synthesize and then
+        // discard a default `file-123.java` rel-path.
+        db.set_file_text(file, "class Foo { int x; }");
         db.set_project_files(project, Arc::new(vec![file]));
 
         // Ensure we have some tracked usage so `MemoryManager::enforce()` enters High/Critical on

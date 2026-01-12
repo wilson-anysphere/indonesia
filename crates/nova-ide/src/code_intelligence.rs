@@ -1107,8 +1107,10 @@ fn seed_salsa_inputs_for_single_file(
     if let Some(cfg) = project_config {
         salsa.set_project_config(project, Arc::clone(cfg));
     }
-    salsa.set_file_text(file, text.to_string());
     salsa.set_file_rel_path(file, Arc::clone(file_rel_path));
+    // Set `file_rel_path` before `set_file_text` so `set_file_text` doesn't synthesize and then
+    // discard a default `file-123.java` rel-path.
+    salsa.set_file_text(file, text.to_string());
     salsa.set_project_files(project, Arc::new(vec![file]));
 }
 
