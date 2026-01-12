@@ -410,6 +410,54 @@ class A {
 }
 
 #[test]
+fn unresolved_name_type_like_offers_create_class_quick_fix() {
+    let source = r#"
+class A {
+  void m() {
+    MissingType.of();
+  }
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, source.to_string());
+
+    let view = SalsaDbView::from_source_db(&db);
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
+    let ide = IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    // Ensure `MissingType` triggers an `unresolved-name` diagnostic (expression position).
+    let cancel = CancellationToken::new();
+    let diagnostics = nova_ide::core_file_diagnostics(db.as_ref(), file, &cancel);
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code.as_ref() == "unresolved-name"
+                && d.message.contains("MissingType")
+        }),
+        "expected unresolved-name diagnostic for MissingType; got {diagnostics:#?}"
+    );
+
+    let start = source
+        .find("MissingType")
+        .expect("expected MissingType in fixture");
+    let end = start + "MissingType".len();
+    let span = Span::new(start, end);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+    assert!(
+        actions.iter().any(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => action.title == "Create class 'MissingType'",
+            CodeActionOrCommand::Command(_) => false,
+        }),
+        "expected Create class quick fix; got titles {:?}",
+        action_titles(&actions)
+    );
+}
+
+#[test]
 fn type_mismatch_offers_cast_quick_fix() {
     let source = r#"class A {
   void m() {
