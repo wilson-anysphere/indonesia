@@ -795,6 +795,10 @@ fn parse_members_in_class(
     let mut fields = Vec::new();
     let mut i = 0;
     let mut depth = 0usize;
+    // Tracks the start of the current class-body "member" (field, method, initializer block,
+    // nested type, etc). This lets us apply a heuristic to avoid misclassifying call expressions in
+    // field initializers as method declarations.
+    let mut member_start = 0usize;
     let mut pending_override = false;
     let mut pending_override_decl_start: Option<usize> = None;
     while i < bytes.len() {
@@ -807,6 +811,12 @@ fn parse_members_in_class(
             b'}' => {
                 depth = depth.saturating_sub(1);
                 i += 1;
+                if depth == 0 {
+                    // A top-level block member ended.
+                    member_start = i;
+                    pending_override = false;
+                    pending_override_decl_start = None;
+                }
                 continue;
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
@@ -867,6 +877,12 @@ fn parse_members_in_class(
                     if !looks_like_decl_name(body_text, name_start) {
                         continue;
                     }
+                    // Heuristic: if there's an `=` earlier in this member (e.g. `int x = (foo());`),
+                    // this `name(` is very likely a call inside a field initializer, not a method
+                    // declaration.
+                    if member_contains_assignment(body_text, member_start, name_start) {
+                        continue;
+                    }
 
                     // Find matching `)` and then `{` or `;`.
                     let open_paren = i;
@@ -912,6 +928,7 @@ fn parse_members_in_class(
 
                             // Skip scanning inside the declaration we just recorded.
                             i = decl_end.saturating_sub(body_offset);
+                            member_start = i;
                             continue;
                         }
                     }
@@ -937,6 +954,7 @@ fn parse_members_in_class(
                 pending_override = false;
                 pending_override_decl_start = None;
                 i += 1;
+                member_start = i;
                 continue;
             }
         }
@@ -944,6 +962,88 @@ fn parse_members_in_class(
         i += 1;
     }
     (methods, fields)
+}
+
+fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = member_start.min(bytes.len());
+    let until = until.min(bytes.len());
+    let mut paren_depth = 0usize;
+
+    while i < until {
+        match bytes[i] {
+            b'(' => {
+                paren_depth += 1;
+                i += 1;
+                continue;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+            b'"' => {
+                // Skip strings.
+                i += 1;
+                while i < until {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(until);
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'\'' => {
+                // Skip char literals.
+                i += 1;
+                while i < until {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(until);
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < until && bytes[i + 1] == b'/' => {
+                // Skip line comment.
+                i += 2;
+                while i < until && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < until && bytes[i + 1] == b'*' => {
+                // Skip block comment.
+                i += 2;
+                while i + 1 < until {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'=' if paren_depth == 0 => {
+                return true;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    false
 }
 
 fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
