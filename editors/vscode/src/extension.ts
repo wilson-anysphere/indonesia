@@ -2326,12 +2326,33 @@ function createMethodNotFoundError(method: string): Error & { code: number } {
   return err;
 }
 
+function isRequestCancelledError(err: unknown): boolean {
+  if (typeof err === 'string') {
+    return err.toLowerCase().includes('requestcancelled');
+  }
+
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+
+  const code = (err as { code?: unknown }).code;
+  if (code === -32800) {
+    return true;
+  }
+
+  const message = (err as { message?: unknown }).message;
+  return typeof message === 'string' && message.toLowerCase().includes('requestcancelled');
+}
+
 async function sendNovaRequest<R>(
   method: string,
   params?: unknown,
   opts: SendNovaRequestOptions = {},
 ): Promise<R | undefined> {
   const token = opts.token;
+  if (token?.isCancellationRequested) {
+    return undefined;
+  }
   const c = await requireClient({ token });
   if (method.startsWith('nova/')) {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
@@ -2361,11 +2382,22 @@ async function sendNovaRequest<R>(
   }
   try {
     const result = await sendRequestWithOptionalToken<R>(c, method, params, token);
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     if (method.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(method) && !token?.isCancellationRequested) {
       setSafeModeEnabled?.(false);
     }
     return result;
   } catch (err) {
+    if (token?.isCancellationRequested || isRequestCancelledError(err)) {
+      // Treat cancellation as a non-error for callers and avoid clearing safe-mode UI.
+      // Still record safe-mode state if the server reported it.
+      if (isSafeModeError(err)) {
+        setSafeModeEnabled?.(true);
+      }
+      return undefined;
+    }
     if (method.startsWith('nova/') && isNovaMethodNotFoundError(err)) {
       if (opts.allowMethodFallback) {
         throw err;
