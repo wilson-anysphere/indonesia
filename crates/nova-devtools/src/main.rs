@@ -668,7 +668,7 @@ USAGE:
 OPTIONS:
   --config <path>         Path to crate-layers.toml (default: crate-layers.toml)
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
-  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps --locked` JSON to read instead of spawning cargo
   --json                  Emit machine-readable JSON output
   -h, --help              Print help
 "
@@ -683,7 +683,7 @@ USAGE:
 OPTIONS:
   --doc <path>            Path to docs/architecture-map.md (default: docs/architecture-map.md)
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
-  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps --locked` JSON to read instead of spawning cargo
   --strict                Require Purpose / Key entry points / Maturity / Known gaps bullets for each crate section
   --json                  Emit machine-readable JSON output
   -h, --help              Print help
@@ -701,7 +701,7 @@ By default, emits DOT to stdout. Use `--output` to write to a file.
 OPTIONS:
   --config <path>         Path to crate-layers.toml (default: crate-layers.toml)
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
-  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps --locked` JSON to read instead of spawning cargo
   --output <path>         Write DOT to a file instead of stdout
   --json                  Write DOT to `--output` (or target/nova-deps.dot) and emit a JSON report
   -h, --help              Print help
@@ -729,7 +729,7 @@ USAGE:
 
 OPTIONS:
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
-  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps --locked` JSON to read instead of spawning cargo
   --json                  Emit machine-readable JSON output
   -h, --help              Print help
 "
@@ -751,7 +751,7 @@ This runs:
 OPTIONS:
   --config <path>               Path to crate-layers.toml (default: crate-layers.toml)
   --manifest-path <path>        Optional workspace Cargo.toml to run `cargo metadata` against
-  --metadata-path <path>        Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --metadata-path <path>        Pre-generated `cargo metadata --format-version=1 --no-deps --locked` JSON to read instead of spawning cargo
   --architecture-map <path>     Path to docs/architecture-map.md (default: docs/architecture-map.md)
   --protocol-extensions <path>  Path to docs/protocol-extensions.md (default: docs/protocol-extensions.md)
   --json                        Emit machine-readable JSON output
