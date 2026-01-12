@@ -1,8 +1,8 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_db::InMemoryFileStore;
 use nova_ide::{completion_cache, completions};
+use tempfile::TempDir;
 
 use crate::text_fixture::{offset_to_position, CARET};
 
@@ -10,8 +10,13 @@ use crate::text_fixture::{offset_to_position, CARET};
 fn completion_env_is_reused_across_completion_requests() {
     let mut db = InMemoryFileStore::new();
 
-    let file_a_path = PathBuf::from("/workspace/src/main/java/p/FooBar.java");
-    let file_b_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+    // Use an isolated, unique root so this test doesn't fight other tests over the global
+    // completion cache entry for a shared path (e.g. "/workspace").
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path();
+
+    let file_a_path = root.join("src/main/java/p/FooBar.java");
+    let file_b_path = root.join("src/main/java/p/Main.java");
 
     let file_a = db.file_id_for_path(&file_a_path);
     db.set_file_text(
