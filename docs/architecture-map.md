@@ -540,8 +540,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Nested/inner class type arguments are flattened into a single argument list (Nova’s `Type::Class` does not model owner-type generics yet).
 
 ### `nova-vfs`
-- **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, file-watching). Includes feature-gated OS watcher integration (Notify-backed; keeps the `notify` dependency inside `nova-vfs`) and move/rename normalization.
-- **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`), `crates/nova-vfs/src/watch.rs` (`FileWatcher`).
+- **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, file-watching). Includes feature-gated OS watcher integration (Notify-backed; keeps the `notify` dependency inside `nova-vfs`), recursive/non-recursive watch modes, and move/rename normalization.
+- **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`), `crates/nova-vfs/src/watch.rs` (`FileWatcher`, `WatchMode`, `WatchEvent`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - `nova-lsp`’s stdio server uses `nova_vfs::Vfs<LocalFs>` as its primary file store + open-document overlay (see `AnalysisState` in `crates/nova-lsp/src/main.rs`); decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store.
@@ -556,7 +556,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - v3 is the current router↔worker protocol; schema evolution is expected within minor versions.
 
 ### `nova-workspace`
-- **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events). Workspace watching is built on `nova-vfs::FileWatcher` and refreshes its watch roots dynamically after project reload (when source roots change).
+- **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events). Workspace watching is built on `nova-vfs::FileWatcher` and refreshes its watch paths dynamically after project reload (when source roots change).
 - **Key entry points:** `crates/nova-workspace/src/lib.rs` (`Workspace::open`, `Workspace::index_and_write_cache`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
