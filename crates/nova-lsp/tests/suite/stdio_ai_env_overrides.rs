@@ -1,10 +1,9 @@
-use lsp_types::{CompletionList, Position, Uri};
+use lsp_types::{CompletionList, Position};
 use nova_lsp::MoreCompletionsResult;
 use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
-use std::str::FromStr;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -65,7 +64,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = support::file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -243,7 +242,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = support::file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")

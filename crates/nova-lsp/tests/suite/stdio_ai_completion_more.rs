@@ -1,14 +1,13 @@
-use lsp_types::{CompletionItem, CompletionList, Position, TextEdit, Uri};
+use lsp_types::{CompletionItem, CompletionList, Position, TextEdit};
 use nova_lsp::MoreCompletionsResult;
 use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
-use std::str::FromStr;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{file_uri, read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_supports_ai_multi_token_completion_polling() {
@@ -70,7 +69,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -309,7 +308,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -479,7 +478,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -653,7 +652,7 @@ model = "default"
         "}\n"
     );
     fs::write(&file_path, source).expect("write Foo.java");
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")

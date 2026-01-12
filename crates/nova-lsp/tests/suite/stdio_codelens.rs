@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{file_uri_string, read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_provides_run_test_codelens_for_junit_method() {
@@ -29,8 +29,8 @@ public class CalculatorTest {
 "#;
     fs::write(&file_path, source).expect("write test file");
 
-    let uri = format!("file://{}", file_path.to_string_lossy());
-    let root_uri = format!("file://{}", root.to_string_lossy());
+    let uri = file_uri_string(&file_path);
+    let root_uri = file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -127,8 +127,8 @@ public class Main {
 "#;
     fs::write(&file_path, source).expect("write main file");
 
-    let uri = format!("file://{}", file_path.to_string_lossy());
-    let root_uri = format!("file://{}", root.to_string_lossy());
+    let uri = file_uri_string(&file_path);
+    let root_uri = file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -257,7 +257,7 @@ public class CalculatorTest {
     )
     .expect("write test file");
 
-    let root_uri = format!("file://{}", root.to_string_lossy());
+    let root_uri = file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")

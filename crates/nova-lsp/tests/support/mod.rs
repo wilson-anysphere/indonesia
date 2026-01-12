@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
+use lsp_types::Uri;
+use nova_core::{path_to_file_uri, AbsPathBuf};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -19,6 +22,20 @@ pub fn stdio_server_lock() -> std::sync::MutexGuard<'static, ()> {
     STDIO_SERVER_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner())
+}
+
+/// Build an RFC 8089 `file://` URI string for an absolute filesystem path.
+///
+/// This uses `nova_core::path_to_file_uri`, which handles Windows drive letters and
+/// percent-encoding for special characters.
+pub fn file_uri_string(path: &Path) -> String {
+    let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
+    path_to_file_uri(&abs).expect("file uri")
+}
+
+/// Build an RFC 8089 `file://` URI for an absolute filesystem path.
+pub fn file_uri(path: &Path) -> Uri {
+    file_uri_string(path).parse().expect("lsp uri")
 }
 
 pub struct TestAiServer {
