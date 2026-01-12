@@ -2067,6 +2067,17 @@ fn resolve_snapshot_jar_file_name(
     })
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return false;
+    }
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
 fn child_element<'a>(
     node: &'a roxmltree::Node<'a, 'a>,
     name: &str,
