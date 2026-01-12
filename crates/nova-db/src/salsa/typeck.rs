@@ -458,6 +458,18 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     /// This store pre-interns project-local and external types (by name) so cloned body-local
     /// stores allocate stable [`nova_types::ClassId`]s independent of per-body loading order.
     fn project_base_type_store(&self, project: ProjectId) -> ArcEq<TypeStore>;
+    /// Project-scoped base type checking metadata computed alongside [`NovaTypeck::project_base_type_store`].
+    ///
+    /// This is primarily a performance optimization for non-JPMS projects: per-body queries reuse
+    /// the cached [`SourceTypes`] instead of re-defining the full workspace in every body-local
+    /// `TypeStore`.
+    fn project_base_type_store_data(&self, project: ProjectId) -> ProjectBaseTypeStoreData;
+
+    /// Cached workspace-wide source typing metadata for a project.
+    ///
+    /// This is used by non-JPMS type checking queries to resolve workspace fields/methods and
+    /// type parameters without scanning every file per body.
+    fn project_source_types(&self, project: ProjectId) -> ArcEq<SourceTypes>;
     /// Per-body expression scope mapping used for lexical name resolution inside bodies.
     ///
     /// This is memoized independently from `typeck_body` so demand-driven, per-expression type
@@ -645,9 +657,23 @@ fn type_of_expr_demand_result(
     let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, provider_for_loader);
     let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
-    // Define source types for the full workspace so workspace `Type::Class` ids are stable within
-    // this body and cross-file member resolution works.
-    let source_types = define_workspace_source_types(db, project, file, &resolver, &mut loader);
+    // Source typing metadata:
+    // - In JPMS mode, type accessibility depends on the "from" module, so we must build the
+    //   workspace view per query.
+    // - In non-JPMS mode, reuse the project-level cached `SourceTypes` computed alongside
+    //   `project_base_type_store`.
+    let source_types_handle = if jpms_ctx.is_some() {
+        SourceTypesHandle::Owned(define_workspace_source_types(
+            db,
+            project,
+            file,
+            &resolver,
+            &mut loader,
+        ))
+    } else {
+        SourceTypesHandle::Cached(db.project_source_types(project))
+    };
+    let source_types = source_types_handle.as_ref();
     let type_vars = type_vars_for_owner(
         &resolver,
         owner,
@@ -657,12 +683,9 @@ fn type_of_expr_demand_result(
         &mut loader,
         &source_types.source_type_vars,
     );
-    let SourceTypes {
-        field_types,
-        field_owners,
-        method_owners,
-        ..
-    } = source_types;
+    let field_types = &source_types.field_types;
+    let field_owners = &source_types.field_owners;
+    let method_owners = &source_types.method_owners;
 
     let (expected_return, signature_diags) = resolve_expected_return_type(
         &resolver,
@@ -1594,14 +1617,27 @@ fn resolve_method_call_demand(
     let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, provider_for_loader);
     let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
-    // Define source types for the full workspace so workspace `Type::Class` ids are stable within
-    // this query and static imports can be resolved across files.
-    let SourceTypes {
-        field_types,
-        field_owners,
-        method_owners,
-        source_type_vars,
-    } = define_workspace_source_types(db, project, file, &resolver, &mut loader);
+    // Source typing metadata:
+    // - In JPMS mode, type accessibility depends on the "from" module, so we must build the
+    //   workspace view per query.
+    // - In non-JPMS mode, reuse the project-level cached `SourceTypes` computed alongside
+    //   `project_base_type_store`.
+    let source_types_handle = if jpms_ctx.is_some() {
+        SourceTypesHandle::Owned(define_workspace_source_types(
+            db,
+            project,
+            file,
+            &resolver,
+            &mut loader,
+        ))
+    } else {
+        SourceTypesHandle::Cached(db.project_source_types(project))
+    };
+    let source_types = source_types_handle.as_ref();
+    let field_types = &source_types.field_types;
+    let field_owners = &source_types.field_owners;
+    let method_owners = &source_types.method_owners;
+    let source_type_vars = &source_types.source_type_vars;
 
     let type_vars = type_vars_for_owner(
         &resolver,
@@ -1610,7 +1646,7 @@ fn resolve_method_call_demand(
         &scopes.scopes,
         &tree,
         &mut loader,
-        &source_type_vars,
+        source_type_vars,
     );
 
     let (expected_return, _) = resolve_expected_return_type(
@@ -3091,7 +3127,48 @@ fn expr_scopes(db: &dyn NovaTypeck, owner: DefWithBodyId) -> ArcEq<ExprScopes> {
     result
 }
 
-fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<TypeStore> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectBaseTypeStoreData {
+    store: ArcEq<TypeStore>,
+    source_types: ArcEq<SourceTypes>,
+}
+
+impl ProjectBaseTypeStoreData {
+    #[must_use]
+    pub fn store(&self) -> ArcEq<TypeStore> {
+        self.store.clone()
+    }
+
+    #[must_use]
+    pub fn source_types(&self) -> ArcEq<SourceTypes> {
+        self.source_types.clone()
+    }
+}
+
+enum SourceTypesHandle {
+    Owned(SourceTypes),
+    Cached(ArcEq<SourceTypes>),
+}
+
+impl SourceTypesHandle {
+    fn as_ref(&self) -> &SourceTypes {
+        match self {
+            SourceTypesHandle::Owned(types) => types,
+            SourceTypesHandle::Cached(types) => types,
+        }
+    }
+}
+
+fn project_source_types(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<SourceTypes> {
+    db.project_base_type_store_data(project)
+        .source_types
+        .clone()
+}
+
+fn project_base_type_store_data(
+    db: &dyn NovaTypeck,
+    project: ProjectId,
+) -> ProjectBaseTypeStoreData {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
@@ -3398,6 +3475,8 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     let jdk_provider: &dyn TypeProvider = &*jdk;
     let java_only_provider = JavaOnlyJdkTypeProvider::new(&chain_provider, jdk_provider);
 
+    let mut source_types = SourceTypes::default();
+
     if let Some(env) = jpms_env.as_deref() {
         for (idx, file) in files.iter().enumerate() {
             cancel::checkpoint_cancelled_every(db, idx as u32, 16);
@@ -3427,6 +3506,8 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
                 WorkspaceShadowingTypeProvider::new(&workspace, &jpms_provider);
             let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
+            // In JPMS mode, source type accessibility depends on the "from" module, so per-body
+            // queries still build workspace member/type-param maps on demand.
             let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
         }
     } else {
@@ -3449,19 +3530,29 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
                 .with_classpath(&workspace_index)
                 .with_workspace(&workspace);
 
-            let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
+            source_types.extend(define_source_types(&resolver, &scopes, &tree, &mut loader));
         }
 
         drop(loader);
     }
 
+    let store_bytes = store.estimated_bytes();
+    let source_types_bytes = source_types.estimated_bytes();
     db.record_salsa_project_memo_bytes(
         project,
         TrackedSalsaProjectMemo::ProjectBaseTypeStore,
-        store.estimated_bytes(),
+        store_bytes.saturating_add(source_types_bytes),
     );
     db.record_query_stat("project_base_type_store", start.elapsed());
-    ArcEq::new(Arc::new(store))
+
+    ProjectBaseTypeStoreData {
+        store: ArcEq::new(Arc::new(store)),
+        source_types: ArcEq::new(Arc::new(source_types)),
+    }
+}
+
+fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<TypeStore> {
+    db.project_base_type_store_data(project).store.clone()
 }
 
 fn project_base_type_store_for_module(
@@ -3662,9 +3753,23 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, provider_for_loader);
     let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
-    // Define source types for the full workspace so workspace `Type::Class` ids are stable within
-    // this body and cross-file member resolution works.
-    let source_types = define_workspace_source_types(db, project, file, &resolver, &mut loader);
+    // Source typing metadata:
+    // - In JPMS mode, type accessibility depends on the "from" module, so we must build the
+    //   workspace view per body.
+    // - In non-JPMS mode, reuse the project-level cached `SourceTypes` computed alongside
+    //   `project_base_type_store`.
+    let source_types_handle = if jpms_ctx.is_some() {
+        SourceTypesHandle::Owned(define_workspace_source_types(
+            db,
+            project,
+            file,
+            &resolver,
+            &mut loader,
+        ))
+    } else {
+        SourceTypesHandle::Cached(db.project_source_types(project))
+    };
+    let source_types = source_types_handle.as_ref();
     let type_vars = type_vars_for_owner(
         &resolver,
         owner,
@@ -3674,12 +3779,9 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         &mut loader,
         &source_types.source_type_vars,
     );
-    let SourceTypes {
-        field_types,
-        field_owners,
-        method_owners,
-        ..
-    } = source_types;
+    let field_types = &source_types.field_types;
+    let field_owners = &source_types.field_owners;
+    let method_owners = &source_types.method_owners;
 
     let (expected_return, signature_diags) = resolve_expected_return_type(
         &resolver,
@@ -3855,9 +3957,9 @@ struct BodyChecker<'a, 'idx> {
     local_foreach_iterables: Vec<Option<HirExprId>>,
     lazy_locals: bool,
     param_types: Vec<Type>,
-    field_types: HashMap<FieldId, Type>,
-    field_owners: HashMap<FieldId, String>,
-    method_owners: HashMap<MethodId, String>,
+    field_types: &'a HashMap<FieldId, Type>,
+    field_owners: &'a HashMap<FieldId, String>,
+    method_owners: &'a HashMap<MethodId, String>,
     expr_info: Vec<Option<ExprInfo>>,
     call_resolutions: Vec<Option<ResolvedMethod>>,
     diagnostics: Vec<Diagnostic>,
@@ -3917,9 +4019,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         type_vars: HashMap<String, TypeVarId>,
         expected_return: Type,
         param_types: Vec<Type>,
-        field_types: HashMap<FieldId, Type>,
-        field_owners: HashMap<FieldId, String>,
-        method_owners: HashMap<MethodId, String>,
+        field_types: &'a HashMap<FieldId, Type>,
+        field_owners: &'a HashMap<FieldId, String>,
+        method_owners: &'a HashMap<MethodId, String>,
         java_level: JavaLanguageLevel,
         lazy_locals: bool,
     ) -> Self {
@@ -10086,8 +10188,8 @@ fn strip_type_use_annotation_type_diagnostics(
     });
 }
 
-#[derive(Default)]
-struct SourceTypes {
+#[derive(Debug, Default)]
+pub struct SourceTypes {
     field_types: HashMap<FieldId, Type>,
     field_owners: HashMap<FieldId, String>,
     method_owners: HashMap<MethodId, String>,
@@ -10095,6 +10197,63 @@ struct SourceTypes {
 }
 
 impl SourceTypes {
+    /// Approximate heap memory usage of this structure in bytes.
+    ///
+    /// This intentionally favors stable, cheap accounting over precision and mirrors the
+    /// `TypeStore::estimated_bytes` philosophy.
+    #[must_use]
+    fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        const AVG_OWNER_NAME_BYTES: u64 = 64;
+        const AVG_TYPE_PARAM_NAME_BYTES: u64 = 16;
+        const AVG_TYPE_PARAMS_PER_ITEM: u64 = 2;
+
+        let mut bytes = 0u64;
+
+        // `HashMap` backing storage (best-effort; ignores per-entry overhead beyond key/value).
+        bytes = bytes
+            .saturating_add((self.field_types.capacity() * size_of::<(FieldId, Type)>()) as u64);
+        bytes = bytes.saturating_add(self.field_types.capacity() as u64); // control bytes heuristic
+
+        bytes = bytes
+            .saturating_add((self.field_owners.capacity() * size_of::<(FieldId, String)>()) as u64);
+        bytes = bytes.saturating_add(self.field_owners.capacity() as u64);
+        bytes = bytes.saturating_add(self.field_owners.capacity() as u64 * AVG_OWNER_NAME_BYTES);
+
+        bytes = bytes.saturating_add(
+            (self.method_owners.capacity() * size_of::<(MethodId, String)>()) as u64,
+        );
+        bytes = bytes.saturating_add(self.method_owners.capacity() as u64);
+        bytes = bytes.saturating_add(self.method_owners.capacity() as u64 * AVG_OWNER_NAME_BYTES);
+
+        bytes = bytes.saturating_add(
+            (self.source_type_vars.classes.capacity()
+                * size_of::<(nova_hir::ids::ItemId, Vec<(String, TypeVarId)>)>())
+                as u64,
+        );
+        bytes = bytes.saturating_add(self.source_type_vars.classes.capacity() as u64);
+
+        bytes = bytes.saturating_add(
+            (self.source_type_vars.methods.capacity()
+                * size_of::<(MethodId, Vec<(String, TypeVarId)>)>()) as u64,
+        );
+        bytes = bytes.saturating_add(self.source_type_vars.methods.capacity() as u64);
+
+        // Inner vectors + names (best-effort heuristic).
+        let class_items = self.source_type_vars.classes.len() as u64;
+        let method_items = self.source_type_vars.methods.len() as u64;
+        let approx_param_entries = class_items
+            .saturating_add(method_items)
+            .saturating_mul(AVG_TYPE_PARAMS_PER_ITEM);
+        bytes = bytes.saturating_add(
+            approx_param_entries
+                * (size_of::<(String, TypeVarId)>() as u64 + AVG_TYPE_PARAM_NAME_BYTES),
+        );
+
+        bytes
+    }
+
     fn extend(&mut self, other: SourceTypes) {
         self.field_types.extend(other.field_types);
         self.field_owners.extend(other.field_owners);
@@ -10188,7 +10347,7 @@ fn param_name_lookup(tree: &nova_hir::item_tree::ItemTree, id: ParamId) -> Name 
 }
 
 #[derive(Debug, Default)]
-struct SourceTypeVars {
+pub struct SourceTypeVars {
     classes: HashMap<nova_hir::ids::ItemId, Vec<(String, TypeVarId)>>,
     methods: HashMap<MethodId, Vec<(String, TypeVarId)>>,
 }
