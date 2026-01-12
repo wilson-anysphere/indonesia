@@ -1,3 +1,5 @@
+#![cfg(feature = "real-jvm-tests")]
+
 use std::{
     collections::VecDeque,
     net::TcpListener,

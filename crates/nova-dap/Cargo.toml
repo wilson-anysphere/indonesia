@@ -45,9 +45,12 @@ path = "src/lib.rs"
 [features]
 # Optional smoke tests that exercise the DAP adapter against a real JVM.
 #
-# The real-JVM tests (`crates/nova-dap/tests/suite/real_jvm.rs`) print a message
-# and return early if `java`/`javac` are missing (Rust has no built-in "skip"),
-# so CI can run them safely in environments without a JDK.
+# Feature-gated by default. Enable with `--features real-jvm-tests`.
+#
+# When enabled, the real-JVM tests (`crates/nova-dap/tests/suite/real_jvm.rs`)
+# print a message and return early if `java`/`javac` are missing (Rust has no
+# built-in "skip"), so CI can still run them safely in environments without a
+# JDK.
 real-jvm-tests = []
 
 [[bin]]

@@ -342,14 +342,15 @@ Response body:
 ## Real JVM integration test (optional)
 
 `nova-dap` includes an end-to-end smoke test that exercises the adapter against a
-real JVM using `java` + `javac`.
+real JVM using `java` + `javac`. The tests are feature-gated (disabled by
+default) and must be enabled explicitly with `--features real-jvm-tests`.
 
 If `java`/`javac` are missing, the test prints a message and returns early (Rust’s
 test harness has no built-in “skip”), so CI environments without a JDK stay
-green.
+green even when the feature is enabled.
 
 Run it locally with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
 ```
