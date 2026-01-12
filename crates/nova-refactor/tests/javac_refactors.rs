@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_refactor::{
-    apply_workspace_edit, extract_constant, extract_variable, inline_variable,
-    move_class_workspace_edit, rename, ExtractOptions, ExtractVariableParams, FileId,
-    InlineVariableParams, MoveClassParams, RefactorJavaDatabase, RenameParams, TextRange,
+    apply_workspace_edit, extract_constant, extract_variable, inline_variable, move_class_workspace_edit,
+    organize_imports, rename, ExtractOptions, ExtractVariableParams, FileId, InlineVariableParams,
+    MoveClassParams, OrganizeImportsParams, RefactorJavaDatabase, RenameParams, TextRange,
 };
 use nova_test_utils::javac::{javac_available, run_javac_files};
 
@@ -328,4 +328,33 @@ fn javac_refactor_rename_type_compiles_before_after() {
 
     let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
     assert_javac_ok(&updated, "after rename type");
+}
+
+#[test]
+#[ignore]
+fn javac_refactor_organize_imports_compiles_before_after() {
+    if !javac_available() {
+        eprintln!("javac not available; skipping test");
+        return;
+    }
+
+    let file = FileId::new("Test.java");
+    let src = r#"import java.util.HashMap;
+import java.util.List;
+import java.util.ArrayList;
+
+class Test {
+  List<String> xs = new ArrayList<>();
+}
+"#;
+
+    let files = BTreeMap::from([(file.clone(), src.to_string())]);
+    assert_javac_ok(&files, "before organize imports");
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+        .expect("organize imports should succeed");
+
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
+    assert_javac_ok(&updated, "after organize imports");
 }
