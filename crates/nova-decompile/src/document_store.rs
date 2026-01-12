@@ -198,12 +198,27 @@ impl DecompiledDocumentStore {
             }
         }
 
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(_) => return false,
+        // Use the same open strategy as `load_text` so `exists` cannot be fooled by
+        // symlink tricks (best-effort: corruption -> delete + miss).
+        let file = match open_cache_file_read(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return false,
+            Err(_) => {
+                remove_corrupt_store_leaf_best_effort(&path);
+                return false;
+            }
         };
 
-        if meta.file_type().is_symlink() || !meta.is_file() {
+        let meta = match file.metadata() {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return false,
+            Err(_) => {
+                remove_corrupt_store_leaf_best_effort(&path);
+                return false;
+            }
+        };
+
+        if !meta.is_file() {
             remove_corrupt_store_leaf_best_effort(&path);
             return false;
         }
