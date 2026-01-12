@@ -281,6 +281,7 @@ Response body:
   "analysis": {
     // nova_stream_debug::StreamChain
     "expression": "list.stream().map(x -> x * 2).count()",
+    // "stream" | "intStream" | "longStream" | "doubleStream"
     "streamKind": "stream",
     "source": { "kind": "collection", "collectionExpr": "list", "streamExpr": "list.stream()", "method": "stream" },
     "intermediates": [
