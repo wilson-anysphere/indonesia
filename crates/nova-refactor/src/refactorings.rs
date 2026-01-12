@@ -1910,7 +1910,7 @@ pub fn inline_variable(
         // initializer relative to other side-effectful expressions in the usage statement (e.g.
         // `int a = foo(); bar() + a` -> `bar() + foo()` changes evaluation order). Enforce a
         // conservative ordering check before proceeding.
-        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
 
         let usage = targets
             .first()
