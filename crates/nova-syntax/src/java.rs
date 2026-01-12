@@ -1433,6 +1433,13 @@ impl Lowerer {
                 Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
             }
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
+            SyntaxKind::LabeledStatement => {
+                let range = self.spans.map_node(node);
+                node.children()
+                    .find(|child| is_statement_kind(child.kind()))
+                    .and_then(|child| self.lower_stmt(&child))
+                    .or_else(|| Some(ast::Stmt::Empty(range)))
+            }
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
             SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
             SyntaxKind::WhileStatement | SyntaxKind::DoWhileStatement => {
@@ -2969,6 +2976,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::ExpressionStatement
             | SyntaxKind::ExplicitConstructorInvocation
             | SyntaxKind::ReturnStatement
+            | SyntaxKind::LabeledStatement
             | SyntaxKind::Block
             | SyntaxKind::IfStatement
             | SyntaxKind::WhileStatement
@@ -3311,6 +3319,29 @@ mod tests {
         assert!(
             matches!(expr_stmt.expr, ast::Expr::ArrayAccess(_)),
             "expected array access expression"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_labeled_statement_inner_stmt() {
+        let text = "{ label: { int x = 0; } }";
+        let block = parse_block(text, 0);
+
+        assert!(
+            !block.statements.is_empty(),
+            "expected labeled statement to lower to at least one statement"
+        );
+
+        let ast::Stmt::Block(labeled_inner) = &block.statements[0] else {
+            panic!("expected labeled statement to lower to a block");
+        };
+
+        assert!(
+            labeled_inner
+                .statements
+                .iter()
+                .any(|stmt| matches!(stmt, ast::Stmt::LocalVar(_))),
+            "expected labeled inner block to contain local variable statement"
         );
     }
 }
