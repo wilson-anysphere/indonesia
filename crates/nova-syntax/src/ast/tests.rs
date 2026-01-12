@@ -1937,3 +1937,81 @@ fn string_template_expression_accessors_method_call_processor() {
         .expect("expected interpolation expression");
     assert_eq!(interpolation_expr.syntax().text().to_string(), "name");
 }
+
+#[test]
+fn string_template_expression_accessors_nested_template_in_interpolation() {
+    let src = r#"
+        class Foo {
+          void m(String name) {
+            String s = STR."Outer \{STR."Inner \{name}!"}!";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let templates: Vec<_> = parse
+        .syntax()
+        .descendants()
+        .filter_map(StringTemplateExpression::cast)
+        .collect();
+    assert_eq!(templates.len(), 2);
+
+    let outer = &templates[0];
+    assert_eq!(
+        outer
+            .processor()
+            .expect("outer processor")
+            .syntax()
+            .text()
+            .to_string(),
+        "STR"
+    );
+    let outer_template = outer.template().expect("outer template");
+    let outer_text_segments: Vec<_> = outer_template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(outer_text_segments, vec!["Outer ", "!"]);
+
+    let outer_interp_expr = outer_template
+        .parts()
+        .next()
+        .expect("outer interpolation")
+        .expression()
+        .expect("outer interpolation expression");
+    let inner = match outer_interp_expr {
+        Expression::StringTemplateExpression(inner) => inner,
+        other => panic!("expected nested StringTemplateExpression, got {other:?}"),
+    };
+
+    assert_eq!(
+        inner
+            .processor()
+            .expect("inner processor")
+            .syntax()
+            .text()
+            .to_string(),
+        "STR"
+    );
+    let inner_template = inner.template().expect("inner template");
+    let inner_text_segments: Vec<_> = inner_template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(inner_text_segments, vec!["Inner ", "!"]);
+
+    let inner_interp_expr = inner_template
+        .parts()
+        .next()
+        .expect("inner interpolation")
+        .expression()
+        .expect("inner interpolation expression");
+    assert_eq!(inner_interp_expr.syntax().text().to_string(), "name");
+}
