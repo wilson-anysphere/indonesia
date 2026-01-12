@@ -3107,6 +3107,83 @@ async fn handle_request_inner(
 
             let config = args.into_config();
 
+            fn is_pure_access_expr(expr: &str) -> bool {
+                // Heuristic: if the expression contains no *call* segments, it's likely an existing
+                // Stream *value* (e.g. `s`, `this.s`, `foo.bar`, `(s)`, `((Stream<?>) s)`), which is
+                // unsafe to sample because iterating consumes the stream.
+                //
+                // If the expression contains a call (e.g. `collection.stream(...)`,
+                // `Arrays.stream(arr)`, `getStream()`), it is usually safe to re-evaluate.
+                //
+                // When we can't confidently parse, err on the side of safety (treat as a value).
+                let expr = expr.trim();
+                if expr.is_empty() {
+                    return true;
+                }
+
+                let mut in_str = false;
+                let mut in_char = false;
+                let mut escape = false;
+
+                let chars: Vec<char> = expr.chars().collect();
+                for (idx, ch) in chars.iter().enumerate() {
+                    if escape {
+                        escape = false;
+                        continue;
+                    }
+
+                    if in_str {
+                        if *ch == '\\' {
+                            escape = true;
+                        } else if *ch == '"' {
+                            in_str = false;
+                        }
+                        continue;
+                    }
+
+                    if in_char {
+                        if *ch == '\\' {
+                            escape = true;
+                        } else if *ch == '\'' {
+                            in_char = false;
+                        }
+                        continue;
+                    }
+
+                    match *ch {
+                        '"' => {
+                            in_str = true;
+                            continue;
+                        }
+                        '\'' => {
+                            in_char = true;
+                            continue;
+                        }
+                        '(' => {
+                            // Look back for the previous non-whitespace character.
+                            let mut j = idx;
+                            while j > 0 {
+                                j -= 1;
+                                let prev = chars[j];
+                                if prev.is_whitespace() {
+                                    continue;
+                                }
+
+                                // A call segment is preceded by an identifier character, e.g.
+                                // `stream(`.
+                                if prev == '_' || prev == '$' || prev.is_alphanumeric() {
+                                    return false;
+                                }
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                true
+            }
+
             // IMPORTANT: Do not hold the debugger mutex across compilation / JDWP InvokeMethod.
             // Stream debug can execute user code and trigger async JDWP events, which the event
             // forwarding task must be able to process concurrently.
@@ -3163,7 +3240,7 @@ async fn handle_request_inner(
                     &analysis.source
                 {
                     let stream_expr = stream_expr.trim();
-                    let looks_like_value = !stream_expr.contains('(');
+                    let looks_like_value = is_pure_access_expr(stream_expr);
                     if looks_like_value {
                         send_response(
                             out_tx,
