@@ -37,11 +37,13 @@ jobs:
       # cargo-fuzz is required for libFuzzer integration and is expensive to build from source.
       # Use cargo-binstall to fetch a prebuilt binary (pinned for reproducibility).
       - name: Install cargo-binstall
-        uses: taiki-e/install-action@cargo-binstall
+        uses: taiki-e/install-action@v2
         timeout-minutes: 5
+        with:
+          tool: cargo-binstall@1.16.6
 
       - name: Install cargo-fuzz
-        run: cargo binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+        run: cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
         timeout-minutes: 5
         env:
           GITHUB_TOKEN: ${{ github.token }}
