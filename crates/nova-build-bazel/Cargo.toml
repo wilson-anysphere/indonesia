@@ -20,3 +20,11 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3.10.1"
+
+[[bin]]
+name = "fake_bsp_server"
+path = "src/bin/fake_bsp_server.rs"
+test = false
+doc = false
+bench = false
+required-features = ["bsp"]
