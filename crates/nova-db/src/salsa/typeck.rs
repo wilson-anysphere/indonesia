@@ -1864,16 +1864,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
     for tp in type_params {
         for (idx, bound) in tp.bounds.iter().enumerate() {
             let base_span = tp.bounds_ranges.get(idx).copied();
-            collect_type_use_annotation_diagnostics(
-                resolver,
-                &scopes.scopes,
-                class_scope,
-                loader,
-                &class_vars,
-                file_text,
-                base_span,
-                out,
-            );
             let resolved = resolve_type_ref_text(
                 resolver,
                 &scopes.scopes,
@@ -1893,16 +1883,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             let class = tree.class(id);
             for (idx, ext) in class.extends.iter().enumerate() {
                 let base_span = class.extends_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -1916,16 +1896,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             for (idx, imp) in class.implements.iter().enumerate() {
                 let base_span = class.implements_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -1939,16 +1909,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             for (idx, perm) in class.permits.iter().enumerate() {
                 let base_span = class.permits_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -1965,16 +1925,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             let iface = tree.interface(id);
             for (idx, ext) in iface.extends.iter().enumerate() {
                 let base_span = iface.extends_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -1988,16 +1938,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             for (idx, perm) in iface.permits.iter().enumerate() {
                 let base_span = iface.permits_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2014,16 +1954,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             let enm = tree.enum_(id);
             for (idx, imp) in enm.implements.iter().enumerate() {
                 let base_span = enm.implements_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2037,16 +1967,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             for (idx, perm) in enm.permits.iter().enumerate() {
                 let base_span = enm.permits_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2063,16 +1983,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             let record = tree.record(id);
             for (idx, imp) in record.implements.iter().enumerate() {
                 let base_span = record.implements_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2086,16 +1996,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             for (idx, perm) in record.permits.iter().enumerate() {
                 let base_span = record.permits_ranges.get(idx).copied();
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    base_span,
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2127,16 +2027,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     &class_vars,
                     file_text,
                     &field.annotations,
-                    out,
-                );
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    class_scope,
-                    loader,
-                    &class_vars,
-                    file_text,
-                    Some(field.ty_range),
                     out,
                 );
                 let resolved = resolve_type_ref_text(
@@ -2190,16 +2080,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 for tp in &method.type_params {
                     for (idx, bound) in tp.bounds.iter().enumerate() {
                         let base_span = tp.bounds_ranges.get(idx).copied();
-                        collect_type_use_annotation_diagnostics(
-                            resolver,
-                            &scopes.scopes,
-                            scope,
-                            loader,
-                            &vars,
-                            file_text,
-                            base_span,
-                            out,
-                        );
                         let resolved = resolve_type_ref_text(
                             resolver,
                             &scopes.scopes,
@@ -2213,16 +2093,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     }
                 }
 
-                collect_type_use_annotation_diagnostics(
-                    resolver,
-                    &scopes.scopes,
-                    scope,
-                    loader,
-                    &vars,
-                    file_text,
-                    Some(method.return_ty_range),
-                    out,
-                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -2235,16 +2105,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
 
                 for param in &method.params {
-                    collect_type_use_annotation_diagnostics(
-                        resolver,
-                        &scopes.scopes,
-                        scope,
-                        loader,
-                        &vars,
-                        file_text,
-                        Some(param.ty_range),
-                        out,
-                    );
                     let resolved = resolve_type_ref_text(
                         resolver,
                         &scopes.scopes,
@@ -2259,16 +2119,6 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
 
                 for (idx, thrown) in method.throws.iter().enumerate() {
                     let base_span = method.throws_ranges.get(idx).copied();
-                    collect_type_use_annotation_diagnostics(
-                        resolver,
-                        &scopes.scopes,
-                        scope,
-                        loader,
-                        &vars,
-                        file_text,
-                        base_span,
-                        out,
-                    );
                     let resolved = resolve_type_ref_text(
                         resolver,
                         &scopes.scopes,
@@ -2381,197 +2231,6 @@ fn annotation_name_span(file_text: &str, ann: &nova_hir::item_tree::AnnotationUs
     }
     Some(Span::new(name_start, name_end))
 }
-
-fn collect_type_use_annotation_diagnostics<'idx>(
-    resolver: &nova_resolve::Resolver<'idx>,
-    scopes: &nova_resolve::ScopeGraph,
-    scope_id: nova_resolve::ScopeId,
-    loader: &mut ExternalTypeLoader<'_>,
-    type_vars: &HashMap<String, TypeVarId>,
-    file_text: &str,
-    base_span: Option<Span>,
-    out: &mut Vec<Diagnostic>,
-) {
-    let Some(span) = base_span else {
-        return;
-    };
-    let bytes = file_text.as_bytes();
-    let start = span.start.min(bytes.len());
-    let end = span.end.min(bytes.len());
-    if start >= end {
-        return;
-    }
-
-    fn skip_line_comment(bytes: &[u8], mut i: usize, end: usize) -> usize {
-        i = i.saturating_add(2);
-        while i < end && bytes[i] != b'\n' {
-            i += 1;
-        }
-        i
-    }
-
-    fn skip_block_comment(bytes: &[u8], mut i: usize, end: usize) -> usize {
-        i = i.saturating_add(2);
-        while i + 1 < end && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-            i += 1;
-        }
-        if i + 1 < end {
-            i += 2;
-        }
-        i
-    }
-
-    fn skip_string_literal(bytes: &[u8], mut i: usize, end: usize) -> usize {
-        i += 1; // opening quote
-        while i < end {
-            match bytes[i] {
-                b'\\' => i = (i + 2).min(end),
-                b'"' => {
-                    i += 1;
-                    break;
-                }
-                _ => i += 1,
-            }
-        }
-        i
-    }
-
-    fn skip_char_literal(bytes: &[u8], mut i: usize, end: usize) -> usize {
-        i += 1; // opening quote
-        while i < end {
-            match bytes[i] {
-                b'\\' => i = (i + 2).min(end),
-                b'\'' => {
-                    i += 1;
-                    break;
-                }
-                _ => i += 1,
-            }
-        }
-        i
-    }
-
-    fn skip_paren_group(bytes: &[u8], mut i: usize, end: usize) -> usize {
-        if i >= end || bytes[i] != b'(' {
-            return i;
-        }
-        i += 1; // '('
-        let mut depth = 1usize;
-        while i < end && depth > 0 {
-            match bytes[i] {
-                b'(' => {
-                    depth += 1;
-                    i += 1;
-                }
-                b')' => {
-                    depth = depth.saturating_sub(1);
-                    i += 1;
-                }
-                b'/' if i + 1 < end && bytes[i + 1] == b'/' => {
-                    i = skip_line_comment(bytes, i, end);
-                }
-                b'/' if i + 1 < end && bytes[i + 1] == b'*' => {
-                    i = skip_block_comment(bytes, i, end);
-                }
-                b'"' => {
-                    i = skip_string_literal(bytes, i, end);
-                }
-                b'\'' => {
-                    i = skip_char_literal(bytes, i, end);
-                }
-                _ => i += 1,
-            }
-        }
-        i
-    }
-
-    let mut i = start;
-    while i < end {
-        match bytes[i] {
-            b'/' if i + 1 < end && bytes[i + 1] == b'/' => {
-                i = skip_line_comment(bytes, i, end);
-            }
-            b'/' if i + 1 < end && bytes[i + 1] == b'*' => {
-                i = skip_block_comment(bytes, i, end);
-            }
-            b'"' => {
-                i = skip_string_literal(bytes, i, end);
-            }
-            b'\'' => {
-                i = skip_char_literal(bytes, i, end);
-            }
-            b'@' => {
-                let mut j = i.saturating_add(1);
-                while j < end && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= end || !is_ident_start(bytes[j]) {
-                    i = j.max(i + 1);
-                    continue;
-                }
-
-                let name_start = j;
-                j += 1;
-                while j < end && is_ident_continue(bytes[j]) {
-                    j += 1;
-                }
-                let mut name_end = j;
-
-                loop {
-                    let mut k = j;
-                    while k < end && bytes[k].is_ascii_whitespace() {
-                        k += 1;
-                    }
-                    if k < end && bytes[k] == b'.' {
-                        k += 1;
-                        while k < end && bytes[k].is_ascii_whitespace() {
-                            k += 1;
-                        }
-                        if k < end && is_ident_start(bytes[k]) {
-                            j = k + 1;
-                            while j < end && is_ident_continue(bytes[j]) {
-                                j += 1;
-                            }
-                            name_end = j;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-
-                let name_span = Span::new(name_start, name_end);
-                let name_text = file_text
-                    .get(name_span.start..name_span.end)
-                    .unwrap_or_default();
-                let resolved = resolve_type_ref_text(
-                    resolver,
-                    scopes,
-                    scope_id,
-                    loader,
-                    type_vars,
-                    name_text,
-                    Some(name_span),
-                );
-                // Type-use annotation types are intentionally ignored by Nova's typechecker (we
-                // parse them so the underlying type can be resolved, but don't surface
-                // unresolved-type errors for the annotation name itself).
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
-
-                // Skip optional argument list: `@A(x = 1)`.
-                let mut k = name_end;
-                while k < end && bytes[k].is_ascii_whitespace() {
-                    k += 1;
-                }
-                if k < end && bytes[k] == b'(' {
-                    k = skip_paren_group(bytes, k, end);
-                }
-                i = k;
-            }
-            _ => i += 1,
-        }
-    }
-}
-
 fn alloc_type_param_ids(
     loader: &mut ExternalTypeLoader<'_>,
     default_bound: &Type,
