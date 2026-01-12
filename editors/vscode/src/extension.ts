@@ -1831,8 +1831,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const result = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: progressTitle, cancellable: true },
       async (_progress, token) => {
+        if (token.isCancellationRequested) {
+          throw new Error('RequestCancelled');
+        }
         // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
-        return await c.sendRequest(
+        const resp = await c.sendRequest(
           'workspace/executeCommand',
           {
             command: args.lspCommand,
@@ -1840,6 +1843,10 @@ export async function activate(context: vscode.ExtensionContext) {
           },
           token,
         );
+        if (token.isCancellationRequested) {
+          throw new Error('RequestCancelled');
+        }
+        return resp;
       },
     );
 
@@ -1898,6 +1905,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
         void showCopyToClipboardAction('Explain Error', text);
       } catch (err) {
+        if (isRequestCancelledError(err)) {
+          return;
+        }
         if (isAiNotConfiguredError(err)) {
           await handleAiNotConfigured();
           return;
@@ -1942,6 +1952,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
         void showCopyToClipboardAction('Generate Method Body', text);
       } catch (err) {
+        if (isRequestCancelledError(err)) {
+          return;
+        }
         if (isAiNotConfiguredError(err)) {
           await handleAiNotConfigured();
           return;
@@ -1982,6 +1995,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
         void showCopyToClipboardAction('Generate Tests', text);
       } catch (err) {
+        if (isRequestCancelledError(err)) {
+          return;
+        }
         if (isAiNotConfiguredError(err)) {
           await handleAiNotConfigured();
           return;

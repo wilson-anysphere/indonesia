@@ -38,4 +38,9 @@ describe('isRequestCancelledError', () => {
   it('detects a RequestCancelled message', () => {
     expect(isRequestCancelledError({ message: 'RequestCancelled' })).toBe(true);
   });
+
+  it('detects \"Request cancelled\" message variants', () => {
+    expect(isRequestCancelledError({ message: 'Request cancelled' })).toBe(true);
+    expect(isRequestCancelledError({ message: 'Request canceled' })).toBe(true);
+  });
 });

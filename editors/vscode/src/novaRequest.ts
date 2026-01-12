@@ -8,8 +8,17 @@ export interface SendRequestClient {
 }
 
 export function isRequestCancelledError(err: unknown): boolean {
+  const matchesCancellationMessage = (value: string): boolean => {
+    const lower = value.toLowerCase();
+    return (
+      lower.includes('requestcancelled') ||
+      lower.includes('request cancelled') ||
+      lower.includes('request canceled')
+    );
+  };
+
   if (typeof err === 'string') {
-    return err.toLowerCase().includes('requestcancelled');
+    return matchesCancellationMessage(err);
   }
 
   if (!err || typeof err !== 'object') {
@@ -22,7 +31,7 @@ export function isRequestCancelledError(err: unknown): boolean {
   }
 
   const message = (err as { message?: unknown }).message;
-  return typeof message === 'string' && message.toLowerCase().includes('requestcancelled');
+  return typeof message === 'string' && matchesCancellationMessage(message);
 }
 
 /**
