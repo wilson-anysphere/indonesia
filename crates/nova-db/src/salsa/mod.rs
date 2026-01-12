@@ -1161,6 +1161,7 @@ impl Database {
         let db = Self::new();
         db.register_salsa_memo_evictor(manager);
         db.register_java_parse_cache_evictor(manager);
+        db.register_salsa_cancellation_on_memory_pressure(manager);
         db
     }
 
@@ -1924,11 +1925,8 @@ impl Database {
 
         let db = Arc::downgrade(&self.inner);
         manager.subscribe(Arc::new(move |event: nova_memory::MemoryEvent| {
-            // Only cancel on rising pressure into High/Critical.
+            // Request cancellation whenever we're under High/Critical pressure.
             if !matches!(event.pressure, MemoryPressure::High | MemoryPressure::Critical) {
-                return;
-            }
-            if event.pressure <= event.previous_pressure {
                 return;
             }
 
