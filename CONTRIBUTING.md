@@ -14,8 +14,8 @@ In those environments:
 - Scope builds/tests to what you’re changing (for example `-p <crate>` or `--manifest-path <path>`, and for tests
   further scope with `--lib` / `--test <name>` / `--bin <name>`).
 
-Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo test` for doctests
-(and as a fallback) on dedicated runners.
+Note: CI uses `cargo nextest run --locked --workspace --profile ci` for the main suite and runs
+doctests separately via `cargo test --locked --workspace --doc` on dedicated runners.
 
 ## Repository layout
 
