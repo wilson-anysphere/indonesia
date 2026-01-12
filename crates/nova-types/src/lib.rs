@@ -2275,10 +2275,12 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
 }
 
 fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
+    // Flatten all nested intersection components.
     let mut flat = Vec::new();
-    for t in types {
+    let mut stack = types;
+    while let Some(t) = stack.pop() {
         match t {
-            Type::Intersection(parts) => flat.extend(parts),
+            Type::Intersection(parts) => stack.extend(parts),
             other => flat.push(other),
         }
     }
@@ -2307,10 +2309,19 @@ fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
         let rank: u8 = match ty {
             Type::Unknown | Type::Error => 0,
             Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
-                Some(ClassKind::Class) | None => 1,
                 Some(ClassKind::Interface) => 2,
+                Some(ClassKind::Class) | None => 1,
             },
-            Type::Array(_) | Type::Named(_) | Type::VirtualInner { .. } => 1,
+            Type::Named(name) => env
+                .lookup_class(name)
+                .and_then(|id| env.class(id))
+                .map(|c| c.kind)
+                .map(|k| match k {
+                    ClassKind::Interface => 2,
+                    ClassKind::Class => 1,
+                })
+                .unwrap_or(1),
+            Type::Array(_) | Type::VirtualInner { .. } => 1,
             _ => 2,
         };
         (rank, type_sort_key(env, ty))
