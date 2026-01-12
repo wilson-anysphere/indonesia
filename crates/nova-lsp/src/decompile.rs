@@ -1,4 +1,7 @@
-//! Virtual document support for `nova-decompile:///...` URIs.
+//! Virtual document support for decompiled virtual documents.
+//!
+//! This primarily exists for legacy `nova-decompile:///...` URIs, but some helpers (like
+//! [`is_read_only_uri`]) also apply to canonical ADR0006 `nova:///decompiled/...` URIs.
 //!
 //! The full Nova LSP implementation is still evolving; this module provides
 //! reusable helpers for exposing decompiled, read-only documents to editors.
@@ -6,7 +9,7 @@
 use nova_cache::DerivedArtifactCache;
 use nova_decompile::{
     class_internal_name_from_uri, decompile_classfile, decompile_classfile_cached,
-    DECOMPILE_URI_SCHEME,
+    parse_decompiled_uri, DECOMPILE_URI_SCHEME,
 };
 use std::io;
 
@@ -25,7 +28,32 @@ pub fn is_decompile_uri(uri: &str) -> bool {
 
 /// Returns whether the given URI should be treated as read-only by the editor.
 pub fn is_read_only_uri(uri: &str) -> bool {
-    is_decompile_uri(uri)
+    is_decompile_uri(uri) || parse_decompiled_uri(uri).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH_64: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn canonical_decompiled_uris_are_read_only() {
+        let uri = format!("nova:///decompiled/{HASH_64}/com.example.Foo.java");
+        assert!(is_read_only_uri(&uri));
+    }
+
+    #[test]
+    fn legacy_decompile_uris_are_read_only() {
+        let uri = "nova-decompile:///com/example/Foo.class";
+        assert!(is_read_only_uri(uri));
+    }
+
+    #[test]
+    fn file_uris_are_not_read_only() {
+        let uri = "file:///tmp/Main.java";
+        assert!(!is_read_only_uri(uri));
+    }
 }
 
 /// Loads the virtual document content for a `nova-decompile:///...` URI.
