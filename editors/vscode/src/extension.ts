@@ -2038,8 +2038,36 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const handleAiDisabled = async (): Promise<void> => {
+    const picked = await vscode.window.showWarningMessage(
+      'Nova AI is disabled by settings (`nova.ai.enabled = false`). Enable it and restart the language server to use AI features.',
+      'Enable AI',
+      'Open Settings',
+      'Restart Language Server',
+    );
+    if (picked === 'Enable AI') {
+      await vscode.workspace.getConfiguration('nova').update('ai.enabled', true, vscode.ConfigurationTarget.Global);
+      const restart = await vscode.window.showInformationMessage(
+        'Nova: AI enabled. Restart nova-lsp to apply changes.',
+        'Restart Language Server',
+      );
+      if (restart === 'Restart Language Server') {
+        await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+      }
+    } else if (picked === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.ai.enabled');
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND, async (payload: unknown) => {
+      if (!isAiEnabled()) {
+        await handleAiDisabled();
+        return;
+      }
+
       const args =
         payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
           ? (payload as NovaAiShowCommandArgs)
@@ -2086,6 +2114,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND, async (payload: unknown) => {
+      if (!isAiEnabled()) {
+        await handleAiDisabled();
+        return;
+      }
+
       const args =
         payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
           ? (payload as NovaAiShowCommandArgs)
@@ -2126,6 +2159,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_TESTS_COMMAND, async (payload: unknown) => {
+      if (!isAiEnabled()) {
+        await handleAiDisabled();
+        return;
+      }
+
       const args =
         payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
           ? (payload as NovaAiShowCommandArgs)
