@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use nova_vfs::FileChange;
+
 fn normalize_watch_path(path: impl Into<PathBuf>) -> PathBuf {
     match nova_vfs::VfsPath::local(path.into()) {
         nova_vfs::VfsPath::Local(path) => path,
@@ -23,6 +25,24 @@ pub enum NormalizedEvent {
 }
 
 impl NormalizedEvent {
+    pub fn from_file_change(change: &FileChange) -> Option<Self> {
+        match change {
+            FileChange::Created { path } => Some(NormalizedEvent::Created(
+                path.as_local_path()?.to_path_buf(),
+            )),
+            FileChange::Modified { path } => Some(NormalizedEvent::Modified(
+                path.as_local_path()?.to_path_buf(),
+            )),
+            FileChange::Deleted { path } => Some(NormalizedEvent::Deleted(
+                path.as_local_path()?.to_path_buf(),
+            )),
+            FileChange::Moved { from, to } => Some(NormalizedEvent::Moved {
+                from: from.as_local_path()?.to_path_buf(),
+                to: to.as_local_path()?.to_path_buf(),
+            }),
+        }
+    }
+
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
         let (first, second) = match self {
             NormalizedEvent::Created(p)

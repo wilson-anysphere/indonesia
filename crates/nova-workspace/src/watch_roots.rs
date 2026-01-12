@@ -24,7 +24,7 @@ pub(crate) trait RootWatcher {
     fn unwatch_path(&mut self, path: &Path) -> io::Result<()>;
 }
 
-impl<T> RootWatcher for T
+impl<T: ?Sized> RootWatcher for T
 where
     T: FileWatcher,
 {
@@ -79,7 +79,7 @@ impl WatchRootManager {
         &self.pending_roots
     }
 
-    pub(crate) fn set_desired_roots<W: RootWatcher>(
+    pub(crate) fn set_desired_roots<W: RootWatcher + ?Sized>(
         &mut self,
         desired: HashMap<PathBuf, WatchMode>,
         now: Instant,
@@ -149,7 +149,7 @@ impl WatchRootManager {
         out
     }
 
-    pub(crate) fn retry_pending<W: RootWatcher>(
+    pub(crate) fn retry_pending<W: RootWatcher + ?Sized>(
         &mut self,
         now: Instant,
         watcher: &mut W,
@@ -181,7 +181,7 @@ impl WatchRootManager {
         out
     }
 
-    fn try_watch_root<W: RootWatcher>(
+    fn try_watch_root<W: RootWatcher + ?Sized>(
         &mut self,
         root: &Path,
         mode: WatchMode,
