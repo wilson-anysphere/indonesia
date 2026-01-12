@@ -245,7 +245,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   registerNovaDebugAdapter(context, { serverManager, output: serverOutput });
   registerNovaDebugConfigurations(context, sendNovaRequest);
-  registerNovaFrameworkSearch(context, sendNovaRequest);
+  registerNovaFrameworkSearch(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }));
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   registerFrameworkDashboardCommands(context);
@@ -1909,13 +1909,32 @@ async function requireClient(): Promise<LanguageClient> {
   return client;
 }
 
-async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> {
+type SendNovaRequestOptions = {
+  /**
+   * When true, do not show a user-facing unsupported-method message and do not return `undefined`
+   * for unsupported methods. Instead, throw a method-not-found error so callers can attempt a
+   * fallback request (e.g. alias methods).
+   */
+  allowMethodFallback?: boolean;
+};
+
+function createMethodNotFoundError(method: string): Error & { code: number } {
+  const err = new Error(`Method not found: ${method}`) as Error & { code: number };
+  err.code = -32601;
+  return err;
+}
+
+async function sendNovaRequest<R>(method: string, params?: unknown, opts: SendNovaRequestOptions = {}): Promise<R> {
   const c = await requireClient();
   if (method.startsWith('nova/')) {
     const supported = isNovaRequestSupported(method);
     if (supported === false) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
-      return undefined as unknown as R;
+      if (opts.allowMethodFallback) {
+        throw createMethodNotFoundError(method);
+      } else {
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+        return undefined as unknown as R;
+      }
     }
   }
   try {
@@ -1927,8 +1946,12 @@ async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> 
     return result;
   } catch (err) {
     if (method.startsWith('nova/') && isNovaMethodNotFoundError(err)) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
-      return undefined as unknown as R;
+      if (opts.allowMethodFallback) {
+        throw err;
+      } else {
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+        return undefined as unknown as R;
+      }
     }
     if (isSafeModeError(err)) {
       setSafeModeEnabled?.(true);
