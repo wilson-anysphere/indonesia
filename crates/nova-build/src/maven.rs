@@ -16,6 +16,18 @@ use std::io::{Read, Seek};
 #[cfg(test)]
 use zip::ZipArchive;
 
+const MAVEN_JPMS_FLAG_NEEDLES: [&str; 9] = [
+    "--module-path",
+    "--add-modules",
+    "--patch-module",
+    "--add-reads",
+    "--add-exports",
+    "--add-opens",
+    "--limit-modules",
+    "--upgrade-module-path",
+    "--module-source-path",
+];
+
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
     /// Path to the Maven executable (defaults to `mvn` in `PATH`).
@@ -330,6 +342,18 @@ impl MavenBuild {
             "--enable-preview",
         )?;
 
+        let compiler_args_looks_like_jpms = self.evaluate_contains_any_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.compilerArgs",
+            &MAVEN_JPMS_FLAG_NEEDLES,
+        )? || self.evaluate_contains_any_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.compilerArgument",
+            &MAVEN_JPMS_FLAG_NEEDLES,
+        )?;
+
         // Best-effort: ensure output dirs are represented on the appropriate classpaths.
         if let Some(out_dir) = &main_output_dir {
             if !compile_classpath.iter().any(|p| p == out_dir) {
@@ -396,7 +420,7 @@ impl MavenBuild {
                     &compile_classpath,
                     &main_source_roots,
                     main_output_dir.as_ref(),
-                    false,
+                    compiler_args_looks_like_jpms,
                 )
             } else {
                 module_path
@@ -686,6 +710,20 @@ impl MavenBuild {
     ) -> Result<bool> {
         match self.run_help_evaluate_raw(project_root, module_relative, expression) {
             Ok(output) => Ok(output.contains(needle)),
+            Err(BuildError::CommandFailed { .. }) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn evaluate_contains_any_best_effort(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+        needles: &[&str],
+    ) -> Result<bool> {
+        match self.run_help_evaluate_raw(project_root, module_relative, expression) {
+            Ok(output) => Ok(needles.iter().any(|needle| output.contains(needle))),
             Err(BuildError::CommandFailed { .. }) => Ok(false),
             Err(err) => Err(err),
         }
@@ -1827,5 +1865,27 @@ mod tests {
             infer_module_path_for_compile_config(&resolved_compile_classpath, &[main_src_root], None, false);
 
         assert!(module_path.is_empty());
+    }
+
+    #[test]
+    fn infer_module_path_is_enabled_by_jpms_args() {
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let main_src_root = tmp.path().join("src/main/java");
+        std::fs::create_dir_all(&main_src_root).unwrap();
+
+        let resolved_compile_classpath = vec![named.clone(), dep, automatic.clone()];
+        let module_path = infer_module_path_for_compile_config(
+            &resolved_compile_classpath,
+            &[main_src_root],
+            None,
+            true,
+        );
+
+        assert_eq!(module_path, vec![named, automatic]);
     }
 }
