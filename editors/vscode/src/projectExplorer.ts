@@ -1374,12 +1374,28 @@ async function copyPath(arg: unknown): Promise<void> {
 }
 
 function extractPathText(arg: unknown): string | undefined {
+  const asFolder = asWorkspaceFolder(arg);
+  if (asFolder) {
+    return asFolder.uri.fsPath;
+  }
+
   if (arg instanceof vscode.Uri) {
     return arg.fsPath || arg.toString();
   }
 
   if (!arg || typeof arg !== 'object') {
     return undefined;
+  }
+
+  const workspace = (arg as { workspace?: unknown }).workspace;
+  const asNestedFolder = asWorkspaceFolder(workspace);
+  if (asNestedFolder) {
+    return asNestedFolder.uri.fsPath;
+  }
+
+  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
+  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+    return projectRoot.trim();
   }
 
   const uri = (arg as { uri?: unknown }).uri;

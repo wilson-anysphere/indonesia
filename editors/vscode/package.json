@@ -389,6 +389,16 @@
           "command": "nova.projectExplorer.copyPath",
           "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerPath",
           "group": "clipboard@0"
+        },
+        {
+          "command": "nova.projectExplorer.copyPath",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "clipboard@0"
+        },
+        {
+          "command": "nova.projectExplorer.copyPath",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerUnit",
+          "group": "clipboard@0"
         }
       ]
     },
