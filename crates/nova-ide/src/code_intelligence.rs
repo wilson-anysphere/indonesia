@@ -2696,6 +2696,50 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
     })
 }
 
+/// Generate alternative binary-name prefixes for a user-typed Java source prefix.
+///
+/// Java source uses `.` for both package separators and nested type separators
+/// (`Outer.Inner`). Binary names encode nested types using `$` (`Outer$Inner`).
+///
+/// When users type `Outer.Inner.P`, we need to query both `Outer.Inner.P` and
+/// `Outer$Inner$P` (and intermediate variants) against indexes that store
+/// binary names.
+///
+/// This returns `prefix` plus variants where one or more of the rightmost `.`
+/// separators are replaced with `$`.
+fn nested_binary_prefixes(prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if seen.insert(prefix.to_string()) {
+        out.push(prefix.to_string());
+    }
+
+    let dots: Vec<usize> = prefix
+        .bytes()
+        .enumerate()
+        .filter_map(|(idx, b)| (b == b'.').then_some(idx))
+        .collect();
+
+    for k in 1..=dots.len() {
+        let mut bytes = prefix.as_bytes().to_vec();
+        for &idx in &dots[dots.len() - k..] {
+            bytes[idx] = b'$';
+        }
+        if let Ok(candidate) = String::from_utf8(bytes) {
+            if seen.insert(candidate.clone()) {
+                out.push(candidate);
+            }
+        }
+    }
+
+    out
+}
+
+fn binary_name_to_source_name(binary: &str) -> String {
+    binary.replace('$', ".")
+}
+
 fn import_completions(
     db: &dyn Database,
     text_index: &TextIndex<'_>,
@@ -2818,6 +2862,7 @@ fn import_completions(
 
     // Type/class completions (as remainder completions).
     let mut seen_types: HashSet<String> = HashSet::new();
+
     for name in workspace_classes {
         if items.len() >= MAX_ITEMS {
             break;
@@ -2848,23 +2893,25 @@ fn import_completions(
         mark_workspace_completion_item(&mut item);
         items.push(item);
     }
-
-    if let Some(owner_binary) = nested_type_owner.as_deref() {
-        let binary_prefix = format!("{owner_binary}${}", ctx.segment_prefix);
-        let start = class_names.partition_point(|name| name.as_str() < binary_prefix.as_str());
-        for name in &class_names[start..] {
+    let mut seen_binary: HashSet<String> = HashSet::new();
+    'types: for query_prefix in nested_binary_prefixes(&ctx.prefix) {
+        let start = class_names.partition_point(|name| name.as_str() < query_prefix.as_str());
+        for binary in &class_names[start..] {
             if items.len() >= MAX_ITEMS {
+                break 'types;
+            }
+            if !binary.starts_with(query_prefix.as_str()) {
                 break;
             }
-            if !name.starts_with(binary_prefix.as_str()) {
-                break;
-            }
-
-            let source_name = name.replace('$', ".");
-            if !source_name.starts_with(&ctx.base_prefix) {
+            if !seen_binary.insert(binary.clone()) {
                 continue;
             }
-            let remainder = source_name[ctx.base_prefix.len()..].to_string();
+
+            let source_full = binary_name_to_source_name(binary);
+            if !source_full.starts_with(&ctx.base_prefix) {
+                continue;
+            }
+            let remainder = source_full[ctx.base_prefix.len()..].to_string();
             if remainder.is_empty() {
                 continue;
             }
@@ -2875,43 +2922,7 @@ fn import_completions(
             items.push(CompletionItem {
                 label: remainder.clone(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: Some(name.clone()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: replace_range,
-                    new_text: remainder,
-                })),
-                ..Default::default()
-            });
-        }
-    } else {
-        let start = class_names.partition_point(|name| name.as_str() < ctx.prefix.as_str());
-        for name in &class_names[start..] {
-            if items.len() >= MAX_ITEMS {
-                break;
-            }
-            if !name.starts_with(ctx.prefix.as_str()) {
-                break;
-            }
-
-            let name = name.as_str();
-            if !name.starts_with(&ctx.base_prefix) {
-                continue;
-            }
-            let mut remainder = name[ctx.base_prefix.len()..].to_string();
-            if remainder.is_empty() {
-                continue;
-            }
-            // Translate binary nested names (`$`) to Java source nested form (`.`).
-            remainder = remainder.replace('$', ".");
-
-            if !seen_types.insert(remainder.clone()) {
-                continue;
-            }
-
-            items.push(CompletionItem {
-                label: remainder.clone(),
-                kind: Some(CompletionItemKind::CLASS),
-                detail: Some(name.to_string()),
+                detail: Some(source_full),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: replace_range,
                     new_text: remainder,
@@ -2920,7 +2931,6 @@ fn import_completions(
             });
         }
     }
-
     // Optional star import (`import foo.bar.*;`). Only offer when the cursor is at the start of a
     // segment (e.g. after a dot).
     if items.len() < MAX_ITEMS
@@ -2944,6 +2954,98 @@ fn import_completions(
     rank_completions(&ctx.segment_prefix, &mut items, &ctx_rank);
     items.truncate(MAX_ITEMS);
     items
+}
+
+fn qualified_type_name_completions(
+    java_source: &str,
+    prefix_start: usize,
+    offset: usize,
+    segment_prefix: &str,
+) -> Vec<CompletionItem> {
+    const MAX_ITEMS: usize = 200;
+
+    let (start, raw_prefix) = qualified_name_prefix(java_source, offset);
+    if raw_prefix.is_empty() || prefix_start < start {
+        return Vec::new();
+    }
+
+    let base_prefix = java_source
+        .get(start..prefix_start)
+        .unwrap_or_default()
+        .to_string();
+
+    let (head, _tail) = match raw_prefix.split_once('.') {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+
+    let imports = parse_java_imports(java_source);
+    let mut qualified_prefix = raw_prefix.clone();
+    let mut head_mapping: Option<String> = None;
+    if let Some(full) = imports
+        .explicit_types
+        .iter()
+        .find(|ty| ty.rsplit('.').next().is_some_and(|simple| simple == head))
+    {
+        let suffix = &raw_prefix[head.len()..];
+        qualified_prefix = format!("{full}{suffix}");
+        head_mapping = Some(full.clone());
+    }
+
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for query_prefix in nested_binary_prefixes(&qualified_prefix) {
+        if out.len() >= MAX_ITEMS {
+            break;
+        }
+        let names = jdk
+            .class_names_with_prefix(&query_prefix)
+            .or_else(|_| JdkIndex::new().class_names_with_prefix(&query_prefix))
+            .unwrap_or_default();
+
+        for binary in names {
+            if out.len() >= MAX_ITEMS {
+                break;
+            }
+            if !seen.insert(binary.clone()) {
+                continue;
+            }
+
+            let source_full = binary_name_to_source_name(&binary);
+            let rendered = match head_mapping.as_deref() {
+                Some(qualified_head) if source_full.starts_with(qualified_head) => {
+                    format!("{head}{}", &source_full[qualified_head.len()..])
+                }
+                _ => source_full.clone(),
+            };
+
+            if !rendered.starts_with(&base_prefix) {
+                continue;
+            }
+            let remainder = rendered[base_prefix.len()..].to_string();
+            if remainder.is_empty() {
+                continue;
+            }
+
+            out.push(CompletionItem {
+                label: remainder.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(source_full),
+                insert_text: Some(remainder),
+                ..Default::default()
+            });
+        }
+    }
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(segment_prefix, &mut out, &ctx);
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3548,7 +3650,21 @@ pub(crate) fn core_completions(
             .as_ref()
             .map(|r| r.expr.clone())
             .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
-        let mut items = if receiver.is_empty() {
+        let mut items = Vec::new();
+        if !receiver.is_empty() {
+            let analysis = analyze(text);
+            // If this isn't a value receiver (variable/field/param/literal), treat the dotted
+            // prefix as a qualified type name (e.g. `Map.En` / `java.util.Map.En`).
+            if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
+                items.extend(qualified_type_name_completions(
+                    text,
+                    prefix_start,
+                    offset,
+                    &prefix,
+                ));
+            }
+        }
+        items.extend(if receiver.is_empty() {
             if cancel.is_cancelled() {
                 return Vec::new();
             }
@@ -3560,7 +3676,12 @@ pub(crate) fn core_completions(
                 return Vec::new();
             }
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
-        };
+        });
+        if items.len() > 1 {
+            deduplicate_completion_items(&mut items);
+            let ranking_ctx = CompletionRankingContext::default();
+            rank_completions(&prefix, &mut items, &ranking_ctx);
+        }
         if let Some(receiver) = ctx.receiver.as_ref() {
             if cancel.is_cancelled() {
                 return Vec::new();
@@ -4002,13 +4123,30 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             .as_ref()
             .map(|r| r.expr.clone())
             .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
-        let mut items = if receiver.is_empty() {
+        let mut items = Vec::new();
+        if !receiver.is_empty() {
+            let analysis = analyze(text);
+            if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
+                items.extend(qualified_type_name_completions(
+                    text,
+                    prefix_start,
+                    offset,
+                    &prefix,
+                ));
+            }
+        }
+        items.extend(if receiver.is_empty() {
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
-        };
+        });
+        if items.len() > 1 {
+            deduplicate_completion_items(&mut items);
+            let ranking_ctx = CompletionRankingContext::default();
+            rank_completions(&prefix, &mut items, &ranking_ctx);
+        }
         if let Some(receiver) = ctx.receiver.as_ref() {
             items.extend(postfix_completions(
                 text,
@@ -9536,6 +9674,50 @@ fn semantic_call_for_inlay(
     Some((resolved, names))
 }
 
+fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize) -> bool {
+    let receiver = receiver.trim();
+    if receiver.is_empty() {
+        return false;
+    }
+
+    // Trivial literals and keywords.
+    if receiver.starts_with('"')
+        || receiver.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        || matches!(receiver, "true" | "false" | "null" | "this" | "super")
+    {
+        return true;
+    }
+
+    // Identifier (local vars / params / fields).
+    if analysis.vars.iter().any(|v| v.name == receiver) {
+        return true;
+    }
+    if analysis
+        .methods
+        .iter()
+        .flat_map(|m| m.params.iter())
+        .any(|p| p.name == receiver)
+    {
+        return true;
+    }
+    if analysis.fields.iter().any(|f| f.name == receiver) {
+        return true;
+    }
+
+    // Params in the enclosing method.
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, offset))
+    {
+        if method.params.iter().any(|p| p.name == receiver) {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn infer_receiver(
     types: &mut TypeStore,
     analysis: &Analysis,
@@ -11266,6 +11448,20 @@ pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
         }
     }
     (start, text.get(start..offset).unwrap_or("").to_string())
+}
+
+fn qualified_name_prefix(text: &str, offset: usize) -> (usize, String) {
+    let bytes = text.as_bytes();
+    let mut start = offset;
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    (start, text[start..offset].to_string())
 }
 
 pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {

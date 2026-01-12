@@ -1659,6 +1659,23 @@ class A {}
 }
 
 #[test]
+fn completion_type_position_nested_type_includes_entry() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.Map;
+class A { Map.En<|> e; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected type-position completion list to contain Map.Entry; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_inside_line_comment_is_empty() {
     let (db, file, pos) = fixture("class A { // if<|>\n }");
     let items = completions(&db, file, pos);
