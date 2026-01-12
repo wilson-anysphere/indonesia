@@ -29,7 +29,9 @@ fn validate_protocol_extensions(
     repo_root: &Path,
     doc_path: &Path,
 ) -> anyhow::Result<Vec<Diagnostic>> {
-    let lsp_methods = extract_rust_methods(&repo_root.join("crates/nova-lsp/src"))?;
+    let lsp_src_root = repo_root.join("crates/nova-lsp/src");
+    let lsp_methods = extract_rust_methods(&lsp_src_root)?;
+    let rust_nova_literals = extract_rust_nova_string_literals(&lsp_src_root)?;
     let vscode_methods = extract_vscode_methods(&repo_root.join("editors/vscode/src"))?;
     let needed: BTreeSet<String> = lsp_methods.union(&vscode_methods).cloned().collect();
 
@@ -38,6 +40,29 @@ fn validate_protocol_extensions(
     let doc_methods: BTreeSet<String> = parsed.order.iter().cloned().collect();
 
     let mut diagnostics = Vec::new();
+
+    let mut undocumented_literals: Vec<String> = rust_nova_literals
+        .difference(&lsp_methods)
+        .filter(|m| !is_allowlisted_non_method_nova_string(m))
+        .cloned()
+        .collect();
+    if !undocumented_literals.is_empty() {
+        undocumented_literals.sort();
+        diagnostics.push(
+            Diagnostic::warning(
+                "undocumented-nova-method-literal",
+                format!(
+                    "Found `nova/*` string literals in `crates/nova-lsp` that are not exported as `pub const`: {}",
+                    undocumented_literals.join(", ")
+                ),
+            )
+            .with_suggestion(
+                "Promote each method to a `pub const` in `crates/nova-lsp/src/lib.rs` (or an appropriate module) \
+and add a corresponding method section to `docs/protocol-extensions.md`."
+                    .to_string(),
+            ),
+        );
+    }
 
     let duplicates = duplicates(doc_methods_list);
     if !duplicates.is_empty() {
@@ -211,6 +236,31 @@ fn extract_rust_methods(root: &Path) -> anyhow::Result<BTreeSet<String>> {
     Ok(methods)
 }
 
+fn extract_rust_nova_string_literals(root: &Path) -> anyhow::Result<BTreeSet<String>> {
+    let mut methods = BTreeSet::new();
+    for path in collect_files_with_extension(root, "rs")? {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for method in extract_rust_nova_string_literals_from_text(&text) {
+            methods.insert(method);
+        }
+    }
+    Ok(methods)
+}
+
+fn is_allowlisted_non_method_nova_string(s: &str) -> bool {
+    // `nova/*` strings that are known to appear in the codebase but are not RPC methods (and
+    // therefore should not be forced into `pub const` exports / protocol docs).
+    const ALLOWLIST: &[&str] = &[
+        // Payload tag used by refactor responses (not an RPC method).
+        "nova/refactor/preview",
+        // Substring used by VS Code to detect safe-mode error messages (not an RPC method).
+        "nova/bugreport",
+    ];
+
+    ALLOWLIST.contains(&s)
+}
+
 fn extract_rust_methods_from_text(text: &str) -> Vec<String> {
     let mut methods = Vec::new();
     for line in text.lines() {
@@ -236,6 +286,167 @@ fn extract_rust_methods_from_text(text: &str) -> Vec<String> {
         methods.push(method);
     }
     methods
+}
+
+fn extract_rust_nova_string_literals_from_text(text: &str) -> Vec<String> {
+    extract_rust_string_literals(text)
+        .into_iter()
+        .filter(|literal| {
+            literal.starts_with("nova/")
+                && literal.len() > "nova/".len()
+                // Prefix checks like `method.starts_with("nova/")` are not RPC methods.
+                && !literal.ends_with('/')
+        })
+        .collect()
+}
+
+fn extract_rust_string_literals(text: &str) -> Vec<String> {
+    // Best-effort scanning for Rust string literals. This is intentionally not a full Rust parser;
+    // it just needs to be robust enough to detect `nova/...` strings in typical code paths
+    // (consts, match arms, serde renames, etc) while avoiding comment bodies.
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                // Line comment (`// ...`).
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                // Block comment (`/* ... */`), supports nesting.
+                i += 2;
+                let mut depth = 1usize;
+                while i + 1 < bytes.len() && depth > 0 {
+                    if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                }
+            }
+            b'"' => {
+                if let Some((literal, next)) = parse_rust_normal_string_literal(text, i) {
+                    out.push(literal);
+                    i = next;
+                } else {
+                    break;
+                }
+            }
+            b'b' if i + 1 < bytes.len() && bytes[i + 1] == b'"' => {
+                // Byte string literal (`b"..."`).
+                if let Some((literal, next)) = parse_rust_normal_string_literal(text, i + 1) {
+                    out.push(literal);
+                    i = next;
+                } else {
+                    break;
+                }
+            }
+            b'r' => {
+                if let Some((literal, next)) = parse_rust_raw_string_literal(text, i) {
+                    out.push(literal);
+                    i = next;
+                } else {
+                    i += 1;
+                }
+            }
+            b'b' if i + 1 < bytes.len() && bytes[i + 1] == b'r' => {
+                // Raw byte string literal (`br"..."`, `br#"..."#`, ...).
+                if let Some((literal, next)) = parse_rust_raw_string_literal(text, i + 1) {
+                    out.push(literal);
+                    i = next;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    out
+}
+
+fn parse_rust_normal_string_literal(text: &str, quote_idx: usize) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(quote_idx) != Some(&b'"') {
+        return None;
+    }
+
+    let start = quote_idx + 1;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                // Skip the escaped byte, if present.
+                i += 2;
+            }
+            b'"' => {
+                let literal = text.get(start..i)?.to_string();
+                return Some((literal, i + 1));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn parse_rust_raw_string_literal(text: &str, r_idx: usize) -> Option<(String, usize)> {
+    // Supports:
+    // - r"..." / r#"..."# / r##"..."## / ...
+    // - (caller handles optional leading `b` for `br...`)
+    let bytes = text.as_bytes();
+    if bytes.get(r_idx) != Some(&b'r') {
+        return None;
+    }
+
+    let mut i = r_idx + 1;
+    let mut hashes = 0usize;
+    while bytes.get(i) == Some(&b'#') {
+        hashes += 1;
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'"') {
+        return None;
+    }
+
+    let start = i + 1;
+    let mut j = start;
+    while j < bytes.len() {
+        if bytes[j] != b'"' {
+            j += 1;
+            continue;
+        }
+
+        // Found a quote - check if it is followed by the right number of hashes.
+        if hashes == 0 {
+            let literal = text.get(start..j)?.to_string();
+            return Some((literal, j + 1));
+        }
+
+        let after_quote = j + 1;
+        if after_quote + hashes <= bytes.len()
+            && bytes[after_quote..after_quote + hashes]
+                .iter()
+                .all(|b| *b == b'#')
+        {
+            let literal = text.get(start..j)?.to_string();
+            return Some((literal, after_quote + hashes));
+        }
+
+        j += 1;
+    }
+
+    None
 }
 
 fn extract_vscode_methods(root: &Path) -> anyhow::Result<BTreeSet<String>> {
@@ -347,12 +558,60 @@ mod tests {
     #[test]
     fn extracts_rust_methods_from_lines() {
         let text = r#"
-pub const A: &str = "nova/a";
-pub const B: &str = "textDocument/formatting";
-  pub const C: &str = "nova/c";
-"#;
+ pub const A: &str = "nova/a";
+ pub const B: &str = "textDocument/formatting";
+   pub const C: &str = "nova/c";
+ "#;
         let methods = extract_rust_methods_from_text(text);
         assert_eq!(methods, vec!["nova/a".to_string(), "nova/c".to_string()]);
+    }
+
+    #[test]
+    fn warns_on_nova_method_literals_not_exported_as_pub_const() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("crates/nova-lsp/src")).unwrap();
+
+        fs::write(
+            tmp.path().join("crates/nova-lsp/src/lib.rs"),
+            r#"pub const TEST_METHOD: &str = "nova/test";"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("crates/nova-lsp/src/main.rs"),
+            r#"const HIDDEN_METHOD: &str = "nova/hidden";"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("crates/nova-lsp/src/refactor.rs"),
+            r#"#[serde(rename = "nova/refactor/preview")]"#,
+        )
+        .unwrap();
+
+        let doc = r#"
+ # Protocol extensions
+ 
+ ### `nova/test`
+ - **Kind:** request
+ - **Stability:** experimental
+ "#;
+        let diags =
+            validate_protocol_extensions(doc, tmp.path(), Path::new("docs/protocol-extensions.md"))
+                .unwrap();
+
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "undocumented-nova-method-literal"
+                    && d.level == DiagnosticLevel::Warning
+                    && d.message.contains("nova/hidden")),
+            "{diags:#?}"
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| matches!(d.level, DiagnosticLevel::Error)),
+            "{diags:#?}"
+        );
     }
 
     #[test]
