@@ -1186,10 +1186,85 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
     let mut imports: Vec<ImportLine> = Vec::new();
     let mut last_import_end = 0usize;
 
-    let mut idx = 0usize;
-    while idx < tokens.len() && tokens[idx].kind.is_trivia() {
-        idx += 1;
+    fn skip_trivia(tokens: &[nova_syntax::Token], idx: &mut usize) {
+        while *idx < tokens.len() && tokens[*idx].kind.is_trivia() {
+            *idx += 1;
+        }
     }
+
+    fn skip_annotation(tokens: &[nova_syntax::Token], idx: &mut usize) {
+        use nova_syntax::SyntaxKind;
+
+        if *idx >= tokens.len() || tokens[*idx].kind != SyntaxKind::At {
+            return;
+        }
+
+        // Consume `@`.
+        *idx += 1;
+        skip_trivia(tokens, idx);
+
+        // Consume a qualified annotation name (e.g. `javax.annotation.Nullable`).
+        while *idx < tokens.len() {
+            match tokens[*idx].kind {
+                SyntaxKind::Identifier | SyntaxKind::Dot => {
+                    *idx += 1;
+                }
+                kind if kind.is_trivia() => {
+                    *idx += 1;
+                }
+                _ => break,
+            }
+        }
+
+        skip_trivia(tokens, idx);
+
+        // Optional argument list: `(@Foo(...))`.
+        if *idx < tokens.len() && tokens[*idx].kind == SyntaxKind::LParen {
+            let mut depth: i32 = 0;
+            while *idx < tokens.len() {
+                match tokens[*idx].kind {
+                    SyntaxKind::LParen => depth += 1,
+                    SyntaxKind::RParen => {
+                        depth -= 1;
+                        if depth <= 0 {
+                            *idx += 1;
+                            break;
+                        }
+                    }
+                    SyntaxKind::Eof => break,
+                    _ => {}
+                }
+                *idx += 1;
+            }
+        }
+    }
+
+    let mut idx = 0usize;
+    skip_trivia(&tokens, &mut idx);
+
+    // Skip optional package annotations (e.g. `@Nonnull package ...;`) so we can find the import
+    // block even when a file uses package-level annotations.
+    loop {
+        skip_trivia(&tokens, &mut idx);
+        if idx >= tokens.len() {
+            break;
+        }
+        if tokens[idx].kind != nova_syntax::SyntaxKind::At {
+            break;
+        }
+
+        // `@interface` declares an annotation type, not a package annotation. Stop scanning the
+        // header in that case.
+        let mut lookahead = idx + 1;
+        skip_trivia(&tokens, &mut lookahead);
+        if lookahead < tokens.len() && tokens[lookahead].kind == nova_syntax::SyntaxKind::InterfaceKw
+        {
+            break;
+        }
+
+        skip_annotation(&tokens, &mut idx);
+    }
+    skip_trivia(&tokens, &mut idx);
 
     // Skip an optional package declaration so we start scanning at the import block.
     if idx < tokens.len() && tokens[idx].kind == nova_syntax::SyntaxKind::PackageKw {
