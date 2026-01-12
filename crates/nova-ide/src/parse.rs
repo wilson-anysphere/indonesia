@@ -836,7 +836,7 @@ fn parse_method_body(
                         name_span,
                     });
                 }
-            } else if matches!(next_sym, Some(':') | Some(')') | Some('&')) {
+            } else if matches!(next_sym, Some(':') | Some(')') | Some('&') | Some('?')) {
                 locals.push(VarDef {
                     ty,
                     ty_span,
