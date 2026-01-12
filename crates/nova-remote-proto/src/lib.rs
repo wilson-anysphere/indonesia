@@ -219,6 +219,12 @@ pub struct Symbol {
     pub name: String,
     #[serde(deserialize_with = "bounded_de::small_string")]
     pub path: String,
+    /// 0-based UTF-16 (LSP-compatible) position of the symbol's identifier.
+    #[serde(default)]
+    pub line: u32,
+    /// 0-based UTF-16 (LSP-compatible) position of the symbol's identifier.
+    #[serde(default)]
+    pub column: u32,
 }
 
 /// A stable, comparable rank key for fuzzy symbol search results.

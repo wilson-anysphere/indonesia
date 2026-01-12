@@ -232,6 +232,105 @@ fn stdio_server_supports_workspace_symbol_requests_via_distributed_router() {
 }
 
 #[test]
+fn stdio_distributed_workspace_symbol_reports_utf16_definition_positions() {
+    let _lock = stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let file_path = root.join("Foo.java");
+    let file_text =
+        "package com.example;\n\n/* 🦀 */ public class Foo {\n    public void bar() {}\n}\n";
+    std::fs::write(&file_path, file_text).expect("write java file");
+
+    let name_offset = file_text.find("Foo").expect("class name");
+    let line_index = nova_core::LineIndex::new(file_text);
+    let expected =
+        line_index.position(file_text, nova_core::TextSize::from(name_offset as u32));
+    assert_eq!(expected.line, 2, "expected Foo on line 2 (0-based)");
+    assert_eq!(
+        expected.character, 22,
+        "expected UTF-16 column to count the emoji as a surrogate pair"
+    );
+
+    let root_uri = uri_for_path(root);
+    let file_uri = uri_for_path(&file_path);
+
+    let worker_bin = ensure_worker_binary();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--distributed")
+        .arg("--distributed-worker-command")
+        .arg(worker_bin)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let mut next_id = 2i64;
+    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
+
+    let resp = send_workspace_symbol_request(&mut stdin, &mut stdout, next_id, "Foo");
+    let results = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("workspace/symbol result array");
+    let foo = results
+        .iter()
+        .find(|value| {
+            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
+                && value.pointer("/location/uri").and_then(|v| v.as_str())
+                    == Some(file_uri.as_str())
+        })
+        .unwrap_or_else(|| panic!("expected Foo symbol pointing at Foo.java, got: {resp:?}"));
+
+    let line = foo
+        .pointer("/location/range/start/line")
+        .and_then(|v| v.as_u64())
+        .expect("location.range.start.line");
+    let character = foo
+        .pointer("/location/range/start/character")
+        .and_then(|v| v.as_u64())
+        .expect("location.range.start.character");
+
+    assert_eq!(line as u32, expected.line);
+    assert_eq!(character as u32, expected.character);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": next_id + 1, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, next_id + 1);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
     let _lock = stdio_server_lock();
 

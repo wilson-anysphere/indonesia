@@ -7089,8 +7089,8 @@ fn handle_workspace_symbol(
                 .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
 
             let position = LspTypesPosition {
-                line: 0,
-                character: 0,
+                line: symbol.line,
+                character: symbol.column,
             };
             let location = LspLocation {
                 uri,

@@ -36,6 +36,8 @@ fn sample_index(shard_id: ShardId) -> ShardIndex {
         symbols: vec![Symbol {
             name: "Foo".to_string(),
             path: "src/Foo.java".to_string(),
+            line: 0,
+            column: 0,
         }],
     }
 }

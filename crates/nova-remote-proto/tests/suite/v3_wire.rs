@@ -87,6 +87,8 @@ fn decoding_ignores_unknown_fields_in_structs() {
         symbols: vec![Symbol {
             name: "Foo".into(),
             path: "Foo.java".into(),
+            line: 0,
+            column: 0,
         }],
     };
 

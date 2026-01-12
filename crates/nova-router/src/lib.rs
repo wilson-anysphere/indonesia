@@ -2716,19 +2716,200 @@ fn index_for_files(
             }
         };
         db.set_file_exists(file_id, true);
-        db.set_file_content(file_id, text);
+        db.set_file_content(file_id, Arc::clone(&text));
 
-        let names = db.with_snapshot(|snap| snap.hir_symbol_names(file_id));
-        for name in names.iter() {
-            symbols.push(Symbol {
-                name: name.clone(),
-                path: file.clone(),
+        let line_index = nova_core::LineIndex::new(&text);
+        let tree = db.with_snapshot(|snap| snap.hir_item_tree(file_id));
+
+        fn push_symbol(
+            out: &mut Vec<Symbol>,
+            line_index: &nova_core::LineIndex,
+            text: &str,
+            name: &str,
+            path: &str,
+            name_start: usize,
+        ) {
+            let offset_u32 = u32::try_from(name_start).unwrap_or(0);
+            let pos = line_index.position(text, nova_core::TextSize::from(offset_u32));
+            out.push(Symbol {
+                name: name.to_string(),
+                path: path.to_string(),
+                line: pos.line,
+                column: pos.character,
             });
+        }
+
+        fn collect_member_symbols(
+            tree: &nova_hir::item_tree::ItemTree,
+            members: &[nova_hir::item_tree::Member],
+            line_index: &nova_core::LineIndex,
+            text: &str,
+            path: &str,
+            out: &mut Vec<Symbol>,
+        ) {
+            for member in members {
+                match member {
+                    nova_hir::item_tree::Member::Field(id) => {
+                        let data = tree.field(*id);
+                        push_symbol(
+                            out,
+                            line_index,
+                            text,
+                            &data.name,
+                            path,
+                            data.name_range.start,
+                        );
+                    }
+                    nova_hir::item_tree::Member::Method(id) => {
+                        let data = tree.method(*id);
+                        push_symbol(
+                            out,
+                            line_index,
+                            text,
+                            &data.name,
+                            path,
+                            data.name_range.start,
+                        );
+                    }
+                    nova_hir::item_tree::Member::Constructor(id) => {
+                        let data = tree.constructor(*id);
+                        push_symbol(
+                            out,
+                            line_index,
+                            text,
+                            &data.name,
+                            path,
+                            data.name_range.start,
+                        );
+                    }
+                    nova_hir::item_tree::Member::Initializer(_) => {}
+                    nova_hir::item_tree::Member::Type(item) => collect_item_symbols(
+                        tree, *item, line_index, text, path, out,
+                    ),
+                }
+            }
+        }
+
+        fn collect_item_symbols(
+            tree: &nova_hir::item_tree::ItemTree,
+            item: nova_hir::item_tree::Item,
+            line_index: &nova_core::LineIndex,
+            text: &str,
+            path: &str,
+            out: &mut Vec<Symbol>,
+        ) {
+            match item {
+                nova_hir::item_tree::Item::Class(id) => {
+                    let data = tree.class(id);
+                    push_symbol(
+                        out,
+                        line_index,
+                        text,
+                        &data.name,
+                        path,
+                        data.name_range.start,
+                    );
+                    collect_member_symbols(
+                        tree,
+                        &data.members,
+                        line_index,
+                        text,
+                        path,
+                        out,
+                    );
+                }
+                nova_hir::item_tree::Item::Interface(id) => {
+                    let data = tree.interface(id);
+                    push_symbol(
+                        out,
+                        line_index,
+                        text,
+                        &data.name,
+                        path,
+                        data.name_range.start,
+                    );
+                    collect_member_symbols(
+                        tree,
+                        &data.members,
+                        line_index,
+                        text,
+                        path,
+                        out,
+                    );
+                }
+                nova_hir::item_tree::Item::Enum(id) => {
+                    let data = tree.enum_(id);
+                    push_symbol(
+                        out,
+                        line_index,
+                        text,
+                        &data.name,
+                        path,
+                        data.name_range.start,
+                    );
+                    collect_member_symbols(
+                        tree,
+                        &data.members,
+                        line_index,
+                        text,
+                        path,
+                        out,
+                    );
+                }
+                nova_hir::item_tree::Item::Record(id) => {
+                    let data = tree.record(id);
+                    push_symbol(
+                        out,
+                        line_index,
+                        text,
+                        &data.name,
+                        path,
+                        data.name_range.start,
+                    );
+                    collect_member_symbols(
+                        tree,
+                        &data.members,
+                        line_index,
+                        text,
+                        path,
+                        out,
+                    );
+                }
+                nova_hir::item_tree::Item::Annotation(id) => {
+                    let data = tree.annotation(id);
+                    push_symbol(
+                        out,
+                        line_index,
+                        text,
+                        &data.name,
+                        path,
+                        data.name_range.start,
+                    );
+                    collect_member_symbols(
+                        tree,
+                        &data.members,
+                        line_index,
+                        text,
+                        path,
+                        out,
+                    );
+                }
+            }
+        }
+
+        for item in tree.items.iter() {
+            collect_item_symbols(tree.as_ref(), *item, &line_index, &text, &file, &mut symbols);
         }
     }
 
-    symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-    symbols.dedup();
+    symbols.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
+    });
+    symbols.dedup_by(|a, b| a.name == b.name && a.path == b.path);
     Ok(Ok(symbols))
 }
 
@@ -2739,8 +2920,14 @@ fn build_global_symbols<'a>(
     for shard in shard_indexes {
         symbols.extend(shard.symbols.iter().cloned());
     }
-    symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-    symbols.dedup();
+    symbols.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
+    });
+    symbols.dedup_by(|a, b| a.name == b.name && a.path == b.path);
     symbols
 }
 
@@ -3261,10 +3448,14 @@ mod tests {
             Symbol {
                 name: "foobar".into(),
                 path: "a.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "barfoo".into(),
                 path: "b.java".into(),
+                line: 0,
+                column: 0,
             },
         ];
 
@@ -3389,10 +3580,14 @@ mod tests {
             Symbol {
                 name: "FooBar".into(),
                 path: "a.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "foobar".into(),
                 path: "b.java".into(),
+                line: 0,
+                column: 0,
             },
         ];
 
@@ -3407,10 +3602,14 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 path: "a.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "FooBar".into(),
                 path: "b.java".into(),
+                line: 0,
+                column: 0,
             },
         ];
 
@@ -3432,14 +3631,20 @@ mod tests {
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "b.java".into(),
+            line: 0,
+            column: 0,
         }); // id 0
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         }); // id 1
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         }); // id 2 (duplicate name+path, should be ordered by id)
 
         for a in b'a'..=b'z' {
@@ -3452,6 +3657,8 @@ mod tests {
                 symbols.push(Symbol {
                     name,
                     path: format!("{a}{b}.java"),
+                    line: 0,
+                    column: 0,
                 });
             }
         }
@@ -3484,14 +3691,20 @@ mod tests {
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "b.java".into(),
+            line: 0,
+            column: 0,
         });
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         });
         symbols.push(Symbol {
             name: "fooaa".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         });
 
         for a in b'a'..=b'z' {
@@ -3503,6 +3716,8 @@ mod tests {
                 symbols.push(Symbol {
                     name,
                     path: format!("{a}{b}.java"),
+                    line: 0,
+                    column: 0,
                 });
             }
         }
@@ -3527,14 +3742,20 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 path: "a.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "FooBar".into(),
                 path: "b.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "Vector".into(),
                 path: "c.java".into(),
+                line: 0,
+                column: 0,
             },
         ];
 

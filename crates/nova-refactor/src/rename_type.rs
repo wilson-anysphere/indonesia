@@ -566,7 +566,32 @@ fn expr_scope_for_offset(
         use hir::Expr;
 
         let expr = &body.exprs[expr_id];
-        let range = expr.range();
+        let range = match expr {
+            Expr::Name { range, .. }
+            | Expr::Literal { range, .. }
+            | Expr::Null { range }
+            | Expr::This { range }
+            | Expr::Super { range }
+            | Expr::FieldAccess { range, .. }
+            | Expr::ArrayAccess { range, .. }
+            | Expr::MethodReference { range, .. }
+            | Expr::ConstructorReference { range, .. }
+            | Expr::ClassLiteral { range, .. }
+            | Expr::Cast { range, .. }
+            | Expr::Call { range, .. }
+            | Expr::New { range, .. }
+            | Expr::ArrayCreation { range, .. }
+            | Expr::ArrayInitializer { range, .. }
+            | Expr::Unary { range, .. }
+            | Expr::Binary { range, .. }
+            | Expr::Instanceof { range, .. }
+            | Expr::Assign { range, .. }
+            | Expr::Conditional { range, .. }
+            | Expr::Lambda { range, .. }
+            | Expr::Switch { range, .. }
+            | Expr::Invalid { range, .. }
+            | Expr::Missing { range } => *range,
+        };
 
         if !contains(range, offset) {
             return;
@@ -613,8 +638,8 @@ fn expr_scope_for_offset(
                 for dim in dim_exprs {
                     visit_expr(body, *dim, offset, best_expr, best_stmt);
                 }
-                if let Some(initializer) = initializer {
-                    visit_expr(body, *initializer, offset, best_expr, best_stmt);
+                if let Some(init) = initializer {
+                    visit_expr(body, *init, offset, best_expr, best_stmt);
                 }
             }
             Expr::ArrayInitializer { items, .. } => {
@@ -642,26 +667,6 @@ fn expr_scope_for_offset(
                 visit_expr(body, *then_expr, offset, best_expr, best_stmt);
                 visit_expr(body, *else_expr, offset, best_expr, best_stmt);
             }
-            Expr::Switch { selector, arms, .. } => {
-                visit_expr(body, *selector, offset, best_expr, best_stmt);
-                for arm in arms {
-                    for label in &arm.labels {
-                        if let hir::SwitchLabel::Case { values, .. } = label {
-                            for value in values {
-                                visit_expr(body, *value, offset, best_expr, best_stmt);
-                            }
-                        }
-                    }
-                    match &arm.body {
-                        hir::SwitchArmBody::Expr(expr) => {
-                            visit_expr(body, *expr, offset, best_expr, best_stmt);
-                        }
-                        hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                            visit_stmt(body, *stmt, offset, best_expr, best_stmt);
-                        }
-                    }
-                }
-            }
             Expr::Lambda {
                 body: lambda_body, ..
             } => match lambda_body {
@@ -672,6 +677,14 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt)
                 }
             },
+            Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                visit_expr(body, *selector, offset, best_expr, best_stmt);
+                visit_stmt(body, *switch_body, offset, best_expr, best_stmt);
+            }
             Expr::Invalid { children, .. } => {
                 for child in children {
                     visit_expr(body, *child, offset, best_expr, best_stmt);
@@ -701,7 +714,6 @@ fn expr_scope_for_offset(
             | Stmt::Let { range, .. }
             | Stmt::Expr { range, .. }
             | Stmt::Yield { range, .. }
-            | Stmt::Assert { range, .. }
             | Stmt::Return { range, .. }
             | Stmt::If { range, .. }
             | Stmt::While { range, .. }
@@ -710,6 +722,7 @@ fn expr_scope_for_offset(
             | Stmt::Synchronized { range, .. }
             | Stmt::Switch { range, .. }
             | Stmt::Try { range, .. }
+            | Stmt::Assert { range, .. }
             | Stmt::Throw { range, .. }
             | Stmt::Break { range }
             | Stmt::Continue { range }
@@ -749,16 +762,11 @@ fn expr_scope_for_offset(
                 condition, message, ..
             } => {
                 visit_expr(body, *condition, offset, best_expr, best_stmt);
-                if let Some(message_expr) = message {
-                    visit_expr(body, *message_expr, offset, best_expr, best_stmt);
-                }
-            }
-            Stmt::Return { expr, .. } => {
-                if let Some(expr) = expr {
+                if let Some(expr) = message {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
-            Stmt::Yield { expr, .. } => {
+            Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }

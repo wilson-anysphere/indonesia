@@ -91,14 +91,20 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
     let fresh_symbol = Symbol {
         name: "FreshSymbol".into(),
         path: "fresh.java".into(),
+        line: 0,
+        column: 0,
     };
     let stale_symbol = Symbol {
         name: "StaleSymbol".into(),
         path: "stale.java".into(),
+        line: 0,
+        column: 0,
     };
     let stale_symbol_generation = Symbol {
         name: "StaleSymbolGeneration".into(),
         path: "stale_gen.java".into(),
+        line: 0,
+        column: 0,
     };
 
     worker_conn.set_request_handler({

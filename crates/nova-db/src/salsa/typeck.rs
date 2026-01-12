@@ -12054,6 +12054,11 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         HirStmt::Expr { expr, .. } => {
             find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
         }
+        HirStmt::Yield { expr, .. } => {
+            if let Some(expr) = expr {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
         HirStmt::Assert {
             condition, message, ..
         } => {
@@ -12267,6 +12272,11 @@ fn find_enclosing_target_typed_expr_in_expr(
                     target_range,
                     best,
                 );
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {
