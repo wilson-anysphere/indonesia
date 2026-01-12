@@ -38,8 +38,10 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/gradle.lockfile',
   '**/dependency-locks/**/*.lockfile',
   '**/gradle.properties',
-  '**/gradlew',
-  '**/gradlew.bat',
+  // Gradle wrapper scripts should only be treated as build inputs at the workspace root (this
+  // matches Gradle build-file fingerprinting semantics in `nova-build-model`).
+  'gradlew',
+  'gradlew.bat',
   '**/gradle/wrapper/gradle-wrapper.properties',
   '**/gradle/wrapper/gradle-wrapper.jar',
   // Gradle version catalogs can define dependency versions.
