@@ -242,3 +242,34 @@ Common call sites include:
 - **Workspace reload build integration**: `crates/nova-workspace/src/engine.rs` reloads the project
   and may call `BuildManager::java_compile_config_gradle(workspace_root, None)` to refresh the
   workspace classpath during reloads.
+
+---
+
+## Troubleshooting
+
+### Snapshot exists but is ignored by `nova-project`
+
+`nova-project` will ignore `.nova/queries/gradle.json` when:
+
+- `schemaVersion` doesn’t match `GRADLE_SNAPSHOT_SCHEMA_VERSION`, or
+- `buildFingerprint` doesn’t match the current fingerprint of Gradle build inputs, or
+- the JSON can’t be parsed.
+
+In all of these cases, Nova falls back to heuristic discovery.
+
+### Snapshot never appears on disk
+
+Snapshot writing is **best-effort**. Call sites intentionally ignore I/O errors when writing
+`.nova/queries/gradle.json`.
+
+If the file is missing after running Gradle integration:
+
+- ensure the workspace is writable (Nova needs to create `.nova/queries/`),
+- ensure you invoked a query that writes the snapshot (`GradleBuild::projects`, per-project
+  `java_compile_config(..., project_path=Some(":app"))`, or the batch `java_compile_configs_all`).
+
+### Snapshot seems “stale” even though build files didn’t change
+
+`buildFingerprint` is based on **build inputs**, not on Gradle cache contents. If dependency
+resolution changes without build file edits (e.g. dynamic versions, refreshed caches), the snapshot
+may still validate and be used, but can be outdated. Re-run Gradle extraction to refresh it.
