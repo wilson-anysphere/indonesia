@@ -3309,7 +3309,7 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^'"]+))?['"]"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
         ))
         .expect("valid regex")
     });
@@ -3322,13 +3322,23 @@ fn parse_gradle_dependencies_from_text(
         let version = caps
             .name("version")
             .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
+        let classifier = caps
+            .name("classifier")
+            .map(|m| m.as_str().trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let type_ = caps
+            .name("type")
+            .map(|m| m.as_str().trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
             version,
             scope,
-            classifier: None,
-            type_: None,
+            classifier,
+            type_,
         });
     }
 
@@ -3603,9 +3613,16 @@ fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec
         return Vec::new();
     }
 
-    let prefix = format!("{}-{}", dep.artifact_id, version);
+    let base_prefix = format!("{}-{}", dep.artifact_id, version);
+    let preferred_prefix = dep
+        .classifier
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("{base_prefix}-{c}"))
+        .unwrap_or_else(|| base_prefix.clone());
 
     let mut preferred = Vec::new();
+    let mut fallback = Vec::new();
     let mut others = Vec::new();
 
     for entry in WalkDir::new(&base).into_iter().filter_map(Result::ok) {
@@ -3623,8 +3640,10 @@ fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec
             .and_then(|s| s.to_str())
             .unwrap_or_default();
 
-        if file_name.starts_with(&prefix) {
+        if file_name.starts_with(&preferred_prefix) {
             preferred.push(path);
+        } else if dep.classifier.is_some() && file_name.starts_with(&base_prefix) {
+            fallback.push(path);
         } else {
             others.push(path);
         }
@@ -3632,6 +3651,8 @@ fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec
 
     let mut out = if !preferred.is_empty() {
         preferred
+    } else if !fallback.is_empty() {
+        fallback
     } else {
         others
     };
@@ -3878,11 +3899,11 @@ mod tests {
     use std::fs;
 
     use super::{
-        append_included_build_module_refs, extract_named_brace_blocks,
+        append_included_build_module_refs, extract_named_brace_blocks, gradle_dependency_jar_paths,
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
         parse_gradle_settings_included_builds, parse_gradle_settings_projects,
         parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
-        GradleModuleRef, GradleProperties,
+        Dependency, GradleModuleRef, GradleProperties,
     };
     use tempfile::tempdir;
 
@@ -4105,6 +4126,79 @@ dependencies {
             "auto-service".to_string(),
             Some("1.1.1".to_string())
         )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_classifier_and_type_notation() {
+        let script = r#"
+dependencies {
+    implementation("org.example:foo:1.2.3:linux@jar")
+    runtimeOnly 'org.example:bar:4.5.6@jar'
+    compileOnly 'org.example:baz:7.8.9:all'
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let mut deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        sort_dedup_dependencies(&mut deps);
+
+        let foo = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "foo")
+            .expect("foo dep");
+        assert_eq!(foo.version.as_deref(), Some("1.2.3"));
+        assert_eq!(foo.classifier.as_deref(), Some("linux"));
+        assert_eq!(foo.type_.as_deref(), Some("jar"));
+        assert_eq!(foo.scope.as_deref(), Some("compile"));
+
+        let bar = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "bar")
+            .expect("bar dep");
+        assert_eq!(bar.version.as_deref(), Some("4.5.6"));
+        assert_eq!(bar.classifier.as_deref(), None);
+        assert_eq!(bar.type_.as_deref(), Some("jar"));
+        assert_eq!(bar.scope.as_deref(), Some("runtime"));
+
+        let baz = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "baz")
+            .expect("baz dep");
+        assert_eq!(baz.version.as_deref(), Some("7.8.9"));
+        assert_eq!(baz.classifier.as_deref(), Some("all"));
+        assert_eq!(baz.type_.as_deref(), None);
+        assert_eq!(baz.scope.as_deref(), Some("provided"));
+    }
+
+    #[test]
+    fn gradle_dependency_jar_paths_prefers_classifier_matches_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let gradle_home = dir.path();
+
+        let base = gradle_home
+            .join("caches/modules-2/files-2.1")
+            .join("g")
+            .join("a")
+            .join("1.0")
+            .join("deadbeef");
+        std::fs::create_dir_all(&base).unwrap();
+
+        let plain = base.join("a-1.0.jar");
+        let classified = base.join("a-1.0-linux.jar");
+        std::fs::write(&plain, "").unwrap();
+        std::fs::write(&classified, "").unwrap();
+
+        let dep = Dependency {
+            group_id: "g".to_string(),
+            artifact_id: "a".to_string(),
+            version: Some("1.0".to_string()),
+            scope: None,
+            classifier: Some("linux".to_string()),
+            type_: None,
+        };
+
+        let jars = gradle_dependency_jar_paths(gradle_home, &dep);
+        assert_eq!(jars, vec![classified]);
     }
 
     #[test]
