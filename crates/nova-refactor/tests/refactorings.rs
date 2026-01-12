@@ -2946,6 +2946,61 @@ fn rename_local_variable_does_not_touch_type_arguments_or_annotations() {
 }
 
 #[test]
+fn rename_updates_annotation_method_default_enum_constant() {
+    let file = FileId::new("Test.java");
+    let src = r#"enum E { FOO, BAR }
+@interface A { E v() default E.FOO; }
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // Pick the enum constant declaration, not the default value usage.
+    let offset = src.find("FOO,").unwrap() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at FOO");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "BAZ".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("enum E { BAZ, BAR }"), "{after}");
+    assert!(after.contains("default E.BAZ;"), "{after}");
+}
+
+#[test]
+fn rename_updates_annotation_method_default_class_literal() {
+    let file = FileId::new("Test.java");
+    let src = r#"@interface A { Class<?> c() default Foo.class; }
+class Foo {}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // Pick the class declaration, not the class literal usage.
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("default Bar.class;"), "{after}");
+    assert!(after.contains("class Bar {}"), "{after}");
+    assert!(!after.contains("Foo"), "{after}");
+}
+
+#[test]
 fn rename_shadowing_conflict_detected_in_nested_block_scope() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

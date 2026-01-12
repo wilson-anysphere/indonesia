@@ -4119,6 +4119,53 @@ fn record_syntax_only_references(
         );
     }
 
+    // Annotation element default values (`@interface A { Foo v() default Foo.BAR; }`).
+    //
+    // These default expressions are not part of any stable `hir::Body` and therefore need
+    // a syntax-only reference pass so renames update them.
+    for node in unit.syntax().descendants() {
+        let Some(method) = ast::MethodDeclaration::cast(node) else {
+            continue;
+        };
+        let Some(default_value) = method.default_value() else {
+            continue;
+        };
+        let Some(value) = default_value.value() else {
+            continue;
+        };
+
+        let range = method.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+
+        // Resolve in the innermost enclosing type body scope (so nested types resolve correctly).
+        let mut scope = scope_result.file_scope;
+        let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
+        for (body_range, class_scope) in &type_scopes {
+            if body_range.start <= start && start < body_range.end {
+                let len = body_range.len();
+                if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                    best = Some((len, *class_scope));
+                }
+            }
+        }
+        if let Some((_, class_scope)) = best {
+            scope = class_scope;
+        }
+
+        visit_value(
+            file,
+            value,
+            scope,
+            scope_result,
+            resolver,
+            workspace,
+            resolution_to_symbol,
+            references,
+            spans,
+            &mut seen_annotations,
+        );
+    }
+
     // Enum constant argument expressions.
     for node in unit.syntax().descendants() {
         let Some(constant) = ast::EnumConstant::cast(node) else {
