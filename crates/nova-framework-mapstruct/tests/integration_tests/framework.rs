@@ -334,6 +334,7 @@ public interface CarMapper {
         offset: cursor_offset,
     };
     let items = registry.framework_completions(&db, &ctx);
+
     assert!(
         items.iter().any(|i| i.label == "seatCount"),
         "expected `seatCount` completion from imported CarDto, got: {items:?}"
@@ -506,4 +507,78 @@ public class Car {
     let hp = items.iter().find(|i| i.label == "horsepower").unwrap();
     let span = hp.replace_span.expect("replace_span");
     assert_eq!(&mapper[span.start..span.end], "ho");
+}
+
+#[test]
+fn nested_mapping_does_not_trigger_unmapped_target_properties_diagnostic() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+
+    // Ensure the analyzer is applicable and treats the project as having MapStruct.
+    db.add_dependency(project, "org.mapstruct", "mapstruct");
+
+    let mapper = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+  @Mapping(target="engine.horsepower", source="horsepower")
+  CarDto carToCarDto(Car car);
+}
+"#;
+
+    let mapper_file = db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarMapper.java",
+        mapper,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/EngineDto.java",
+        r#"
+package com.example;
+
+public class EngineDto {
+  public int horsepower;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarDto.java",
+        r#"
+package com.example;
+
+public class CarDto {
+  public EngineDto engine;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/Car.java",
+        r#"
+package com.example;
+
+public class Car {
+  public int horsepower;
+}
+"#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, mapper_file);
+    assert!(
+        diags.iter()
+            .all(|d| d.code.as_ref() != "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"),
+        "expected no unmapped-target diagnostic, got: {diags:?}"
+    );
 }

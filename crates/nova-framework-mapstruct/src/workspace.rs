@@ -84,7 +84,6 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
 pub(crate) struct MapStructWorkspace {
     pub(crate) analysis: AnalysisResult,
     type_to_file: HashMap<String, FileId>,
-    properties: Mutex<HashMap<String, Option<Arc<HashSet<String>>>>>,
     property_types: Mutex<HashMap<String, Option<Arc<HashMap<String, JavaType>>>>>,
 }
 
@@ -134,52 +133,6 @@ impl MapStructWorkspace {
             .filter(|d| d.file.as_path() == path)
             .map(|d| d.diagnostic.clone())
             .collect()
-    }
-
-    pub(crate) fn properties_for_type(
-        &self,
-        db: &dyn Database,
-        ty: &JavaType,
-    ) -> Option<Arc<HashSet<String>>> {
-        let key = ty.qualified_name();
-        if key.is_empty() {
-            return None;
-        }
-
-        {
-            let cache = lock_unpoison(&self.properties);
-            if let Some(cached) = cache.get(&key) {
-                return cached.clone();
-            }
-        }
-
-        let (file_id, cache_key) = match self.type_to_file.get(&key).copied() {
-            Some(file) => (Some(file), key),
-            None => match self.type_to_file.get(&ty.name).copied() {
-                Some(file) => (Some(file), key),
-                None => (None, key),
-            },
-        };
-
-        let Some(file_id) = file_id else {
-            lock_unpoison(&self.properties).insert(cache_key, None);
-            return None;
-        };
-
-        let Some(text) = db.file_text(file_id) else {
-            lock_unpoison(&self.properties).insert(cache_key, None);
-            return None;
-        };
-
-        let Ok(tree) = nova_framework_parse::parse_java(text) else {
-            lock_unpoison(&self.properties).insert(cache_key, None);
-            return None;
-        };
-
-        let props = crate::collect_properties_in_class(tree.root_node(), text, &ty.name);
-        let props = Arc::new(props);
-        lock_unpoison(&self.properties).insert(cache_key, Some(props.clone()));
-        Some(props)
     }
 
     pub(crate) fn property_types_for_type(
@@ -428,7 +381,10 @@ impl WorkspaceBuilder {
                 let mut mapped: HashSet<String> =
                     source_props.intersection(&target_props).cloned().collect();
                 for mapping in &method.mappings {
-                    mapped.insert(mapping.target.clone());
+                    let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
+                    if !target.is_empty() {
+                        mapped.insert(target.to_string());
+                    }
                 }
 
                 let mut unmapped: Vec<String> =
@@ -460,7 +416,6 @@ impl WorkspaceBuilder {
                 diagnostics,
             },
             type_to_file: self.type_to_file,
-            properties: Mutex::new(self.properties),
             property_types: Mutex::new(HashMap::new()),
         }
     }

@@ -336,7 +336,10 @@ pub fn analyze_workspace(
             let mut mapped: HashSet<String> =
                 source_props.intersection(&target_props).cloned().collect();
             for mapping in &method.mappings {
-                mapped.insert(mapping.target.clone());
+                let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
+                if !target.is_empty() {
+                    mapped.insert(target.to_string());
+                }
             }
 
             let mut unmapped: Vec<String> = target_props.difference(&mapped).cloned().collect();
