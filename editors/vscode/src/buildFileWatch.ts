@@ -9,6 +9,8 @@ export type NovaRequest = <R>(method: string, params?: unknown, opts?: NovaReque
 type FormatError = (err: unknown) => string;
 type IsMethodNotFoundError = (err: unknown) => boolean;
 
+type BuildTool = 'auto' | 'maven' | 'gradle';
+
 const BUILD_FILE_GLOBS: readonly string[] = [
   // Maven
   '**/pom.xml',
@@ -125,9 +127,13 @@ export function registerNovaBuildFileWatchers(
     }
 
     const projectRoot = workspaceFolder.uri.fsPath;
+    const rawBuildTool = config.get<string>('build.buildTool', 'auto');
+    const buildTool: BuildTool =
+      rawBuildTool === 'maven' || rawBuildTool === 'gradle' || rawBuildTool === 'auto' ? rawBuildTool : 'auto';
 
     try {
-      await request('nova/reloadProject', { projectRoot, buildTool: 'auto' }, { allowMethodFallback: true });
+      // Auto-reload should never prompt for input. Treat the "prompt" setting as "auto".
+      await request('nova/reloadProject', { projectRoot, buildTool }, { allowMethodFallback: true });
     } catch (err) {
       if (opts.isMethodNotFoundError(err)) {
         reloadProjectSupported = false;
