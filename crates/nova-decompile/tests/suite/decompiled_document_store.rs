@@ -353,3 +353,84 @@ fn symlink_store_root_is_treated_as_cache_miss_and_removed() {
         "file outside the store must not be deleted"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn store_text_does_not_follow_symlink_store_root() {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+
+    let store_root = base.path().join("decompiled");
+    symlink(outside.path(), &store_root).unwrap();
+
+    let store = DecompiledDocumentStore::new(store_root.clone());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .expect("store");
+
+    let meta = std::fs::symlink_metadata(&store_root).expect("store root meta");
+    assert!(
+        !meta.file_type().is_symlink() && meta.is_dir(),
+        "expected store root to be a real directory after store_text"
+    );
+
+    let stored_path = store_root
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+    assert_eq!(
+        std::fs::read_to_string(&stored_path).unwrap(),
+        "hello",
+        "expected decompiled text to be stored under the store root"
+    );
+
+    // Ensure we did not write into the symlink target directory.
+    let outside_path = outside.path().join(content_hash).join(format!("{safe_stem}.java"));
+    assert!(
+        !outside_path.exists(),
+        "expected symlink target to not receive store writes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn store_text_does_not_follow_symlink_parent_dir() {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(base.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+
+    let content_dir = base.path().join(content_hash);
+    symlink(outside.path(), &content_dir).unwrap();
+
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .expect("store");
+
+    let meta = std::fs::symlink_metadata(&content_dir).expect("content dir meta");
+    assert!(
+        !meta.file_type().is_symlink() && meta.is_dir(),
+        "expected content hash directory to be a real directory after store_text"
+    );
+
+    let stored_path = content_dir.join(format!("{safe_stem}.java"));
+    assert_eq!(std::fs::read_to_string(&stored_path).unwrap(), "hello");
+
+    // Ensure we did not write into the symlink target directory.
+    let outside_path = outside.path().join(format!("{safe_stem}.java"));
+    assert!(
+        !outside_path.exists(),
+        "expected symlink target to not receive store writes"
+    );
+}

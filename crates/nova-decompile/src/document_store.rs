@@ -78,6 +78,10 @@ impl DecompiledDocumentStore {
         text: &str,
     ) -> Result<(), CacheError> {
         let path = self.path_for(content_hash, binary_name)?;
+        ensure_dir_safe(&self.root)?;
+        if let Some(parent) = path.parent() {
+            ensure_dir_safe(parent)?;
+        }
         atomic_write(&path, text.as_bytes())
     }
 
@@ -585,6 +589,31 @@ fn remove_corrupt_path(path: &Path) {
             let _ = std::fs::remove_dir_all(path);
         }
     }
+}
+
+fn ensure_dir_safe(path: &Path) -> Result<(), CacheError> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    if let Some(meta) = meta {
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            remove_corrupt_path(path);
+        } else {
+            return Ok(());
+        }
+    }
+
+    std::fs::create_dir_all(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        remove_corrupt_path(path);
+        return Err(io::Error::other("failed to create safe cache directory").into());
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
