@@ -223,6 +223,25 @@ fn ast_formatting_preserves_multiline_string_template_text() {
 }
 
 #[test]
+fn ast_tabs_indentation_does_not_rewrite_string_template_text() {
+    let input = r#"class Foo{void m(String name){String s=STR."""
+    hi \{name}
+    """;}}
+"#;
+    let parse = parse_java(input);
+    let config = FormatConfig {
+        indent_style: IndentStyle::Tabs,
+        ..FormatConfig::default()
+    };
+    let formatted = format_java_ast(&parse, input, &config);
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n\tvoid m(String name) {\n\t\tString s = STR.\"\"\"\n    hi \\{name}\n    \"\"\";\n\t}\n}\n"
+    );
+}
+
+#[test]
 fn formats_broken_syntax_best_effort() {
     let input = "class A{void m(){if(true){System.out.println(\"x\"); // oops\n";
     let parse = parse_java(input);
