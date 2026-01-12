@@ -979,6 +979,38 @@ class C {}
 }
 
 #[test]
+fn type_use_annotations_in_type_arguments_with_suffix_annotations_are_ignored() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String[]>",
+        None,
+    );
+    // `List<@A String @B []>` -> `List<@AString@B[]>`
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<@AString@B[]>",
+        None,
+    );
+
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
+
+#[test]
 fn type_use_annotations_before_varargs_are_ignored() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
@@ -1398,6 +1430,22 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
         "@AString@B[]",
         None,
     );
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    // Varargs: `@A String @B ...` -> `@AString@B...`
+    let plain =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@AString@B...", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int...", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint@B...", None);
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
