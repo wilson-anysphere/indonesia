@@ -267,6 +267,10 @@ implementation:
 
 See the `manual_watcher_*` tests in `crates/nova-workspace/src/engine.rs` for examples.
 
+Note: `Workspace::open(...)` canonicalizes the workspace root on disk. In tests that use temporary
+directories, prefer canonicalizing paths you pass to the workspace and any file-change events you
+inject (e.g. on macOS `/var/...` vs `/private/var/...`) to avoid path-mismatch flakes.
+
 ### 2) Bypass the watcher and call "apply events" APIs directly
 
 For higher-level workspace behavior, many tests can skip the watcher entirely and call the
