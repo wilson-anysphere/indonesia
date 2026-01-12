@@ -3564,6 +3564,28 @@ class C {
 }
 
 #[test]
+fn type_at_offset_finds_synchronized_lock_expr() {
+    let src = r#"
+class C {
+    void m() {
+        Object x = new Object();
+        synchronized (x) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let sync = src
+        .find("synchronized (x)")
+        .expect("snippet should contain synchronized statement");
+    let offset = sync + "synchronized (".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Object");
+}
+
+#[test]
 fn extends_allows_inherited_method_call() {
     let src = r#"
 class A { int foo(){ return 1; } }
