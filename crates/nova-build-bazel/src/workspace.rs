@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
@@ -119,6 +119,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     cache: BazelCache,
     compile_info_expr_version_hex: String,
     supports_same_pkg_direct_rdeps: Option<bool>,
+    java_owning_targets_cache: HashMap<String, Vec<String>>,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
     #[cfg(feature = "bsp")]
@@ -134,6 +135,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             cache: BazelCache::default(),
             compile_info_expr_version_hex: compile_info_expr_version_hex(),
             supports_same_pkg_direct_rdeps: None,
+            java_owning_targets_cache: HashMap::new(),
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
             #[cfg(feature = "bsp")]
@@ -204,6 +206,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(Vec::new());
         };
 
+        let cache_key = if let Some(run_target) = run_target {
+            format!("{run_target}::{file_label}")
+        } else {
+            file_label.clone()
+        };
+        if let Some(cached) = self.java_owning_targets_cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
         let mut owners = BTreeSet::<String>::new();
 
         if let Some(run_target) = run_target {
@@ -238,7 +249,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 frontier = next_frontier;
             }
 
-            return Ok(owners.into_iter().collect());
+            let out: Vec<String> = owners.into_iter().collect();
+            self.java_owning_targets_cache.insert(cache_key, out.clone());
+            return Ok(out);
         }
 
         let package_universe = if package_rel.is_empty() {
@@ -270,7 +283,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             }
         }
 
-        Ok(owners.into_iter().collect())
+        let out: Vec<String> = owners.into_iter().collect();
+        self.java_owning_targets_cache.insert(cache_key, out.clone());
+        Ok(out)
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
@@ -592,6 +607,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             })
             .collect::<Vec<_>>();
 
+        // Owning-target results are derived from BUILD/BUILD.bazel state and are therefore cheap to
+        // invalidate wholesale. This keeps the cache simple and avoids subtle staleness if build
+        // definitions change.
+        self.java_owning_targets_cache.clear();
         self.cache.invalidate_changed_files(&changed);
         self.persist_cache()
     }
