@@ -135,7 +135,8 @@ cargo bench --locked -p nova-classpath --bench index
 **What:** Regular Rust tests (`#[test]`, `#[tokio::test]`) in:
 
 - `crates/*/src/**/*.rs` (module tests)
-- `crates/*/tests/*.rs` (integration tests)
+- `crates/*/tests/*.rs` (integration test harnesses)
+  - may include additional Rust modules under `crates/*/tests/**`
 
 **Run locally:**
 
@@ -284,14 +285,14 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 - Inputs: `crates/nova-format/tests/fixtures/*.java`
 - Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
 - Tests:
-  - `crates/nova-format/tests/format_fixtures.rs` (file-based `.snap` snapshots)
-  - `crates/nova-format/tests/format_snapshots.rs` (inline snapshots in Rust source; includes `tests/suite/format_snapshots.rs`)
+  - Harness: `crates/nova-format/tests/format_fixtures.rs`
+    - file-based `.snap` snapshots live under `crates/nova-format/tests/snapshots/`
+    - inline snapshot tests live in Rust submodules compiled by the same harness (under `crates/nova-format/tests/**`)
 
 **Run locally:**
 
 ```bash
 bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 There is also an ignored large-file regression/stress test:
@@ -308,9 +309,9 @@ Some tests use small “inline fixture DSLs” rather than on-disk golden direct
 
 - Helper crate: `crates/nova-test-utils/`
 - Multi-file + cursor markers: `nova_test_utils::Fixture`
-  - used in e.g. `crates/nova-lsp/tests/navigation.rs`
+  - used throughout nova-lsp integration tests
 - Range selection markers: `nova_test_utils::extract_range` (`/*start*/ ... /*end*/`)
-  - used in e.g. `crates/nova-lsp/tests/extract_method.rs`
+  - used throughout refactoring-oriented integration tests
 
 **Example (`Fixture::parse`):**
 
@@ -331,13 +332,15 @@ These are “black-box-ish” tests around Nova’s protocol surfaces.
 
 #### 3a) LSP (stdio) end-to-end tests
 
-**Where:** `crates/nova-lsp/tests/stdio_*.rs` (spawns the `nova-lsp` binary and talks JSON-RPC over stdio).
+**Where:** integration test harness `crates/nova-lsp/tests/stdio_server.rs`, plus supporting modules under
+`crates/nova-lsp/tests/**` (spawns the `nova-lsp` binary and talks JSON-RPC over stdio).
 
 **Run locally:**
 
 ```bash
 cargo test --locked -p nova-lsp --test stdio_server
-cargo test --locked -p nova-lsp stdio_
+# filter by test name substring
+cargo test --locked -p nova-lsp --test stdio_server stdio_
 ```
 
 #### 3b) DAP end-to-end tests (in-memory transport)
@@ -642,14 +645,14 @@ Always inspect `git diff` after blessing.
 
 Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 
-- `format_fixtures.rs` → updates `.snap` files under `crates/nova-format/tests/snapshots/`
-- `format_snapshots.rs` → updates inline snapshots in the Rust source file
+- `format_fixtures.rs` → updates both:
+  - `.snap` files under `crates/nova-format/tests/snapshots/`
+  - inline snapshots in the Rust modules compiled by the harness
 
-To update inline snapshots:
+To update snapshots:
 
 ```bash
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 Always inspect `git diff` after updating snapshots.
