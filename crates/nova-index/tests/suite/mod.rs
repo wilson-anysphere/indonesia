@@ -5,3 +5,4 @@ mod persistence_generations;
 mod persistence_roundtrip;
 mod segments_persistence;
 mod sharded_persistence;
+mod sketch_index;
