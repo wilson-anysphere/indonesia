@@ -1113,6 +1113,17 @@ erased generic types). Try adding explicit casts or types, e.g. \
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
+    use tempfile::TempDir;
+
+    fn tool_available(name: &str) -> bool {
+        Command::new(name)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
 
     #[test]
     fn dedup_lines_normalizes_import_semicolons_and_trailing_comments() {
@@ -1131,6 +1142,43 @@ mod tests {
                 "import java.util.*;".to_string(),
                 "import static java.util.stream.Collectors.*;".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn render_eval_source_compiles_collect_to_list_when_javac_available() {
+        if !tool_available("javac") {
+            eprintln!("skipping javac compile test: `javac` not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let source_path = tmp.path().join("NovaStreamEval_Test.java");
+
+        // `Arrays` comes from `java.util.*` and `toList()` comes from the default static
+        // `Collectors.*` import. This is a real-world stream-debug expression pattern.
+        let src = render_eval_source(
+            None,
+            "NovaStreamEval_Test",
+            &[],
+            &[],
+            &["Arrays.asList(1, 2, 3).stream().collect(toList())".to_string()],
+            None,
+        );
+        std::fs::write(&source_path, &src).unwrap();
+
+        let cancel = CancellationToken::new();
+        let javac = HotSwapJavacConfig {
+            javac: "javac".to_string(),
+            release: Some("8".to_string()),
+            ..HotSwapJavacConfig::default()
+        };
+
+        let compiled = crate::javac::compile_java_for_hot_swap(&cancel, &javac, &source_path).await;
+        assert!(
+            compiled.is_ok(),
+            "expected helper source to compile (do we have the right default imports?)\nsource:\n{src}\nerror:\n{}",
+            compiled.err().unwrap().to_string()
         );
     }
 
