@@ -6914,6 +6914,7 @@ mod inline_variable_try_with_resources_tests {
             inner: RefactorJavaDatabase,
             symbol: SymbolId,
             injected: Reference,
+            injected_range: TextRange,
         }
 
         impl RefactorDatabase for Db {
@@ -6952,6 +6953,15 @@ mod inline_variable_try_with_resources_tests {
                 }
                 refs
             }
+
+            fn resolve_name_expr(&self, file: &FileId, range: TextRange) -> Option<SymbolId> {
+                // Simulate a semantic layer that *does* treat `try (r)` as a resolvable name
+                // expression usage, even if the underlying reference index does not include it.
+                if file == &self.injected.file && range == self.injected_range {
+                    return Some(self.symbol);
+                }
+                self.inner.resolve_name_expr(file, range)
+            }
         }
 
         let db = Db {
@@ -6963,6 +6973,7 @@ mod inline_variable_try_with_resources_tests {
                 scope: None,
                 kind: ReferenceKind::Name,
             },
+            injected_range: try_range,
         };
 
         let err = inline_variable(
