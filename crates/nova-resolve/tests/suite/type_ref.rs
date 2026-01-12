@@ -442,6 +442,36 @@ fn malformed_inputs_produce_diagnostics_but_do_not_crash() {
 }
 
 #[test]
+fn type_variables_shadow_imported_types() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let mut env = TypeStore::with_minimal_jdk();
+
+    let tv = env.add_type_param("List", vec![Type::class(env.well_known().object, vec![])]);
+    let mut type_vars = HashMap::new();
+    type_vars.insert("List".to_string(), tv);
+
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List", None);
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::TypeVar(tv));
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String>",
+        None,
+    );
+    assert_eq!(ty.ty, Type::TypeVar(tv));
+    assert!(ty
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "invalid-type-ref" && d.message.contains("type variables cannot have type arguments")));
+}
+
+#[test]
 fn falls_back_to_type_variables_when_name_resolution_fails() {
     let (jdk, index, scopes, scope) = setup(&[]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);

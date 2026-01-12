@@ -342,7 +342,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         } else if let Some(class_id) = self.env.lookup_class(&dotted) {
             return Type::class(class_id, args);
         }
-
         let mut best_guess = dotted.clone();
         // Best-effort: if the first segment resolves to a type in the current
         // scope, treat remaining segments as nested class qualifiers and build a
