@@ -279,6 +279,11 @@ fn find_best_expr_in_stmt(
             }
         }
         HirStmt::Expr { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
+        HirStmt::Yield { expr, .. } => {
+            if let Some(expr) = expr {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
         HirStmt::Return { expr, .. } => {
             if let Some(expr) = expr {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
@@ -350,6 +355,16 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_stmt(body, *finally, offset, owner, best);
             }
         }
+        HirStmt::Assert {
+            condition,
+            message,
+            ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            if let Some(message) = message {
+                find_best_expr_in_expr(body, *message, offset, owner, best);
+            }
+        }
         HirStmt::Throw { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
         HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
     }
@@ -410,9 +425,21 @@ fn find_best_expr_in_expr(
                 find_best_expr_in_expr(body, *arg, offset, owner, best);
             }
         }
-        HirExpr::ArrayCreation { dim_exprs, .. } => {
+        HirExpr::ArrayCreation {
+            dim_exprs,
+            initializer,
+            ..
+        } => {
             for dim_expr in dim_exprs {
                 find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
+            }
+            if let Some(init) = initializer {
+                find_best_expr_in_expr(body, *init, offset, owner, best);
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_best_expr_in_expr(body, *item, offset, owner, best);
             }
         }
         HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
@@ -443,6 +470,12 @@ fn find_best_expr_in_expr(
             LambdaBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
             LambdaBody::Block(stmt) => find_best_expr_in_stmt(body, *stmt, offset, owner, best),
         },
+        HirExpr::Switch {
+            selector, body: b, ..
+        } => {
+            find_best_expr_in_expr(body, *selector, offset, owner, best);
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
         HirExpr::Name { .. }
         | HirExpr::Literal { .. }
         | HirExpr::Null { .. }

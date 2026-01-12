@@ -9,9 +9,52 @@ use nova_build::{BuildManager, DefaultCommandRunner};
 use nova_jdwp::wire::JdwpClient;
 use nova_scheduler::CancellationToken;
 use tempfile::TempDir;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::hot_swap::{CompileError, CompiledClass};
+
+pub(crate) const MAX_JAVAC_OUTPUT_BYTES: usize = 1024 * 1024; // 1 MiB per stream
+
+pub(crate) async fn read_truncated_and_drain<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> Vec<u8> {
+    const READ_CHUNK: usize = 8 * 1024;
+    const TRUNCATED_MARKER: &[u8] = b"\n<output truncated>\n";
+
+    let mut captured: Vec<u8> = Vec::new();
+    let mut scratch = [0u8; READ_CHUNK];
+    let mut truncated = false;
+
+    loop {
+        let n = match reader.read(&mut scratch).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        if captured.len() < limit {
+            let remaining = limit - captured.len();
+            let take = remaining.min(n);
+            captured.extend_from_slice(&scratch[..take]);
+            if take < n {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+
+    if truncated && limit >= TRUNCATED_MARKER.len() {
+        if captured.len() + TRUNCATED_MARKER.len() > limit {
+            captured.truncate(limit - TRUNCATED_MARKER.len());
+        }
+        captured.extend_from_slice(TRUNCATED_MARKER);
+    }
+
+    captured
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HotSwapJavacConfig {
@@ -333,14 +376,10 @@ pub(crate) async fn compile_java_to_dir(
         .ok_or_else(|| CompileError::new("javac stderr unavailable"))?;
 
     let stdout_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut buf).await;
-        buf
+        read_truncated_and_drain(stdout, MAX_JAVAC_OUTPUT_BYTES).await
     });
     let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf).await;
-        buf
+        read_truncated_and_drain(stderr, MAX_JAVAC_OUTPUT_BYTES).await
     });
 
     let timeout = Duration::from_secs(30);

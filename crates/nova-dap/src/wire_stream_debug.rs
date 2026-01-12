@@ -745,14 +745,10 @@ async fn run_javac_attempt(
         .ok_or_else(|| WireStreamDebugError::Compile("javac stderr unavailable".to_string()))?;
 
     let stdout_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut buf).await;
-        buf
+        crate::javac::read_truncated_and_drain(stdout, crate::javac::MAX_JAVAC_OUTPUT_BYTES).await
     });
     let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf).await;
-        buf
+        crate::javac::read_truncated_and_drain(stderr, crate::javac::MAX_JAVAC_OUTPUT_BYTES).await
     });
 
     let status = tokio::select! {
