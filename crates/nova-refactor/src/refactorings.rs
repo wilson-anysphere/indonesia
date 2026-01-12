@@ -3355,6 +3355,22 @@ fn check_extract_variable_field_shadowing(
         {
             continue;
         }
+        // Only flag *unqualified* same-name identifier references. Qualified names like `C.value`
+        // or `obj.value` are unaffected by introducing a same-named local.
+        if name_expression_has_dot(&name_expr) {
+            continue;
+        }
+        // Avoid false positives: `foo` in `foo(...)` is a method name, not a field access.
+        if let Some(parent) = name_expr.syntax().parent() {
+            if let Some(call) = ast::MethodCallExpression::cast(parent) {
+                if call
+                    .callee()
+                    .is_some_and(|callee| callee.syntax() == name_expr.syntax())
+                {
+                    continue;
+                }
+            }
+        }
         let Some(tok) = ast::support::ident_token(name_expr.syntax()) else {
             continue;
         };

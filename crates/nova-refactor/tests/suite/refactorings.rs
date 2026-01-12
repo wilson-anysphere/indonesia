@@ -889,6 +889,48 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
+fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualified_name() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  static int value = 0;
+
+  void m() {
+    int x = /*select*/1 + 2/*end*/;
+    System.out.println(Test.value);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  static int value = 0;
+
+  void m() {
+    var value = 1 + 2;
+    int x = value;
+    System.out.println(Test.value);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses()
 {
     let file = FileId::new("Test.java");
