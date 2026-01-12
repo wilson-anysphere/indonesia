@@ -869,6 +869,74 @@ fn completion_parameter_receiver_works_in_package() {
 }
 
 #[test]
+fn completion_member_completion_works_for_method_parameter_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo { void bar(){} }
+class A { void m(Foo f){ f.<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "bar"),
+        "expected completion list to contain Foo.bar; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_member_completion_resolves_cross_file_same_package_types() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let foo_text = "package p; public class Foo { public void bar(){} }".to_string();
+    let main_text = "package p; class Main { void m(){ Foo f = new Foo(); f.<|> } }";
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "bar"),
+        "expected completion list to contain Foo.bar across files; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_member_completion_filters_static_members_for_type_receiver() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let foo_text = r#"
+package p;
+public class Foo {
+  public static int CONST = 1;
+  public static void baz(){}
+  public void bar(){}
+}
+"#
+    .to_string();
+
+    let main_text = "package p; class Main { void m(){ Foo.<|> } }";
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"CONST"),
+        "expected static field CONST in completion list; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"baz"),
+        "expected static method baz in completion list; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"bar"),
+        "expected instance method bar to be excluded for type receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_local_method_inserts_snippet_placeholders_for_params() {
     let (db, file, pos) = fixture(
         r#"

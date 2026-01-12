@@ -8601,6 +8601,7 @@ struct CompletionResolveCtx {
     package: Option<String>,
     single_type_imports: HashMap<String, String>,
     star_imports: Vec<String>,
+    env: Option<Arc<completion_cache::CompletionEnv>>,
 }
 
 impl CompletionResolveCtx {
@@ -8680,6 +8681,11 @@ impl CompletionResolveCtx {
         ctx
     }
 
+    fn with_env(mut self, env: Option<Arc<completion_cache::CompletionEnv>>) -> Self {
+        self.env = env;
+        self
+    }
+
     fn resolve_reference_type(&self, types: &mut TypeStore, name: &str) -> Type {
         let name = name.trim();
         if name.is_empty() {
@@ -8754,6 +8760,12 @@ impl CompletionResolveCtx {
 
         for pkg in &self.star_imports {
             push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
+        }
+
+        if let Some(env) = &self.env {
+            if let Some(fqn) = env.workspace_index().unique_fqn_for_simple_name(raw) {
+                push_unique(&mut out, canonical_to_binary_name(fqn));
+            }
         }
 
         push_unique(&mut out, raw.to_string());
@@ -8919,11 +8931,14 @@ fn parse_source_type_in_context(
     ty
 }
 
-fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
+fn completion_type_store(
+    db: &dyn Database,
+    file: FileId,
+) -> (TypeStore, Option<Arc<completion_cache::CompletionEnv>>) {
     // Prefer the cached completion environment so we don't rebuild the expensive workspace type
     // store on every completion request.
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
-        return env.types().clone();
+        return (env.types().clone(), Some(env));
     }
 
     // Fallback for virtual buffers without a known root/path.
@@ -8934,7 +8949,7 @@ fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/completion.java"));
     provider.update_file(&mut store, file_path, db.file_content(file));
-    store
+    (store, None)
 }
 
 fn maybe_load_external_type_for_member_completion(
@@ -8994,8 +9009,8 @@ fn member_completions(
 ) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
-    let mut types = completion_type_store(db, file);
-    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
     // Explicitly handle `this.` / `super.` member access.
     //
@@ -9179,8 +9194,8 @@ fn method_reference_completions(
     let text = db.file_content(file);
     let analysis = analyze(text);
 
-    let mut types = completion_type_store(db, file);
-    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
     let receiver = receiver_before_double_colon(text, double_colon_offset);
 
@@ -9409,8 +9424,8 @@ fn member_completions_for_receiver_type(
     let text = db.file_content(file);
     let analysis = analyze(text);
 
-    let mut types = completion_type_store(db, file);
-    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
     let receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
