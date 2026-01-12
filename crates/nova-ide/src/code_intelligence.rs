@@ -928,6 +928,8 @@ fn new_expression_type_completions(
         }
     }
 
+    // New-expression completions currently don't compute expected-type / scope / recency
+    // context, but we still want deterministic, fuzzy-ranked results.
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items.truncate(MAX_NEW_TYPE_COMPLETIONS);

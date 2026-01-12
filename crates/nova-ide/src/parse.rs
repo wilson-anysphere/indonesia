@@ -415,8 +415,10 @@ fn parse_method_body(
             // - `new Foo(` is a constructor call.
             // - Filter out common control-flow keywords/constructs.
             if prev_symbol != Some('.')
+                && prev_symbol != Some('@')
                 && !is_generic_member_call(tokens, i)
                 && prev_ident != Some("new")
+                && prev_ident != Some("record")
                 && !is_receiverless_call_keyword(method)
             {
                 calls.push(CallSite {
@@ -813,5 +815,37 @@ class C {
             .calls
             .iter()
             .any(|call| call.receiver == "this" && call.method == "bar"));
+    }
+
+    #[test]
+    fn annotation_invocations_are_not_indexed_as_receiverless_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+@interface A {
+  int value();
+}
+
+class C {
+  void test() { @A(1) int x = 0; }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(!parsed.calls.iter().any(|call| call.method == "A"));
+    }
+
+    #[test]
+    fn record_declarations_are_not_indexed_as_receiverless_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  void test() { record R(int x) {} }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(!parsed.calls.iter().any(|call| call.method == "R"));
     }
 }
