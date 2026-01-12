@@ -4476,6 +4476,11 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Semicolon => Some(SyntaxKind::MissingSemicolon),
                 SyntaxKind::RParen => Some(SyntaxKind::MissingRParen),
                 SyntaxKind::RBrace => Some(SyntaxKind::MissingRBrace),
+                // The lexer emits a dedicated token kind for the `}` that closes a string template
+                // interpolation. Use the existing `MissingRBrace` synthetic token to keep
+                // incomplete template expressions structurally similar to other brace-delimited
+                // constructs.
+                SyntaxKind::StringTemplateExprEnd => Some(SyntaxKind::MissingRBrace),
                 SyntaxKind::RBracket => Some(SyntaxKind::MissingRBracket),
                 _ => None,
             };
