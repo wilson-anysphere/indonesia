@@ -241,12 +241,14 @@ impl DefMap {
             Some(parent) => TypeName::new(format!("{}${}", parent.as_str(), name.as_str())),
             None => binary_name_for_top_level(self.package.as_ref(), &name),
         };
+        let is_static = type_is_static(tree, id);
 
         let mut type_def = TypeDef {
             kind,
             name: name.clone(),
             binary_name: binary_name.clone(),
             enclosing,
+            is_static,
             fields: HashMap::new(),
             methods: HashMap::new(),
             constructors: Vec::new(),
@@ -376,4 +378,15 @@ fn binary_name_for_top_level(package: Option<&PackageName>, name: &Name) -> Type
         }
         _ => TypeName::new(name.as_str()),
     }
+}
+
+fn type_is_static(tree: &ItemTree, id: ItemId) -> bool {
+    let modifiers = match id {
+        ItemId::Class(id) => tree.class(id).modifiers,
+        ItemId::Interface(id) => tree.interface(id).modifiers,
+        ItemId::Enum(id) => tree.enum_(id).modifiers,
+        ItemId::Record(id) => tree.record(id).modifiers,
+        ItemId::Annotation(id) => tree.annotation(id).modifiers,
+    };
+    (modifiers.raw & Modifiers::STATIC) != 0
 }

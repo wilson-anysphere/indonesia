@@ -642,6 +642,56 @@ class C {}
 }
 
 #[test]
+fn static_import_single_resolves_member_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static java.util.Map.Entry;
+class C { Entry e; }
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    let entry = index.add_type("java.util", "Map$Entry");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+    let resolved = resolver.resolve_type_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
+    assert!(
+        matches!(resolved, nova_resolve::TypeNameResolution::Resolved(TypeResolution::External(ref ty)) if ty == &entry),
+        "expected Entry to resolve to {entry:?}, got {resolved:?}"
+    );
+}
+
+#[test]
+fn static_import_star_resolves_member_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static java.util.Map.*;
+class C { Entry e; }
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    let entry = index.add_type("java.util", "Map$Entry");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+    let resolved = resolver.resolve_type_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
+    assert!(
+        matches!(resolved, nova_resolve::TypeNameResolution::Resolved(TypeResolution::External(ref ty)) if ty == &entry),
+        "expected Entry to resolve to {entry:?}, got {resolved:?}"
+    );
+}
+
+#[test]
 fn qualified_name_resolves_nested_types() {
     let jdk = JdkIndex::new();
     let mut index = TestIndex::default();

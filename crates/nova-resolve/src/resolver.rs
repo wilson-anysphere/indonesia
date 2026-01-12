@@ -9,7 +9,7 @@ use crate::diagnostics::{
 };
 use crate::import_map::ImportMap;
 use crate::scopes::{ScopeGraph, ScopeId, ScopeKind};
-use crate::WorkspaceDefMap;
+use crate::{TypeKind, WorkspaceDefMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BodyOwner {
@@ -209,6 +209,65 @@ impl<'a> Resolver<'a> {
         }
 
         StaticMemberResolution::External(member)
+    }
+
+    fn workspace_allows_static_import_of_member_type(&self, ty: &TypeName) -> bool {
+        let Some(workspace) = self.workspace else {
+            // Best-effort: external indices do not expose member-type staticness, so assume the
+            // imported member type is static. This mirrors the existing best-effort behavior for
+            // external static-member lookup (fields/methods).
+            return true;
+        };
+        let Some(item) = workspace.item_by_type_name(ty) else {
+            // External type (classpath/JDK): assume static.
+            return true;
+        };
+        let Some(def) = workspace.type_def(item) else {
+            return true;
+        };
+        let Some(enclosing) = def.enclosing else {
+            // Only member types may be statically imported (JLS 7.5.3).
+            return false;
+        };
+
+        // Explicitly `static` member types are OK.
+        if def.is_static {
+            return true;
+        }
+
+        // Implicitly-static member types are OK.
+        if matches!(
+            def.kind,
+            TypeKind::Interface | TypeKind::Annotation | TypeKind::Enum | TypeKind::Record
+        ) {
+            return true;
+        }
+
+        // Additional best-effort: any member type declared in an interface/annotation is
+        // implicitly static (JLS 9.1.1.3 / 9.6.1.1).
+        workspace
+            .type_def(enclosing)
+            .is_some_and(|enclosing_def| matches!(enclosing_def.kind, TypeKind::Interface | TypeKind::Annotation))
+    }
+
+    fn resolve_static_imported_member_type(
+        &self,
+        owner: &QualifiedName,
+        member: &Name,
+    ) -> Option<TypeName> {
+        // Static imports use a `TypeName` as their qualifier; require the qualifier to resolve as
+        // a type before treating `owner.member` as a member type.
+        self.resolve_type_in_index(owner)?;
+
+        let path = if owner.segments().is_empty() {
+            member.as_str().to_string()
+        } else {
+            format!("{}.{}", owner.to_dotted(), member.as_str())
+        };
+        let ty = self.resolve_type_in_index(&QualifiedName::from_dotted(&path))?;
+
+        self.workspace_allows_static_import_of_member_type(&ty)
+            .then_some(ty)
     }
 
     fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
@@ -447,6 +506,9 @@ impl<'a> Resolver<'a> {
         }
 
         // Duplicate static single imports (`import static a.Foo.x; import static b.Bar.x;`).
+        //
+        // Note: static imports can introduce both *values* (fields/methods) and *types*
+        // (member types). This diagnostic pass treats both as valid static-import targets.
         let mut static_single_by_name: HashMap<Name, Vec<String>> = HashMap::new();
         let mut static_single_span: HashMap<Name, nova_types::Span> = HashMap::new();
         let mut static_single_seen: HashMap<Name, HashSet<String>> = HashMap::new();
@@ -458,9 +520,17 @@ impl<'a> Resolver<'a> {
             let Some(owner) = self.resolve_type_in_index(&import.ty) else {
                 continue;
             };
-            let Some(_) = self.resolve_static_member_in_index(&owner, &import.member) else {
+
+            let imports_member = self
+                .resolve_static_member_in_index(&owner, &import.member)
+                .is_some()
+                || self
+                    .resolve_static_imported_member_type(&import.ty, &import.member)
+                    .is_some();
+            if !imports_member {
                 continue;
-            };
+            }
+
             let target = format!("{}.{}", owner.as_str(), import.member.as_str());
             if !static_single_seen
                 .entry(import.imported.clone())
@@ -497,10 +567,15 @@ impl<'a> Resolver<'a> {
                 ));
                 continue;
             };
-            if self
+
+            let resolves = self
                 .resolve_static_member_in_index(&owner, &import.member)
-                .is_none()
-            {
+                .is_some()
+                || self
+                    .resolve_static_imported_member_type(&import.ty, &import.member)
+                    .is_some();
+
+            if !resolves {
                 diags.push(unresolved_import_diagnostic(
                     import.range,
                     &format!("static {}.{}", import.ty.to_dotted(), import.member),
@@ -955,6 +1030,37 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        for import in &imports.static_single {
+            if &import.imported != name {
+                continue;
+            }
+
+            if let Some(ty) = self.resolve_static_imported_member_type(&import.ty, &import.member) {
+                if !candidates.contains(&ty) {
+                    candidates.push(ty);
+                }
+            }
+        }
+
+        match candidates.len() {
+            0 => TypeLookup::NotFound,
+            1 => TypeLookup::Found(candidates.remove(0)),
+            _ => TypeLookup::Ambiguous(candidates),
+        }
+    }
+
+    fn resolve_static_star_type_imports_detailed(&self, imports: &ImportMap, name: &Name) -> TypeLookup {
+        let mut seen = HashSet::<TypeName>::new();
+        let mut candidates = Vec::<TypeName>::new();
+
+        for import in &imports.static_star {
+            if let Some(ty) = self.resolve_static_imported_member_type(&import.ty, name) {
+                if seen.insert(ty.clone()) {
+                    candidates.push(ty);
+                }
+            }
+        }
+
         match candidates.len() {
             0 => TypeLookup::NotFound,
             1 => TypeLookup::Found(candidates.remove(0)),
@@ -1022,6 +1128,22 @@ impl<'a> Resolver<'a> {
         let mut candidates = Vec::<TypeName>::new();
 
         match self.resolve_star_type_imports_detailed(imports, name) {
+            TypeLookup::Found(ty) => {
+                if seen.insert(ty.clone()) {
+                    candidates.push(ty);
+                }
+            }
+            TypeLookup::Ambiguous(types) => {
+                for ty in types {
+                    if seen.insert(ty.clone()) {
+                        candidates.push(ty);
+                    }
+                }
+            }
+            TypeLookup::NotFound => {}
+        }
+
+        match self.resolve_static_star_type_imports_detailed(imports, name) {
             TypeLookup::Found(ty) => {
                 if seen.insert(ty.clone()) {
                     candidates.push(ty);

@@ -31,6 +31,11 @@ pub struct TypeDef {
     pub name: Name,
     pub binary_name: TypeName,
     pub enclosing: Option<ItemId>,
+    /// Whether this type declaration is `static`.
+    ///
+    /// This is only meaningful for member types. Top-level types cannot be declared `static`
+    /// in Java.
+    pub is_static: bool,
 
     pub fields: HashMap<Name, FieldDef>,
     pub methods: HashMap<Name, Vec<MethodDef>>,
