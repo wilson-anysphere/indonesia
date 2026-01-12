@@ -16,7 +16,7 @@ import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
 import { ProjectModelCache } from './projectModelCache';
 import { registerNovaTestDebugRunProfile } from './testDebug';
-import { registerNovaServerCommands } from './serverCommands';
+import { registerNovaServerCommands, type NovaServerCommandHandlers } from './serverCommands';
 import { toDidRenameFilesParams } from './fileOperations';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
@@ -441,6 +441,8 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  let serverCommandHandlers: NovaServerCommandHandlers | undefined;
+
   const clientOptions: LanguageClientOptions = {
     documentSelector,
     outputChannel: serverOutput,
@@ -448,6 +450,13 @@ export async function activate(context: vscode.ExtensionContext) {
       fileEvents: fileWatchers,
     },
     middleware: {
+      executeCommand: async (command, args, next) => {
+        const handled = serverCommandHandlers?.dispatch(command, args);
+        if (handled) {
+          return await handled;
+        }
+        return await next(command, args);
+      },
       sendRequest: async (type, param, token, next) => {
         try {
           const result = await next(type, param, token);
@@ -2039,7 +2048,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register local handlers for server-advertised `workspace/executeCommand` IDs.
   // This ensures Nova code lenses (Run Test / Debug Test / Run Main / Debug Main) do something
   // user-visible when invoked in VS Code.
-  registerNovaServerCommands(context, {
+  serverCommandHandlers = registerNovaServerCommands(context, {
     novaRequest: sendNovaRequest,
     requireClient,
     getTestOutputChannel,

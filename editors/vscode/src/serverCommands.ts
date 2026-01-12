@@ -7,6 +7,20 @@ import { formatError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
+export type NovaServerCommandHandlers = {
+  runTest: (...args: unknown[]) => Promise<void>;
+  debugTest: (...args: unknown[]) => Promise<void>;
+  runMain: (...args: unknown[]) => Promise<void>;
+  debugMain: (...args: unknown[]) => Promise<void>;
+  extractMethod: (...args: unknown[]) => Promise<void>;
+  /**
+   * Dispatch a server-advertised `workspace/executeCommand` ID to a local VS Code-side handler.
+   *
+   * Returns `undefined` when the command is not handled.
+   */
+  dispatch: (commandId: string, args: unknown[]) => Promise<void> | undefined;
+};
+
 type TestKind = 'class' | 'test';
 
 interface LspPosition {
@@ -170,63 +184,19 @@ export function registerNovaServerCommands(
     requireClient: () => Promise<LanguageClient>;
     getTestOutputChannel: () => vscode.OutputChannel;
   },
-): void {
-  context.subscriptions.push(
-    vscode.commands.registerCommand('nova.runTest', async (...args: unknown[]) => {
-      const workspaces = vscode.workspace.workspaceFolders ?? [];
-      if (workspaces.length === 0) {
-        void vscode.window.showErrorMessage('Nova: Open a workspace folder to run tests.');
-        return;
-      }
+): NovaServerCommandHandlers {
+  const runTest = async (...args: unknown[]): Promise<void> => {
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    if (workspaces.length === 0) {
+      void vscode.window.showErrorMessage('Nova: Open a workspace folder to run tests.');
+      return;
+    }
 
-      const testId = extractTestIdFromCommandArgs(args);
+    const testId = extractTestIdFromCommandArgs(args);
 
-      // If the server provided a testId (CodeLens / code action), run it directly.
-      if (testId) {
-        const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
-        if (!workspaceFolder) {
-          return;
-        }
-
-        const channel = opts.getTestOutputChannel();
-        channel.show(true);
-
-        try {
-          const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
-            projectRoot: workspaceFolder.uri.fsPath,
-            buildTool: await getTestBuildTool(workspaceFolder),
-            tests: [testId],
-          });
-          if (!resp) {
-            return;
-          }
-
-          channel.appendLine(`\n=== Run ${testId} (${resp.tool}) ===`);
-          channel.appendLine(
-            `Summary: total=${resp.summary.total} passed=${resp.summary.passed} failed=${resp.summary.failed} skipped=${resp.summary.skipped}`,
-          );
-          if (resp.stdout) {
-            channel.appendLine('\n--- stdout ---\n' + resp.stdout);
-          }
-          if (resp.stderr) {
-            channel.appendLine('\n--- stderr ---\n' + resp.stderr);
-          }
-
-          if (resp.success) {
-            void vscode.window.showInformationMessage(`Nova: Test passed (${testId})`);
-          } else {
-            void vscode.window.showErrorMessage(`Nova: Test failed (${testId})`);
-          }
-        } catch (err) {
-          const message = formatError(err);
-          void vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
-        }
-        return;
-      }
-
-      // Command palette: fall back to interactive picker.
-      const workspaceFolder =
-        workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+    // If the server provided a testId (CodeLens / code action), run it directly.
+    if (testId) {
+      const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
       if (!workspaceFolder) {
         return;
       }
@@ -234,6 +204,119 @@ export function registerNovaServerCommands(
       const channel = opts.getTestOutputChannel();
       channel.show(true);
 
+      try {
+        const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
+          projectRoot: workspaceFolder.uri.fsPath,
+          buildTool: await getTestBuildTool(workspaceFolder),
+          tests: [testId],
+        });
+        if (!resp) {
+          return;
+        }
+
+        channel.appendLine(`\n=== Run ${testId} (${resp.tool}) ===`);
+        channel.appendLine(
+          `Summary: total=${resp.summary.total} passed=${resp.summary.passed} failed=${resp.summary.failed} skipped=${resp.summary.skipped}`,
+        );
+        if (resp.stdout) {
+          channel.appendLine('\n--- stdout ---\n' + resp.stdout);
+        }
+        if (resp.stderr) {
+          channel.appendLine('\n--- stderr ---\n' + resp.stderr);
+        }
+
+        if (resp.success) {
+          void vscode.window.showInformationMessage(`Nova: Test passed (${testId})`);
+        } else {
+          void vscode.window.showErrorMessage(`Nova: Test failed (${testId})`);
+        }
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
+      }
+      return;
+    }
+
+    // Command palette: fall back to interactive picker.
+    const workspaceFolder =
+      workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+    if (!workspaceFolder) {
+      return;
+    }
+
+    const channel = opts.getTestOutputChannel();
+    channel.show(true);
+
+    try {
+      const discover = await opts.novaRequest<DiscoverResponse>('nova/test/discover', {
+        projectRoot: workspaceFolder.uri.fsPath,
+      });
+      if (!discover) {
+        return;
+      }
+
+      const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
+      if (candidates.length === 0) {
+        void vscode.window.showInformationMessage('Nova: No tests discovered.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        candidates.map((t) => ({ label: t.label, description: t.id, testId: t.id })),
+        { placeHolder: 'Select a test to run' },
+      );
+      if (!picked) {
+        return;
+      }
+
+      const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
+        projectRoot: workspaceFolder.uri.fsPath,
+        buildTool: await getTestBuildTool(workspaceFolder),
+        tests: [picked.testId],
+      });
+      if (!resp) {
+        return;
+      }
+
+      channel.appendLine(`\n=== Run ${picked.testId} (${resp.tool}) ===`);
+      channel.appendLine(
+        `Summary: total=${resp.summary.total} passed=${resp.summary.passed} failed=${resp.summary.failed} skipped=${resp.summary.skipped}`,
+      );
+      if (resp.stdout) {
+        channel.appendLine('\n--- stdout ---\n' + resp.stdout);
+      }
+      if (resp.stderr) {
+        channel.appendLine('\n--- stderr ---\n' + resp.stderr);
+      }
+
+      if (resp.success) {
+        void vscode.window.showInformationMessage(`Nova: Test passed (${picked.label})`);
+      } else {
+        void vscode.window.showErrorMessage(`Nova: Test failed (${picked.label})`);
+      }
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
+    }
+  };
+
+  const debugTest = async (...args: unknown[]): Promise<void> => {
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    if (workspaces.length === 0) {
+      void vscode.window.showErrorMessage('Nova: Open a workspace folder to debug tests.');
+      return;
+    }
+
+    const testId = extractTestIdFromCommandArgs(args);
+
+    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
+    if (!workspaceFolder) {
+      return;
+    }
+
+    let resolvedTestId: string | undefined = testId;
+
+    if (!resolvedTestId) {
       try {
         const discover = await opts.novaRequest<DiscoverResponse>('nova/test/discover', {
           projectRoot: workspaceFolder.uri.fsPath,
@@ -250,202 +333,160 @@ export function registerNovaServerCommands(
 
         const picked = await vscode.window.showQuickPick(
           candidates.map((t) => ({ label: t.label, description: t.id, testId: t.id })),
-          { placeHolder: 'Select a test to run' },
+          { placeHolder: 'Select a test to debug' },
         );
-        if (!picked) {
+        resolvedTestId = picked?.testId;
+        if (!resolvedTestId) {
           return;
-        }
-
-        const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
-          projectRoot: workspaceFolder.uri.fsPath,
-          buildTool: await getTestBuildTool(workspaceFolder),
-          tests: [picked.testId],
-        });
-        if (!resp) {
-          return;
-        }
-
-        channel.appendLine(`\n=== Run ${picked.testId} (${resp.tool}) ===`);
-        channel.appendLine(
-          `Summary: total=${resp.summary.total} passed=${resp.summary.passed} failed=${resp.summary.failed} skipped=${resp.summary.skipped}`,
-        );
-        if (resp.stdout) {
-          channel.appendLine('\n--- stdout ---\n' + resp.stdout);
-        }
-        if (resp.stderr) {
-          channel.appendLine('\n--- stderr ---\n' + resp.stderr);
-        }
-
-        if (resp.success) {
-          void vscode.window.showInformationMessage(`Nova: Test passed (${picked.label})`);
-        } else {
-          void vscode.window.showErrorMessage(`Nova: Test failed (${picked.label})`);
         }
       } catch (err) {
         const message = formatError(err);
-        void vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
-      }
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('nova.debugTest', async (...args: unknown[]) => {
-      const workspaces = vscode.workspace.workspaceFolders ?? [];
-      if (workspaces.length === 0) {
-        void vscode.window.showErrorMessage('Nova: Open a workspace folder to debug tests.');
+        void vscode.window.showErrorMessage(`Nova: test discovery failed: ${message}`);
         return;
       }
+    }
 
-      const testId = extractTestIdFromCommandArgs(args);
+    try {
+      await debugTestById(context, opts.novaRequest, {
+        workspaceFolder,
+        projectRoot: workspaceFolder.uri.fsPath,
+        testId: resolvedTestId,
+      });
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: test debug failed: ${message}`);
+    }
+  };
 
-      const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
-      if (!workspaceFolder) {
-        return;
-      }
+  const runOrDebugMain = async (commandId: 'nova.runMain' | 'nova.debugMain', args: unknown[]): Promise<void> => {
+    const mainClass = extractMainClassFromCommandArgs(args);
+    if (!mainClass) {
+      void vscode.window.showErrorMessage(`Nova: ${commandId} requires a mainClass argument.`);
+      return;
+    }
 
-      let resolvedTestId: string | undefined = testId;
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
+    if (!workspaceFolder) {
+      void vscode.window.showErrorMessage('Nova: Open a workspace folder to run or debug a main class.');
+      return;
+    }
 
-      if (!resolvedTestId) {
-        try {
-          const discover = await opts.novaRequest<DiscoverResponse>('nova/test/discover', {
-            projectRoot: workspaceFolder.uri.fsPath,
-          });
-          if (!discover) {
-            return;
-          }
+    let configs: NovaLspDebugConfiguration[] | undefined;
+    try {
+      configs = (await opts.novaRequest('nova/debug/configurations', {
+        projectRoot: workspaceFolder.uri.fsPath,
+      })) as NovaLspDebugConfiguration[];
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: failed to resolve debug configurations: ${message}`);
+      return;
+    }
 
-          const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
-          if (candidates.length === 0) {
-            void vscode.window.showInformationMessage('Nova: No tests discovered.');
-            return;
-          }
+    if (!configs || !Array.isArray(configs) || configs.length === 0) {
+      void vscode.window.showErrorMessage('Nova: No debug configurations discovered for this workspace.');
+      return;
+    }
 
-          const picked = await vscode.window.showQuickPick(
-            candidates.map((t) => ({ label: t.label, description: t.id, testId: t.id })),
-            { placeHolder: 'Select a test to debug' },
-          );
-          resolvedTestId = picked?.testId;
-          if (!resolvedTestId) {
-            return;
-          }
-        } catch (err) {
-          const message = formatError(err);
-          void vscode.window.showErrorMessage(`Nova: test discovery failed: ${message}`);
-          return;
-        }
-      }
+    const config = selectDebugConfigurationForMain(configs, mainClass);
+    if (!config) {
+      void vscode.window.showErrorMessage(`Nova: No debug configuration found for ${mainClass}.`);
+      return;
+    }
 
-      try {
-        await debugTestById(context, opts.novaRequest, {
-          workspaceFolder,
-          projectRoot: workspaceFolder.uri.fsPath,
-          testId: resolvedTestId,
-        });
-      } catch (err) {
-        const message = formatError(err);
-        void vscode.window.showErrorMessage(`Nova: test debug failed: ${message}`);
-      }
-    }),
-  );
+    if (config.type === 'java' && !hasJavaDebugger()) {
+      await promptInstallJavaDebugger();
+      return;
+    }
 
-  const registerMainCommand = (commandId: 'nova.runMain' | 'nova.debugMain') => {
-    context.subscriptions.push(
-      vscode.commands.registerCommand(commandId, async (...args: unknown[]) => {
-        const mainClass = extractMainClassFromCommandArgs(args);
-        if (!mainClass) {
-          void vscode.window.showErrorMessage(`Nova: ${commandId} requires a mainClass argument.`);
-          return;
-        }
-
-        const workspaces = vscode.workspace.workspaceFolders ?? [];
-        const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
-        if (!workspaceFolder) {
-          void vscode.window.showErrorMessage('Nova: Open a workspace folder to run or debug a main class.');
-          return;
-        }
-
-        let configs: NovaLspDebugConfiguration[] | undefined;
-        try {
-          configs = (await opts.novaRequest('nova/debug/configurations', {
-            projectRoot: workspaceFolder.uri.fsPath,
-          })) as NovaLspDebugConfiguration[];
-        } catch (err) {
-          const message = formatError(err);
-          void vscode.window.showErrorMessage(`Nova: failed to resolve debug configurations: ${message}`);
-          return;
-        }
-
-        if (!configs || !Array.isArray(configs) || configs.length === 0) {
-          void vscode.window.showErrorMessage('Nova: No debug configurations discovered for this workspace.');
-          return;
-        }
-
-        const config = selectDebugConfigurationForMain(configs, mainClass);
-        if (!config) {
-          void vscode.window.showErrorMessage(`Nova: No debug configuration found for ${mainClass}.`);
-          return;
-        }
-
+    const noDebug = commandId === 'nova.runMain';
+    try {
+      const started = await vscode.debug.startDebugging(
+        workspaceFolder,
+        config as unknown as vscode.DebugConfiguration,
+        noDebug ? { noDebug: true } : undefined,
+      );
+      if (!started) {
         if (config.type === 'java' && !hasJavaDebugger()) {
           await promptInstallJavaDebugger();
           return;
         }
-
-        const noDebug = commandId === 'nova.runMain';
-        try {
-          const started = await vscode.debug.startDebugging(
-            workspaceFolder,
-            config as unknown as vscode.DebugConfiguration,
-            noDebug ? { noDebug: true } : undefined,
-          );
-          if (!started) {
-            if (config.type === 'java' && !hasJavaDebugger()) {
-              await promptInstallJavaDebugger();
-              return;
-            }
-            void vscode.window.showErrorMessage(`Nova: VS Code refused to start debugging for ${mainClass}.`);
-          }
-        } catch (err) {
-          if (config.type === 'java' && !hasJavaDebugger()) {
-            await promptInstallJavaDebugger();
-            return;
-          }
-          const message = formatError(err);
-          void vscode.window.showErrorMessage(`Nova: failed to start debugging for ${mainClass}: ${message}`);
-        }
-      }),
-    );
+        void vscode.window.showErrorMessage(`Nova: VS Code refused to start debugging for ${mainClass}.`);
+      }
+    } catch (err) {
+      if (config.type === 'java' && !hasJavaDebugger()) {
+        await promptInstallJavaDebugger();
+        return;
+      }
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: failed to start debugging for ${mainClass}: ${message}`);
+    }
   };
 
-  registerMainCommand('nova.runMain');
-  registerMainCommand('nova.debugMain');
+  const runMain = async (...args: unknown[]): Promise<void> => {
+    await runOrDebugMain('nova.runMain', args);
+  };
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('nova.extractMethod', async (...args: unknown[]) => {
-      try {
-        const edit = await opts.novaRequest<unknown>('workspace/executeCommand', {
-          command: 'nova.extractMethod',
-          arguments: args,
-        });
-        if (!edit) {
-          void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
-          return;
-        }
+  const debugMain = async (...args: unknown[]): Promise<void> => {
+    await runOrDebugMain('nova.debugMain', args);
+  };
 
-        const client = await opts.requireClient();
-        const vsEdit = await client.protocol2CodeConverter.asWorkspaceEdit(edit as never);
-        if (!vsEdit) {
-          void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
-          return;
-        }
-        const applied = await vscode.workspace.applyEdit(vsEdit);
-        if (!applied) {
-          void vscode.window.showErrorMessage('Nova: Failed to apply extract method edits.');
-        }
-      } catch (err) {
-        const message = formatError(err);
-        void vscode.window.showErrorMessage(`Nova: extract method failed: ${message}`);
+  const extractMethod = async (...args: unknown[]): Promise<void> => {
+    try {
+      const edit = await opts.novaRequest<unknown>('workspace/executeCommand', {
+        command: 'nova.extractMethod',
+        arguments: args,
+      });
+      if (!edit) {
+        void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
+        return;
       }
-    }),
-  );
+
+      const client = await opts.requireClient();
+      const vsEdit = await client.protocol2CodeConverter.asWorkspaceEdit(edit as never);
+      if (!vsEdit) {
+        void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
+        return;
+      }
+      const applied = await vscode.workspace.applyEdit(vsEdit);
+      if (!applied) {
+        void vscode.window.showErrorMessage('Nova: Failed to apply extract method edits.');
+      }
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: extract method failed: ${message}`);
+    }
+  };
+
+  const handlers: NovaServerCommandHandlers = {
+    runTest,
+    debugTest,
+    runMain,
+    debugMain,
+    extractMethod,
+    dispatch: (commandId, args) => {
+      switch (commandId) {
+        case 'nova.runTest':
+          return runTest(...args);
+        case 'nova.debugTest':
+          return debugTest(...args);
+        case 'nova.runMain':
+          return runMain(...args);
+        case 'nova.debugMain':
+          return debugMain(...args);
+        case 'nova.extractMethod':
+          return extractMethod(...args);
+        default:
+          return undefined;
+      }
+    },
+  };
+
+  context.subscriptions.push(vscode.commands.registerCommand('nova.runTest', runTest));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.debugTest', debugTest));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.runMain', runMain));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.debugMain', debugMain));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.extractMethod', extractMethod));
+
+  return handlers;
 }
