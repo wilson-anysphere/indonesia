@@ -172,9 +172,7 @@ pub(crate) fn quick_fixes_for_diagnostics(
                 }));
             }
             // Lightweight lexer-based diagnostics.
-            "UNRESOLVED_REFERENCE"
-            // Salsa/typeck.
-            | "unresolved-method" => {
+            "UNRESOLVED_REFERENCE" => {
                 let Some(diag_span) = diag.span else {
                     continue;
                 };
