@@ -197,6 +197,10 @@ When it can be safe:
 as *not tracked by Salsa* and therefore must be used carefully to avoid introducing evaluation-order
 dependence inside queries.
 
+Additionally, its current `ClassKey` shape is only `(ProjectId, binary_name)`. It does not encode an
+origin component (source/classpath/JDK) or JPMS defining module, so it cannot disambiguate duplicate
+binary names in those scenarios. Treat it as a prototype, not a complete long-term identity scheme.
+
 ### D) Deterministic derived mapping from tracked inputs (sorted enumeration)
 
 Pros:
