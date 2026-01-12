@@ -472,6 +472,222 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
 }
 
 #[test]
+fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
+    let shard_count = 64;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let file_a = "A.java".to_string();
+    let shard_a = shard_id_for_path(&file_a, shard_count);
+    let file_b = (0..500u32)
+        .map(|idx| format!("B{idx}.java"))
+        .find(|name| shard_id_for_path(name, shard_count) != shard_a)
+        .expect("expected to find a filename in a different shard");
+
+    let a = project_root.join(&file_a);
+    let b = project_root.join(&file_b);
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from(&file_a), PathBuf::from(&file_b)],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    for file in [&file_a, &file_b] {
+        let shard = shard_id_for_path(file, shard_count) as usize;
+        shards[shard].symbols.insert(
+            "Foo",
+            SymbolLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shards[shard].references.insert(
+            "Foo",
+            ReferenceLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shards[shard].annotations.insert(
+            "@Deprecated",
+            AnnotationLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+
+    let shard_a_idx = shard_id_for_path(&file_a, shard_count) as usize;
+    shards[shard_a_idx].symbols.insert(
+        "OnlyA",
+        SymbolLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+    shards[shard_a_idx].references.insert(
+        "OnlyA",
+        ReferenceLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+    shards[shard_a_idx].annotations.insert(
+        "@OnlyA",
+        AnnotationLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
+
+    // Modify A.java so it's invalidated.
+    std::fs::write(&a, "class A { void m() {} }").unwrap();
+    let snapshot_v2 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from(&file_a), PathBuf::from(&file_b)],
+    )
+    .unwrap();
+
+    let mut loaded_v2 = load_sharded_index_view_lazy(&cache_dir, &snapshot_v2, shard_count)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_v2.invalidated_files, vec![file_a.clone()]);
+
+    // Persisted view should filter out A.java results.
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_locations("Foo")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str()]
+    );
+    assert_eq!(loaded_v2.view.symbol_locations("OnlyA").count(), 0);
+    assert_eq!(
+        loaded_v2.view.symbol_names().collect::<Vec<_>>(),
+        vec!["Foo"]
+    );
+
+    // Apply overlay deltas for the invalidated file.
+    let mut delta = ProjectIndexes::default();
+    for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
+        delta.symbols.insert(
+            symbol,
+            SymbolLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+        delta.references.insert(
+            symbol,
+            ReferenceLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+    }
+    for (annotation, column) in [("@Deprecated", 1u32), ("@OnlyA", 1), ("@NewInA", 10)] {
+        delta.annotations.insert(
+            annotation,
+            AnnotationLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+    }
+
+    loaded_v2.view.overlay.apply_file_delta(&file_a, delta);
+    assert_eq!(
+        loaded_v2.view.overlay.covered_files,
+        BTreeSet::from([file_a.clone()])
+    );
+
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_locations_merged("Foo")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str(), file_a.as_str()]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .reference_locations_merged("NewInA")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_a.as_str()]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .annotation_locations_merged("@Deprecated")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str(), file_a.as_str()]
+    );
+
+    assert_eq!(
+        loaded_v2.view.symbol_names_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2.view.referenced_symbols_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2.view.annotation_names_merged().collect::<Vec<_>>(),
+        vec!["@Deprecated", "@NewInA", "@OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_names_with_prefix_merged("N")
+            .collect::<Vec<_>>(),
+        vec!["NewInA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .annotation_names_with_prefix_merged("@N")
+            .collect::<Vec<_>>(),
+        vec!["@NewInA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .referenced_symbols_with_prefix_merged("O")
+            .collect::<Vec<_>>(),
+        vec!["OnlyA"]
+    );
+}
+
+#[test]
 fn corrupt_shard_is_partial_cache_miss() {
     let shard_count = 64;
 
