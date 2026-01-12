@@ -152,6 +152,136 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_use_var_false_emits_explicit_type() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int sum = 1 + 2;
+    int x = sum;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_trims_whitespace_in_selection_range() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x =  1 + 2  ;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    // Select extra whitespace around the expression; the refactoring should
+    // trim it and still find the expression node.
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start - 2, expr_end + 2),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    var sum = 1 + 2;
+    int x =  sum;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_while_condition_extraction() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int i = 0;
+    while (i < 10) {
+      i++;
+    }
+
+    do {
+      i++;
+    } while (i < 10);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // while condition
+    let expr_start = src.find("i < 10").unwrap();
+    let expr_end = expr_start + "i < 10".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "cond".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+
+    // do-while condition (second occurrence)
+    let expr_start = src.rfind("i < 10").unwrap();
+    let expr_end = expr_start + "i < 10".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "cond".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn rename_local_variable_does_not_touch_shadowed_field() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

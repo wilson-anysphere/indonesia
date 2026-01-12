@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+use nova_format::NewlineStyle;
+use nova_syntax::ast::{self, AstNode};
+use nova_syntax::{parse_java, SyntaxKind};
 use thiserror::Error;
 
 use crate::edit::{apply_text_edits, FileId, TextEdit, TextRange, WorkspaceEdit};
@@ -19,6 +22,14 @@ pub enum RefactorError {
     UnknownFile(FileId),
     #[error("expected a variable with initializer for inline")]
     InlineNotSupported,
+    #[error("failed to parse Java source")]
+    ParseError,
+    #[error("selection does not resolve to a single expression")]
+    InvalidSelection,
+    #[error("extract variable is not supported in this context: {reason}")]
+    ExtractNotSupported { reason: &'static str },
+    #[error("could not infer type for extracted expression")]
+    TypeInferenceFailed,
     #[error(transparent)]
     Edit(#[from] crate::edit::EditError),
 }
@@ -115,6 +126,10 @@ pub fn extract_variable(
         .file_text(&params.file)
         .ok_or_else(|| RefactorError::UnknownFile(params.file.clone()))?;
 
+    if params.expr_range.start > params.expr_range.end {
+        return Err(RefactorError::InvalidSelection);
+    }
+
     if params.expr_range.end > text.len() {
         return Err(RefactorError::Edit(crate::edit::EditError::OutOfBounds {
             file: params.file.clone(),
@@ -123,19 +138,70 @@ pub fn extract_variable(
         }));
     }
 
-    let expr_text = text[params.expr_range.start..params.expr_range.end]
-        .trim()
-        .to_string();
-    let insert_pos = line_start(text, params.expr_range.start);
-    let indent = current_indent(text, insert_pos);
-    let ty = if params.use_var { "var" } else { "var" };
+    let selection = trim_range(text, params.expr_range);
+    if selection.len() == 0 {
+        return Err(RefactorError::InvalidSelection);
+    }
 
+    let parsed = parse_java(text);
+    if !parsed.errors.is_empty() {
+        return Err(RefactorError::ParseError);
+    }
+
+    let root = parsed.syntax();
+    let expr =
+        find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
+    let expr_range = syntax_range(expr.syntax());
+    let expr_text = text
+        .get(selection.start..selection.end)
+        .ok_or(RefactorError::InvalidSelection)?
+        .to_string();
+
+    let stmt = expr
+        .syntax()
+        .ancestors()
+        .find_map(ast::Statement::cast)
+        .ok_or(RefactorError::InvalidSelection)?;
+
+    // Be conservative: extracting from loop conditions changes evaluation frequency.
+    match stmt {
+        ast::Statement::WhileStatement(_) => {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract from while condition",
+            })
+        }
+        ast::Statement::DoWhileStatement(_) => {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract from do-while condition",
+            })
+        }
+        ast::Statement::ForStatement(_) => {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract from for statement header",
+            })
+        }
+        _ => {}
+    }
+
+    let stmt_range = syntax_range(stmt.syntax());
+    let insert_pos = line_start(text, stmt_range.start);
+    let indent = current_indent(text, insert_pos);
+
+    let ty = if params.use_var {
+        "var".to_string()
+    } else {
+        infer_expr_type(text, &expr)
+            .map(|s| s.to_string())
+            .ok_or(RefactorError::TypeInferenceFailed)?
+    };
+
+    let newline = NewlineStyle::detect(text).as_str();
     let name = params.name;
-    let decl = format!("{indent}{ty} {} = {};\n", &name, expr_text);
+    let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
     let mut edit = WorkspaceEdit::new(vec![
         TextEdit::insert(params.file.clone(), insert_pos, decl),
-        TextEdit::replace(params.file.clone(), params.expr_range, name),
+        TextEdit::replace(params.file.clone(), expr_range, name),
     ]);
     edit.normalize()?;
     Ok(edit)
@@ -345,6 +411,72 @@ pub fn organize_imports(
 
 fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0)
+}
+
+fn trim_range(text: &str, mut range: TextRange) -> TextRange {
+    let bytes = text.as_bytes();
+    while range.start < range.end && bytes[range.start].is_ascii_whitespace() {
+        range.start += 1;
+    }
+    while range.start < range.end && bytes[range.end - 1].is_ascii_whitespace() {
+        range.end -= 1;
+    }
+    range
+}
+
+fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
+    let range = node.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn find_expression(
+    source: &str,
+    root: nova_syntax::SyntaxNode,
+    selection: TextRange,
+) -> Option<ast::Expression> {
+    for expr in root.descendants().filter_map(ast::Expression::cast) {
+        // The Java AST may include trivia (whitespace/comments) in node ranges,
+        // so compare against a trimmed version to keep selection matching stable
+        // even when the user includes incidental whitespace.
+        let range = trim_range(source, syntax_range(expr.syntax()));
+        if range.start == selection.start && range.end == selection.end {
+            return Some(expr);
+        }
+    }
+    None
+}
+
+fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<&'static str> {
+    match expr {
+        ast::Expression::LiteralExpression(lit) => {
+            let tok = lit
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
+            match tok.kind() {
+                SyntaxKind::IntLiteral => Some("int"),
+                SyntaxKind::StringLiteral => Some("String"),
+                SyntaxKind::CharLiteral => Some("char"),
+                _ => None,
+            }
+        }
+        ast::Expression::BinaryExpression(_)
+        | ast::Expression::UnaryExpression(_)
+        | ast::Expression::ParenthesizedExpression(_) => {
+            let range = syntax_range(expr.syntax());
+            let text = source.get(range.start..range.end)?.trim();
+            if text.contains('"') {
+                Some("String")
+            } else {
+                Some("int")
+            }
+        }
+        _ => None,
+    }
 }
 
 fn current_indent(text: &str, line_start: usize) -> String {
