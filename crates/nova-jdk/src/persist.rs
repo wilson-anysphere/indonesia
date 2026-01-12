@@ -6,7 +6,10 @@ use nova_cache::Fingerprint;
 use nova_storage::{ArtifactKind, Compression, PersistedArchive};
 
 pub(crate) const JDK_SYMBOL_INDEX_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CT_SYM_INDEX_SCHEMA_VERSION: u32 = 1;
 const CACHE_FILE_NAME: &str = "jdk-symbol-index.idx";
+const CT_SYM_CACHE_FILE_PREFIX: &str = "ct-sym-r";
+const CACHE_FILE_EXT: &str = "idx";
 
 #[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[archive(check_bytes)]
@@ -48,10 +51,30 @@ struct SymbolIndexCacheFile {
     binary_names_sorted: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
+struct CtSymIndexCacheFile {
+    saved_at_millis: u64,
+    ct_sym_path: String,
+    fingerprint: ContainerFingerprint,
+    release: u32,
+    modules: Vec<String>,
+    class_to_module: Vec<(String, u32)>,
+    internal_to_zip_path: Vec<(String, String)>,
+    module_info_zip_paths: Vec<String>,
+}
+
 pub(crate) struct LoadedSymbolIndex {
     pub(crate) class_to_container: HashMap<String, u32>,
     pub(crate) packages_sorted: Vec<String>,
     pub(crate) binary_names_sorted: Vec<String>,
+}
+
+pub(crate) struct LoadedCtSymIndex {
+    pub(crate) modules: Vec<String>,
+    pub(crate) class_to_module: HashMap<String, usize>,
+    pub(crate) internal_to_zip_path: HashMap<String, String>,
+    pub(crate) module_info_zip_paths: Vec<String>,
 }
 
 pub(crate) fn fingerprint_containers(
@@ -145,10 +168,184 @@ pub(crate) fn store_symbol_index(
     .is_ok()
 }
 
+pub(crate) fn load_ct_sym_index(
+    cache_dir: &Path,
+    ct_sym_path: &Path,
+    release: u32,
+    fingerprint: &ContainerFingerprint,
+) -> Option<LoadedCtSymIndex> {
+    let cache_path = ct_sym_cache_file_path(cache_dir, ct_sym_path, release);
+    let archive = match PersistedArchive::<CtSymIndexCacheFile>::open_optional(
+        &cache_path,
+        ArtifactKind::JdkSymbolIndex,
+        CT_SYM_INDEX_SCHEMA_VERSION,
+    ) {
+        Ok(Some(archive)) => archive,
+        Ok(None) => return None,
+        Err(_) => {
+            let _ = std::fs::remove_file(&cache_path);
+            return None;
+        }
+    };
+
+    if archive.release != release {
+        return None;
+    }
+
+    // The cache is keyed by a fingerprinted directory path; validate that the
+    // intended ct.sym file still matches.
+    if !fingerprint_matches_single(&archive.fingerprint, fingerprint) {
+        return None;
+    }
+
+    // Optional extra safety check: ensure the stored ct.sym path still matches.
+    let current_path_str = canonical_path_string(ct_sym_path);
+    if archive.ct_sym_path.as_str() != current_path_str {
+        return None;
+    }
+
+    let modules: Vec<String> = archive
+        .modules
+        .iter()
+        .map(|m| m.as_str().to_owned())
+        .collect();
+    let module_count = modules.len() as u32;
+
+    let mut internal_to_zip_path = HashMap::with_capacity(archive.internal_to_zip_path.len());
+    for (internal, zip_path) in archive.internal_to_zip_path.iter() {
+        internal_to_zip_path.insert(internal.as_str().to_owned(), zip_path.as_str().to_owned());
+    }
+
+    let mut class_to_module = HashMap::with_capacity(archive.class_to_module.len());
+    for (internal, module_idx) in archive.class_to_module.iter() {
+        if *module_idx >= module_count {
+            let _ = std::fs::remove_file(&cache_path);
+            return None;
+        }
+        let internal = internal.as_str().to_owned();
+        if !internal_to_zip_path.contains_key(&internal) {
+            let _ = std::fs::remove_file(&cache_path);
+            return None;
+        }
+        class_to_module.insert(internal, *module_idx as usize);
+    }
+
+    let module_info_zip_paths = archive
+        .module_info_zip_paths
+        .iter()
+        .map(|p| p.as_str().to_owned())
+        .collect();
+
+    Some(LoadedCtSymIndex {
+        modules,
+        class_to_module,
+        internal_to_zip_path,
+        module_info_zip_paths,
+    })
+}
+
+pub(crate) fn store_ct_sym_index(
+    cache_dir: &Path,
+    ct_sym_path: &Path,
+    release: u32,
+    fingerprint: ContainerFingerprint,
+    modules: Vec<String>,
+    class_to_module: &mut HashMap<String, usize>,
+    internal_to_zip_path: &mut HashMap<String, String>,
+    mut module_info_zip_paths: Vec<String>,
+) -> bool {
+    let cache_path = ct_sym_cache_file_path(cache_dir, ct_sym_path, release);
+
+    let mut class_to_module_vec: Vec<(String, u32)> = std::mem::take(class_to_module)
+        .into_iter()
+        .map(|(k, v)| (k, v as u32))
+        .collect();
+    class_to_module_vec.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut internal_to_zip_path_vec: Vec<(String, String)> =
+        std::mem::take(internal_to_zip_path).into_iter().collect();
+    internal_to_zip_path_vec.sort_by(|a, b| a.0.cmp(&b.0));
+
+    module_info_zip_paths.sort();
+
+    let file = CtSymIndexCacheFile {
+        saved_at_millis: now_millis(),
+        ct_sym_path: canonical_path_string(ct_sym_path),
+        fingerprint,
+        release,
+        modules,
+        class_to_module: class_to_module_vec,
+        internal_to_zip_path: internal_to_zip_path_vec,
+        module_info_zip_paths,
+    };
+
+    let ok = nova_storage::write_archive_atomic(
+        &cache_path,
+        ArtifactKind::JdkSymbolIndex,
+        CT_SYM_INDEX_SCHEMA_VERSION,
+        &file,
+        Compression::None,
+    )
+    .is_ok();
+
+    // Restore the maps regardless of whether the write succeeded so the caller
+    // can keep using the computed index.
+    let CtSymIndexCacheFile {
+        class_to_module: class_to_module_entries,
+        internal_to_zip_path: internal_to_zip_path_entries,
+        ..
+    } = file;
+    *class_to_module = class_to_module_entries
+        .into_iter()
+        .map(|(k, v)| (k, v as usize))
+        .collect();
+    *internal_to_zip_path = internal_to_zip_path_entries.into_iter().collect();
+
+    ok
+}
+
 fn cache_file_path(cache_dir: &Path, cache_key_path: &Path) -> PathBuf {
+    cache_dir_path(cache_dir, cache_key_path).join(CACHE_FILE_NAME)
+}
+
+fn ct_sym_cache_file_path(cache_dir: &Path, ct_sym_path: &Path, release: u32) -> PathBuf {
+    let key_path = ct_sym_cache_key_path(ct_sym_path);
+    let file_name = format!("{CT_SYM_CACHE_FILE_PREFIX}{release}.{CACHE_FILE_EXT}");
+    cache_dir_path(cache_dir, &key_path).join(file_name)
+}
+
+fn cache_dir_path(cache_dir: &Path, cache_key_path: &Path) -> PathBuf {
     let canonical = cache_key_path.to_string_lossy().replace('\\', "/");
     let fingerprint = Fingerprint::from_bytes(canonical.as_bytes());
-    cache_dir.join(fingerprint.as_str()).join(CACHE_FILE_NAME)
+    cache_dir.join(fingerprint.as_str())
+}
+
+fn ct_sym_cache_key_path(ct_sym_path: &Path) -> PathBuf {
+    // The canonical cache key is the JDK root directory so ct.sym and jmod
+    // caches share the same `<cache>/<jdk-hash>/` directory.
+    let mut key = ct_sym_path.to_path_buf();
+    if ct_sym_path
+        .file_name()
+        .is_some_and(|n| n == std::ffi::OsStr::new("ct.sym"))
+    {
+        if let Some(lib_dir) = ct_sym_path.parent() {
+            if lib_dir
+                .file_name()
+                .is_some_and(|n| n == std::ffi::OsStr::new("lib"))
+            {
+                if let Some(root) = lib_dir.parent() {
+                    key = root.to_path_buf();
+                }
+            }
+        }
+    }
+
+    std::fs::canonicalize(&key).unwrap_or(key)
+}
+
+fn canonical_path_string(path: &Path) -> String {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn system_time_parts(time: SystemTime) -> (u64, u32) {
@@ -177,6 +374,16 @@ fn fingerprints_match(
     }
 
     true
+}
+
+fn fingerprint_matches_single(
+    archived: &ArchivedContainerFingerprint,
+    current: &ContainerFingerprint,
+) -> bool {
+    archived.file_name.as_str() == current.file_name
+        && archived.len == current.len
+        && archived.mtime_secs == current.mtime_secs
+        && archived.mtime_nanos == current.mtime_nanos
 }
 
 fn now_millis() -> u64 {

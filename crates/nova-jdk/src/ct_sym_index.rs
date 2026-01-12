@@ -12,8 +12,9 @@ use zip::ZipArchive;
 use crate::ct_sym;
 use crate::index::{
     classfile_to_stub, is_direct_java_lang_member, is_non_type_classfile, normalize_binary_prefix,
-    JdkIndexError,
+    record_cache_hit, record_cache_write, IndexingStats, JdkIndexError,
 };
+use crate::persist;
 use crate::stub::{binary_to_internal, internal_to_binary};
 use crate::JdkClassStub;
 use crate::{JdkFieldStub, JdkMethodStub};
@@ -57,6 +58,81 @@ pub(crate) struct CtSymReleaseIndex {
 }
 
 impl CtSymReleaseIndex {
+    pub(crate) fn from_ct_sym_path_with_cache(
+        ct_sym_path: impl AsRef<Path>,
+        release: u32,
+        cache_dir: Option<&Path>,
+        allow_write: bool,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
+        let ct_sym_path = ct_sym_path.as_ref().to_path_buf();
+
+        let fingerprint = if cache_dir.is_some() {
+            Some(persist::ContainerFingerprint::for_path(&ct_sym_path)?)
+        } else {
+            None
+        };
+
+        if let (Some(cache_dir), Some(fingerprint)) = (cache_dir, fingerprint.as_ref()) {
+            if let Some(loaded) = persist::load_ct_sym_index(cache_dir, &ct_sym_path, release, fingerprint)
+            {
+                record_cache_hit(stats);
+                return from_loaded_ct_sym_index(ct_sym_path, release, loaded);
+            }
+        }
+
+        let mut archive = ct_sym::open_archive(&ct_sym_path)?;
+        let file_names: Vec<String> = archive.file_names().map(|name| name.to_owned()).collect();
+        let built = build_release_mapping(&mut archive, &file_names, release)?;
+
+        let module_graph = build_module_graph(&mut archive, &built.module_info_zip_paths)?;
+
+        let mut class_to_module = built.class_to_module;
+        let mut internal_to_zip_path = built.internal_to_zip_path;
+
+        if allow_write {
+            if let (Some(cache_dir), Some(fingerprint)) = (cache_dir, fingerprint) {
+                let modules: Vec<String> = built
+                    .modules
+                    .iter()
+                    .map(|m| m.as_str().to_owned())
+                    .collect();
+
+                // Clone the module-info paths (small, one entry per module) so we can still build
+                // the in-memory module graph without re-reading the archive.
+                let write_ok = persist::store_ct_sym_index(
+                    cache_dir,
+                    &ct_sym_path,
+                    release,
+                    fingerprint,
+                    modules,
+                    &mut class_to_module,
+                    &mut internal_to_zip_path,
+                    built.module_info_zip_paths.clone(),
+                );
+                if write_ok {
+                    record_cache_write(stats);
+                }
+            }
+        }
+
+        Ok(Self {
+            release,
+            ct_sym_path,
+            archive: Mutex::new(archive),
+            modules: built.modules,
+            module_graph,
+            class_to_module,
+            internal_to_zip_path,
+            by_internal: Mutex::new(HashMap::new()),
+            by_binary: Mutex::new(HashMap::new()),
+            missing: Mutex::new(HashSet::new()),
+            packages: OnceLock::new(),
+            java_lang: OnceLock::new(),
+            binary_names_sorted: OnceLock::new(),
+        })
+    }
+
     pub(crate) fn from_ct_sym_path(
         ct_sym_path: impl AsRef<Path>,
         release: u32,
@@ -67,126 +143,17 @@ impl CtSymReleaseIndex {
         // Collect file names up-front so we can iterate without holding a borrow
         // on the archive. We also re-use this archive for module-info reads.
         let file_names: Vec<String> = archive.file_names().map(|name| name.to_owned()).collect();
-
-        let mut available_releases = BTreeSet::new();
-        let mut release_found = false;
-
-        let mut module_entries: HashMap<String, HashMap<String, CtSymSelectedEntry>> =
-            HashMap::new();
-
-        for entry_name in &file_names {
-            let Some(parsed) = ct_sym::parse_entry_name(entry_name) else {
-                continue;
-            };
-
-            let ct_sym::CtSymEntry {
-                release: entry_release,
-                module,
-                internal_name,
-                zip_path,
-                ext,
-            } = parsed;
-
-            available_releases.insert(entry_release);
-            if entry_release != release {
-                continue;
-            }
-
-            release_found = true;
-
-            let by_internal = module_entries.entry(module).or_default();
-            let selected = CtSymSelectedEntry { zip_path, ext };
-            match by_internal.entry(internal_name) {
-                Entry::Vacant(v) => {
-                    v.insert(selected);
-                }
-                Entry::Occupied(mut o) => {
-                    // Prefer `.sig` over `.class` if both are present.
-                    if o.get().ext == ct_sym::CtSymExt::Class && ext == ct_sym::CtSymExt::Sig {
-                        o.insert(selected);
-                    }
-                }
-            }
-        }
-
-        if !release_found {
-            return Err(JdkIndexError::CtSymReleaseNotFound {
-                release,
-                available: available_releases.into_iter().collect(),
-            });
-        }
-
-        let mut modules: Vec<ModuleName> = module_entries
-            .keys()
-            .map(|name| ModuleName::new(name.clone()))
-            .collect();
-        // Stable ordering with `java.base` first (mirrors `.jmod` indexing).
-        modules.sort_by(
-            |a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.as_str().cmp(b.as_str()),
-            },
-        );
-
-        let mut class_to_module = HashMap::new();
-        let mut internal_to_zip_path = HashMap::new();
-        let mut module_info_zip_paths: Vec<String> = Vec::new();
-
-        for (module_idx, module) in modules.iter().enumerate() {
-            let Some(entries) = module_entries.get(module.as_str()) else {
-                continue;
-            };
-
-            for (internal, selected) in entries {
-                if internal == "module-info" {
-                    module_info_zip_paths.push(selected.zip_path.clone());
-                    continue;
-                }
-
-                if is_non_type_classfile(internal) {
-                    continue;
-                }
-
-                let inserted = match class_to_module.entry(internal.clone()) {
-                    Entry::Vacant(v) => {
-                        v.insert(module_idx);
-                        true
-                    }
-                    Entry::Occupied(_) => false,
-                };
-
-                if inserted {
-                    internal_to_zip_path.insert(internal.clone(), selected.zip_path.clone());
-                }
-            }
-        }
-
-        let module_graph = if module_info_zip_paths.is_empty() {
-            None
-        } else {
-            let mut graph = ModuleGraph::new();
-            for zip_path in &module_info_zip_paths {
-                let Some(bytes) = ct_sym::read_entry_bytes_from_archive(&mut archive, zip_path)?
-                else {
-                    continue;
-                };
-
-                if let Ok(info) = parse_module_info_class(&bytes) {
-                    graph.insert(info);
-                }
-            }
-            Some(graph)
-        };
+        let built = build_release_mapping(&mut archive, &file_names, release)?;
+        let module_graph = build_module_graph(&mut archive, &built.module_info_zip_paths)?;
 
         Ok(Self {
             release,
             ct_sym_path,
             archive: Mutex::new(archive),
-            modules,
+            modules: built.modules,
             module_graph,
-            class_to_module,
-            internal_to_zip_path,
+            class_to_module: built.class_to_module,
+            internal_to_zip_path: built.internal_to_zip_path,
             by_internal: Mutex::new(HashMap::new()),
             by_binary: Mutex::new(HashMap::new()),
             missing: Mutex::new(HashSet::new()),
@@ -766,6 +733,167 @@ impl CtSymReleaseIndex {
 
         bytes
     }
+}
+
+struct BuiltCtSymReleaseMapping {
+    modules: Vec<ModuleName>,
+    class_to_module: HashMap<String, usize>,
+    internal_to_zip_path: HashMap<String, String>,
+    module_info_zip_paths: Vec<String>,
+}
+
+fn build_release_mapping(
+    _archive: &mut ZipArchive<std::fs::File>,
+    file_names: &[String],
+    release: u32,
+) -> Result<BuiltCtSymReleaseMapping, JdkIndexError> {
+    let mut available_releases = BTreeSet::new();
+    let mut release_found = false;
+
+    let mut module_entries: HashMap<String, HashMap<String, CtSymSelectedEntry>> = HashMap::new();
+
+    for entry_name in file_names {
+        let Some(parsed) = ct_sym::parse_entry_name(entry_name) else {
+            continue;
+        };
+
+        let ct_sym::CtSymEntry {
+            release: entry_release,
+            module,
+            internal_name,
+            zip_path,
+            ext,
+        } = parsed;
+
+        available_releases.insert(entry_release);
+        if entry_release != release {
+            continue;
+        }
+
+        release_found = true;
+
+        let by_internal = module_entries.entry(module).or_default();
+        let selected = CtSymSelectedEntry { zip_path, ext };
+        match by_internal.entry(internal_name) {
+            Entry::Vacant(v) => {
+                v.insert(selected);
+            }
+            Entry::Occupied(mut o) => {
+                // Prefer `.sig` over `.class` if both are present.
+                if o.get().ext == ct_sym::CtSymExt::Class && ext == ct_sym::CtSymExt::Sig {
+                    o.insert(selected);
+                }
+            }
+        }
+    }
+
+    if !release_found {
+        return Err(JdkIndexError::CtSymReleaseNotFound {
+            release,
+            available: available_releases.into_iter().collect(),
+        });
+    }
+
+    let mut modules: Vec<ModuleName> = module_entries
+        .keys()
+        .map(|name| ModuleName::new(name.clone()))
+        .collect();
+    // Stable ordering with `java.base` first (mirrors `.jmod` indexing).
+    modules.sort_by(|a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.as_str().cmp(b.as_str()),
+    });
+
+    let mut class_to_module = HashMap::new();
+    let mut internal_to_zip_path = HashMap::new();
+    let mut module_info_zip_paths: Vec<String> = Vec::new();
+
+    for (module_idx, module) in modules.iter().enumerate() {
+        let Some(entries) = module_entries.get(module.as_str()) else {
+            continue;
+        };
+
+        for (internal, selected) in entries {
+            if internal == "module-info" {
+                module_info_zip_paths.push(selected.zip_path.clone());
+                continue;
+            }
+
+            if is_non_type_classfile(internal) {
+                continue;
+            }
+
+            let inserted = match class_to_module.entry(internal.clone()) {
+                Entry::Vacant(v) => {
+                    v.insert(module_idx);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+
+            if inserted {
+                internal_to_zip_path.insert(internal.clone(), selected.zip_path.clone());
+            }
+        }
+    }
+
+    Ok(BuiltCtSymReleaseMapping {
+        modules,
+        class_to_module,
+        internal_to_zip_path,
+        module_info_zip_paths,
+    })
+}
+
+fn build_module_graph(
+    archive: &mut ZipArchive<std::fs::File>,
+    module_info_zip_paths: &[String],
+) -> Result<Option<ModuleGraph>, JdkIndexError> {
+    if module_info_zip_paths.is_empty() {
+        return Ok(None);
+    }
+
+    let mut graph = ModuleGraph::new();
+    for zip_path in module_info_zip_paths {
+        let Some(bytes) = ct_sym::read_entry_bytes_from_archive(archive, zip_path)? else {
+            continue;
+        };
+
+        if let Ok(info) = parse_module_info_class(&bytes) {
+            graph.insert(info);
+        }
+    }
+
+    Ok(Some(graph))
+}
+
+fn from_loaded_ct_sym_index(
+    ct_sym_path: PathBuf,
+    release: u32,
+    loaded: persist::LoadedCtSymIndex,
+) -> Result<CtSymReleaseIndex, JdkIndexError> {
+    let mut archive = ct_sym::open_archive(&ct_sym_path)?;
+
+    let module_graph = build_module_graph(&mut archive, &loaded.module_info_zip_paths)?;
+
+    let modules: Vec<ModuleName> = loaded.modules.into_iter().map(ModuleName::new).collect();
+
+    Ok(CtSymReleaseIndex {
+        release,
+        ct_sym_path,
+        archive: Mutex::new(archive),
+        modules,
+        module_graph,
+        class_to_module: loaded.class_to_module,
+        internal_to_zip_path: loaded.internal_to_zip_path,
+        by_internal: Mutex::new(HashMap::new()),
+        by_binary: Mutex::new(HashMap::new()),
+        missing: Mutex::new(HashSet::new()),
+        packages: OnceLock::new(),
+        java_lang: OnceLock::new(),
+        binary_names_sorted: OnceLock::new(),
+    })
 }
 
 #[cfg(test)]

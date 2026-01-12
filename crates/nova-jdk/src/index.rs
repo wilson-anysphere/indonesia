@@ -49,13 +49,13 @@ fn record_module_scan(stats: Option<&IndexingStats>) {
     }
 }
 
-fn record_cache_hit(stats: Option<&IndexingStats>) {
+pub(crate) fn record_cache_hit(stats: Option<&IndexingStats>) {
     if let Some(stats) = stats {
         stats.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-fn record_cache_write(stats: Option<&IndexingStats>) {
+pub(crate) fn record_cache_write(stats: Option<&IndexingStats>) {
     if let Some(stats) = stats {
         stats.cache_writes.fetch_add(1, Ordering::Relaxed);
     }
@@ -114,9 +114,12 @@ impl JdkSymbolIndex {
                                 release: requested,
                             });
                         }
-                        return Ok(Self::CtSym(CtSymReleaseIndex::from_ct_sym_path(
+                        return Ok(Self::CtSym(CtSymReleaseIndex::from_ct_sym_path_with_cache(
                             &ct_sym_path,
                             u32::from(requested),
+                            cache_dir,
+                            allow_write,
+                            stats,
                         )?));
                     }
                 }

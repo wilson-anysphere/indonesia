@@ -1079,3 +1079,73 @@ fn fingerprint_mismatch_forces_cache_miss() -> Result<(), Box<dyn std::error::Er
 
     Ok(())
 }
+
+#[test]
+fn reuses_persisted_ct_sym_release_index_cache() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    // Fake a JPMS JDK root for spec release 17, but request API release 8 so
+    // indexing must use ct.sym.
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+    std::fs::write(
+        root.join("release"),
+        "JAVA_SPEC_VERSION=\"17\"\nJAVA_VERSION=\"17.0.2\"\n",
+    )?;
+
+    let lib_dir = root.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+    let ct_sym_path = lib_dir.join("ct.sym");
+
+    let java_base_jmod = jmods_dir.join("java.base.jmod");
+    let string_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/java/lang/String.class")?;
+    let module_info_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/module-info.class")?;
+
+    let file = std::fs::File::create(&ct_sym_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("META-INF/sym/8/java.base/java/lang/String.sig", opts)?;
+    zip.write_all(&string_bytes)?;
+    zip.start_file("META-INF/sym/8/java.base/module-info.sig", opts)?;
+    zip.write_all(&module_info_bytes)?;
+    zip.finish()?;
+
+    let cfg = JdkConfig {
+        home: Some(root.to_path_buf()),
+        release: Some(8),
+        ..Default::default()
+    };
+
+    let cache_dir = tempdir()?;
+
+    let stats_first = IndexingStats::default();
+    let first = JdkIndex::discover_with_cache_and_stats(
+        Some(&cfg),
+        Some(cache_dir.path()),
+        Some(&stats_first),
+    )?;
+    assert_eq!(first.info().backing, JdkIndexBacking::CtSym);
+    assert!(first.lookup_type("java.lang.String")?.is_some());
+    assert_eq!(stats_first.cache_hits(), 0);
+    assert_eq!(stats_first.cache_writes(), 1);
+
+    let stats_second = IndexingStats::default();
+    let second = JdkIndex::discover_with_cache_and_stats(
+        Some(&cfg),
+        Some(cache_dir.path()),
+        Some(&stats_second),
+    )?;
+    assert_eq!(second.info().backing, JdkIndexBacking::CtSym);
+    assert!(second.lookup_type("java.lang.String")?.is_some());
+    assert_eq!(stats_second.cache_hits(), 1);
+    assert_eq!(stats_second.cache_writes(), 0);
+
+    Ok(())
+}
