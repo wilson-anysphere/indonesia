@@ -70,5 +70,9 @@ fn parse_properties_key(raw_line: &str) -> Option<&str> {
         None => line,
     };
     let key = key.trim();
-    if key.is_empty() { None } else { Some(key) }
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
 }

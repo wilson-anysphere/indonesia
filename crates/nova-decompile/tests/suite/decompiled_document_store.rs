@@ -413,7 +413,10 @@ fn non_file_entries_are_treated_as_cache_miss_and_deleted() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&path).unwrap();
 
-    assert!(path.is_dir(), "precondition: expected a directory at file path");
+    assert!(
+        path.is_dir(),
+        "precondition: expected a directory at file path"
+    );
 
     let loaded = store.load_text(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
