@@ -1,7 +1,5 @@
-use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use nova_classfile::ClassFile;
@@ -11,10 +9,9 @@ use nova_jdk::{
     JdkInstallation,
 };
 use nova_modules::ModuleName;
+use nova_test_utils::{env_lock, EnvVarGuard};
 use nova_types::TypeProvider;
 use tempfile::tempdir;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn builtin_index_resolves_minimal_fixture_types() {
@@ -213,39 +210,6 @@ fn read_zip_entry_bytes(
     Ok(bytes)
 }
 
-struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: &std::path::Path) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-
-    fn set_os(key: &'static str, value: &OsString) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var(self.key, v),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
 
 #[test]
 fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
@@ -607,10 +571,10 @@ fn resolves_static_member_from_jmod_stub() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let fake = fake_jdk_root();
-    let _java_home = EnvVarGuard::set("JAVA_HOME", &fake);
+    let _java_home = EnvVarGuard::set("JAVA_HOME", fake.as_os_str());
 
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), fake.as_path());
@@ -618,7 +582,7 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
     // Point JAVA_HOME at a bogus directory but still expect the config override
     // to win.
     let bogus = fake.join("bogus");
-    let _java_home = EnvVarGuard::set("JAVA_HOME", &bogus);
+    let _java_home = EnvVarGuard::set("JAVA_HOME", bogus.as_os_str());
     let cfg = JdkConfig {
         home: Some(fake),
         ..Default::default()
@@ -632,7 +596,7 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let temp = tempdir()?;
     let workspace_root = temp.path();
@@ -644,7 +608,10 @@ fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::err
     )?;
 
     let _nova_config_path = EnvVarGuard::unset("NOVA_CONFIG_PATH");
-    let _java_home = EnvVarGuard::set("JAVA_HOME", &workspace_root.join("bogus-java-home"));
+    let _java_home = EnvVarGuard::set(
+        "JAVA_HOME",
+        workspace_root.join("bogus-java-home").as_os_str(),
+    );
 
     let (nova_config, _config_path) = nova_config::load_for_workspace(workspace_root)?;
     // `nova-config` is the source of truth for on-disk settings; `nova-core`
@@ -659,7 +626,7 @@ fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::err
 
 #[test]
 fn discovery_prefers_toolchain_for_configured_release() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let toolchain_dir = tempdir()?;
     let toolchain_root = toolchain_dir.path();
@@ -686,7 +653,7 @@ fn discovery_prefers_toolchain_for_configured_release() -> Result<(), Box<dyn st
 
 #[test]
 fn discovery_for_release_prefers_requested_toolchain() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let toolchain_dir = tempdir()?;
     let toolchain_root = toolchain_dir.path();
@@ -712,7 +679,7 @@ fn discovery_for_release_prefers_requested_toolchain() -> Result<(), Box<dyn std
 #[test]
 fn jdk_index_discover_for_release_prefers_requested_toolchain(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
@@ -733,7 +700,7 @@ fn jdk_index_discover_for_release_prefers_requested_toolchain(
 
 #[test]
 fn jdk_index_discover_sets_api_release_from_config() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
@@ -876,7 +843,7 @@ fn jdk_index_discover_for_release_errors_when_ct_sym_release_missing(
 
 #[test]
 fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let temp = tempdir()?;
     let root = temp.path();
@@ -890,7 +857,7 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
     let jre_dir = root.join("jre");
     std::fs::create_dir_all(&jre_dir)?;
 
-    let _java_home = EnvVarGuard::set("JAVA_HOME", &jre_dir);
+    let _java_home = EnvVarGuard::set("JAVA_HOME", jre_dir.as_os_str());
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
 
@@ -900,7 +867,7 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn discovery_coerces_java_home_jre_subdir_for_legacy_rt_jar(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let temp = tempdir()?;
     let root = temp.path();
@@ -912,7 +879,7 @@ fn discovery_coerces_java_home_jre_subdir_for_legacy_rt_jar(
         jre_lib_dir.join("rt.jar"),
     )?;
 
-    let _java_home = EnvVarGuard::set("JAVA_HOME", &root.join("jre"));
+    let _java_home = EnvVarGuard::set("JAVA_HOME", root.join("jre").as_os_str());
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
 
@@ -976,7 +943,7 @@ fn discovery_falls_back_to_java_on_path_via_java_home_property(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let temp = tempdir()?;
     let root = temp.path();
@@ -1009,7 +976,7 @@ fn discovery_falls_back_to_java_on_path_via_java_home_property(
     let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
     paths.extend(std::env::split_paths(&old_path));
     let new_path = std::env::join_paths(paths)?;
-    let _path_guard = EnvVarGuard::set_os("PATH", &new_path);
+    let _path_guard = EnvVarGuard::set_os("PATH", new_path);
 
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
@@ -1023,7 +990,7 @@ fn discovery_falls_back_to_java_on_path_via_symlink_resolution(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _lock = env_lock();
 
     let temp = tempdir()?;
     let root = temp.path();
@@ -1050,7 +1017,7 @@ fn discovery_falls_back_to_java_on_path_via_symlink_resolution(
     let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
     paths.extend(std::env::split_paths(&old_path));
     let new_path = std::env::join_paths(paths)?;
-    let _path_guard = EnvVarGuard::set_os("PATH", &new_path);
+    let _path_guard = EnvVarGuard::set_os("PATH", new_path);
 
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);

@@ -4001,6 +4001,7 @@ dependencies = [
  "nova-modules",
  "nova-process",
  "nova-storage",
+ "nova-test-utils",
  "nova-types",
  "once_cell",
  "rkyv",
