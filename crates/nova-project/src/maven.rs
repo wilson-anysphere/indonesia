@@ -1598,7 +1598,7 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
     if let Some(profiles_node) = child_element(&project, "profiles") {
         for profile_node in profiles_node
             .children()
-            .filter(|n| n.is_element() && n.has_tag_name("profile"))
+            .filter(|n| n.is_element() && n.tag_name().name() == "profile")
         {
             let active_by_default = child_element(&profile_node, "activation")
                 .and_then(|activation| child_text(&activation, "activeByDefault"))
@@ -1617,7 +1617,7 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
     if let Some(profiles_node) = child_element(&project, "profiles") {
         pom.profiles = profiles_node
             .children()
-            .filter(|n| n.is_element() && n.has_tag_name("profile"))
+            .filter(|n| n.is_element() && n.tag_name().name() == "profile")
             .map(parse_profile)
             .collect();
     }
@@ -1668,7 +1668,7 @@ fn parse_profile(profile_node: roxmltree::Node<'_, '_>) -> RawProfile {
 fn parse_modules_list(modules_node: &roxmltree::Node<'_, '_>) -> Vec<String> {
     modules_node
         .children()
-        .filter(|n| n.is_element() && n.has_tag_name("module"))
+        .filter(|n| n.is_element() && n.tag_name().name() == "module")
         .filter_map(|n| n.text())
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
@@ -1678,7 +1678,7 @@ fn parse_modules_list(modules_node: &roxmltree::Node<'_, '_>) -> Vec<String> {
 fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency> {
     deps_node
         .children()
-        .filter(|n| n.is_element() && n.has_tag_name("dependency"))
+        .filter(|n| n.is_element() && n.tag_name().name() == "dependency")
         .filter_map(|dep_node| {
             let group_id = child_text(&dep_node, "groupId")?;
             let artifact_id = child_text(&dep_node, "artifactId")?;
@@ -1694,7 +1694,7 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency>
             if let Some(exclusions_node) = child_element(&dep_node, "exclusions") {
                 for exclusion_node in exclusions_node
                     .children()
-                    .filter(|n| n.is_element() && n.has_tag_name("exclusion"))
+                    .filter(|n| n.is_element() && n.tag_name().name() == "exclusion")
                 {
                     let Some(group_id) = child_text(&exclusion_node, "groupId") else {
                         continue;
@@ -1769,7 +1769,7 @@ fn parse_maven_compiler_plugin_config_from_plugins(
 
     for plugin in plugins
         .children()
-        .filter(|n| n.is_element() && n.has_tag_name("plugin"))
+        .filter(|n| n.is_element() && n.tag_name().name() == "plugin")
     {
         let artifact_id = child_text(&plugin, "artifactId");
         if artifact_id.as_deref() != Some("maven-compiler-plugin") {
@@ -1788,7 +1788,7 @@ fn parse_maven_compiler_plugin_config_from_plugins(
         if let Some(compiler_args) = child_element(&configuration, "compilerArgs") {
             for arg in compiler_args
                 .children()
-                .filter(|n| n.is_element() && n.has_tag_name("arg"))
+                .filter(|n| n.is_element() && n.tag_name().name() == "arg")
             {
                 if let Some(value) = arg.text().map(str::trim).filter(|t| !t.is_empty()) {
                     cfg.compiler_args.push(value.to_string());

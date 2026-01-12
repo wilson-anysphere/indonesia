@@ -7,6 +7,7 @@ use nova_db::{InMemoryFileStore, SalsaDbView};
 use nova_ext::{ProjectId, Span};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
+use nova_types::Severity;
 
 use crate::text_fixture::position_to_offset;
 
@@ -228,9 +229,7 @@ fn unresolved_type_offers_create_class_quick_fix() {
     let action = actions
         .iter()
         .find_map(|action| match action {
-            CodeActionOrCommand::CodeAction(action)
-                if action.title == "Create class 'MissingType'" =>
-            {
+            CodeActionOrCommand::CodeAction(action) if action.title == "Create class 'MissingType'" => {
                 Some(action)
             }
             _ => None,
@@ -266,7 +265,8 @@ fn unresolved_type_offers_create_class_quick_fix() {
 
     let updated = apply_single_text_edit(source, edit);
     assert_eq!(
-        updated, "class A { MissingType x; }\n\nclass MissingType {\n}\n",
+        updated,
+        "class A { MissingType x; }\n\nclass MissingType {\n}\n",
         "unexpected updated text:\n{updated}"
     );
 }
@@ -316,5 +316,63 @@ fn create_field_quick_fix_in_single_line_file_inserts_before_final_brace() {
     assert!(
         updated.ends_with("\n}"),
         "expected inserted field to end with closing brace on its own line; got:\n{updated}"
+    );
+}
+
+#[test]
+fn unresolved_name_type_like_offers_import_and_qualify_quick_fixes() {
+    let source = r#"
+class A {
+  void m() {
+    List.of("x");
+  }
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, source.to_string());
+
+    // `IdeExtensions` requires a `Send + Sync` database; wrap our in-memory store in a
+    // snapshot-like view.
+    let view = SalsaDbView::from_source_db(&db);
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
+    let ide = IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    // Ensure `List` triggers an `unresolved-name` diagnostic (expression position).
+    let cancel = CancellationToken::new();
+    let diagnostics = nova_ide::core_file_diagnostics(db.as_ref(), file, &cancel);
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code.as_ref() == "unresolved-name"
+                && d.message.contains("List")
+        }),
+        "expected unresolved-name diagnostic for List; got {diagnostics:#?}"
+    );
+
+    let list_start = source.find("List").expect("expected List in fixture");
+    let list_end = list_start + "List".len();
+    let list_span = Span::new(list_start, list_end);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(list_span));
+    let titles: Vec<&str> = actions
+        .iter()
+        .filter_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => Some(action.title.as_str()),
+            CodeActionOrCommand::Command(cmd) => Some(cmd.title.as_str()),
+        })
+        .collect();
+
+    assert!(
+        titles.iter().any(|t| *t == "Import 'java.util.List'"),
+        "expected Import quick fix; got {titles:?}"
+    );
+    assert!(
+        titles
+            .iter()
+            .any(|t| *t == "Use fully qualified name 'java.util.List'"),
+        "expected fully qualified name quick fix; got {titles:?}"
     );
 }

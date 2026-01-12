@@ -26,41 +26,39 @@ pub(crate) fn quick_fixes_for_diagnostics(
     ));
 
     for diag in diagnostics {
+        let Some(diag_span) = diag.span else {
+            continue;
+        };
+
+        if !spans_intersect(diag_span, selection) {
+            continue;
+        }
+
         match diag.code.as_ref() {
             "unresolved-name" => {
-                let Some(diag_span) = diag.span else {
-                    continue;
-                };
-
-                if !spans_intersect(diag_span, selection) {
-                    continue;
-                }
-
                 let Some(name) = extract_unresolved_name(diag, source) else {
                     continue;
                 };
 
-                if !looks_like_value_ident(&name) {
-                    continue;
+                // Lowercase identifiers are assumed to be missing values (locals/fields).
+                if looks_like_value_ident(&name) {
+                    if let Some(action) = create_local_variable_action(uri, source, diag_span, &name)
+                    {
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+
+                    if let Some(action) = create_field_action(uri, source, &name) {
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
                 }
 
-                if let Some(action) = create_local_variable_action(uri, source, diag_span, &name) {
-                    actions.push(CodeActionOrCommand::CodeAction(action));
-                }
-
-                if let Some(action) = create_field_action(uri, source, &name) {
-                    actions.push(CodeActionOrCommand::CodeAction(action));
+                // Uppercase identifiers are often missing types used as qualifiers (e.g.
+                // `List.of(...)`).
+                if looks_like_type_ident(&name) {
+                    actions.extend(import_and_qualify_type_actions(uri, source, diag_span, &name));
                 }
             }
             "unused-import" => {
-                let Some(diag_span) = diag.span else {
-                    continue;
-                };
-
-                if !spans_intersect(diag_span, selection) {
-                    continue;
-                }
-
                 let Some(line_start) = line_start_offset(source, diag_span.start) else {
                     continue;
                 };
@@ -101,14 +99,6 @@ pub(crate) fn quick_fixes_for_diagnostics(
                 }));
             }
             "unresolved-type" => {
-                let Some(diag_span) = diag.span else {
-                    continue;
-                };
-
-                if !spans_intersect(diag_span, selection) {
-                    continue;
-                }
-
                 let name = source
                     .get(diag_span.start..diag_span.end)
                     .filter(|s| !s.is_empty())
@@ -228,6 +218,120 @@ fn looks_like_value_ident(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(|b| matches!(b, b'a'..=b'z'))
+}
+
+fn looks_like_type_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    name.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+}
+
+fn import_and_qualify_type_actions(
+    uri: &Uri,
+    source: &str,
+    diag_span: Span,
+    name: &str,
+) -> Vec<CodeActionOrCommand> {
+    let span_text = source.get(diag_span.start..diag_span.end).unwrap_or_default();
+    if span_text.contains('.') {
+        return Vec::new();
+    }
+
+    // Reuse the same (small) JDK package probe used by `unresolved-type` quick fixes.
+    let candidates = crate::quickfix::import_candidates(name);
+    let mut actions = Vec::new();
+    for fqn in candidates {
+        if let Some(edit) = java_import_workspace_edit(uri, source, &fqn) {
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("Import '{fqn}'"),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(edit),
+                ..CodeAction::default()
+            }));
+        }
+
+        // Replace the unresolved identifier with a fully qualified name.
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Use fully qualified name '{fqn}'"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(single_replace_edit(uri, source, diag_span, fqn)),
+            ..CodeAction::default()
+        }));
+    }
+
+    actions
+}
+
+fn java_import_workspace_edit(uri: &Uri, source: &str, fqn: &str) -> Option<WorkspaceEdit> {
+    let insert_offset = java_import_insertion_offset(source);
+
+    // Avoid suggesting duplicate imports (including star-import coverage).
+    if has_java_import(source, fqn) {
+        return None;
+    }
+    if let Some((pkg, _)) = fqn.rsplit_once('.') {
+        if has_java_import(source, &format!("{pkg}.*")) {
+            return None;
+        }
+    }
+
+    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let new_text = format!("import {fqn};{line_ending}");
+    Some(single_edit(uri, source, insert_offset, new_text))
+}
+
+fn java_import_insertion_offset(text: &str) -> usize {
+    let mut package_line_end: Option<usize> = None;
+    let mut last_import_line_end: Option<usize> = None;
+
+    let mut offset = 0usize;
+    for segment in text.split_inclusive('\n') {
+        let line_end = offset + segment.len();
+        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
+        line = line.strip_suffix('\r').unwrap_or(line);
+        let trimmed = line.trim_start();
+
+        if package_line_end.is_none() && trimmed.starts_with("package ") {
+            package_line_end = Some(line_end);
+        }
+        if trimmed.starts_with("import ") {
+            last_import_line_end = Some(line_end);
+        }
+
+        offset = line_end;
+    }
+
+    last_import_line_end.or(package_line_end).unwrap_or(0)
+}
+
+fn has_java_import(source: &str, path: &str) -> bool {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("import ") {
+            continue;
+        }
+
+        let mut rest = trimmed["import ".len()..].trim_start();
+        // Ignore static imports for type import checks.
+        if let Some(after_static) = rest.strip_prefix("static") {
+            if after_static.starts_with(char::is_whitespace) {
+                rest = after_static.trim_start();
+            }
+        }
+
+        let rest = rest.trim_end();
+        let rest = rest.strip_suffix(';').unwrap_or(rest).trim_end();
+        if rest == path {
+            return true;
+        }
+    }
+    false
 }
 
 fn extract_unresolved_name(diag: &Diagnostic, source: &str) -> Option<String> {

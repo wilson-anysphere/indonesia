@@ -100,7 +100,7 @@ fn single_file_workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit 
     }
 }
 
-fn import_candidates(unresolved_name: &str) -> Vec<String> {
+pub(crate) fn import_candidates(unresolved_name: &str) -> Vec<String> {
     let jdk = crate::code_intelligence::jdk_index();
     import_candidates_with_index(unresolved_name, jdk.as_ref())
 }
