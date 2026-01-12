@@ -268,6 +268,22 @@ impl GradleBuild {
             }
         }
 
+        // Optimization: when a per-module config is requested and there's a cache miss, attempt to
+        // fetch *all* project configs in a single Gradle invocation. This avoids N× Gradle
+        // startups in multi-module workspaces when callers query multiple modules in sequence.
+        if let Some(requested_path) = project_path {
+            // Avoid running the batch task for simple single-project builds.
+            if gradle_settings_suggest_multi_project(project_root) {
+                if let Ok(configs) = self.java_compile_configs_all(project_root, cache) {
+                    if let Some((_, cfg)) =
+                        configs.into_iter().find(|(path, _)| path == requested_path)
+                    {
+                        return Ok(cfg);
+                    }
+                }
+            }
+        }
+
         let (program, args, output) =
             match self.run_print_java_compile_config(project_root, project_path) {
                 Ok(output) => output,
@@ -707,6 +723,28 @@ impl GradleBuild {
 fn gradle_build_fingerprint(project_root: &Path) -> Result<BuildFileFingerprint> {
     let build_files = collect_gradle_build_files(project_root)?;
     BuildFileFingerprint::from_files(project_root, build_files)
+}
+
+fn gradle_settings_suggest_multi_project(project_root: &Path) -> bool {
+    // Best-effort heuristic: only attempt the batch `printNovaAllJavaCompileConfigs` task when the
+    // build looks multi-project. Avoids doing extra work for single-project builds where callers
+    // ask for a specific `:app`-style project path even though the workspace has no `include`.
+    //
+    // We intentionally keep this heuristic simple and fast: check for a `settings.gradle*` file
+    // that contains the substring `include` (covers `include`, `includeBuild`, `includeFlat`).
+    for name in ["settings.gradle.kts", "settings.gradle"] {
+        let path = project_root.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if contents.contains("include") {
+            return true;
+        }
+    }
+    false
 }
 
 fn gradle_output_dir_cached(

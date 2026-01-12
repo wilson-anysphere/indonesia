@@ -615,3 +615,96 @@ fn gradle_java_compile_configs_all_parses_and_populates_cache() {
         Some("printNovaAllJavaCompileConfigs".to_string())
     );
 }
+
+#[test]
+fn gradle_java_compile_config_uses_batch_task_to_avoid_per_module_invocations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::write(root.join("settings.gradle"), "include ':app', ':lib'\n").unwrap();
+    std::fs::write(root.join("build.gradle"), "").unwrap();
+    std::fs::write(root.join("app").join("build.gradle"), "plugins { id 'java' }").unwrap();
+    std::fs::write(root.join("lib").join("build.gradle"), "plugins { id 'java' }").unwrap();
+
+    let shared = root.join("shared.jar");
+    let app_dep = root.join("app.jar");
+    let lib_dep = root.join("lib.jar");
+
+    let all_payload = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": root.to_string_lossy(),
+                "config": { "compileClasspath": serde_json::Value::Null }
+            },
+            {
+                "path": ":app",
+                "projectDir": root.join("app").to_string_lossy(),
+                "config": { "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()] }
+            },
+            {
+                "path": ":lib",
+                "projectDir": root.join("lib").to_string_lossy(),
+                "config": { "compileClasspath": [shared.to_string_lossy(), lib_dep.to_string_lossy()] }
+            }
+        ]
+    });
+
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "printNovaAllJavaCompileConfigs".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: format!(
+                "noise\nNOVA_ALL_JSON_BEGIN\n{all_payload}\nNOVA_ALL_JSON_END\nmore noise\n"
+            ),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+
+    let runner = Arc::new(RoutingCommandRunner::new(outputs));
+    let cache_dir = tmp.path().join("cache");
+    let cache = BuildCache::new(&cache_dir);
+    let build = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+
+    let app_cfg = build
+        .java_compile_config(&root, Some(":app"), &cache)
+        .expect("batch per-module config");
+    let lib_cfg = build
+        .java_compile_config(&root, Some(":lib"), &cache)
+        .expect("cached second module config");
+
+    assert_eq!(
+        app_cfg.compile_classpath,
+        vec![
+            root.join("app")
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main"),
+            shared.clone(),
+            app_dep.clone(),
+        ]
+    );
+    assert_eq!(
+        lib_cfg.compile_classpath,
+        vec![
+            root.join("lib")
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main"),
+            shared.clone(),
+            lib_dep.clone(),
+        ]
+    );
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(
+        invocations[0].args.last().cloned(),
+        Some("printNovaAllJavaCompileConfigs".to_string())
+    );
+}
