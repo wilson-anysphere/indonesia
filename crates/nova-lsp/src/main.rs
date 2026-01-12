@@ -951,6 +951,12 @@ fn handle_request_json(
         }));
     }
 
+    // LSP lifecycle: after a successful `shutdown` request, the server must not accept
+    // any further requests (other than repeated `shutdown`) and should wait for `exit`.
+    if state.shutdown_requested && method != "shutdown" {
+        return Ok(server_shutting_down_error(id));
+    }
+
     match method {
         "initialize" => {
             // Capture workspace root to power CodeLens execute commands.
@@ -1451,6 +1457,12 @@ fn handle_notification(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
+    // LSP lifecycle: after `shutdown`, the client should only send `exit`. Ignore any
+    // other notifications to avoid doing unnecessary work during teardown.
+    if state.shutdown_requested {
+        return Ok(());
+    }
+
     match method {
         // Handled in the router/main loop.
         "$/cancelRequest" | "exit" => {}
