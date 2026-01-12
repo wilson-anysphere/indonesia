@@ -2288,10 +2288,32 @@ async function sendNovaRequest<R>(
       params,
     });
 
-    // If we can't unambiguously map the request to a workspace folder (multi-root), treat support
-    // as "unknown" so we don't incorrectly block requests when different workspace servers may
+    // If we can't unambiguously map the request to a single workspace folder (multi-root), be
+    // conservative: only treat the method as unsupported when *all* known capability sets report it
+    // missing. This avoids incorrectly blocking requests when different workspace servers may
     // advertise different capability sets.
-    const supported = routedWorkspaceKey ? isNovaRequestSupported(routedWorkspaceKey, method) : 'unknown';
+    const workspaceKeys = workspaces.map((workspace) => workspace.uri.toString());
+    const keysToCheck = routedWorkspaceKey
+      ? [routedWorkspaceKey]
+      : workspaceKeys.length > 0
+        ? workspaceKeys
+        : [DEFAULT_NOVA_CAPABILITIES_KEY];
+
+    let supported: boolean | 'unknown' = false;
+    let sawUnknown = false;
+    for (const key of keysToCheck) {
+      const keySupported = isNovaRequestSupported(key, method);
+      if (keySupported === true) {
+        supported = true;
+        break;
+      }
+      if (keySupported === 'unknown') {
+        sawUnknown = true;
+      }
+    }
+    if (supported !== true) {
+      supported = sawUnknown ? 'unknown' : false;
+    }
     if (supported === false) {
       if (opts.allowMethodFallback) {
         throw createMethodNotFoundError(method);
