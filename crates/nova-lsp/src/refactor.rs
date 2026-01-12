@@ -3,9 +3,6 @@ use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-use std::str::FromStr;
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
@@ -22,6 +19,9 @@ use nova_refactor::{
 use schemars::schema::RootSchema;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::str::FromStr;
 
 pub const CHANGE_SIGNATURE_METHOD: &str = "nova/refactor/changeSignature";
 pub const MOVE_METHOD_METHOD: &str = "nova/refactor/moveMethod";
@@ -230,10 +230,15 @@ pub fn extract_variable_code_actions(
     let file_path = uri.to_string();
     let file = FileId::new(file_path.clone());
     let db = TextDatabase::new([(file.clone(), source.to_string())]);
+
+    let mut actions = Vec::new();
+    // Only offer Extract Variable when the `var` extraction variant is applicable. This preserves
+    // the refactoring's "safe by default" behavior (e.g. we do not offer extraction for
+    // side-effectful expressions).
     if extract_variable(
         &db,
         ExtractVariableParams {
-            file,
+            file: file.clone(),
             expr_range,
             name: "extracted".to_string(),
             use_var: true,
@@ -244,7 +249,7 @@ pub fn extract_variable_code_actions(
         return Vec::new();
     }
 
-    vec![CodeActionOrCommand::CodeAction(CodeAction {
+    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: "Extract variable…".to_string(),
         kind: Some(CodeActionKind::REFACTOR_EXTRACT),
         data: Some(
@@ -257,7 +262,37 @@ pub fn extract_variable_code_actions(
             .expect("serializable"),
         ),
         ..CodeAction::default()
-    })]
+    }));
+
+    // Offer the explicit-type extraction variant when type inference is available.
+    if extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "extracted".to_string(),
+            use_var: false,
+        },
+    )
+    .is_ok()
+    {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Extract variable… (explicit type)".to_string(),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            data: Some(
+                serde_json::to_value(CodeActionData::ExtractVariable {
+                    start: expr_range.start,
+                    end: expr_range.end,
+                    use_var: false,
+                    name: None,
+                })
+                .expect("serializable"),
+            ),
+            ..CodeAction::default()
+        }));
+    }
+
+    actions
 }
 
 /// Resolve a code action produced by [`extract_variable_code_actions`].
@@ -473,7 +508,11 @@ fn is_java_uri(uri: &Uri) -> bool {
 
 fn move_refactor_workspace(
     open_files: &BTreeMap<String, String>,
-) -> (BTreeMap<PathBuf, String>, TextDatabase, HashMap<FileId, Uri>) {
+) -> (
+    BTreeMap<PathBuf, String>,
+    TextDatabase,
+    HashMap<FileId, Uri>,
+) {
     let mut files = BTreeMap::new();
     let mut db_files = Vec::new();
     let mut uri_by_id = HashMap::new();
@@ -595,7 +634,10 @@ mod tests {
         nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
     }
 
-    fn apply_workspace_edit(files: &BTreeMap<Uri, String>, edit: &WorkspaceEdit) -> BTreeMap<Uri, String> {
+    fn apply_workspace_edit(
+        files: &BTreeMap<Uri, String>,
+        edit: &WorkspaceEdit,
+    ) -> BTreeMap<Uri, String> {
         let mut out = files.clone();
         let Some(changes) = &edit.changes else {
             return out;
@@ -941,7 +983,8 @@ class C {
         let uri_use = test_uri("Use.java");
 
         let before_a = "public class A {\n    public B b = new B();\n    int base = 10;\n\n    public int compute(int x) {\n        return base + b.inc(x);\n    }\n}\n";
-        let before_b = "public class B {\n    public int inc(int x) {\n        return x + 1;\n    }\n}\n";
+        let before_b =
+            "public class B {\n    public int inc(int x) {\n        return x + 1;\n    }\n}\n";
         let before_use =
             "public class Use {\n    public int f(A a) {\n        return a.compute(5);\n    }\n}\n";
 

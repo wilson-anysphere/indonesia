@@ -52,7 +52,7 @@ fn apply_lsp_edits(source: &str, edits: &[lsp_types::TextEdit]) -> String {
 }
 
 #[test]
-fn extract_variable_code_action_resolves_and_applies() {
+fn extract_variable_code_actions_offer_var_and_explicit_type_variants() {
     let fixture = r#"
 class C {
     void m() {
@@ -70,22 +70,32 @@ class C {
     };
 
     let mut actions = extract_variable_code_actions(&uri, &source, range);
-    assert_eq!(actions.len(), 1);
+    assert_eq!(actions.len(), 2);
 
-    let mut action = match actions.pop().unwrap() {
-        lsp_types::CodeActionOrCommand::CodeAction(action) => action,
-        _ => panic!("expected code action"),
-    };
+    let mut var_action = None;
+    let mut explicit_action = None;
+    for action in actions.drain(..) {
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("expected code action");
+        };
+        match action.title.as_str() {
+            "Extract variable…" => var_action = Some(action),
+            "Extract variable… (explicit type)" => explicit_action = Some(action),
+            other => panic!("unexpected action title: {other}"),
+        }
+    }
 
-    resolve_extract_variable_code_action(&uri, &source, &mut action, Some("sum".to_string()))
-        .expect("resolve");
+    // `var` variant.
+    let mut var_action = var_action.expect("var extract variable action");
+    resolve_extract_variable_code_action(&uri, &source, &mut var_action, Some("sum".to_string()))
+        .expect("resolve var action");
 
-    let edit = action.edit.expect("resolved edit");
-    let changes = edit.changes.expect("changes");
-    let edits = changes.get(&uri).expect("edits for uri");
+    let var_edit = var_action.edit.expect("resolved edit");
+    let var_changes = var_edit.changes.expect("changes");
+    let var_edits = var_changes.get(&uri).expect("edits for uri");
 
-    let actual = apply_lsp_edits(&source, edits);
-    let expected = r#"
+    let actual_var = apply_lsp_edits(&source, var_edits);
+    let expected_var = r#"
 class C {
     void m() {
         var sum = 1 + 2;
@@ -95,7 +105,34 @@ class C {
 }
 "#;
 
-    assert_eq!(actual, expected);
+    assert_eq!(actual_var, expected_var);
+
+    // Explicit type variant.
+    let mut explicit_action = explicit_action.expect("explicit type extract variable action");
+    resolve_extract_variable_code_action(
+        &uri,
+        &source,
+        &mut explicit_action,
+        Some("sum".to_string()),
+    )
+    .expect("resolve explicit type action");
+
+    let explicit_edit = explicit_action.edit.expect("resolved edit");
+    let explicit_changes = explicit_edit.changes.expect("changes");
+    let explicit_edits = explicit_changes.get(&uri).expect("edits for uri");
+
+    let actual_explicit = apply_lsp_edits(&source, explicit_edits);
+    let expected_explicit = r#"
+class C {
+    void m() {
+        int sum = 1 + 2;
+        int x = sum;
+        System.out.println(x);
+    }
+}
+"#;
+
+    assert_eq!(actual_explicit, expected_explicit);
 }
 
 #[test]

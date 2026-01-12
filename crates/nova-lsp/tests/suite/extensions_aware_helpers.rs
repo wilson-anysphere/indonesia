@@ -5,6 +5,7 @@ use nova_scheduler::CancellationToken;
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nova_ext::{
     CompletionItem, CompletionParams, CompletionProvider, Diagnostic, DiagnosticParams,
@@ -91,6 +92,10 @@ class A {
         }))
         .unwrap();
 
+    // Avoid flakiness under heavy test parallelism: providers are executed with a per-call
+    // watchdog timeout and the default is tuned for interactive latency, not CI environments.
+    extensions.registry_mut().options_mut().completion_timeout = Duration::from_secs(1);
+
     let position = lsp_types::Position::new(4, 6);
     let built_in = nova_lsp::completion(db.as_ref(), file, position);
     assert!(
@@ -147,6 +152,8 @@ class A {
             message: "from-a",
         }))
         .unwrap();
+
+    extensions.registry_mut().options_mut().diagnostic_timeout = Duration::from_secs(1);
 
     let built_in = nova_lsp::diagnostics(db.as_ref(), file);
     assert!(
