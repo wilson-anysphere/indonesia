@@ -1,6 +1,6 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
-use crate::jpms::{infer_module_path_entries, main_source_roots_have_module_info};
+use crate::jpms::main_source_roots_have_module_info;
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
@@ -326,13 +326,6 @@ impl MavenBuild {
             "--enable-preview",
         )?;
 
-        let module_path = infer_module_path_for_compile_config(
-            &compile_classpath,
-            &main_source_roots,
-            main_output_dir.as_ref(),
-            false,
-        );
-
         // Best-effort: ensure output dirs are represented on the appropriate classpaths.
         if let Some(out_dir) = &main_output_dir {
             if !compile_classpath.iter().any(|p| p == out_dir) {
@@ -373,25 +366,19 @@ impl MavenBuild {
                 "project.testCompileModulePathElements",
             )?;
 
-            let mut module_path_candidates = Vec::new();
-            module_path_candidates.extend(absolutize_paths(&module_dir, main_module_path));
-            module_path_candidates.extend(absolutize_paths(&module_dir, test_module_path));
+            let mut module_path = Vec::new();
+            module_path.extend(absolutize_paths(&module_dir, main_module_path));
+            module_path.extend(absolutize_paths(&module_dir, test_module_path));
 
-            // Avoid placing build output directories on the module-path.
-            if let Some(out_dir) = &main_output_dir {
-                module_path_candidates.retain(|p| p != out_dir);
-            }
-            if let Some(out_dir) = &test_output_dir {
-                module_path_candidates.retain(|p| p != out_dir);
-            }
-
-            // Match Gradle behavior by considering only stable modules
-            // (`module-info.class` or `Automatic-Module-Name`).
-            let module_path = infer_module_path_entries(&module_path_candidates);
+            // Dedupe while preserving order.
+            let mut seen = std::collections::HashSet::new();
+            module_path.retain(|p| seen.insert(p.clone()));
 
             if module_path.is_empty() {
-                // Fallback heuristic: if the module looks like it uses JPMS, approximate by
-                // inferring stable modules from the compile classpath.
+                // Heuristic fallback: if the module looks like it uses JPMS, approximate by using
+                // the compile classpath as the module path. This matches Maven's behavior in
+                // many setups where `project.compileClasspathElements` already reflects the
+                // effective compilation inputs.
                 let has_module_info = module_dir
                     .join("src")
                     .join("main")
@@ -401,11 +388,7 @@ impl MavenBuild {
                     || main_source_roots_have_module_info(&main_source_roots);
 
                 if has_module_info {
-                    let mut deps = compile_classpath.clone();
-                    if let Some(out_dir) = &main_output_dir {
-                        deps.retain(|p| p != out_dir);
-                    }
-                    infer_module_path_entries(&deps)
+                    compile_classpath.clone()
                 } else {
                     Vec::new()
                 }
