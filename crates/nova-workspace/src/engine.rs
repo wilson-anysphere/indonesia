@@ -2872,6 +2872,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
+    use tokio::task::yield_now;
     use tokio::time::timeout;
 
     use super::*;
@@ -5342,5 +5343,59 @@ mod tests {
         engine.query_db.with_snapshot(|snap| {
             assert_eq!(snap.file_content(file_id).as_str(), updated);
         });
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_rescan_triggers_project_reload_and_file_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Create a new Java file on disk, but simulate the watcher dropping events by sending a
+        // `Rescan` signal. The workspace should fall back to a project reload and discover the file.
+        let file = project_root.join("src/Main.java");
+        let text = "class Main { int x; }";
+        fs::write(&file, text.as_bytes()).unwrap();
+
+        handle.push(WatchEvent::Rescan).unwrap();
+
+        let vfs_path = VfsPath::local(file.clone());
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                    yield_now().await;
+                    continue;
+                };
+
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        snap.file_exists(file_id)
+                            && snap.file_content(file_id).as_str() == text
+                            && snap.file_rel_path(file_id).as_str() == "src/Main.java"
+                            && snap.project_files(ProjectId::from_raw(0)).contains(&file_id)
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for rescan-triggered project reload");
     }
 }
