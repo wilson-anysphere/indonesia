@@ -1,3 +1,15 @@
+//! Trigram index used for fuzzy candidate filtering.
+//!
+//! Trigrams are extracted from a case-insensitive representation of the input.
+//!
+//! ## Unicode support
+//!
+//! - By default, trigrams are generated from raw UTF-8 bytes with **ASCII-only**
+//!   case folding.
+//! - With the crate's `unicode` feature enabled, inputs are normalized to Unicode
+//!   **NFKC** and then Unicode **case folded** before trigram extraction.
+//!   Purely ASCII inputs continue to take a fast path.
+
 use nova_core::SymbolId;
 
 /// Trigram key used for indexing.
@@ -88,7 +100,12 @@ fn trigrams_unicode_chars(chars: impl Iterator<Item = char>, out: &mut Vec<Trigr
 
 /// Iterate all (overlapping) trigrams for `text`.
 ///
-/// The returned trigrams are ASCII case-folded.
+/// The returned trigrams are case-folded.
+///
+/// - Without the crate's `unicode` feature: ASCII case folding over raw UTF-8 bytes.
+/// - With `unicode` enabled: `text` is normalized to Unicode NFKC and Unicode case
+///   folded before trigram extraction. Pure ASCII inputs still take the packed
+///   3-byte trigram fast path.
 #[cfg_attr(feature = "unicode", allow(dead_code))]
 fn trigrams(text: &str, out: &mut Vec<Trigram>) {
     #[cfg(feature = "unicode")]
@@ -323,6 +340,9 @@ impl TrigramIndexBuilder {
     }
 
     /// Insert trigrams extracted from `text` for `id`.
+    ///
+    /// The exact normalization/case folding depends on the crate configuration
+    /// (see the module-level docs).
     pub fn insert(&mut self, id: SymbolId, text: &str) {
         self.scratch.clear();
         #[cfg(feature = "unicode")]

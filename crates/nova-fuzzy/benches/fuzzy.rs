@@ -3,6 +3,8 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, TrigramCandidateScratch, TrigramIndexBuilder};
+#[cfg(feature = "unicode")]
+use nova_fuzzy::RankKey;
 
 fn configure_rayon() {
     // Criterion uses Rayon internally for statistics. On constrained CI hosts we can fail to spawn
@@ -182,9 +184,122 @@ fn bench_trigram_candidates(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "unicode")]
+fn build_unicode_trigram_index(symbol_count: usize) -> (Vec<String>, nova_fuzzy::TrigramIndex) {
+    let mut seed = 0xdec0_de01_cafe_f00du64;
+
+    // Include a handful of "interesting" Unicode cases:
+    // - case folding expansions: "Straße" ↔ "strasse"
+    // - composed vs decomposed accents: "CAFÉ" ↔ "cafe\u{0301}"
+    // - NFKC compatibility normalization: fullwidth forms ↔ ASCII
+    const UNICODE_BASE: &[&str] = &["Straße", "CAFÉ", "cafe\u{0301}", "ＦｏｏＢａｒ"];
+
+    let mut symbols = Vec::with_capacity(symbol_count + UNICODE_BASE.len() * 4);
+    for i in 0..symbol_count {
+        let base = gen_ident(&mut seed);
+        let x = lcg(&mut seed);
+
+        let symbol = if (x % 16) == 0 {
+            let unicode = UNICODE_BASE[(x as usize) % UNICODE_BASE.len()];
+            match i % 64 {
+                0 => format!("get_{unicode}_{base}"),
+                2 => format!("set_{unicode}_{base}"),
+                _ => format!("{unicode}_{base}"),
+            }
+        } else {
+            match i % 64 {
+                0 => format!("get_value_{base}"),
+                2 => format!("get_{base}"),
+                4 => format!("set_value_{base}"),
+                6 => format!("set_{base}"),
+                _ => base,
+            }
+        };
+
+        symbols.push(symbol);
+    }
+
+    // Ensure canonical forms are present without suffixes as well.
+    symbols.extend(UNICODE_BASE.iter().map(|s| (*s).to_string()));
+    symbols.push("strasse".to_string());
+    symbols.push("foobar".to_string());
+    symbols.push("café".to_string());
+
+    let mut builder = TrigramIndexBuilder::new();
+    for (i, s) in symbols.iter().enumerate() {
+        builder.insert(i as SymbolId, s);
+    }
+
+    let index = builder.build();
+    (symbols, index)
+}
+
+#[cfg(feature = "unicode")]
+fn bench_unicode_fuzzy_search(c: &mut Criterion) {
+    let symbols: usize = std::env::var("NOVA_FUZZY_BENCH_UNICODE_SYMBOLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
+
+    let (symbols, index) = build_unicode_trigram_index(symbols);
+
+    let mut group = c.benchmark_group("unicode_fuzzy_search");
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    let cases = [
+        ("strasse_ascii", "strasse"),
+        ("strasse_unicode", "Straße"),
+        ("cafe_decomposed", "cafe\u{0301}"),
+        ("fullwidth_foobar", "ＦｏｏＢａｒ"),
+    ];
+
+    for (id, query) in cases {
+        group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
+            let mut scratch = TrigramCandidateScratch::default();
+            let mut matcher = FuzzyMatcher::new(*query);
+
+            // Warm up internal buffers and scratch capacities outside the timed loop.
+            let candidates = index.candidates_with_scratch(*query, &mut scratch);
+            if let Some(&first) = candidates.first() {
+                black_box(matcher.score(&symbols[first as usize]));
+            } else {
+                black_box(matcher.score("this_is_a_long_candidate_string_for_warmup"));
+            }
+
+            let mut best: Vec<(RankKey, SymbolId)> = Vec::new();
+
+            b.iter(|| {
+                best.clear();
+                let candidates = index.candidates_with_scratch(black_box(*query), &mut scratch);
+                for &id in candidates {
+                    if let Some(score) = matcher.score(&symbols[id as usize]) {
+                        best.push((score.rank_key(), id));
+                    }
+                }
+                best.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                best.truncate(20);
+                black_box(best.len())
+            })
+        });
+    }
+
+    group.finish();
+}
+
+#[cfg(feature = "unicode")]
+criterion_group! {
+    name = benches;
+    config = criterion_config();
+    targets = bench_fuzzy_score, bench_trigram_candidates, bench_unicode_fuzzy_search
+}
+
+#[cfg(not(feature = "unicode"))]
 criterion_group! {
     name = benches;
     config = criterion_config();
     targets = bench_fuzzy_score, bench_trigram_candidates
 }
+
 criterion_main!(benches);

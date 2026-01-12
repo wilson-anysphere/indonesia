@@ -1,9 +1,21 @@
+//! Fuzzy subsequence scoring.
+//!
+//! ## Unicode support
+//!
+//! - By default, scoring is **ASCII case-insensitive** and operates on raw UTF-8 bytes.
+//! - With the crate's `unicode` feature enabled, scoring becomes **Unicode-aware** by
+//!   normalizing inputs to **NFKC** and applying Unicode **case folding** first.
+//!   Purely ASCII inputs continue to take a fast path.
+
 use std::cmp::Ordering;
 
 /// The kind of match that was produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchKind {
-    /// `candidate` starts with `query` (ASCII case-insensitive).
+    /// `candidate` starts with `query` (case-insensitive).
+    ///
+    /// - Without the `unicode` feature this is ASCII-only.
+    /// - With `unicode` enabled this is Unicode-aware (NFKC + Unicode case folding).
     Prefix,
     /// General fuzzy subsequence match.
     Fuzzy,
@@ -805,7 +817,8 @@ impl FuzzyMatcher {
 
 /// Fuzzy match `query` against `candidate`.
 ///
-/// - ASCII case-insensitive.
+/// - Case-insensitive (`unicode` feature controls whether this is ASCII-only or
+///   Unicode-aware).
 /// - Prefix matches are fast-pathed and always rank above fuzzy matches.
 #[cfg(not(feature = "unicode"))]
 pub fn fuzzy_match(query: &str, candidate: &str) -> Option<MatchScore> {
