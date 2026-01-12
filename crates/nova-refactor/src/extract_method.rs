@@ -207,8 +207,19 @@ pub struct ExtractMethod {
 impl ExtractMethod {
     pub fn analyze(&self, source: &str) -> Result<ExtractMethodAnalysis, String> {
         let raw_selection = self.selection;
+        if raw_selection.start > raw_selection.end || raw_selection.end > source.len() {
+            return Ok(ExtractMethodAnalysis {
+                region: ExtractRegionKind::Statements,
+                parameters: Vec::new(),
+                return_value: None,
+                return_ty: "void".to_string(),
+                thrown_exceptions: Vec::new(),
+                hazards: Vec::new(),
+                issues: vec![ExtractMethodIssue::InvalidSelection],
+            });
+        }
         let selection = trim_range(source, raw_selection);
-        if selection.len() == 0 || raw_selection.end > source.len() {
+        if selection.len() == 0 {
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
