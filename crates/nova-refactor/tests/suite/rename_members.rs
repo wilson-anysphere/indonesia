@@ -55,6 +55,61 @@ fn rename_field_updates_this_qualified_reference() {
 }
 
 #[test]
+fn rename_field_updates_inherited_references_in_subclass() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Base { int x; } class Derived extends Base { void f(){ x = 1; this.x = 2; super.x = 3; } }"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Base.x");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("int y;"), "{after}");
+    assert!(after.contains("y = 1"), "{after}");
+    assert!(after.contains("this.y = 2"), "{after}");
+    assert!(after.contains("super.y = 3"), "{after}");
+    assert!(!after.contains("int x"), "{after}");
+    assert!(!after.contains("x = 1"), "{after}");
+    assert!(!after.contains("this.x"), "{after}");
+    assert!(!after.contains("super.x"), "{after}");
+}
+
+#[test]
+fn rename_field_updates_super_reference_even_when_shadowed() {
+    let file = FileId::new("Test.java");
+    let src =
+        r#"class Base { int x; } class Derived extends Base { int y; void f(){ super.x = 1; } }"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Base.x");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Base { int y; }"), "{after}");
+    assert!(after.contains("class Derived extends Base { int y;"), "{after}");
+    assert!(after.contains("super.y = 1"), "{after}");
+    assert!(!after.contains("super.x"), "{after}");
+}
+
+#[test]
 fn rename_method_updates_declaration_and_call() {
     let file = FileId::new("Test.java");
     let src = r#"class Test { void foo(){} void m(){ foo(); } }"#;

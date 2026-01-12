@@ -11,8 +11,8 @@ use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::HirDatabase;
 use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
-    BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
-    ScopeKind, StaticMemberResolution, TypeKind, TypeResolution, WorkspaceDefMap,
+    BodyOwner, DefMap, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
+    ScopeBuildResult, ScopeKind, StaticMemberResolution, TypeKind, TypeResolution, WorkspaceDefMap,
 };
 use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode};
@@ -2012,28 +2012,67 @@ fn record_body_references(
                 if call_callees.contains(&expr_id) {
                     return;
                 }
-                let name = Name::from(name.as_str());
-                let resolved = resolver
-                    .resolve_name(&scope_result.scopes, scope, &name)
-                    .or_else(|| resolver.resolve_method_name(&scope_result.scopes, scope, &name));
-                let Some(resolved) = resolved else {
+                let name_text = name.as_str();
+                let name = Name::from(name_text);
+
+                // NOTE: `nova_resolve::ScopeGraph` does not contain inherited fields. If this name
+                // is an inherited field reference, `resolve_name` will likely return `Unresolved`.
+                // We fall back to an explicit inheritance walk below.
+                let resolved_name =
+                    resolver.resolve_name_detailed(&scope_result.scopes, scope, &name);
+                let resolved = match &resolved_name {
+                    NameResolution::Resolved(res) => Some(res.clone()),
+                    NameResolution::Ambiguous(_) => return,
+                    NameResolution::Unresolved => None,
+                }
+                .or_else(|| resolver.resolve_method_name(&scope_result.scopes, scope, &name));
+
+                if let Some(resolved) = resolved {
+                    let key = match resolved {
+                        Resolution::Local(local) => ResolutionKey::Local(local),
+                        Resolution::Parameter(param) => ResolutionKey::Param(param),
+                        Resolution::Field(field) => ResolutionKey::Field(field),
+                        Resolution::Type(TypeResolution::Source(item)) => ResolutionKey::Type(item),
+                        Resolution::Type(TypeResolution::External(_)) => return,
+                        Resolution::StaticMember(StaticMemberResolution::SourceField(field)) => {
+                            ResolutionKey::Field(field)
+                        }
+                        Resolution::StaticMember(StaticMemberResolution::SourceMethod(method)) => {
+                            ResolutionKey::Method(method)
+                        }
+                        Resolution::StaticMember(StaticMemberResolution::External(_))
+                        | Resolution::Methods(_)
+                        | Resolution::Constructors(_)
+                        | Resolution::Package(_) => return,
+                    };
+                    let Some(&symbol) = resolution_to_symbol.get(&key) else {
+                        return;
+                    };
+                    let range = TextRange::new(range.start, range.end);
+                    record(file, symbol, range, references, spans);
+                    return;
+                }
+
+                // Best-effort: if this looks like an unqualified inherited field reference, resolve
+                // it against the enclosing class + supertypes and record it as a reference to the
+                // resolved field symbol.
+                if !matches!(resolved_name, NameResolution::Unresolved) {
+                    return;
+                }
+                let Some(enclosing_item) = enclosing_class(&scope_result.scopes, scope) else {
                     return;
                 };
-
-                let key = match resolved {
-                    Resolution::Local(local) => ResolutionKey::Local(local),
-                    Resolution::Parameter(param) => ResolutionKey::Param(param),
-                    Resolution::Field(field) => ResolutionKey::Field(field),
-                    Resolution::Type(TypeResolution::Source(item)) => ResolutionKey::Type(item),
-                    Resolution::StaticMember(StaticMemberResolution::SourceField(field)) => {
-                        ResolutionKey::Field(field)
-                    }
-                    Resolution::StaticMember(StaticMemberResolution::SourceMethod(method)) => {
-                        ResolutionKey::Method(method)
-                    }
-                    _ => return,
+                let Some(field) = resolve_field_in_type_or_supertypes(
+                    enclosing_item,
+                    name_text,
+                    workspace_def_map,
+                    type_by_name,
+                    type_name_by_item,
+                    inheritance,
+                ) else {
+                    return;
                 };
-                let Some(&symbol) = resolution_to_symbol.get(&key) else {
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
                     return;
                 };
                 let range = TextRange::new(range.start, range.end);
@@ -2073,10 +2112,43 @@ fn record_body_references(
                             TypeResolution::External(_) => {
                                 // Treat external types as types too, but only record workspace
                                 // symbols for refactorings.
-                                return;
-                            }
+                                 return;
+                             }
+                         }
+                     }
+                 }
+
+                // `super.x` and `this.x` need special casing: `WorkspaceDefMap::type_def` does not
+                // include inherited members, and `super` should bind to the direct superclass even
+                // if the subclass defines a shadowing field.
+                let receiver_kind = match &body.exprs[*receiver] {
+                    hir::Expr::This { .. } => Some(ReceiverKind::This),
+                    hir::Expr::Super { .. } => Some(ReceiverKind::Super),
+                    _ => None,
+                };
+                if let Some(receiver_kind) = receiver_kind {
+                    let Some(enclosing_item) = enclosing_class(&scope_result.scopes, scope) else {
+                        return;
+                    };
+                    if let Some(field) = resolve_receiver_field(
+                        enclosing_item,
+                        receiver_kind,
+                        name.as_str(),
+                        workspace_def_map,
+                        type_by_name,
+                        type_name_by_item,
+                        inheritance,
+                    ) {
+                        if let Some(&symbol) =
+                            resolution_to_symbol.get(&ResolutionKey::Field(field))
+                        {
+                            let range = TextRange::new(name_range.start, name_range.end);
+                            record(file, symbol, range, references, spans);
                         }
                     }
+                    // Do not fall back to normal receiver-type lookup: `super.x` must not bind to a
+                    // shadowing field in the current class.
+                    return;
                 }
 
                 let Some(receiver_ty) = receiver_type(
@@ -2093,10 +2165,14 @@ fn record_body_references(
                 let TypeResolution::Source(item) = receiver_ty else {
                     return;
                 };
-                let Some(def) = workspace_def_map.type_def(item) else {
-                    return;
-                };
-                let Some(field) = def.fields.get(&Name::from(name.as_str())).map(|f| f.id) else {
+                let Some(field) = resolve_field_in_type_or_supertypes(
+                    item,
+                    name.as_str(),
+                    workspace_def_map,
+                    type_by_name,
+                    type_name_by_item,
+                    inheritance,
+                ) else {
                     return;
                 };
                 let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
@@ -2822,6 +2898,39 @@ fn resolve_receiver_method(
     }
 }
 
+fn resolve_receiver_field(
+    enclosing_item: ItemId,
+    receiver_kind: ReceiverKind,
+    name: &str,
+    workspace: &WorkspaceDefMap,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    inheritance: &nova_index::InheritanceIndex,
+) -> Option<FieldId> {
+    match receiver_kind {
+        ReceiverKind::This => resolve_field_in_type_or_supertypes(
+            enclosing_item,
+            name,
+            workspace,
+            type_by_name,
+            type_name_by_item,
+            inheritance,
+        ),
+        ReceiverKind::Super => {
+            let super_item =
+                direct_super_item(enclosing_item, type_by_name, type_name_by_item, inheritance)?;
+            resolve_field_in_type_or_supertypes(
+                super_item,
+                name,
+                workspace,
+                type_by_name,
+                type_name_by_item,
+                inheritance,
+            )
+        }
+    }
+}
+
 fn direct_super_item(
     subtype: ItemId,
     type_by_name: &HashMap<String, ItemId>,
@@ -2843,6 +2952,70 @@ fn direct_super_item(
     for super_name in supertypes {
         if let Some(super_item) = type_by_name.get(super_name) {
             return Some(*super_item);
+        }
+    }
+
+    None
+}
+
+fn resolve_field_in_type_or_supertypes(
+    ty: ItemId,
+    name: &str,
+    workspace: &WorkspaceDefMap,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    inheritance: &nova_index::InheritanceIndex,
+) -> Option<FieldId> {
+    let mut visited = HashSet::<ItemId>::new();
+    resolve_field_in_type_or_supertypes_impl(
+        ty,
+        name,
+        workspace,
+        type_by_name,
+        type_name_by_item,
+        inheritance,
+        &mut visited,
+    )
+}
+
+fn resolve_field_in_type_or_supertypes_impl(
+    ty: ItemId,
+    name: &str,
+    workspace: &WorkspaceDefMap,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    inheritance: &nova_index::InheritanceIndex,
+    visited: &mut HashSet<ItemId>,
+) -> Option<FieldId> {
+    if !visited.insert(ty) {
+        return None;
+    }
+
+    if let Some(def) = workspace.type_def(ty) {
+        if let Some(field) = def.fields.get(&Name::from(name)) {
+            return Some(field.id);
+        }
+    }
+
+    let ty_name = type_name_by_item.get(&ty)?;
+    let Some(supertypes) = inheritance.supertypes.get(ty_name) else {
+        return None;
+    };
+
+    for super_name in supertypes {
+        let Some(super_item) = type_by_name.get(super_name).copied() else {
+            continue;
+        };
+        if let Some(found) = resolve_field_in_type_or_supertypes_impl(
+            super_item,
+            name,
+            workspace,
+            type_by_name,
+            type_name_by_item,
+            inheritance,
+            visited,
+        ) {
+            return Some(found);
         }
     }
 
