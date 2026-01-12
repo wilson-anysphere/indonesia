@@ -1427,7 +1427,13 @@ fn resolve_method_call_demand(
                 } => {
                     set_expr_parent(parent_expr, enclosing_expr, *condition);
                     visit_expr(body, *condition, parent_expr, visited_expr);
-                    visit_stmt(body, *then_branch, enclosing_expr, parent_expr, visited_expr);
+                    visit_stmt(
+                        body,
+                        *then_branch,
+                        enclosing_expr,
+                        parent_expr,
+                        visited_expr,
+                    );
                     if let Some(stmt) = else_branch {
                         visit_stmt(body, *stmt, enclosing_expr, parent_expr, visited_expr);
                     }

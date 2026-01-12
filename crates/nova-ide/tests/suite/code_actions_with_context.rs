@@ -31,7 +31,9 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
     db.set_file_text(file, source.to_string());
 
     let diag_start = 0;
-    let diag_end = source.find('\n').expect("import line should end with newline");
+    let diag_end = source
+        .find('\n')
+        .expect("import line should end with newline");
     let range = Range::new(
         offset_to_position(source, diag_start),
         offset_to_position(source, diag_end),

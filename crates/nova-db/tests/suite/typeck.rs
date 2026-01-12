@@ -7268,7 +7268,9 @@ class C { void m(){ new ArrayList(1, 2); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-constructor"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-constructor"),
         "expected unresolved-constructor diagnostic; got {diags:?}"
     );
 }

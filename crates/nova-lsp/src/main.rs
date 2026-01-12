@@ -8670,8 +8670,10 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     // comes from a standard Maven/Gradle layout.
     let (action_file, insert_range, workspace) = if file_rel.starts_with("src/main/java/") {
         if let Some(test_file) = derive_test_file_path(&source, &abs_path) {
-            let insert_range =
-                lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 0));
+            let insert_range = lsp_types::Range::new(
+                lsp_types::Position::new(0, 0),
+                lsp_types::Position::new(0, 0),
+            );
 
             let mut workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
             // Best-effort: include existing test file contents so the model can append new tests.

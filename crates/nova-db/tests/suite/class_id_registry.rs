@@ -299,7 +299,8 @@ fn core_jdk_class_ids_are_seeded_and_stable() {
             );
 
             assert_eq!(
-                snap.class_name_for_id(app_project, id_after_evict).as_deref(),
+                snap.class_name_for_id(app_project, id_after_evict)
+                    .as_deref(),
                 Some(name)
             );
         }

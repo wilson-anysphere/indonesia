@@ -2785,7 +2785,10 @@ esac\n",
         std::env::set_var("PATH", original_path);
 
         let result: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(result.project_root, workspace_root.to_string_lossy().to_string());
+        assert_eq!(
+            result.project_root,
+            workspace_root.to_string_lossy().to_string()
+        );
         assert_eq!(result.units.len(), 1);
 
         match &result.units[0] {

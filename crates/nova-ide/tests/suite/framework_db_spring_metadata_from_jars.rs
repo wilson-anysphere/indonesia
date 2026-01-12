@@ -126,7 +126,10 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     // dependency metadata is present.
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(&config_path);
-    db.set_file_text(file, "server.port=8080\nserver.address=127.0.0.1\n".to_string());
+    db.set_file_text(
+        file,
+        "server.port=8080\nserver.address=127.0.0.1\n".to_string(),
+    );
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
 
     let fw_db =

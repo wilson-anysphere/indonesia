@@ -54,9 +54,7 @@ mod tests {
     #[test]
     fn builtin_jdk_names_are_sorted_and_unique() {
         assert!(
-            BUILTIN_JDK_BINARY_NAMES
-                .windows(2)
-                .all(|w| w[0] < w[1]),
+            BUILTIN_JDK_BINARY_NAMES.windows(2).all(|w| w[0] < w[1]),
             "expected BUILTIN_JDK_BINARY_NAMES to be strictly sorted and deduplicated"
         );
     }

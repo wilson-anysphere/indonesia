@@ -42,7 +42,8 @@ pub(crate) fn quick_fixes_for_diagnostics(
 
                 // Lowercase identifiers are assumed to be missing values (locals/fields).
                 if looks_like_value_ident(&name) {
-                    if let Some(action) = create_local_variable_action(uri, source, diag_span, &name)
+                    if let Some(action) =
+                        create_local_variable_action(uri, source, diag_span, &name)
                     {
                         actions.push(CodeActionOrCommand::CodeAction(action));
                     }
@@ -55,7 +56,9 @@ pub(crate) fn quick_fixes_for_diagnostics(
                 // Uppercase identifiers are often missing types used as qualifiers (e.g.
                 // `List.of(...)`).
                 if looks_like_type_ident(&name) {
-                    actions.extend(import_and_qualify_type_actions(uri, source, diag_span, &name));
+                    actions.extend(import_and_qualify_type_actions(
+                        uri, source, diag_span, &name,
+                    ));
                 }
             }
             "unused-import" => {
@@ -238,7 +241,9 @@ fn import_and_qualify_type_actions(
     diag_span: Span,
     name: &str,
 ) -> Vec<CodeActionOrCommand> {
-    let span_text = source.get(diag_span.start..diag_span.end).unwrap_or_default();
+    let span_text = source
+        .get(diag_span.start..diag_span.end)
+        .unwrap_or_default();
     if span_text.contains('.') {
         return Vec::new();
     }
@@ -281,7 +286,11 @@ fn java_import_workspace_edit(uri: &Uri, source: &str, fqn: &str) -> Option<Work
         }
     }
 
-    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let line_ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let new_text = format!("import {fqn};{line_ending}");
     Some(single_edit(uri, source, insert_offset, new_text))
 }

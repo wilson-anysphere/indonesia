@@ -1789,7 +1789,6 @@ pub fn inline_variable(
         }) {
             return Err(RefactorError::InlineSideEffects);
         }
-
     }
 
     // Even "pure" initializers can be order-sensitive because they may throw (NPE/AIOOBE/ClassCast)

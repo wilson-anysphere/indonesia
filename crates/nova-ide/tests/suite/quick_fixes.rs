@@ -196,12 +196,8 @@ fn code_actions_with_context_void_method_return_value_offers_remove_returned_val
     };
 
     let selection = Span::new(expr_start, expr_start);
-    let actions = ide.code_actions_lsp_with_context(
-        CancellationToken::new(),
-        file,
-        Some(selection),
-        &[diag],
-    );
+    let actions =
+        ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[diag]);
     let action = find_code_action(&actions, "Remove returned value").unwrap_or_else(|| {
         panic!(
             "missing `Remove returned value` quick fix; got titles {:?}",
@@ -283,7 +279,9 @@ fn unresolved_type_offers_create_class_quick_fix() {
     let action = actions
         .iter()
         .find_map(|action| match action {
-            CodeActionOrCommand::CodeAction(action) if action.title == "Create class 'MissingType'" => {
+            CodeActionOrCommand::CodeAction(action)
+                if action.title == "Create class 'MissingType'" =>
+            {
                 Some(action)
             }
             _ => None,
@@ -319,8 +317,7 @@ fn unresolved_type_offers_create_class_quick_fix() {
 
     let updated = apply_single_text_edit(source, edit);
     assert_eq!(
-        updated,
-        "class A { MissingType x; }\n\nclass MissingType {\n}\n",
+        updated, "class A { MissingType x; }\n\nclass MissingType {\n}\n",
         "unexpected updated text:\n{updated}"
     );
 }
@@ -392,7 +389,11 @@ class A {
     // snapshot-like view.
     let view = SalsaDbView::from_source_db(&db);
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let ide = IdeExtensions::new(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
 
     // Ensure `List` triggers an `unresolved-name` diagnostic (expression position).
     let cancel = CancellationToken::new();

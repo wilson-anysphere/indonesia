@@ -2937,7 +2937,9 @@ fn classpath_index_for_file(
 
     for output_dir in &config.output_dirs {
         if output_dir.path.is_dir() {
-            entries.push(nova_classpath::ClasspathEntry::ClassDir(output_dir.path.clone()));
+            entries.push(nova_classpath::ClasspathEntry::ClassDir(
+                output_dir.path.clone(),
+            ));
         }
     }
 
@@ -3018,7 +3020,10 @@ fn parse_reference_type_span(tokens: &[Token], start_idx: usize) -> Option<(usiz
     }
 
     // Generic type arguments: '<' ... '>'
-    if tokens.get(i).is_some_and(|t| t.kind == TokenKind::Symbol('<')) {
+    if tokens
+        .get(i)
+        .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+    {
         let mut depth = 0i32;
         while i < tokens.len() {
             match tokens[i].kind {
@@ -3077,7 +3082,8 @@ fn instanceof_type_span(text: &str, offset: usize) -> Option<Span> {
 }
 
 fn is_instanceof_type_completion_context(text: &str, offset: usize) -> bool {
-    instanceof_type_span(text, offset).is_some_and(|span| span.start <= offset && offset <= span.end)
+    instanceof_type_span(text, offset)
+        .is_some_and(|span| span.start <= offset && offset <= span.end)
 }
 
 fn constructor_completion_item(label: String, detail: Option<String>) -> CompletionItem {
@@ -3412,7 +3418,8 @@ fn instanceof_type_completions(
         };
 
         if java_type_needs_import(&imports, &binary) {
-            item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &binary)]);
+            item.additional_text_edits =
+                Some(vec![java_import_text_edit(text, text_index, &binary)]);
         }
 
         items.push(item);
@@ -8643,9 +8650,7 @@ fn catch_param_type_position(tokens: &[Token], cur_idx: usize, cursor_offset: us
         }
 
         // Parameter name.
-        tokens
-            .get(i)
-            .filter(|t| t.kind == TokenKind::Ident)
+        tokens.get(i).filter(|t| t.kind == TokenKind::Ident)
     }
 
     let mut i = cur_idx;

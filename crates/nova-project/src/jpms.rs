@@ -473,7 +473,8 @@ mod tests {
 
     #[test]
     fn reads_automatic_module_name_from_manifest_continuation_lines() {
-        let manifest = b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.\r\n foo\r\n\r\n";
+        let manifest =
+            b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.\r\n foo\r\n\r\n";
         let name = automatic_module_name_from_manifest(manifest).expect("name");
         assert_eq!(name.as_str(), "com.example.foo");
     }
@@ -482,7 +483,8 @@ mod tests {
     fn reads_automatic_module_name_from_manifest_stops_at_end_of_main_section() {
         // `Automatic-Module-Name` only applies in the main section; entries in later sections
         // should be ignored.
-        let manifest = b"Manifest-Version: 1.0\r\n\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n";
+        let manifest =
+            b"Manifest-Version: 1.0\r\n\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n";
         assert!(automatic_module_name_from_manifest(manifest).is_none());
     }
 

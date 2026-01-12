@@ -29,7 +29,10 @@ fn rename_field_updates_reference_in_another_field_initializer() {
     .unwrap();
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
-    assert!(after.contains("int baz = 1;"), "expected field declaration renamed");
+    assert!(
+        after.contains("int baz = 1;"),
+        "expected field declaration renamed"
+    );
     assert!(
         after.contains("int bar = baz + 1;"),
         "expected initializer reference renamed"
@@ -119,4 +122,3 @@ fn rename_enum_constant_updates_switch_case_label() {
         "expected switch label renamed"
     );
 }
-

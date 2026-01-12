@@ -144,7 +144,10 @@ fn tests_dir_contains_only_tests_rs_at_root() {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect();
     root_rs_files.sort();
 

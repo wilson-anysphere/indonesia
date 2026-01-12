@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
 
-use crate::{bazel, gradle, maven, simple, BuildSystem, Module, ProjectConfig, WorkspaceProjectModel};
+use crate::{
+    bazel, gradle, maven, simple, BuildSystem, Module, ProjectConfig, WorkspaceProjectModel,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
@@ -1062,7 +1064,9 @@ mod tests {
         let workspace_root = workspace_root
             .canonicalize()
             .expect("canonicalize workspace root");
-        let included_root = included_root.canonicalize().expect("canonicalize included root");
+        let included_root = included_root
+            .canonicalize()
+            .expect("canonicalize included root");
 
         // Composite build that includes a sibling build under a `build/` directory.
         std::fs::write(
@@ -1070,7 +1074,8 @@ mod tests {
             "includeBuild(\"../build/included\")\n",
         )
         .expect("write settings.gradle");
-        std::fs::write(included_root.join("build.gradle"), "").expect("write included build.gradle");
+        std::fs::write(included_root.join("build.gradle"), "")
+            .expect("write included build.gradle");
 
         // Ensure the included build is materialized as a module so its root can be used for
         // relative-path build file detection.

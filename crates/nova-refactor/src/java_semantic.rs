@@ -2220,7 +2220,8 @@ fn record_non_body_type_references_in_item(
                                 else {
                                     continue;
                                 };
-                                let range = TextRange::new(param.name_range.start, param.name_range.end);
+                                let range =
+                                    TextRange::new(param.name_range.start, param.name_range.end);
                                 references[symbol.as_usize()].push(Reference {
                                     file: file.clone(),
                                     range,
@@ -4973,8 +4974,24 @@ fn collect_switch_contexts(
                 else_branch,
                 ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
-                walk_stmt(body, *then_branch, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
+                walk_stmt(
+                    body,
+                    *then_branch,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 if let Some(stmt) = else_branch {
                     walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out);
                 }
@@ -4984,7 +5001,15 @@ fn collect_switch_contexts(
                 body: inner,
                 ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
             }
             hir::Stmt::For {
@@ -5010,10 +5035,20 @@ fn collect_switch_contexts(
                 body: inner,
                 ..
             } => {
-                walk_expr(body, *iterable, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *iterable,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
             }
-            hir::Stmt::Synchronized { expr, body: inner, .. } => {
+            hir::Stmt::Synchronized {
+                expr, body: inner, ..
+            } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
             }
@@ -5062,15 +5097,29 @@ fn collect_switch_contexts(
                     );
                 }
                 if let Some(finally) = finally {
-                    walk_stmt(body, *finally, owner, scope_result, resolver, item_trees, out);
+                    walk_stmt(
+                        body,
+                        *finally,
+                        owner,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                        out,
+                    );
                 }
             }
             hir::Stmt::Assert {
-                condition,
-                message,
-                ..
+                condition, message, ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 if let Some(expr) = message {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
@@ -5095,7 +5144,15 @@ fn collect_switch_contexts(
             hir::Expr::FieldAccess { receiver, .. }
             | hir::Expr::MethodReference { receiver, .. }
             | hir::Expr::ConstructorReference { receiver, .. } => {
-                walk_expr(body, *receiver, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *receiver,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
             }
             hir::Expr::ArrayAccess { array, index, .. } => {
                 walk_expr(body, *array, owner, scope_result, resolver, item_trees, out);
@@ -5105,7 +5162,15 @@ fn collect_switch_contexts(
                 walk_expr(body, *ty, owner, scope_result, resolver, item_trees, out);
             }
             hir::Expr::Call { callee, args, .. } => {
-                walk_expr(body, *callee, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *callee,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 for arg in args {
                     walk_expr(body, *arg, owner, scope_result, resolver, item_trees, out);
                 }
@@ -5135,11 +5200,37 @@ fn collect_switch_contexts(
                 else_expr,
                 ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
-                walk_expr(body, *then_expr, owner, scope_result, resolver, item_trees, out);
-                walk_expr(body, *else_expr, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
+                walk_expr(
+                    body,
+                    *then_expr,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
+                walk_expr(
+                    body,
+                    *else_expr,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
             }
-            hir::Expr::Lambda { body: lambda_body, .. } => match lambda_body {
+            hir::Expr::Lambda {
+                body: lambda_body, ..
+            } => match lambda_body {
                 hir::LambdaBody::Expr(expr) => {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
                 }
@@ -5161,7 +5252,15 @@ fn collect_switch_contexts(
         }
     }
 
-    walk_stmt(body, body.root, owner, scope_result, resolver, item_trees, out);
+    walk_stmt(
+        body,
+        body.root,
+        owner,
+        scope_result,
+        resolver,
+        item_trees,
+        out,
+    );
 }
 
 fn infer_switch_selector_enum_type(
@@ -5176,7 +5275,8 @@ fn infer_switch_selector_enum_type(
         return None;
     };
 
-    let resolved = resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))?;
+    let resolved =
+        resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))?;
     let ty_text = match resolved {
         Resolution::Local(local_ref) => body.locals[local_ref.local].ty_text.clone(),
         Resolution::Parameter(param_ref) => match param_ref.owner {
@@ -5800,7 +5900,12 @@ fn record_syntax_only_references(
         let (scope, selector_enum) = switch_contexts
             .get(&start)
             .map(|ctx| (ctx.scope, ctx.selector_enum))
-            .unwrap_or_else(|| (type_scope_at(start).unwrap_or(scope_result.file_scope), None));
+            .unwrap_or_else(|| {
+                (
+                    type_scope_at(start).unwrap_or(scope_result.file_scope),
+                    None,
+                )
+            });
 
         for label in switch_stmt.labels() {
             for expr in label.expressions() {

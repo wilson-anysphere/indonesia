@@ -32,11 +32,11 @@ use nova_core::{
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
+pub use builtin_names::BUILTIN_JDK_BINARY_NAMES;
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
 pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
-pub use builtin_names::BUILTIN_JDK_BINARY_NAMES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JdkIndexBacking {

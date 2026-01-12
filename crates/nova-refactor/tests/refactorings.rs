@@ -4517,13 +4517,13 @@ fn rename_record_component_updates_explicit_canonical_constructor_params() {
    }
  }
  "#;
- 
+
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("record P(int x").unwrap() + "record P(int ".len();
     let symbol = db
         .symbol_at(&file, offset)
         .expect("symbol at record component x");
- 
+
     let edit = rename(
         &db,
         RenameParams {
@@ -4533,7 +4533,7 @@ fn rename_record_component_updates_explicit_canonical_constructor_params() {
     )
     .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
- 
+
     assert!(
         after.contains("record P(int y)"),
         "record header component should be renamed: {after}"
@@ -4551,7 +4551,7 @@ fn rename_record_component_updates_explicit_canonical_constructor_params() {
         "external accessor calls should be renamed: {after}"
     );
 }
- 
+
 #[test]
 fn rename_local_variable_does_not_touch_type_arguments_or_annotations() {
     let file = FileId::new("Test.java");

@@ -696,7 +696,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&included).unwrap();
 
-        write_file(&root.join("settings.gradle"), b"includeBuild(\"../included\")\n");
+        write_file(
+            &root.join("settings.gradle"),
+            b"includeBuild(\"../included\")\n",
+        );
         write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
 
         let files = collect_gradle_build_files(&root).unwrap();

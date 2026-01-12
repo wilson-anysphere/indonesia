@@ -608,13 +608,11 @@ impl FrameworkWorkspaceCache {
         build_fingerprint.hash(&mut hasher);
 
         for file_id in db.all_file_ids() {
-                if cancel.is_cancelled() {
-                    if let Some(existing) =
-                        lock_unpoison(&self.spring_workspace).get_cloned(&key)
-                    {
-                        return SpringWorkspace {
-                            is_spring: existing.is_spring,
-                            index: existing.index,
+            if cancel.is_cancelled() {
+                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&key) {
+                    return SpringWorkspace {
+                        is_spring: existing.is_spring,
+                        index: existing.index,
                     };
                 }
                 return SpringWorkspace {
@@ -675,9 +673,7 @@ impl FrameworkWorkspaceCache {
         }
 
         if cancel.is_cancelled() {
-            if let Some(existing) =
-                lock_unpoison(&self.spring_workspace).get_cloned(&key)
-            {
+            if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&key) {
                 return SpringWorkspace {
                     is_spring: existing.is_spring,
                     index: existing.index,
@@ -709,9 +705,7 @@ impl FrameworkWorkspaceCache {
 
         for (path, file_id, kind) in files {
             if cancel.is_cancelled() {
-                if let Some(existing) =
-                    lock_unpoison(&self.spring_workspace).get_cloned(&key)
-                {
+                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&key) {
                     return SpringWorkspace {
                         is_spring: existing.is_spring,
                         index: existing.index,
