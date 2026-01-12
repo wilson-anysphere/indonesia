@@ -2673,30 +2673,9 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     let mut store = TypeStore::with_minimal_jdk();
     // 1) Pre-intern all workspace source types in a stable order so their `ClassId`s do not depend
     // on which body/file happens to be typechecked first.
-    let mut source_type_names: Vec<String> = Vec::new();
-    for (idx, file) in files.iter().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 32);
-
-        let scopes = db.scope_graph(*file);
-        let tree = db.hir_item_tree(*file);
-
-        let mut item_ids = Vec::new();
-        for item in &tree.items {
-            collect_item_ids(&tree, *item, &mut item_ids);
-        }
-
-        for item in item_ids {
-            if let Some(name) = scopes.scopes.type_name(item) {
-                source_type_names.push(name.as_str().to_string());
-            }
-        }
-    }
-    source_type_names.sort();
-    source_type_names.dedup();
-
-    for (idx, name) in source_type_names.iter().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 128);
-        store.intern_class_id(name);
+    for (idx, name) in workspace.iter_type_names().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+        store.intern_class_id(name.as_str());
     }
 
     // 2) Pre-intern referenced types (from signatures and bodies) so that subsequent per-body
@@ -3028,15 +3007,6 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
         }
 
         drop(loader);
-    }
-
-    // Pre-intern workspace (source) types in deterministic order so `ClassId`s are stable
-    // across body-local clones even when different bodies load workspace types in different
-    // orders.
-    let workspace = db.workspace_def_map(project);
-    for (idx, name) in workspace.iter_type_names().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
-        store.intern_class_id(name.as_str());
     }
 
     db.record_salsa_project_memo_bytes(
