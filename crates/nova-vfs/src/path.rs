@@ -924,6 +924,24 @@ mod tests {
     }
 
     #[test]
+    fn decompiled_uri_normalizes_binary_name_dots() {
+        let uri = format!("nova:///decompiled/{HASH_64}/com..example..Foo.java");
+        let parsed = VfsPath::uri(uri);
+        let expected = format!("nova:///decompiled/{HASH_64}/com.example.Foo.java");
+        assert_eq!(parsed, VfsPath::decompiled(HASH_64, "com.example.Foo"));
+        assert_eq!(parsed.to_uri().as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn decompiled_uri_normalizes_binary_name_backslashes() {
+        let uri = format!("nova:///decompiled/{HASH_64}/com\\example\\Foo.java");
+        let parsed = VfsPath::uri(uri);
+        let expected = format!("nova:///decompiled/{HASH_64}/com.example.Foo.java");
+        assert_eq!(parsed, VfsPath::decompiled(HASH_64, "com.example.Foo"));
+        assert_eq!(parsed.to_uri().as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
     fn unknown_nova_uri_stays_uri() {
         let uri = "nova:///something/else";
         assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
