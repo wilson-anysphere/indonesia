@@ -193,6 +193,19 @@ impl SourceDatabase for InMemoryFileStore {
     }
 }
 
+impl nova_core::ProjectDatabase for AnalysisDatabase {
+    fn project_files(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.files.keys().map(PathBuf::from).collect();
+        paths.sort();
+        paths
+    }
+
+    fn file_text(&self, path: &Path) -> Option<String> {
+        let key = path.to_str()?;
+        self.files.get(key).map(|data| data.text.as_ref().to_string())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisDbError {
     #[error("unknown file: {0}")]

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use nova_core::ProjectDatabase;
-use nova_db::{FileId, InMemoryFileStore, SalsaDatabase, SalsaDbView};
+use nova_cache::CacheConfig;
+use nova_db::{AnalysisDatabase, FileId, InMemoryFileStore, SalsaDatabase, SalsaDbView};
+use tempfile::TempDir;
 
 #[test]
 fn in_memory_file_store_implements_project_database() {
@@ -41,6 +43,29 @@ fn salsa_database_implements_project_database() {
 
     let files = ProjectDatabase::project_files(&db);
     assert_eq!(files, vec![PathBuf::from("src/A.java")]);
+
+    let text = ProjectDatabase::file_text(&db, &files[0]).expect("file text");
+    assert_eq!(text, "class A {}");
+}
+
+#[test]
+fn analysis_database_implements_project_database() {
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let cache_root = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let cfg = CacheConfig {
+        cache_root_override: Some(cache_root),
+    };
+
+    let mut db = AnalysisDatabase::new_with_cache_config(&project_root, cfg).unwrap();
+    db.set_file_content("src/A.java", "class A {}");
+    db.set_file_content("src/B.java", "class B {}");
+
+    let files = ProjectDatabase::project_files(&db);
+    assert_eq!(files, vec![PathBuf::from("src/A.java"), PathBuf::from("src/B.java")]);
 
     let text = ProjectDatabase::file_text(&db, &files[0]).expect("file text");
     assert_eq!(text, "class A {}");
