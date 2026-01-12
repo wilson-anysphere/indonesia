@@ -89,7 +89,7 @@ Notable “delta” areas to be aware of:
 
 - **Incremental engine coverage (ADR 0001):**
   - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
-    - `crates/nova-lsp/src/main.rs` tracks open documents in `ServerState::analysis: AnalysisState`, which wraps a `nova_vfs::Vfs<LocalFs>` overlay (plus small `HashMap` caches for file text/paths).
+    - `crates/nova-lsp/src/main.rs` tracks open documents in `ServerState::analysis: AnalysisState`, which wraps a `nova_vfs::Vfs<LspFs>` overlay (where `LspFs` is a small adapter around `LocalFs` + the file-backed `nova_decompile::DecompiledDocumentStore`) plus small `HashMap` caches for file text/paths.
     - Refactorings use a Salsa-backed semantic snapshot (`nova_refactor::RefactorJavaDatabase`) and can run against open-document overlays extracted from the VFS (see `ServerState::refactor_snapshot` in `crates/nova-lsp/src/main.rs` and `crates/nova-lsp/src/refactor_workspace.rs`).
     - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
 - **Syntax tree usage (ADR 0002):**
@@ -102,10 +102,10 @@ Notable “delta” areas to be aware of:
   - `rkyv` + validation is implemented in `crates/nova-storage/` and used by some persisted artifacts (e.g. dependency bundles in `crates/nova-deps-cache/`).
   - Some persistence remains serde/bincode-based (e.g. parts of classpath caching in `crates/nova-classpath/`), and not all editor-facing schemas are versioned yet.
 - **URIs + VFS model (ADR 0006):**
-  - `crates/nova-vfs/` has archive path types + overlay support, and the current `nova-lsp` stdio server uses a `nova_vfs::Vfs<LocalFs>` overlay for open documents (`AnalysisState` in `crates/nova-lsp/src/main.rs`).
+  - `crates/nova-vfs/` has archive path types + overlay support, and the current `nova-lsp` stdio server uses a `nova_vfs::Vfs` overlay for open documents (`AnalysisState` in `crates/nova-lsp/src/main.rs`; currently `Vfs<LspFs>`).
   - Some LSP-facing features still assume `file:` URIs and/or legacy schemes:
     - `crates/nova-lsp/src/refactor_workspace.rs` requires `file://` URIs for project-root discovery.
-    - JDK go-to-definition emits canonical ADR0006 `nova:///decompiled/...` URIs (see `goto_definition_jdk` in `crates/nova-lsp/src/main.rs`). Decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store (not injected into the open-document overlay), but legacy `nova-decompile:` handling still exists for compatibility (`crates/nova-lsp/src/decompile.rs` and `crates/nova-vfs/src/path.rs`).
+    - JDK go-to-definition emits canonical ADR0006 `nova:///decompiled/...` URIs (see `goto_definition_jdk` in `crates/nova-lsp/src/main.rs`). Decompiled virtual documents are persisted to the file-backed `nova_decompile::DecompiledDocumentStore` and cached in `nova-vfs`'s bounded `VirtualDocumentStore` for fast follow-up reads (not injected into the open-document overlay). Legacy `nova-decompile:` handling still exists for compatibility (`crates/nova-lsp/src/decompile.rs` and `crates/nova-vfs/src/path.rs`).
 - **Distributed mode (docs/16-distributed-mode.md):**
   - The router/worker stack (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) is now integrated into the shipped `nova-lsp` stdio server behind CLI flags:
     - `--distributed` enables local multi-process indexing/search.
