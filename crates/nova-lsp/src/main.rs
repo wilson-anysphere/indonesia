@@ -1307,6 +1307,42 @@ impl Default for AnalysisState {
     }
 }
 
+impl AnalysisState {
+    fn new_with_memory(memory: &MemoryManager) -> Self {
+        let salsa = nova_db::SalsaDatabase::new_with_memory_manager(memory);
+        let project = nova_db::ProjectId::from_raw(0);
+        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
+        let decompiled_store = match DecompiledDocumentStore::from_env() {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                // Best-effort fallback: if we can't resolve the normal cache directory
+                // (e.g. missing HOME in a sandbox), fall back to a per-process temp dir.
+                let fallback_root = std::env::temp_dir()
+                    .join(format!("nova-decompiled-docs-{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&fallback_root);
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = %err,
+                    fallback = %fallback_root.display(),
+                    "failed to initialize decompiled document store; using temp directory"
+                );
+                Arc::new(DecompiledDocumentStore::new(fallback_root))
+            }
+        };
+
+        let fs = LspFs::new(LocalFs::new(), decompiled_store.clone());
+        Self {
+            vfs: Vfs::new(fs),
+            decompiled_store,
+            file_paths: HashMap::new(),
+            file_exists: HashMap::new(),
+            file_contents: HashMap::new(),
+            salsa,
+        }
+    }
+}
+
 impl nova_db::Database for AnalysisState {
     fn file_content(&self, file_id: nova_db::FileId) -> &str {
         self.file_contents
@@ -1544,7 +1580,7 @@ impl ServerState {
             workspace: None,
             refactor_overlay_generation: 0,
             refactor_snapshot_cache: None,
-            analysis: AnalysisState::default(),
+            analysis: AnalysisState::new_with_memory(&memory),
             jdk_index: None,
             extensions_registry: ExtensionRegistry::default(),
             loaded_extensions: Vec::new(),
