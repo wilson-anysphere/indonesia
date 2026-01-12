@@ -289,11 +289,11 @@ async fn handle_request(
                 .iter()
                 .take(nova_remote_proto::MAX_DIAGNOSTICS_PER_MESSAGE)
             {
-                let (line, column) = byte_offset_to_line_col(&text, err.range.start);
+                let (line, column_utf16) = byte_offset_to_line_col(&text, err.range.start);
                 diagnostics.push(RemoteDiagnostic {
                     severity: DiagnosticSeverity::Error,
                     line,
-                    column,
+                    column: column_utf16,
                     message: err.message.clone(),
                 });
             }
@@ -316,22 +316,34 @@ async fn handle_request(
     }
 }
 
+/// Convert a byte offset within `text` into a 0-based (line, column) pair.
+///
+/// `line` is counted by the number of `\n` characters before `byte_offset`.
+/// `column` is measured in UTF-16 code units since the last `\n`, matching the
+/// LSP `Position.character` encoding.
 fn byte_offset_to_line_col(text: &str, byte_offset: u32) -> (u32, u32) {
-    let bytes = text.as_bytes();
-    let mut line: u32 = 0;
-    let mut col: u32 = 0;
-    let mut idx = 0usize;
-    let end = (byte_offset as usize).min(bytes.len());
-    while idx < end {
-        if bytes[idx] == b'\n' {
-            line = line.saturating_add(1);
-            col = 0;
-        } else {
-            col = col.saturating_add(1);
-        }
-        idx += 1;
+    let mut end = (byte_offset as usize).min(text.len());
+
+    // `byte_offset` should usually already be a char boundary (it comes from our
+    // parser's `TextRange`), but clamp defensively so we never slice into the
+    // middle of a UTF-8 codepoint.
+    while end > 0 && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
     }
-    (line, col)
+
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+
+    for ch in text[..end].chars() {
+        if ch == '\n' {
+            line = line.saturating_add(1);
+            col_utf16 = 0;
+        } else {
+            col_utf16 = col_utf16.saturating_add(ch.len_utf16() as u32);
+        }
+    }
+
+    (line, col_utf16)
 }
 
 fn cancelled_error() -> ProtoRpcError {
@@ -806,6 +818,27 @@ mod tests {
             output.contains("auth_present"),
             "nova-worker Args debug output should include auth presence indicator: {output}"
         );
+    }
+
+    #[test]
+    fn byte_offset_to_line_col_uses_utf16_columns() {
+        // `é` is 2 bytes in UTF-8 but 1 code unit in UTF-16.
+        let text = "aéx";
+        let byte_offset = text.find('x').expect("find x") as u32;
+        assert_eq!(byte_offset, 3);
+
+        let (line, col) = byte_offset_to_line_col(text, byte_offset);
+        assert_eq!(line, 0);
+        assert_eq!(col, 2);
+
+        // 😀 is 4 bytes in UTF-8 but 2 code units in UTF-16.
+        let text = "a😀b";
+        let byte_offset = text.find('b').expect("find b") as u32;
+        assert_eq!(byte_offset, 5);
+
+        let (line, col) = byte_offset_to_line_col(text, byte_offset);
+        assert_eq!(line, 0);
+        assert_eq!(col, 3);
     }
 
     fn parse_executions(db: &SalsaDatabase) -> u64 {
