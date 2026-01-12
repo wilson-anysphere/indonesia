@@ -225,7 +225,12 @@ impl BodyBuilder {
         self.local_with_span(name, kind, Span::new(0, 0))
     }
 
-    pub fn local_with_span(&mut self, name: impl Into<Name>, kind: LocalKind, span: Span) -> LocalId {
+    pub fn local_with_span(
+        &mut self,
+        name: impl Into<Name>,
+        kind: LocalKind,
+        span: Span,
+    ) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         self.locals.push(Local {
             name: name.into(),

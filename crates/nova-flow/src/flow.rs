@@ -52,7 +52,12 @@ pub fn analyze_with(
     let mut diagnostics = Vec::new();
 
     if config.report_unreachable {
-        diagnostics.extend(unreachable_diagnostics(body, &cfg, &reachable, check_cancelled));
+        diagnostics.extend(unreachable_diagnostics(
+            body,
+            &cfg,
+            &reachable,
+            check_cancelled,
+        ));
     }
 
     diagnostics.extend(definite_assignment_diagnostics(
@@ -63,7 +68,12 @@ pub fn analyze_with(
     ));
 
     if config.report_possible_null_deref {
-        diagnostics.extend(null_deref_diagnostics(body, &cfg, &reachable, check_cancelled));
+        diagnostics.extend(null_deref_diagnostics(
+            body,
+            &cfg,
+            &reachable,
+            check_cancelled,
+        ));
     }
 
     // Best-effort: avoid duplicate reports when the same statement is reached
@@ -444,10 +454,7 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     let next_target = if arm.is_arrow {
                         after_bb
                     } else {
-                        arm_entries
-                            .get(idx + 1)
-                            .copied()
-                            .unwrap_or(after_bb)
+                        arm_entries.get(idx + 1).copied().unwrap_or(after_bb)
                     };
 
                     self.cfg.set_terminator(
@@ -772,7 +779,9 @@ fn transfer_terminator_definite_assignment(
 ) {
     match *term {
         Terminator::If { condition, .. } => check_expr_assigned(body, condition, state, diags),
-        Terminator::Switch { expression, .. } => check_expr_assigned(body, expression, state, diags),
+        Terminator::Switch { expression, .. } => {
+            check_expr_assigned(body, expression, state, diags)
+        }
         Terminator::Return { value, .. } => {
             if let Some(value) = value {
                 check_expr_assigned(body, value, state, diags);
@@ -818,10 +827,7 @@ fn check_expr_assigned(body: &Body, expr: ExprId, state: &[bool], diags: &mut Ve
                 check_expr_assigned(body, *child, state, diags);
             }
         }
-        ExprKind::Null
-        | ExprKind::Bool(_)
-        | ExprKind::Int(_)
-        | ExprKind::String(_) => {}
+        ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
     }
 }
 

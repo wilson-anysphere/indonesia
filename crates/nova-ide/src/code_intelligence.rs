@@ -591,7 +591,10 @@ fn flow_diagnostics(parse: &nova_syntax::JavaParseResult) -> Vec<Diagnostic> {
                 let range = token.text_range();
                 Some((
                     Name::new(token.text()),
-                    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize),
+                    Span::new(
+                        u32::from(range.start()) as usize,
+                        u32::from(range.end()) as usize,
+                    ),
                 ))
             })
             .collect::<Vec<_>>();
@@ -617,7 +620,10 @@ fn flow_diagnostics(parse: &nova_syntax::JavaParseResult) -> Vec<Diagnostic> {
                 let range = token.text_range();
                 Some((
                     Name::new(token.text()),
-                    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize),
+                    Span::new(
+                        u32::from(range.start()) as usize,
+                        u32::from(range.end()) as usize,
+                    ),
                 ))
             })
             .collect::<Vec<_>>();

@@ -21,10 +21,7 @@ use crate::body::{
 /// `params` provides the parameter names (and their spans) that should be
 /// considered definitely-assigned on entry.
 #[must_use]
-pub fn lower_flow_body(
-    block: &ast::Block,
-    params: impl IntoIterator<Item = (Name, Span)>,
-) -> Body {
+pub fn lower_flow_body(block: &ast::Block, params: impl IntoIterator<Item = (Name, Span)>) -> Body {
     lower_flow_body_with(block, params, &mut || {})
 }
 
@@ -140,7 +137,10 @@ impl<'a> FlowBodyLower<'a> {
                 let then_branch = if_stmt
                     .then_branch()
                     .map(|stmt| self.lower_scoped_statement(stmt))
-                    .unwrap_or_else(|| self.builder.stmt_with_span(StmtKind::Nop, span_of_node(if_stmt.syntax())));
+                    .unwrap_or_else(|| {
+                        self.builder
+                            .stmt_with_span(StmtKind::Nop, span_of_node(if_stmt.syntax()))
+                    });
 
                 let else_branch = if_stmt
                     .else_branch()
@@ -165,7 +165,10 @@ impl<'a> FlowBodyLower<'a> {
                 let body = while_stmt
                     .body()
                     .map(|stmt| self.lower_scoped_statement(stmt))
-                    .unwrap_or_else(|| self.builder.stmt_with_span(StmtKind::Nop, span_of_node(while_stmt.syntax())));
+                    .unwrap_or_else(|| {
+                        self.builder
+                            .stmt_with_span(StmtKind::Nop, span_of_node(while_stmt.syntax()))
+                    });
 
                 vec![self.builder.stmt_with_span(
                     StmtKind::While { condition, body },
@@ -177,7 +180,10 @@ impl<'a> FlowBodyLower<'a> {
                 let body = do_stmt
                     .body()
                     .map(|stmt| self.lower_scoped_statement(stmt))
-                    .unwrap_or_else(|| self.builder.stmt_with_span(StmtKind::Nop, span_of_node(do_stmt.syntax())));
+                    .unwrap_or_else(|| {
+                        self.builder
+                            .stmt_with_span(StmtKind::Nop, span_of_node(do_stmt.syntax()))
+                    });
                 let condition = do_stmt
                     .condition()
                     .map(|expr| self.lower_expr(expr))
@@ -191,7 +197,9 @@ impl<'a> FlowBodyLower<'a> {
 
             ast::Statement::ForStatement(for_stmt) => self.lower_for_statement(&for_stmt),
 
-            ast::Statement::SwitchStatement(switch_stmt) => self.lower_switch_statement(&switch_stmt),
+            ast::Statement::SwitchStatement(switch_stmt) => {
+                self.lower_switch_statement(&switch_stmt)
+            }
 
             ast::Statement::YieldStatement(yield_stmt) => {
                 // Best-effort: treat `yield <expr>;` like `break` that also evaluates the yielded
@@ -214,18 +222,23 @@ impl<'a> FlowBodyLower<'a> {
                 let mut stmts = Vec::new();
                 if let Some(expr) = sync.expression() {
                     let expr_id = self.lower_expr(expr);
-                    stmts.push(self.builder.stmt_with_span(StmtKind::Expr(expr_id), span_of_node(sync.syntax())));
+                    stmts.push(
+                        self.builder
+                            .stmt_with_span(StmtKind::Expr(expr_id), span_of_node(sync.syntax())),
+                    );
                 }
                 if let Some(body) = sync.body() {
                     stmts.push(self.lower_block(&body));
                 }
                 if stmts.is_empty() {
-                    stmts.push(self.builder.stmt_with_span(StmtKind::Nop, span_of_node(sync.syntax())));
+                    stmts.push(
+                        self.builder
+                            .stmt_with_span(StmtKind::Nop, span_of_node(sync.syntax())),
+                    );
                 }
-                vec![self.builder.stmt_with_span(
-                    StmtKind::Block(stmts),
-                    span_of_node(sync.syntax()),
-                )]
+                vec![self
+                    .builder
+                    .stmt_with_span(StmtKind::Block(stmts), span_of_node(sync.syntax()))]
             }
 
             ast::Statement::AssertStatement(assert_stmt) => {
@@ -238,23 +251,25 @@ impl<'a> FlowBodyLower<'a> {
                     .collect();
                 for expr in exprs {
                     let id = self.lower_expr(expr);
-                    out.push(self.builder.stmt_with_span(
-                        StmtKind::Expr(id),
-                        span_of_node(assert_stmt.syntax()),
-                    ));
+                    out.push(
+                        self.builder
+                            .stmt_with_span(StmtKind::Expr(id), span_of_node(assert_stmt.syntax())),
+                    );
                 }
                 if out.is_empty() {
-                    out.push(self.builder.stmt_with_span(StmtKind::Nop, span_of_node(assert_stmt.syntax())));
+                    out.push(
+                        self.builder
+                            .stmt_with_span(StmtKind::Nop, span_of_node(assert_stmt.syntax())),
+                    );
                 }
                 out
             }
 
             ast::Statement::ReturnStatement(ret) => {
                 let value = ret.expression().map(|expr| self.lower_expr(expr));
-                vec![self.builder.stmt_with_span(
-                    StmtKind::Return(value),
-                    span_of_node(ret.syntax()),
-                )]
+                vec![self
+                    .builder
+                    .stmt_with_span(StmtKind::Return(value), span_of_node(ret.syntax()))]
             }
 
             ast::Statement::ThrowStatement(thr) => {
@@ -262,15 +277,16 @@ impl<'a> FlowBodyLower<'a> {
                     .expression()
                     .map(|expr| self.lower_expr(expr))
                     .unwrap_or_else(|| self.alloc_invalid_expr(span_of_node(thr.syntax())));
-                vec![self.builder.stmt_with_span(
-                    StmtKind::Throw(exception),
-                    span_of_node(thr.syntax()),
-                )]
+                vec![self
+                    .builder
+                    .stmt_with_span(StmtKind::Throw(exception), span_of_node(thr.syntax()))]
             }
 
             ast::Statement::BreakStatement(brk) => {
                 let _ = brk.label_token();
-                vec![self.builder.stmt_with_span(StmtKind::Break, span_of_node(brk.syntax()))]
+                vec![self
+                    .builder
+                    .stmt_with_span(StmtKind::Break, span_of_node(brk.syntax()))]
             }
 
             ast::Statement::ContinueStatement(cont) => {
@@ -302,10 +318,9 @@ impl<'a> FlowBodyLower<'a> {
                 self.lower_expression_statement(expr, span)
             }
 
-            ast::Statement::EmptyStatement(empty) => vec![self.builder.stmt_with_span(
-                StmtKind::Nop,
-                span_of_node(empty.syntax()),
-            )],
+            ast::Statement::EmptyStatement(empty) => vec![self
+                .builder
+                .stmt_with_span(StmtKind::Nop, span_of_node(empty.syntax()))],
 
             _ => vec![self.builder.stmt_with_span(StmtKind::Nop, stmt_span)],
         }
@@ -339,7 +354,9 @@ impl<'a> FlowBodyLower<'a> {
                                 },
                                 span,
                             );
-                            return vec![self.builder.stmt_with_span(StmtKind::Expr(expr_id), span)];
+                            return vec![self
+                                .builder
+                                .stmt_with_span(StmtKind::Expr(expr_id), span)];
                         }
                         other_lhs => {
                             let lhs_id = self.lower_expr(other_lhs);
@@ -349,7 +366,9 @@ impl<'a> FlowBodyLower<'a> {
                                 },
                                 span,
                             );
-                            return vec![self.builder.stmt_with_span(StmtKind::Expr(expr_id), span)];
+                            return vec![self
+                                .builder
+                                .stmt_with_span(StmtKind::Expr(expr_id), span)];
                         }
                     }
                 }
@@ -364,9 +383,14 @@ impl<'a> FlowBodyLower<'a> {
         }
     }
 
-    fn lower_local_declaration(&mut self, local: &ast::LocalVariableDeclarationStatement) -> Vec<StmtId> {
+    fn lower_local_declaration(
+        &mut self,
+        local: &ast::LocalVariableDeclarationStatement,
+    ) -> Vec<StmtId> {
         let Some(decls) = local.declarator_list() else {
-            return vec![self.builder.stmt_with_span(StmtKind::Nop, span_of_node(local.syntax()))];
+            return vec![self
+                .builder
+                .stmt_with_span(StmtKind::Nop, span_of_node(local.syntax()))];
         };
 
         let mut out = Vec::new();
@@ -392,7 +416,10 @@ impl<'a> FlowBodyLower<'a> {
         }
 
         if out.is_empty() {
-            out.push(self.builder.stmt_with_span(StmtKind::Nop, span_of_node(local.syntax())));
+            out.push(
+                self.builder
+                    .stmt_with_span(StmtKind::Nop, span_of_node(local.syntax())),
+            );
         }
         out
     }
@@ -411,7 +438,10 @@ impl<'a> FlowBodyLower<'a> {
 
         let body = body_stmt
             .map(|stmt| self.lower_scoped_statement(stmt))
-            .unwrap_or_else(|| self.builder.stmt_with_span(StmtKind::Nop, span_of_node(for_stmt.syntax())));
+            .unwrap_or_else(|| {
+                self.builder
+                    .stmt_with_span(StmtKind::Nop, span_of_node(for_stmt.syntax()))
+            });
 
         self.pop_scope();
 
@@ -426,12 +456,16 @@ impl<'a> FlowBodyLower<'a> {
         )]
     }
 
-    fn lower_for_header(&mut self, header: &ast::ForHeader) -> (Option<StmtId>, Option<ExprId>, Option<StmtId>) {
+    fn lower_for_header(
+        &mut self,
+        header: &ast::ForHeader,
+    ) -> (Option<StmtId>, Option<ExprId>, Option<StmtId>) {
         self.check_cancelled();
         let header_node = header.syntax();
 
         // Enhanced-for has no `;` tokens directly under the header node.
-        let has_semicolons = nova_syntax::ast::support::token(header_node, SyntaxKind::Semicolon).is_some();
+        let has_semicolons =
+            nova_syntax::ast::support::token(header_node, SyntaxKind::Semicolon).is_some();
 
         if !has_semicolons {
             // Enhanced for: `for (T x : expr)`.
@@ -443,7 +477,8 @@ impl<'a> FlowBodyLower<'a> {
                 .and_then(|decl| {
                     let name_tok = decl.name_token()?;
                     let name = Name::new(name_tok.text().to_string());
-                    let local = self.declare_local(name, LocalKind::Local, span_of_token(&name_tok));
+                    let local =
+                        self.declare_local(name, LocalKind::Local, span_of_token(&name_tok));
 
                     // The enhanced-for variable is definitely assigned when the body runs. We model this
                     // by giving it an initializer.
@@ -474,15 +509,24 @@ impl<'a> FlowBodyLower<'a> {
             .filter(|tok| tok.kind() == SyntaxKind::Semicolon)
             .collect::<Vec<_>>();
 
-        let first_semi = semis.get(0).map(|t| u32::from(t.text_range().start()) as usize);
-        let second_semi = semis.get(1).map(|t| u32::from(t.text_range().start()) as usize);
+        let first_semi = semis
+            .get(0)
+            .map(|t| u32::from(t.text_range().start()) as usize);
+        let second_semi = semis
+            .get(1)
+            .map(|t| u32::from(t.text_range().start()) as usize);
 
         // Init.
-        let init = if let Some(decls) = header_node.children().find_map(ast::VariableDeclaratorList::cast) {
+        let init = if let Some(decls) = header_node
+            .children()
+            .find_map(ast::VariableDeclaratorList::cast)
+        {
             // `for (int i = 0; ...`
             let mut init_stmts = Vec::new();
             for decl in decls.declarators() {
-                let Some(name_tok) = decl.name_token() else { continue };
+                let Some(name_tok) = decl.name_token() else {
+                    continue;
+                };
                 let name = Name::new(name_tok.text().to_string());
                 let local = self.declare_local(name, LocalKind::Local, span_of_token(&name_tok));
                 let init = decl.initializer().map(|expr| self.lower_expr(expr));
@@ -499,10 +543,10 @@ impl<'a> FlowBodyLower<'a> {
             } else if init_stmts.is_empty() {
                 None
             } else {
-                Some(self.builder.stmt_with_span(
-                    StmtKind::Block(init_stmts),
-                    span_of_node(header_node),
-                ))
+                Some(
+                    self.builder
+                        .stmt_with_span(StmtKind::Block(init_stmts), span_of_node(header_node)),
+                )
             }
         } else {
             // Expression init list.
@@ -520,10 +564,10 @@ impl<'a> FlowBodyLower<'a> {
             } else if init_stmts.is_empty() {
                 None
             } else {
-                Some(self.builder.stmt_with_span(
-                    StmtKind::Block(init_stmts),
-                    span_of_node(header_node),
-                ))
+                Some(
+                    self.builder
+                        .stmt_with_span(StmtKind::Block(init_stmts), span_of_node(header_node)),
+                )
             }
         };
 
@@ -533,8 +577,12 @@ impl<'a> FlowBodyLower<'a> {
             .filter_map(ast::Expression::cast)
             .find(|expr| {
                 let span = span_of_node(expr.syntax());
-                let Some(first) = first_semi else { return false };
-                let Some(second) = second_semi else { return false };
+                let Some(first) = first_semi else {
+                    return false;
+                };
+                let Some(second) = second_semi else {
+                    return false;
+                };
                 span.start > first && span.start < second
             })
             .map(|expr| self.lower_expr(expr));
@@ -554,10 +602,10 @@ impl<'a> FlowBodyLower<'a> {
         } else if update_stmts.is_empty() {
             None
         } else {
-            Some(self.builder.stmt_with_span(
-                StmtKind::Block(update_stmts),
-                span_of_node(header_node),
-            ))
+            Some(
+                self.builder
+                    .stmt_with_span(StmtKind::Block(update_stmts), span_of_node(header_node)),
+            )
         };
 
         (init, condition, update)
@@ -614,7 +662,11 @@ impl<'a> FlowBodyLower<'a> {
                         // Patterns are not modeled; still walk nested expressions so we can surface
                         // use-before-assignment diagnostics in best-effort fashion.
                         let _ = pattern;
-                        for child in element.syntax().children().filter_map(ast::Expression::cast) {
+                        for child in element
+                            .syntax()
+                            .children()
+                            .filter_map(ast::Expression::cast)
+                        {
                             let _ = self.lower_expr(child);
                         }
                     }
@@ -656,10 +708,9 @@ impl<'a> FlowBodyLower<'a> {
 
         self.pop_scope();
 
-        vec![self.builder.stmt_with_span(
-            StmtKind::Switch { expression, arms },
-            span,
-        )]
+        vec![self
+            .builder
+            .stmt_with_span(StmtKind::Switch { expression, arms }, span)]
     }
 
     fn lower_try_statement(&mut self, try_stmt: &ast::TryStatement) -> Vec<StmtId> {
@@ -668,7 +719,10 @@ impl<'a> FlowBodyLower<'a> {
         let body = body_block
             .as_ref()
             .map(|block| self.lower_block(block))
-            .unwrap_or_else(|| self.builder.stmt_with_span(StmtKind::Nop, span_of_node(try_stmt.syntax())));
+            .unwrap_or_else(|| {
+                self.builder
+                    .stmt_with_span(StmtKind::Nop, span_of_node(try_stmt.syntax()))
+            });
 
         let mut catches = Vec::new();
         for catch in try_stmt.catches() {
@@ -707,10 +761,9 @@ impl<'a> FlowBodyLower<'a> {
 
             ast::Expression::NameExpression(name) => {
                 if let Some(local) = self.name_expr_local(&name) {
-                    return self.builder.expr_with_span(
-                        ExprKind::Local(local),
-                        span_of_node(name.syntax()),
-                    );
+                    return self
+                        .builder
+                        .expr_with_span(ExprKind::Local(local), span_of_node(name.syntax()));
                 }
                 self.alloc_invalid_expr(span_of_node(name.syntax()))
             }
@@ -850,7 +903,9 @@ impl<'a> FlowBodyLower<'a> {
                     .operand()
                     .map(|expr| self.lower_expr(expr))
                     .unwrap_or_else(|| self.alloc_invalid_expr(span_of_node(unary.syntax())));
-                let op = if nova_syntax::ast::support::token(unary.syntax(), SyntaxKind::Bang).is_some() {
+                let op = if nova_syntax::ast::support::token(unary.syntax(), SyntaxKind::Bang)
+                    .is_some()
+                {
                     Some(UnaryOp::Not)
                 } else {
                     None
@@ -861,7 +916,9 @@ impl<'a> FlowBodyLower<'a> {
                         span_of_node(unary.syntax()),
                     ),
                     None => self.builder.expr_with_span(
-                        ExprKind::Invalid { children: vec![operand] },
+                        ExprKind::Invalid {
+                            children: vec![operand],
+                        },
                         span_of_node(unary.syntax()),
                     ),
                 }
@@ -911,10 +968,8 @@ impl<'a> FlowBodyLower<'a> {
                 if let Some(lhs) = inst.lhs() {
                     children.push(self.lower_expr(lhs));
                 }
-                self.builder.expr_with_span(
-                    ExprKind::Invalid { children },
-                    span_of_node(inst.syntax()),
-                )
+                self.builder
+                    .expr_with_span(ExprKind::Invalid { children }, span_of_node(inst.syntax()))
             }
             ast::Expression::AssignmentExpression(assign) => {
                 let mut children = Vec::new();
@@ -940,20 +995,16 @@ impl<'a> FlowBodyLower<'a> {
                 if let Some(e) = cond.else_branch() {
                     children.push(self.lower_expr(e));
                 }
-                self.builder.expr_with_span(
-                    ExprKind::Invalid { children },
-                    span_of_node(cond.syntax()),
-                )
+                self.builder
+                    .expr_with_span(ExprKind::Invalid { children }, span_of_node(cond.syntax()))
             }
             ast::Expression::CastExpression(cast) => {
                 let mut children = Vec::new();
                 if let Some(expr) = cast.expression() {
                     children.push(self.lower_expr(expr));
                 }
-                self.builder.expr_with_span(
-                    ExprKind::Invalid { children },
-                    span_of_node(cast.syntax()),
-                )
+                self.builder
+                    .expr_with_span(ExprKind::Invalid { children }, span_of_node(cast.syntax()))
             }
             ast::Expression::LambdaExpression(lambda) => {
                 // Lambda bodies are executed lazily; skip lowering their internals (best-effort).
@@ -971,10 +1022,8 @@ impl<'a> FlowBodyLower<'a> {
                     .filter_map(ast::Expression::cast)
                     .map(|child| self.lower_expr(child))
                     .collect::<Vec<_>>();
-                self.builder.expr_with_span(
-                    ExprKind::Invalid { children },
-                    span_of_node(other.syntax()),
-                )
+                self.builder
+                    .expr_with_span(ExprKind::Invalid { children }, span_of_node(other.syntax()))
             }
         }
     }
@@ -1001,15 +1050,21 @@ impl<'a> FlowBodyLower<'a> {
                 ExprKind::Int(value)
             }
             SyntaxKind::StringLiteral => ExprKind::String(tok.text().to_string()),
-            _ => ExprKind::Invalid { children: Vec::new() },
+            _ => ExprKind::Invalid {
+                children: Vec::new(),
+            },
         };
 
         self.builder.expr_with_span(kind, span)
     }
 
     fn alloc_invalid_expr(&mut self, span: Span) -> ExprId {
-        self.builder
-            .expr_with_span(ExprKind::Invalid { children: Vec::new() }, span)
+        self.builder.expr_with_span(
+            ExprKind::Invalid {
+                children: Vec::new(),
+            },
+            span,
+        )
     }
 
     fn name_expr_local(&self, name: &ast::NameExpression) -> Option<LocalId> {
@@ -1030,12 +1085,18 @@ impl<'a> FlowBodyLower<'a> {
 
 fn span_of_node(node: &SyntaxNode) -> Span {
     let range = node.text_range();
-    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn span_of_token(token: &SyntaxToken) -> Span {
     let range = token.text_range();
-    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn binary_op_token(node: &SyntaxNode) -> Option<BinaryOp> {

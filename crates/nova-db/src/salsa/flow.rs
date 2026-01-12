@@ -117,7 +117,8 @@ fn flow_diagnostics(db: &dyn NovaFlow, method: MethodId) -> Arc<Vec<Diagnostic>>
         steps = steps.wrapping_add(1);
     };
 
-    let result = nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
+    let result =
+        nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
     let diags = Arc::new(result.diagnostics);
     db.record_query_stat("flow_diagnostics", start.elapsed());
     diags
@@ -169,4 +170,3 @@ fn find_block(parse: &JavaParseResult, ptr: AstPtr) -> Option<ast::Block> {
 
     ast::Block::cast(node)
 }
-
