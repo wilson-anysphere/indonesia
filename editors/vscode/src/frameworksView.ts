@@ -335,7 +335,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     if (!response) {
       void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', false);
-      return [messageNode('Web endpoints are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
+      return [unsupportedMethodNode('nova/web/endpoints')];
     }
 
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', true);
@@ -372,7 +372,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     if (!response) {
       void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', false);
-      return [messageNode('Micronaut endpoints are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
+      return [unsupportedMethodNode('nova/micronaut/endpoints')];
     }
 
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', true);
@@ -414,7 +414,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     if (!response) {
       void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', false);
-      return [messageNode('Micronaut beans are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
+      return [unsupportedMethodNode('nova/micronaut/beans')];
     }
 
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', true);
@@ -512,6 +512,10 @@ function messageNode(label: string, description?: string, icon: vscode.ThemeIcon
   return { kind: 'message', label, description, icon };
 }
 
+function unsupportedMethodNode(method: string): MessageNode {
+  return messageNode('Not supported by this server.', method, new vscode.ThemeIcon('warning'));
+}
+
 function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
   const pathCmp = a.path.localeCompare(b.path);
   if (pathCmp !== 0) {
@@ -532,8 +536,8 @@ function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
     return fileCmp;
   }
 
-  const aLine = typeof a.line === 'number' ? a.line : 0;
-  const bLine = typeof b.line === 'number' ? b.line : 0;
+  const aLine = typeof a.line === 'number' && Number.isFinite(a.line) ? a.line : 0;
+  const bLine = typeof b.line === 'number' && Number.isFinite(b.line) ? b.line : 0;
   return aLine - bLine;
 }
 
