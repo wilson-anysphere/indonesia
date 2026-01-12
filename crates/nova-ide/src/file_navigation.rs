@@ -275,31 +275,47 @@ struct WorkspaceJavaFile {
 }
 
 fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavigationIndex> {
-    let root = file_navigation_root_key(db, file);
-    let workspace_files = workspace_java_files(db, &root);
+    let (raw_root, root_key) = file_navigation_roots(db, file);
+    let workspace_files = workspace_java_files(db, &raw_root, &root_key);
     let fingerprint = workspace_fingerprint(db, &workspace_files);
     let file_ids: Vec<FileId> = workspace_files.into_iter().map(|f| f.file_id).collect();
 
-    FILE_NAVIGATION_INDEX_CACHE.get_or_update_with(root, fingerprint, || {
+    FILE_NAVIGATION_INDEX_CACHE.get_or_update_with(root_key, fingerprint, || {
         #[cfg(test)]
         FILE_NAVIGATION_INDEX_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
         FileNavigationIndex::new_for_file_ids(db, file_ids)
     })
 }
 
-fn file_navigation_root_key(db: &dyn Database, file: FileId) -> PathBuf {
+fn file_navigation_roots(db: &dyn Database, file: FileId) -> (PathBuf, PathBuf) {
     match db.file_path(file) {
-        Some(path) => framework_cache::project_root_for_path(path),
-        None => PathBuf::from(IN_MEMORY_ROOT),
+        Some(path) => {
+            let raw_root = framework_cache::project_root_for_path(path);
+            let root_key = normalize_root_for_cache(&raw_root);
+            (raw_root, root_key)
+        }
+        None => {
+            let root = PathBuf::from(IN_MEMORY_ROOT);
+            (root.clone(), root)
+        }
     }
 }
 
-fn workspace_java_files(db: &dyn Database, root: &Path) -> Vec<WorkspaceJavaFile> {
+fn normalize_root_for_cache(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+}
+
+fn workspace_java_files(
+    db: &dyn Database,
+    raw_root: &Path,
+    root_key: &Path,
+) -> Vec<WorkspaceJavaFile> {
     use std::cmp::Ordering;
 
     let mut under_root = Vec::new();
     let mut all_java = Vec::new();
-    let in_memory = root == Path::new(IN_MEMORY_ROOT);
+    let in_memory = raw_root == Path::new(IN_MEMORY_ROOT);
+    let has_alt_root = raw_root != root_key;
 
     for file_id in db.all_file_ids() {
         match db.file_path(file_id) {
@@ -313,7 +329,10 @@ fn workspace_java_files(db: &dyn Database, root: &Path) -> Vec<WorkspaceJavaFile
                     file_id,
                 };
 
-                if in_memory || path.starts_with(root) {
+                if in_memory
+                    || path.starts_with(raw_root)
+                    || (has_alt_root && path.starts_with(root_key))
+                {
                     under_root.push(entry);
                 } else {
                     all_java.push(entry);
@@ -600,6 +619,27 @@ mod tests {
 
     use nova_db::InMemoryFileStore;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_navigation_root_key_is_canonicalized() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("tempdir");
+        let real_root = temp_dir.path().join("real");
+        let link_root = temp_dir.path().join("link");
+        std::fs::create_dir_all(real_root.join("src")).expect("create real src");
+        symlink(&real_root, &link_root).expect("symlink");
+
+        let mut db = InMemoryFileStore::new();
+        let file_path = link_root.join("src/Main.java");
+        let file = db.file_id_for_path(&file_path);
+        db.set_file_text(file, "class Main {}".to_string());
+
+        let (_raw_root, got) = file_navigation_roots(&db, file);
+        let expected = std::fs::canonicalize(&real_root).expect("canonical real root");
+        assert_eq!(got, expected);
+    }
 
     #[test]
     fn file_navigation_index_cache_reuses_index_until_workspace_changes() {
