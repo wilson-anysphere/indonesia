@@ -212,6 +212,7 @@ This list is meant to be kept accurate as new components integrate.
 - Category: `MemoryCategory::QueryCache`
 - Registration: via `Database::register_salsa_memo_evictor(&MemoryManager)`
   - Also registers additional trackers as a side effect (see below).
+- Eviction priority: `10` (database rebuild is expensive/coarse-grained; prefer evicting cheaper caches like `nova_db::QueryCache` first).
 - Tracked bytes:
   - Approximation via `SalsaMemoFootprint` (in `crates/nova-db/src/salsa/mod.rs`) for selected memo tables, recorded explicitly by query implementations:
     - **File-keyed** memos: `TrackedSalsaMemo` (e.g. `Parse`, `ParseJava`, `ItemTree`, `FileIndexDelta`, plus additional tracked file memos in `crates/nova-db/src/salsa/{syntax,semantic,hir,resolve}.rs`)
