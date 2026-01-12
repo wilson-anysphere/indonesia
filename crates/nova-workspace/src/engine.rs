@@ -1201,12 +1201,11 @@ impl WorkspaceEngine {
                 self.query_db.set_file_is_dirty(file_id, false);
             }
             self.update_project_files_membership(path, file_id, exists);
-            // The document is no longer open; unpin its syntax tree so memory
-            // accounting attributes it back to Salsa memoization.
+            // The document is no longer open; unpin open-document caches so memory
+            // accounting attributes them back to Salsa memoization.
             self.query_db.unpin_syntax_tree(file_id);
             self.query_db.unpin_java_parse_tree(file_id);
             self.query_db.unpin_item_tree(file_id);
-            self.query_db.unpin_java_parse_tree(file_id);
         }
 
         // Closing can read disk contents back into Salsa, and often follows large edit sessions.
