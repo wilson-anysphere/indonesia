@@ -6709,6 +6709,86 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
                     }
+                    // Static imports can import both fields and methods with the same name (they
+                    // live in separate namespaces in Java). The resolver's static-member query is
+                    // context-free and may return `SourceField` even when the call should resolve
+                    // to a method; try resolving as a method call anyway.
+                    NameResolution::Resolved(Resolution::StaticMember(
+                        StaticMemberResolution::SourceField(field),
+                    )) => {
+                        let Some(owner) = self.field_owners.get(&field).cloned() else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "unresolved-method",
+                                format!("unresolved call `{}`", name),
+                                Some(*range),
+                            ));
+                            return ExprInfo {
+                                ty: Type::Unknown,
+                                is_type_ref: false,
+                            };
+                        };
+                        let recv_ty = self
+                            .ensure_workspace_class(loader, &owner)
+                            .or_else(|| loader.ensure_class(&owner))
+                            .map(|id| Type::class(id, vec![]))
+                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                        self.ensure_type_loaded(loader, &recv_ty);
+
+                        let call = MethodCall {
+                            receiver: recv_ty,
+                            call_kind: CallKind::Static,
+                            name: name.as_str(),
+                            args: arg_types,
+                            expected_return: expected.cloned(),
+                            explicit_type_args: Vec::new(),
+                        };
+
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        let mut ctx = TyContext::new(env_ro);
+                        match nova_types::resolve_method_call(&mut ctx, &call) {
+                            MethodResolution::Found(method) => {
+                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                                self.call_resolutions[expr.idx()] = Some(method.clone());
+                                apply_arg_targets(self, loader, &method);
+                                ExprInfo {
+                                    ty: method.return_type,
+                                    is_type_ref: false,
+                                }
+                            }
+                            MethodResolution::Ambiguous(amb) => {
+                                self.diagnostics.push(self.ambiguous_call_diag(
+                                    env_ro,
+                                    name.as_str(),
+                                    &amb.candidates,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                if let Some(first) = amb.candidates.first() {
+                                    self.call_resolutions[expr.idx()] = Some(first.clone());
+                                    apply_arg_targets(self, loader, first);
+                                    ExprInfo {
+                                        ty: first.return_type.clone(),
+                                        is_type_ref: false,
+                                    }
+                                } else {
+                                    ExprInfo {
+                                        ty: Type::Unknown,
+                                        is_type_ref: false,
+                                    }
+                                }
+                            }
+                            MethodResolution::NotFound(not_found) => {
+                                self.diagnostics.push(self.unresolved_method_diag(
+                                    env_ro,
+                                    &not_found,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                ExprInfo {
+                                    ty: Type::Error,
+                                    is_type_ref: false,
+                                }
+                            }
+                        }
+                    }
                     NameResolution::Resolved(Resolution::StaticMember(
                         StaticMemberResolution::SourceMethod(method),
                     )) => {

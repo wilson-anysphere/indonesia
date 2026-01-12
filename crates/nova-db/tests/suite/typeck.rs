@@ -4037,6 +4037,69 @@ class B {
 }
 
 #[test]
+fn static_single_import_allows_field_and_method_with_same_name_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    let src_a = r#"
+package p;
+class A {
+  static int foo = 1;
+  static String foo(int x) { return "x"; }
+}
+"#;
+    let src_b = r#"
+package p;
+import static p.A.foo;
+class B {
+  void test() {
+    int x = foo;
+    String s = foo(1);
+  }
+}
+"#;
+
+    set_file(&mut db, project, a_file, "src/p/A.java", src_a);
+    set_file(&mut db, project, b_file, "src/p/B.java", src_b);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let offset_field = src_b
+        .find("int x = foo")
+        .expect("snippet should contain `int x = foo`")
+        + "int x = ".len();
+    let field_ty = db
+        .type_at_offset_display(b_file, offset_field as u32)
+        .expect("expected a type at offset for foo field");
+    assert_eq!(field_ty, "int");
+
+    let offset_call = src_b.find("foo(1)").expect("snippet should contain foo(1)") + "foo".len();
+    let call_ty = db
+        .type_at_offset_display(b_file, offset_call as u32)
+        .expect("expected a type at offset for foo(1)");
+    assert_eq!(call_ty, "String");
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        !diags.iter().any(|d| {
+            (d.code.as_ref() == "unresolved-name" || d.code.as_ref() == "unresolved-method")
+                && d.message.contains("`foo`")
+        }),
+        "expected static import to allow both field + method references; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_single_import_resolves_workspace_member_type_across_files() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
