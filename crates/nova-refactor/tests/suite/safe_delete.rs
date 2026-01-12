@@ -261,7 +261,10 @@ class A {
 
     let updated = apply_workspace_edit(&files, &edit);
     let a = updated.get("A.java").unwrap();
-    assert!(!a.contains("void foo()"), "foo() declaration should be removed");
+    assert!(
+        !a.contains("void foo()"),
+        "foo() declaration should be removed"
+    );
     assert!(
         a.contains("void foo(int x)"),
         "other overload should remain: {a}"
@@ -361,7 +364,11 @@ class A {
         SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
     };
 
-    assert_eq!(report.usages.len(), 1, "expected one call usage: {report:?}");
+    assert_eq!(
+        report.usages.len(),
+        1,
+        "expected one call usage: {report:?}"
+    );
     let usage = &report.usages[0];
     assert_eq!(usage.file, "A.java");
     assert_eq!(usage.kind, UsageKind::Call);
@@ -440,4 +447,158 @@ class Derived extends Base {
             .any(|usage| usage.kind == UsageKind::Override && usage.file == "Derived.java"),
         "expected override usage for foo(int): {report:?}"
     );
+}
+
+#[test]
+fn safe_delete_ignores_other_overload_calls_with_same_arity() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void foo(int x) {
+    }
+
+    public void foo(String s) {
+    }
+
+    public void entry() {
+        foo("hi");
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let target = index
+        .method_overload_by_param_types("A", "foo", &[String::from("int")])
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
+        SafeDeleteOutcome::Preview { report } => {
+            panic!("expected direct application (no usages), got: {report:?}")
+        }
+    };
+
+    let updated = apply_workspace_edit(&files, &edit);
+    let a = updated.get("A.java").unwrap();
+    assert!(
+        !a.contains("void foo(int x)"),
+        "foo(int) declaration should be removed"
+    );
+    assert!(
+        a.contains("void foo(String s)"),
+        "other overload should remain: {a}"
+    );
+    assert!(a.contains(r#"foo("hi")"#), "call site should remain: {a}");
+}
+
+#[test]
+fn safe_delete_blocks_when_target_overload_called_with_same_arity() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void foo(int x) {
+    }
+
+    public void foo(String s) {
+    }
+
+    public void entry() {
+        foo(1);
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index
+        .method_overload_by_param_types("A", "foo", &[String::from("int")])
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert_eq!(
+        report.usages.len(),
+        1,
+        "expected one call usage: {report:?}"
+    );
+    assert_eq!(report.usages[0].file, "A.java");
+    assert!(
+        matches!(report.usages[0].kind, UsageKind::Call | UsageKind::Unknown),
+        "expected call/unknown usage kind: {report:?}"
+    );
+}
+
+#[test]
+fn safe_delete_reports_overrides_with_overloads_without_override_annotation() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "Base.java".to_string(),
+        r#"
+class Base {
+    public void foo(int x) {
+    }
+
+    public void foo(String s) {
+    }
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "Derived.java".to_string(),
+        r#"
+class Derived extends Base {
+    public void foo(int x) {
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index
+        .method_overload_by_param_types("Base", "foo", &[String::from("int")])
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert_eq!(
+        report.usages.len(),
+        1,
+        "expected one override usage: {report:?}"
+    );
+    assert_eq!(report.usages[0].file, "Derived.java");
+    assert_eq!(report.usages[0].kind, UsageKind::Override);
 }

@@ -417,7 +417,10 @@ impl GradleBuild {
         //
         // Always augment the config with conventional `src/<sourceSet>/java` roots so downstream
         // consumers relying on build-derived roots don't drop these source sets.
-        augment_java_compile_config_with_conventional_gradle_source_roots(&project_dir, &mut config);
+        augment_java_compile_config_with_conventional_gradle_source_roots(
+            &project_dir,
+            &mut config,
+        );
 
         cache.update_module(
             project_root,
@@ -1216,10 +1219,7 @@ NOVA_JSON_END
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations
-                .lock()
-                .expect("lock poisoned")
-                .clone()
+            self.invocations.lock().expect("lock poisoned").clone()
         }
     }
 
@@ -1334,7 +1334,10 @@ NOVA_JSON_END
 
         augment_java_compile_config_with_conventional_gradle_source_roots(project_dir, &mut cfg);
 
-        assert_eq!(cfg.main_source_roots, vec![project_dir.join("src/main/java")]);
+        assert_eq!(
+            cfg.main_source_roots,
+            vec![project_dir.join("src/main/java")]
+        );
         assert_eq!(
             cfg.test_source_roots,
             vec![
@@ -1396,12 +1399,13 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
 fn parse_gradle_all_java_compile_configs_output(
     output: &str,
 ) -> Result<GradleAllJavaCompileConfigsJson> {
-    let json =
-        extract_sentinel_block(output, NOVA_ALL_JSON_BEGIN, NOVA_ALL_JSON_END).ok_or_else(|| {
+    let json = extract_sentinel_block(output, NOVA_ALL_JSON_BEGIN, NOVA_ALL_JSON_END).ok_or_else(
+        || {
             BuildError::Parse(
                 "failed to locate Gradle all-project Java compile config JSON block".into(),
             )
-        })?;
+        },
+    )?;
 
     serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
 }

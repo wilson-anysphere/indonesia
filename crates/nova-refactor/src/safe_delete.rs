@@ -252,7 +252,7 @@ fn verify_method_usage(
     candidate: &ReferenceCandidate,
 ) -> Option<Usage> {
     let text = index.file_text(&candidate.file)?;
-    let kind = match candidate.kind {
+    let mut kind = match candidate.kind {
         ReferenceKind::Call => UsageKind::Call,
         ReferenceKind::FieldAccess => UsageKind::FieldAccess,
         ReferenceKind::TypeUsage => UsageKind::TypeUsage,
@@ -277,14 +277,11 @@ fn verify_method_usage(
     }
 
     let open_paren = call_open_paren_offset(text, candidate.range.end)?;
-    let arg_count = parse_argument_count(text, open_paren);
+    let args = parse_call_args(text, open_paren)?;
+    let arg_count = args.len();
 
-    // Arity-aware verification: if we can compute both the call-site argument count and the
-    // target method arity, a mismatch means this is definitely a different overload.
-    if let (Some(arg_count), Some(target_arity)) = (
-        arg_count,
-        index.method_param_types(target.id).map(|tys| tys.len()),
-    ) {
+    // Arity-aware verification: a mismatch means this is definitely a different overload.
+    if let Some(target_arity) = index.method_param_types(target.id).map(|tys| tys.len()) {
         if arg_count != target_arity {
             return None;
         }
@@ -308,30 +305,31 @@ fn verify_method_usage(
         Receiver::Unknown => None,
     }?;
 
-    let matches_target = match arg_count {
-        Some(arg_count) => {
-            let candidates =
-                collect_overload_candidates_by_arity(index, &receiver_class, &target.name, arg_count);
-            match_overload_candidate_set(&candidates, target.id)
-                .or_else(|| {
-                    // Best-effort fallback: if overload lookup fails, fall back to name-only
-                    // resolution.
-                    let candidates =
-                        collect_overload_candidates_by_name(index, &receiver_class, &target.name);
-                    match_overload_candidate_set(&candidates, target.id)
-                })
-                .unwrap_or(false)
-        }
-        None => {
-            // Best-effort fallback: if we can't parse argument count, fall back to name-only
-            // resolution.
-            let candidates = collect_overload_candidates_by_name(index, &receiver_class, &target.name);
-            match_overload_candidate_set(&candidates, target.id).unwrap_or(false)
-        }
-    };
+    let arg_types =
+        infer_call_argument_types(index, &candidate.file, candidate.range.start, text, &args);
+    let overloads = collect_effective_overload_candidates_by_arity(
+        index,
+        &receiver_class,
+        &target.name,
+        arg_count,
+    );
+    let matching = filter_overloads_by_argument_types(index, &overloads, &arg_types);
 
-    if !matches_target {
-        return None;
+    match matching.as_slice() {
+        [] => return None,
+        [only] => {
+            if *only != target.id {
+                return None;
+            }
+        }
+        many => {
+            if !many.contains(&target.id) {
+                return None;
+            }
+            // Ambiguous overload match: keep as a usage, but mark it as `Unknown` so callers can
+            // surface that Safe Delete couldn't disambiguate the call site.
+            kind = UsageKind::Unknown;
+        }
     }
 
     Some(Usage {
@@ -612,61 +610,16 @@ fn classify_arg(arg: &str) -> ArgCategory {
 }
 
 fn find_override_usages(index: &Index, target: &SafeDeleteSymbol) -> Vec<Usage> {
-    if target.container.is_none() {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let target_param_types = index.method_param_types(target.id);
-    let target_arity = target_param_types.map(|tys| tys.len());
-    for sym in index.symbols() {
-        if sym.kind != SymbolKind::Method || sym.name != target.name || !sym.is_override {
-            continue;
-        }
-
-        // Only consider `@Override` declarations that match the target signature.
-        let sym_param_types = index.method_param_types(sym.id);
-        let sym_arity = sym_param_types.map(|tys| tys.len());
-        if let (Some(target_param_types), Some(sym_param_types)) = (target_param_types, sym_param_types)
-        {
-            if target_param_types != sym_param_types {
-                continue;
-            }
-        } else if let (Some(target_arity), Some(sym_arity)) = (target_arity, sym_arity)
-        {
-            if target_arity != sym_arity {
-                continue;
-            }
-        }
-
-        let Some(class_name) = sym.container.as_deref() else {
-            continue;
-        };
-        let Some(base_class) = index.class_extends(class_name) else {
-            continue;
-        };
-
-        let Some(overridden_candidates) = resolve_overridden_method_candidates(
-            index,
-            base_class,
-            &sym.name,
-            sym_param_types,
-            sym_arity,
-        ) else {
-            continue;
-        };
-
-        let matches_target =
-            match_overload_candidate_set(&overridden_candidates, target.id).unwrap_or(false);
-        if !matches_target {
-            continue;
-        }
-        out.push(Usage {
+    index
+        .find_overrides(target.id)
+        .into_iter()
+        .filter_map(|id| index.find_symbol(id))
+        .map(|sym| Usage {
             file: sym.file.clone(),
             range: sym.name_range,
             kind: UsageKind::Override,
-        });
-    }
-    out
+        })
+        .collect()
 }
 
 fn call_open_paren_offset(text: &str, mut offset: usize) -> Option<usize> {
@@ -680,7 +633,7 @@ fn call_open_paren_offset(text: &str, mut offset: usize) -> Option<usize> {
     }
 }
 
-fn parse_argument_count(text: &str, open_paren: usize) -> Option<usize> {
+fn parse_call_args(text: &str, open_paren: usize) -> Option<Vec<String>> {
     let bytes = text.as_bytes();
     if bytes.get(open_paren) != Some(&b'(') {
         return None;
@@ -691,42 +644,46 @@ fn parse_argument_count(text: &str, open_paren: usize) -> Option<usize> {
     let mut brace_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut angle_depth = 0usize;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
 
-    let mut count = 0usize;
-    let mut seen_token = false;
+    let mut arg_start = i;
+    let mut args: Vec<String> = Vec::new();
 
     while i < bytes.len() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if bytes[i] == b'\\' {
+                escaped = true;
+            } else if bytes[i] == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if bytes[i] == b'\\' {
+                escaped = true;
+            } else if bytes[i] == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+
         match bytes[i] {
             b'"' => {
-                seen_token = true;
+                in_string = true;
                 i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
                 continue;
             }
             b'\'' => {
-                seen_token = true;
+                in_char = true;
                 i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'\'' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
                 continue;
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
@@ -749,50 +706,44 @@ fn parse_argument_count(text: &str, open_paren: usize) -> Option<usize> {
             }
             b'(' => {
                 paren_depth += 1;
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b')' => {
                 paren_depth = paren_depth.saturating_sub(1);
                 if paren_depth == 0 {
-                    if seen_token {
-                        count += 1;
+                    let last = text[arg_start..i].trim();
+                    if !last.is_empty() {
+                        args.push(last.to_string());
                     }
-                    return Some(count);
+                    return Some(args);
                 }
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b'{' => {
                 brace_depth += 1;
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b'}' => {
                 brace_depth = brace_depth.saturating_sub(1);
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b'[' => {
                 bracket_depth += 1;
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b']' => {
                 bracket_depth = bracket_depth.saturating_sub(1);
-                seen_token = true;
                 i += 1;
                 continue;
             }
             b'<' => {
                 if angle_depth > 0 {
                     angle_depth += 1;
-                    seen_token = true;
                     i += 1;
                     continue;
                 }
@@ -805,12 +756,10 @@ fn parse_argument_count(text: &str, open_paren: usize) -> Option<usize> {
                     && looks_like_generic_argument_list(text, i)
                 {
                     angle_depth = 1;
-                    seen_token = true;
                     i += 1;
                     continue;
                 }
 
-                seen_token = true;
                 i += 1;
                 continue;
             }
@@ -818,22 +767,23 @@ fn parse_argument_count(text: &str, open_paren: usize) -> Option<usize> {
                 if angle_depth > 0 {
                     angle_depth = angle_depth.saturating_sub(1);
                 }
-                seen_token = true;
                 i += 1;
                 continue;
             }
-            b',' if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 && angle_depth == 0 => {
-                count += 1;
-                seen_token = false;
-                i += 1;
-                continue;
-            }
-            b if b.is_ascii_whitespace() => {
+            b',' if paren_depth == 1
+                && brace_depth == 0
+                && bracket_depth == 0
+                && angle_depth == 0 =>
+            {
+                let arg = text[arg_start..i].trim();
+                if !arg.is_empty() {
+                    args.push(arg.to_string());
+                }
+                arg_start = i + 1;
                 i += 1;
                 continue;
             }
             _ => {
-                seen_token = true;
                 i += 1;
                 continue;
             }
@@ -939,19 +889,157 @@ fn looks_like_generic_argument_list(text: &str, lt_offset: usize) -> bool {
     false
 }
 
-fn collect_overload_candidates_by_arity(
+fn infer_call_argument_types(
+    index: &Index,
+    file: &str,
+    call_offset: usize,
+    text: &str,
+    args: &[String],
+) -> Vec<Option<String>> {
+    args.iter()
+        .map(|arg| infer_expression_type(index, file, call_offset, text, arg))
+        .collect()
+}
+
+fn infer_expression_type(
+    index: &Index,
+    file: &str,
+    call_offset: usize,
+    text: &str,
+    expr: &str,
+) -> Option<String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+
+    if expr == "null" {
+        return None;
+    }
+    if expr == "true" || expr == "false" {
+        return Some("boolean".to_string());
+    }
+    if expr == "this" {
+        return enclosing_class_at_offset(index, file, call_offset);
+    }
+    if expr.as_bytes().first() == Some(&b'"') {
+        return Some("String".to_string());
+    }
+    if expr.as_bytes().first() == Some(&b'\'') {
+        return Some("char".to_string());
+    }
+
+    if let Some(num_ty) = infer_numeric_literal_type(expr) {
+        return Some(num_ty);
+    }
+
+    if let Some(rest) = expr.strip_prefix("new") {
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let mut end = 0usize;
+        for (idx, ch) in rest.char_indices() {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+                end = idx + ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+        let mut ty = rest[..end].trim();
+        if ty.is_empty() {
+            return None;
+        }
+        // Drop qualification (`com.foo.Bar` -> `Bar`).
+        if let Some((_, last)) = ty.rsplit_once('.') {
+            ty = last;
+        }
+        return Some(ty.to_string());
+    }
+
+    // Simple identifier: attempt to infer type from a nearby lexical declaration.
+    if expr
+        .bytes()
+        .all(|b| (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    {
+        return infer_var_type_in_scope(text, call_offset, expr);
+    }
+
+    None
+}
+
+fn infer_numeric_literal_type(expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    let expr = expr
+        .strip_prefix("+")
+        .or_else(|| expr.strip_prefix("-"))
+        .unwrap_or(expr);
+    if expr.is_empty() {
+        return None;
+    }
+
+    let mut s = expr;
+    let mut ty: Option<&str> = None;
+
+    // Suffixes.
+    if let Some(stripped) = s.strip_suffix("f").or_else(|| s.strip_suffix("F")) {
+        s = stripped;
+        ty = Some("float");
+    } else if let Some(stripped) = s.strip_suffix("d").or_else(|| s.strip_suffix("D")) {
+        s = stripped;
+        ty = Some("double");
+    } else if let Some(stripped) = s.strip_suffix("L").or_else(|| s.strip_suffix("l")) {
+        s = stripped;
+        ty = Some("long");
+    }
+
+    if s.is_empty() {
+        return None;
+    }
+
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        return Some(ty.unwrap_or("double").to_string());
+    }
+
+    if matches!(ty, Some("float") | Some("double")) {
+        return Some(ty.unwrap().to_string());
+    }
+
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .or_else(|| s.strip_prefix("0b"))
+        .or_else(|| s.strip_prefix("0B"))
+        .unwrap_or(s);
+
+    if s.bytes()
+        .all(|b| (b as char).is_ascii_hexdigit() || b == b'_')
+    {
+        return Some(ty.unwrap_or("int").to_string());
+    }
+
+    None
+}
+
+fn collect_effective_overload_candidates_by_arity(
     index: &Index,
     receiver_class: &str,
     method_name: &str,
     arity: usize,
 ) -> Vec<IndexSymbolId> {
     let mut receiver_class = receiver_class.to_string();
+    let mut seen_param_types: std::collections::HashSet<Vec<String>> =
+        std::collections::HashSet::new();
     let mut out = Vec::new();
     loop {
         for id in index.method_overloads_by_arity(&receiver_class, method_name, arity) {
-            if !out.contains(&id) {
-                out.push(id);
+            if let Some(param_types) = index.method_param_types(id) {
+                let key = param_types.to_vec();
+                if !seen_param_types.insert(key) {
+                    continue;
+                }
             }
+            out.push(id);
         }
         receiver_class = match index.class_extends(&receiver_class) {
             Some(base) => base.to_string(),
@@ -961,67 +1049,86 @@ fn collect_overload_candidates_by_arity(
     out
 }
 
-fn collect_overload_candidates_by_name(
+fn filter_overloads_by_argument_types(
     index: &Index,
-    receiver_class: &str,
-    method_name: &str,
+    overloads: &[IndexSymbolId],
+    arg_types: &[Option<String>],
 ) -> Vec<IndexSymbolId> {
-    let mut receiver_class = receiver_class.to_string();
-    let mut out = Vec::new();
-    loop {
-        for id in index.method_overloads(&receiver_class, method_name) {
-            if !out.contains(&id) {
-                out.push(id);
-            }
-        }
-        receiver_class = match index.class_extends(&receiver_class) {
-            Some(base) => base.to_string(),
-            None => break,
-        };
-    }
-    out
+    overloads
+        .iter()
+        .copied()
+        .filter(|id| overload_matches_arguments(index, *id, arg_types))
+        .collect()
 }
 
-fn match_overload_candidate_set(
-    candidates: &[IndexSymbolId],
-    target_id: IndexSymbolId,
-) -> Option<bool> {
-    match candidates.len() {
-        0 => None,
-        1 => Some(candidates[0] == target_id),
-        _ => Some(candidates.contains(&target_id)),
-    }
-}
-
-fn resolve_overridden_method_candidates(
+fn overload_matches_arguments(
     index: &Index,
-    base_class: &str,
-    method_name: &str,
-    param_types: Option<&[String]>,
-    arity: Option<usize>,
-) -> Option<Vec<IndexSymbolId>> {
-    let mut base_class = base_class.to_string();
-    loop {
-        if let Some(param_types) = param_types {
-            if let Some(id) =
-                index.method_overload_by_param_types(&base_class, method_name, param_types)
-            {
-                return Some(vec![id]);
-            }
-        } else if let Some(arity) = arity {
-            let ids = index.method_overloads_by_arity(&base_class, method_name, arity);
-            if !ids.is_empty() {
-                return Some(ids);
-            }
-        } else {
-            let ids = index.method_overloads(&base_class, method_name);
-            if !ids.is_empty() {
-                return Some(ids);
-            }
-        }
-
-        base_class = index.class_extends(&base_class)?.to_string();
+    method_id: IndexSymbolId,
+    arg_types: &[Option<String>],
+) -> bool {
+    let Some(param_types) = index.method_param_types(method_id) else {
+        // No signature data available; can't filter.
+        return true;
+    };
+    if param_types.len() != arg_types.len() {
+        return false;
     }
+
+    for (param, arg) in param_types.iter().zip(arg_types.iter()) {
+        let Some(arg) = arg.as_deref() else {
+            continue;
+        };
+        if !type_matches(param, arg) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn type_matches(param_type: &str, arg_type: &str) -> bool {
+    let param = normalize_type_for_match(param_type);
+    let arg = normalize_type_for_match(arg_type);
+    if param == arg {
+        return true;
+    }
+
+    // Best-effort boxing/unboxing equivalence for common primitives.
+    matches!(
+        (param.as_str(), arg.as_str()),
+        ("boolean", "Boolean")
+            | ("Boolean", "boolean")
+            | ("byte", "Byte")
+            | ("Byte", "byte")
+            | ("short", "Short")
+            | ("Short", "short")
+            | ("int", "Integer")
+            | ("Integer", "int")
+            | ("long", "Long")
+            | ("Long", "long")
+            | ("float", "Float")
+            | ("Float", "float")
+            | ("double", "Double")
+            | ("Double", "double")
+            | ("char", "Character")
+            | ("Character", "char")
+    )
+}
+
+fn normalize_type_for_match(ty: &str) -> String {
+    let ty = ty.trim();
+    // Drop generic arguments (`List<String>` -> `List`).
+    let ty = ty.split('<').next().unwrap_or(ty).trim();
+    // Drop varargs marker (`String...` -> `String`).
+    let ty = ty.strip_suffix("...").unwrap_or(ty).trim();
+
+    // Drop qualification (`java.lang.String` -> `String`).
+    let ty = ty
+        .rsplit(|c: char| c == '.' || c == '$')
+        .next()
+        .unwrap_or(ty)
+        .trim();
+    ty.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

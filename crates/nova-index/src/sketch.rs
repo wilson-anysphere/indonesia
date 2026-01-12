@@ -443,6 +443,80 @@ impl Index {
         }
         sym.param_types.as_deref()
     }
+
+    /// Return all methods in the workspace that override `target`.
+    ///
+    /// This is a best-effort lexical query intended for refactorings. It does *not* require an
+    /// `@Override` annotation.
+    #[must_use]
+    pub fn find_overrides(&self, target: SymbolId) -> Vec<SymbolId> {
+        let Some(target_sym) = self.find_symbol(target) else {
+            return Vec::new();
+        };
+        if target_sym.kind != SymbolKind::Method {
+            return Vec::new();
+        }
+        let Some(target_class) = target_sym.container.as_deref() else {
+            return Vec::new();
+        };
+
+        let target_name = &target_sym.name;
+        let target_param_types = target_sym.param_types.as_deref();
+        let target_arity = target_param_types.map(|tys| tys.len());
+
+        let mut out: Vec<SymbolId> = Vec::new();
+        for sym in &self.symbols {
+            if sym.kind != SymbolKind::Method {
+                continue;
+            }
+            if sym.id == target {
+                continue;
+            }
+            if sym.name != *target_name {
+                continue;
+            }
+            let Some(sym_class) = sym.container.as_deref() else {
+                continue;
+            };
+            if !self.class_inherits_from(sym_class, target_class) {
+                continue;
+            }
+
+            let sym_param_types = sym.param_types.as_deref();
+            if let (Some(target_param_types), Some(sym_param_types)) =
+                (target_param_types, sym_param_types)
+            {
+                if target_param_types != sym_param_types {
+                    continue;
+                }
+            } else if let (Some(target_arity), Some(sym_param_types)) =
+                (target_arity, sym_param_types)
+            {
+                if sym_param_types.len() != target_arity {
+                    continue;
+                }
+            } else {
+                // No signature data; keep the match as best-effort.
+            }
+
+            out.push(sym.id);
+        }
+
+        // Keep ordering stable for deterministic tests.
+        out.sort_by_key(|id| id.0);
+        out
+    }
+
+    fn class_inherits_from(&self, subtype: &str, supertype: &str) -> bool {
+        let mut cur = self.class_extends(subtype);
+        while let Some(next) = cur {
+            if next == supertype {
+                return true;
+            }
+            cur = self.class_extends(next);
+        }
+        false
+    }
 }
 
 fn is_ident_start(b: u8) -> bool {
