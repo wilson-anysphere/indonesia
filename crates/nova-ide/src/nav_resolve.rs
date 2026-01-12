@@ -566,11 +566,15 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
     }
     let is_call = j < bytes.len() && bytes[j] == b'(';
 
-    match (receiver, is_call) {
-        (Some(receiver), true) => Some(OccurrenceKind::MemberCall { receiver }),
-        (Some(receiver), false) => Some(OccurrenceKind::MemberField { receiver }),
-        (None, true) => Some(OccurrenceKind::LocalCall),
-        (None, false) => Some(OccurrenceKind::Ident),
+    match (dot_idx, receiver, is_call) {
+        (Some(_), Some(receiver), true) => Some(OccurrenceKind::MemberCall { receiver }),
+        (Some(_), Some(receiver), false) => Some(OccurrenceKind::MemberField { receiver }),
+        // There's a dot but we couldn't parse a receiver. This is likely a chained call like
+        // `foo().bar()` or `(expr).bar` where we don't have enough context to resolve the
+        // receiver type safely. Returning `None` is preferable to returning an unrelated `this.bar()`.
+        (Some(_), None, _) => None,
+        (None, _, true) => Some(OccurrenceKind::LocalCall),
+        (None, _, false) => Some(OccurrenceKind::Ident),
     }
 }
 
@@ -598,9 +602,15 @@ fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<Strin
             start -= 1;
         }
         if start == end {
+            if segments_rev.is_empty() {
+                return receiver_type_from_new_expression(text, bytes, recv_end);
+            }
             return None;
         }
         if !is_ident_start(bytes[start]) {
+            if segments_rev.is_empty() {
+                return receiver_type_from_new_expression(text, bytes, recv_end);
+            }
             return None;
         }
         segments_rev.push(&text[start..end]);
@@ -626,6 +636,146 @@ fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<Strin
 
         segments_rev.reverse();
         return Some(segments_rev.join("."));
+    }
+}
+
+fn receiver_type_from_new_expression(text: &str, bytes: &[u8], recv_end: usize) -> Option<String> {
+    // Best-effort support for `new Type(...).method` receivers.
+    //
+    // This allows navigation in patterns like:
+    // - `new C().foo()`
+    // - `new pkg.C().foo()`
+    //
+    // Without this, such calls would be treated as "receiverless" and resolved as `this.foo()`,
+    // which can yield incorrect results (especially when `this` has an inherited `foo`).
+    if recv_end == 0 || bytes.get(recv_end.wrapping_sub(1)) != Some(&b')') {
+        return None;
+    }
+
+    let close_paren_idx = recv_end - 1;
+    let open_paren_idx = matching_open_paren(bytes, close_paren_idx)?;
+
+    // We expect a type name (or `Type<...>`) before the constructor parens.
+    let mut end = open_paren_idx;
+    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    // Skip generic type args: `Foo<...>(...)`.
+    if end > 0 && bytes[end - 1] == b'>' {
+        let open_angle_idx = matching_open_angle(bytes, end - 1)?;
+        end = open_angle_idx;
+        while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
+            end -= 1;
+        }
+    }
+
+    // Parse a dotted type path ending at `end`, keeping the last segment as the receiver type.
+    let (type_chain_start, type_name) = parse_ident_chain_last_segment(text, bytes, end)?;
+
+    // Verify this is actually a `new` expression (`new Type(...)`).
+    let mut i = type_chain_start;
+    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+        i -= 1;
+    }
+    let new_end = i;
+    let mut new_start = new_end;
+    while new_start > 0 && is_ident_continue(bytes[new_start - 1]) {
+        new_start -= 1;
+    }
+    if new_start == new_end || !is_ident_start(bytes[new_start]) {
+        return None;
+    }
+    if text.get(new_start..new_end) != Some("new") {
+        return None;
+    }
+
+    Some(type_name.to_string())
+}
+
+fn matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut j = close_paren_idx;
+    loop {
+        match bytes.get(j)? {
+            b')' => depth += 1,
+            b'(' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    None
+}
+
+fn matching_open_angle(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut j = close_angle_idx;
+    loop {
+        match bytes.get(j)? {
+            b'>' => depth += 1,
+            b'<' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    None
+}
+
+fn parse_ident_chain_last_segment<'a>(
+    text: &'a str,
+    bytes: &[u8],
+    mut end: usize,
+) -> Option<(usize, &'a str)> {
+    let mut last_segment: Option<&'a str> = None;
+
+    loop {
+        let mut start = end;
+        while start > 0 && is_ident_continue(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == end || !is_ident_start(*bytes.get(start)?) {
+            return None;
+        }
+        if last_segment.is_none() {
+            last_segment = Some(&text[start..end]);
+        }
+
+        // Skip whitespace before this identifier.
+        let mut i = start;
+        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+            i -= 1;
+        }
+
+        if i > 0 && bytes[i - 1] == b'.' {
+            i -= 1;
+            while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+                i -= 1;
+            }
+            end = i;
+            continue;
+        }
+
+        return Some((start, last_segment?));
     }
 }
 

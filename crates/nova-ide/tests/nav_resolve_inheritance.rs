@@ -147,6 +147,51 @@ class C implements I { void test(){ $0baz(); } }
     assert_eq!(got.range.start, fixture.marker_position(1));
 }
 
+#[test]
+fn goto_definition_resolves_member_call_on_new_expression_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo { void $1bar(){} }
+//- /C.java
+class C { void test(){ new Foo().$0bar(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = goto_definition(&fixture.db, file, pos).expect("expected definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn goto_definition_does_not_misresolve_unknown_receiver_to_inherited_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base { void $2bar(){} }
+//- /Foo.java
+class Foo { void $1bar(){} }
+//- /C.java
+class C extends Base {
+  Foo makeFoo(){ return new Foo(); }
+  void test(){ makeFoo().$0bar(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = goto_definition(&fixture.db, file, pos);
+
+    assert!(
+        got.is_none(),
+        "expected goto-definition to avoid resolving `makeFoo().bar()` as `this.bar()`; got {got:?}"
+    );
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");
@@ -205,4 +250,3 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     (out, markers)
 }
-
