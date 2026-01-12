@@ -24,7 +24,7 @@ head_sha="$(git rev-parse HEAD)"
 # Only enforce pinning if the harness existed in the base commit (so new crates/targets are still
 # allowed to introduce a first harness).
 pinned_harnesses=(
-  "nova-types:harness"
+  "nova-types:javac_differential"
 )
 
 for entry in "${pinned_harnesses[@]}"; do
