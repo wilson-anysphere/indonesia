@@ -1455,6 +1455,11 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 hir::LambdaBody::Expr(expr) => walk_expr(body, *expr, f),
                 hir::LambdaBody::Block(stmt) => walk_stmt(body, *stmt, f),
             },
+            hir::Expr::Invalid { children, .. } => {
+                for child in children {
+                    walk_expr(body, *child, f);
+                }
+            }
         }
     }
 

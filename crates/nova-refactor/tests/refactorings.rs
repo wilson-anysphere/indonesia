@@ -1571,3 +1571,124 @@ fn inline_variable_reassigned_variable_is_not_supported() {
     .unwrap_err();
     assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
 }
+
+#[test]
+fn rename_local_variable_inside_array_access() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int[] arr) {
+    int foo = 1;
+    System.out.println(arr[foo]);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("int bar = 1;"),
+        "expected foo declaration to be renamed: {after}"
+    );
+    assert!(
+        after.contains("arr[bar]"),
+        "expected foo usage inside array access to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("foo"),
+        "expected all occurrences of foo to be renamed: {after}"
+    );
+}
+
+#[test]
+fn rename_local_variable_inside_instanceof_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {}
+
+class Test {
+  void m(Object x) {
+    boolean b = (x instanceof Foo);
+    System.out.println(b);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Object x").unwrap() + "Object ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("void m(Object y)"),
+        "expected parameter x to be renamed: {after}"
+    );
+    assert!(
+        after.contains("(y instanceof Foo)"),
+        "expected x usage inside instanceof to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("(x instanceof Foo)"),
+        "expected old name to be gone: {after}"
+    );
+}
+
+#[test]
+fn rename_local_variable_inside_array_access_nested_under_field_access() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo { int foo = 0; }
+
+class Test {
+  void m(Foo[] arr) {
+    int i = 0;
+    System.out.println(arr[i].foo);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int i").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at i");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "j".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("int j = 0;"),
+        "expected i declaration to be renamed: {after}"
+    );
+    assert!(
+        after.contains("arr[j].foo"),
+        "expected i usage inside array access receiver to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("arr[i].foo"),
+        "expected old name to be gone: {after}"
+    );
+}

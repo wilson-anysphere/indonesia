@@ -315,6 +315,12 @@ pub enum Expr {
         body: LambdaBody,
         range: Span,
     },
+    /// An expression we don't lower precisely yet, but for which we still preserve
+    /// child expressions so downstream passes can visit nested names.
+    Invalid {
+        children: Vec<ExprId>,
+        range: Span,
+    },
     Missing {
         range: Span,
     },
@@ -351,6 +357,7 @@ impl Expr {
             | Expr::Assign { range, .. }
             | Expr::Conditional { range, .. }
             | Expr::Lambda { range, .. }
+            | Expr::Invalid { range, .. }
             | Expr::Missing { range } => *range,
         }
     }

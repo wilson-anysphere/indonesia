@@ -773,6 +773,11 @@ impl<'a> ScopeBuilder<'a> {
                     }
                 }
             }
+            hir::Expr::Invalid { children, .. } => {
+                for child in children {
+                    self.record_expr_scopes(scope, owner, body, *child);
+                }
+            }
         }
     }
 

@@ -393,6 +393,11 @@ impl Builder {
                     }
                 }
             }
+            Expr::Invalid { children, .. } => {
+                for &child in children {
+                    self.visit_expr(body, child, scope);
+                }
+            }
         }
     }
 }

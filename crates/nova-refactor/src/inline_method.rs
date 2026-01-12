@@ -393,6 +393,9 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     .iter()
                     .any(|stmt| walk_stmt(source, method_name, stmt)),
             },
+            jast::Expr::Invalid { children, .. } => children
+                .iter()
+                .any(|child| walk_expr(source, method_name, child)),
             jast::Expr::Name(_)
             | jast::Expr::IntLiteral(_)
             | jast::Expr::StringLiteral(_)

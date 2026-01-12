@@ -410,6 +410,11 @@ pub mod ast {
         Assign(AssignExpr),
         Conditional(ConditionalExpr),
         Lambda(LambdaExpr),
+        /// A syntactically valid expression kind that we don't lower precisely yet.
+        ///
+        /// We still preserve any direct child expressions so downstream passes (resolver,
+        /// refactoring, etc.) can traverse them and record references.
+        Invalid { children: Vec<Expr>, range: Span },
         Missing(Span),
     }
 
@@ -433,6 +438,7 @@ pub mod ast {
                 Expr::Assign(expr) => expr.range,
                 Expr::Conditional(expr) => expr.range,
                 Expr::Lambda(expr) => expr.range,
+                Expr::Invalid { range, .. } => *range,
                 Expr::Missing(range) => *range,
             }
         }
@@ -1928,8 +1934,23 @@ impl Lowerer {
                 .find(|child| is_expression_kind(child.kind()))
                 .map(|expr| self.lower_expr(&expr))
                 .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
-            SyntaxKind::Error => ast::Expr::Missing(self.spans.map_node(node)),
-            _ => ast::Expr::Missing(self.spans.map_node(node)),
+            // For expression kinds we don't handle precisely (including parse recovery via
+            // `SyntaxKind::Error`), preserve any direct child expressions so name resolution and
+            // refactoring still see identifiers nested inside.
+            _ => {
+                let range = self.spans.map_node(node);
+                let mut children = Vec::new();
+                for child in node.children() {
+                    if is_expression_kind(child.kind()) {
+                        children.push(self.lower_expr(&child));
+                    }
+                }
+                if children.is_empty() {
+                    ast::Expr::Missing(range)
+                } else {
+                    ast::Expr::Invalid { children, range }
+                }
+            }
         }
     }
 

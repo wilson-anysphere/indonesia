@@ -1664,6 +1664,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Unknown,
                 is_type_ref: false,
             },
+            HirExpr::Invalid { children, .. } => {
+                for child in children {
+                    let _ = self.infer_expr(loader, *child);
+                }
+                ExprInfo {
+                    ty: Type::Unknown,
+                    is_type_ref: false,
+                }
+            }
             HirExpr::Literal { kind, .. } => match kind {
                 LiteralKind::Int => ExprInfo {
                     ty: Type::Primitive(PrimitiveType::Int),
@@ -3902,23 +3911,28 @@ fn find_best_expr_in_expr(
         }
     }
 
-    match &body.exprs[expr] {
-        HirExpr::FieldAccess { receiver, .. } => {
-            find_best_expr_in_expr(body, *receiver, offset, owner, best);
-        }
-        HirExpr::MethodReference { receiver, .. } => {
-            find_best_expr_in_expr(body, *receiver, offset, owner, best);
-        }
-        HirExpr::ConstructorReference { receiver, .. } => {
-            find_best_expr_in_expr(body, *receiver, offset, owner, best);
-        }
-        HirExpr::ClassLiteral { ty, .. } => {
-            find_best_expr_in_expr(body, *ty, offset, owner, best);
-        }
-        HirExpr::Call { callee, args, .. } => {
-            find_best_expr_in_expr(body, *callee, offset, owner, best);
-            for arg in args {
-                find_best_expr_in_expr(body, *arg, offset, owner, best);
+        match &body.exprs[expr] {
+            HirExpr::FieldAccess { receiver, .. } => {
+                find_best_expr_in_expr(body, *receiver, offset, owner, best);
+            }
+            HirExpr::MethodReference { receiver, .. } => {
+                find_best_expr_in_expr(body, *receiver, offset, owner, best);
+            }
+            HirExpr::ConstructorReference { receiver, .. } => {
+                find_best_expr_in_expr(body, *receiver, offset, owner, best);
+            }
+            HirExpr::ClassLiteral { ty, .. } => {
+                find_best_expr_in_expr(body, *ty, offset, owner, best);
+            }
+            HirExpr::Invalid { children, .. } => {
+                for child in children {
+                    find_best_expr_in_expr(body, *child, offset, owner, best);
+                }
+            }
+            HirExpr::Call { callee, args, .. } => {
+                find_best_expr_in_expr(body, *callee, offset, owner, best);
+                for arg in args {
+                    find_best_expr_in_expr(body, *arg, offset, owner, best);
             }
         }
         HirExpr::New { args, .. } => {

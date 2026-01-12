@@ -1357,6 +1357,17 @@ impl<'a> BodyLower<'a> {
                     range: lambda.range,
                 })
             }
+            syntax::Expr::Invalid { children, range } => {
+                let mut lowered = Vec::with_capacity(children.len());
+                for child in children {
+                    self.check_cancelled();
+                    lowered.push(self.lower_expr(child));
+                }
+                self.alloc_expr(Expr::Invalid {
+                    children: lowered,
+                    range: *range,
+                })
+            }
             syntax::Expr::Missing(range) => self.alloc_expr(Expr::Missing { range: *range }),
         }
     }
