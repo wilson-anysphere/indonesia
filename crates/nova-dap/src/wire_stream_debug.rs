@@ -176,6 +176,12 @@ pub async fn sample_object_children_via_invoke_method(
 pub enum WireStreamDebugError {
     #[error(transparent)]
     Analysis(#[from] StreamAnalysisError),
+    #[error(
+        "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
+Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
+    )]
+    UnsafeExistingStream { stream_expr: String },
     #[error("evaluation cancelled")]
     Cancelled,
     /// Setup (helper compilation / injection) exceeded the fixed setup timeout.
@@ -291,6 +297,77 @@ pub async fn debug_stream_wire(
     .await
 }
 
+fn is_pure_access_expr(expr: &str) -> bool {
+    // Heuristic: if the expression contains no *call* segments, it's likely a Stream *value*
+    // (e.g. `s`, `this.s`, `foo.bar`) rather than something safe to re-evaluate (e.g. `getStream()`).
+    //
+    // When we can't confidently parse, err on the side of safety (treat as a value).
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return true;
+    }
+
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    let chars: Vec<char> = expr.chars().collect();
+    for (idx, ch) in chars.iter().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+
+        if in_str {
+            if *ch == '\\' {
+                escape = true;
+            } else if *ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+
+        if in_char {
+            if *ch == '\\' {
+                escape = true;
+            } else if *ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match *ch {
+            '"' => {
+                in_str = true;
+                continue;
+            }
+            '\'' => {
+                in_char = true;
+                continue;
+            }
+            '(' => {
+                // Look back for the previous non-whitespace character.
+                let mut j = idx;
+                while j > 0 {
+                    j -= 1;
+                    let prev = chars[j];
+                    if prev.is_whitespace() {
+                        continue;
+                    }
+                    // A call segment is preceded by an identifier character, e.g. `stream(`.
+                    if prev == '_' || prev == '$' || prev.is_alphanumeric() {
+                        return false;
+                    }
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
 async fn debug_stream_wire_with_compiler(
     jdwp: &JdwpClient,
     chain: &nova_stream_debug::StreamChain,
@@ -299,6 +376,15 @@ async fn debug_stream_wire_with_compiler(
     compiler: &impl HelperClassCompiler,
 ) -> Result<StreamDebugResult, WireStreamDebugError> {
     let started = Instant::now();
+
+    if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } = &chain.source {
+        let stream_expr = stream_expr.trim();
+        if is_pure_access_expr(stream_expr) {
+            return Err(WireStreamDebugError::UnsafeExistingStream {
+                stream_expr: stream_expr.to_string(),
+            });
+        }
+    }
 
     // --- Setup phase (excluded from max_total_time) -------------------------
     let (thread, helper_class, helper_method) = match setup_helper(jdwp, cancel, compiler).await {
@@ -776,6 +862,42 @@ mod tests {
                 );
             }
             other => panic!("expected Compile error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn refuses_existing_stream_values() {
+        let jdwp_server = MockJdwpServer::spawn().await.unwrap();
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let cfg = StreamDebugConfig::default();
+        let chain = analyze_stream_expression("s.filter(x -> x > 0).count()").unwrap();
+
+        struct PanicCompiler;
+        impl HelperClassCompiler for PanicCompiler {
+            fn compile<'a>(
+                &'a self,
+                _cancel: &'a CancellationToken,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    panic!("compiler should not be invoked for unsafe existing stream values");
+                })
+            }
+        }
+
+        let result =
+            debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &PanicCompiler).await;
+        match result {
+            Err(WireStreamDebugError::UnsafeExistingStream { stream_expr }) => {
+                assert_eq!(stream_expr, "s");
+            }
+            other => panic!("expected UnsafeExistingStream, got {other:?}"),
         }
     }
 
