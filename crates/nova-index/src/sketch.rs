@@ -989,10 +989,13 @@ fn parse_members_in_class(
                 let stmt_slice = &body_text[member_start..stmt_end];
                 let rel_first_token = stmt_slice.find(|c: char| !c.is_whitespace()).unwrap_or(0);
                 let token_start = member_start + rel_first_token;
-                let stmt_start = body_text[..token_start]
+                let line_start = body_text[..token_start]
                     .rfind('\n')
                     .map(|p| p + 1)
                     .unwrap_or(0);
+                // If multiple members appear on the same line (e.g. `int a; int b;`), we don't
+                // want to extend the declaration range back past the previous member's `;`.
+                let stmt_start = member_start.max(line_start);
                 let stmt_text = &body_text[stmt_start..stmt_end];
                 let decl_range =
                     TextRange::new(body_offset + stmt_start, body_offset + stmt_end + 1);

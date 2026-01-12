@@ -191,3 +191,27 @@ fn multi_line_field_declarations_are_indexed() {
         "    int a,\n        b;"
     );
 }
+
+#[test]
+fn fields_on_same_line_get_distinct_decl_ranges() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        "class A { int a; int b; }\n".to_string(),
+    );
+    let index = Index::new(files);
+    let text = index.file_text("A.java").expect("file text");
+
+    let fields: Vec<_> = index
+        .symbols()
+        .iter()
+        .filter(|sym| sym.kind == SymbolKind::Field && sym.container.as_deref() == Some("A"))
+        .collect();
+    assert_eq!(fields.len(), 2);
+
+    let a = fields.iter().find(|f| f.name == "a").expect("field a");
+    let b = fields.iter().find(|f| f.name == "b").expect("field b");
+
+    assert_eq!(&text[a.decl_range.start..a.decl_range.end], " int a;");
+    assert_eq!(&text[b.decl_range.start..b.decl_range.end], " int b;");
+}
