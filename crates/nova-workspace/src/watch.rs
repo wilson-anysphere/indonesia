@@ -401,12 +401,14 @@ mod tests {
             root.join(".gradle").join("deps.versions.toml"),
             root.join("build").join("dependencies.gradle"),
             root.join("build").join("deps.versions.toml"),
+            root.join("build").join("gradle.lockfile"),
             root.join("target").join("dependencies.gradle"),
             root.join("target").join("deps.versions.toml"),
             root.join(".gradle").join("gradle.lockfile"),
             root.join("build")
                 .join("dependency-locks")
                 .join("compileClasspath.lockfile"),
+            root.join("foo.lockfile"),
         ];
 
         for path in non_build_files {
