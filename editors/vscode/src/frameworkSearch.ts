@@ -125,7 +125,16 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
       }
 
       try {
-        const items = await fetchItemsForKind(kind, request, { workspaceKey, projectRoot });
+        const kindLabel = frameworkSearchKindLabel(kind);
+        const items = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Window,
+            title: `Nova: Loading ${kindLabel}…`,
+          },
+          async () => {
+            return await fetchItemsForKind(kind, request, { workspaceKey, projectRoot });
+          },
+        );
         if (!items) {
           // Unsupported request methods (or already-reported errors) return `undefined` so
           // we don't stack extra error messages on top of `sendNovaRequest`'s built-in UX.
@@ -201,6 +210,21 @@ async function pickFrameworkSearchKind(workspaceKey: string): Promise<FrameworkS
     { placeHolder: 'Select framework items to search', matchOnDescription: true, matchOnDetail: true },
   );
   return picked?.value;
+}
+
+function frameworkSearchKindLabel(kind: FrameworkSearchKind): string {
+  switch (kind) {
+    case 'web-endpoints':
+      return 'web endpoints';
+    case 'micronaut-endpoints':
+      return 'Micronaut endpoints';
+    case 'micronaut-beans':
+      return 'Micronaut beans';
+    default: {
+      const exhaustive: never = kind;
+      return String(exhaustive);
+    }
+  }
 }
 
 async function fetchItemsForKind(
@@ -515,7 +539,8 @@ function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vs
 
 async function showSafeModeError(): Promise<void> {
   const picked = await vscode.window.showErrorMessage(
-    'Nova: nova-lsp is running in safe mode. Framework search is unavailable until safe mode exits.',
+    'Nova: nova-lsp is running in safe mode. Framework search is unavailable. ' +
+      'Run “Nova: Generate Bug Report” to help diagnose the issue.',
     'Generate Bug Report',
   );
   if (picked === 'Generate Bug Report') {
