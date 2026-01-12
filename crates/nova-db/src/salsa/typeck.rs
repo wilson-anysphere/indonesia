@@ -3245,8 +3245,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     return;
                 }
 
-                let decl_ty =
+                let mut decl_ty =
                     self.resolve_source_type(loader, data.ty_text.as_str(), Some(data.ty_range));
+                if decl_ty == Type::Void {
+                    self.diagnostics.push(Diagnostic::error(
+                        "void-variable-type",
+                        "`void` is not a valid type for variables",
+                        Some(data.ty_range),
+                    ));
+                    decl_ty = Type::Error;
+                }
                 self.local_types[local.idx()] = decl_ty.clone();
                 self.local_ty_states[local.idx()] = LocalTyState::Computed;
 
@@ -3436,11 +3444,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // If `var` inference is not enabled at this language level, treat `var` as an
                 // explicit type name for compatibility with older Java versions.
                 if data.ty_text.trim() != "var" || !self.var_inference_enabled() {
-                    let decl_ty = self.resolve_source_type(
+                    let mut decl_ty = self.resolve_source_type(
                         loader,
                         data.ty_text.as_str(),
                         Some(data.ty_range),
                     );
+                    if decl_ty == Type::Void {
+                        self.diagnostics.push(Diagnostic::error(
+                            "void-variable-type",
+                            "`void` is not a valid type for variables",
+                            Some(data.ty_range),
+                        ));
+                        decl_ty = Type::Error;
+                    }
                     self.local_types[local.idx()] = decl_ty.clone();
                     self.local_ty_states[local.idx()] = LocalTyState::Computed;
 
@@ -3490,11 +3506,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 self.check_stmt(loader, *body, expected_return);
                 for catch in catches {
                     let data = &self.body.locals[catch.param];
-                    let catch_ty = self.resolve_source_type(
+                    let mut catch_ty = self.resolve_source_type(
                         loader,
                         data.ty_text.as_str(),
                         Some(data.ty_range),
                     );
+                    if catch_ty == Type::Void {
+                        self.diagnostics.push(Diagnostic::error(
+                            "void-catch-parameter-type",
+                            "`void` is not a valid catch parameter type",
+                            Some(data.ty_range),
+                        ));
+                        catch_ty = Type::Error;
+                    }
                     self.local_types[catch.param.idx()] = catch_ty.clone();
                     self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
 
@@ -5919,7 +5943,16 @@ fn resolve_param_types<'idx>(
             Some(param.ty_range),
         );
         diags.extend(resolved.diagnostics);
-        out.push(resolved.ty);
+        if resolved.ty == Type::Void {
+            diags.push(Diagnostic::error(
+                "void-parameter-type",
+                "`void` is not a valid parameter type",
+                Some(param.ty_range),
+            ));
+            out.push(Type::Error);
+        } else {
+            out.push(resolved.ty);
+        }
     }
 
     (out, diags)

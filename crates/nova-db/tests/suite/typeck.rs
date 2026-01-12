@@ -4422,6 +4422,58 @@ class C {
 }
 
 #[test]
+fn void_local_variable_type_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        void x = 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "void-variable-type"),
+        "expected void-variable-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn void_parameter_type_is_error() {
+    let src = r#"
+class C {
+    void m(void x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "void-parameter-type"),
+        "expected void-parameter-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn void_catch_parameter_type_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        try { } catch (void e) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "void-catch-parameter-type"),
+        "expected void-catch-parameter-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn catch_parameter_var_is_error() {
     let src = r#"
 class C {

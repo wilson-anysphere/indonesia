@@ -4771,6 +4771,8 @@ fn is_primitive_type(kind: SyntaxKind) -> bool {
             | SyntaxKind::CharKw
             | SyntaxKind::FloatKw
             | SyntaxKind::DoubleKw
+            // Parseable everywhere for resilience; semantic analysis rejects it in most positions.
+            | SyntaxKind::VoidKw
     )
 }
 
