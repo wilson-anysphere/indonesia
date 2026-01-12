@@ -22,19 +22,29 @@ pub use crate::framework_db_adapter::FrameworkIdeDatabase;
 
 trait AsDynNovaDb {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database;
+
+    fn into_dyn_nova_db(self: Arc<Self>) -> Arc<dyn nova_db::Database + Send + Sync>;
 }
 
 impl<DB> AsDynNovaDb for DB
 where
-    DB: nova_db::Database,
+    DB: nova_db::Database + Send + Sync + 'static,
 {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
+        self
+    }
+
+    fn into_dyn_nova_db(self: Arc<Self>) -> Arc<dyn nova_db::Database + Send + Sync> {
         self
     }
 }
 
 impl AsDynNovaDb for dyn nova_db::Database + Send + Sync {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
+        self
+    }
+
+    fn into_dyn_nova_db(self: Arc<Self>) -> Arc<dyn nova_db::Database + Send + Sync> {
         self
     }
 }
@@ -391,9 +401,9 @@ impl FrameworkAnalyzerRegistryProvider {
     }
 }
 
-impl<DB> DiagnosticProvider<DB> for FrameworkAnalyzerRegistryProvider
+impl<DB: ?Sized> DiagnosticProvider<DB> for FrameworkAnalyzerRegistryProvider
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
@@ -407,7 +417,7 @@ where
         if self.fast_noop || ctx.cancel.is_cancelled() {
             return Vec::new();
         }
-        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let host_db = ctx.db.clone().into_dyn_nova_db();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -416,9 +426,9 @@ where
     }
 }
 
-impl<DB> CompletionProvider<DB> for FrameworkAnalyzerRegistryProvider
+impl<DB: ?Sized> CompletionProvider<DB> for FrameworkAnalyzerRegistryProvider
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
@@ -432,7 +442,7 @@ where
         if self.fast_noop || ctx.cancel.is_cancelled() {
             return Vec::new();
         }
-        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let host_db = ctx.db.clone().into_dyn_nova_db();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -451,9 +461,9 @@ where
     }
 }
 
-impl<DB> NavigationProvider<DB> for FrameworkAnalyzerRegistryProvider
+impl<DB: ?Sized> NavigationProvider<DB> for FrameworkAnalyzerRegistryProvider
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
@@ -474,7 +484,7 @@ where
             Symbol::Class(_) => return Vec::new(),
         };
 
-        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let host_db = ctx.db.clone().into_dyn_nova_db();
         let Some(fw_db) = self.framework_db(host_db, file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -496,9 +506,9 @@ where
     }
 }
 
-impl<DB> InlayHintProvider<DB> for FrameworkAnalyzerRegistryProvider
+impl<DB: ?Sized> InlayHintProvider<DB> for FrameworkAnalyzerRegistryProvider
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
@@ -512,7 +522,7 @@ where
         if self.fast_noop || ctx.cancel.is_cancelled() {
             return Vec::new();
         }
-        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let host_db = ctx.db.clone().into_dyn_nova_db();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -527,131 +537,6 @@ where
             .collect()
     }
 }
-
-// Explicit impls for `DynDb` (`dyn nova_db::Database + Send + Sync`).
-//
-// We keep these separate from the generic `DB` impls above because `Arc<DB>` cannot
-// be coerced into an `Arc<dyn nova_db::Database + Send + Sync>` when `DB` itself is
-// an unsized trait object type parameter.
-impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
-    fn id(&self) -> &str {
-        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
-    }
-
-    fn provide_diagnostics(
-        &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
-        params: DiagnosticParams,
-    ) -> Vec<Diagnostic> {
-        if self.fast_noop || ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
-            return Vec::new();
-        };
-        self.registry
-            .framework_diagnostics_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
-    }
-}
-
-impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
-    fn id(&self) -> &str {
-        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
-    }
-
-    fn provide_completions(
-        &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
-        params: CompletionParams,
-    ) -> Vec<CompletionItem> {
-        if self.fast_noop || ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
-            return Vec::new();
-        };
-
-        let project = fw_db.project_of_file(params.file);
-        let completion_ctx = FrameworkCompletionContext {
-            project,
-            file: params.file,
-            offset: params.offset,
-        };
-        self.registry.framework_completions_with_cancel(
-            fw_db.as_ref(),
-            &completion_ctx,
-            &ctx.cancel,
-        )
-    }
-}
-
-impl NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
-    fn id(&self) -> &str {
-        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
-    }
-
-    fn provide_navigation(
-        &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
-        params: NavigationParams,
-    ) -> Vec<NavigationTarget> {
-        if self.fast_noop || ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let file = match params.symbol {
-            Symbol::File(file) => file,
-            Symbol::Class(_) => return Vec::new(),
-        };
-
-        let Some(fw_db) = self.framework_db(ctx.db.clone(), file, &ctx.cancel) else {
-            return Vec::new();
-        };
-
-        let symbol = match params.symbol {
-            Symbol::File(file) => FrameworkSymbol::File(file),
-            Symbol::Class(class) => FrameworkSymbol::Class(class),
-        };
-
-        self.registry
-            .framework_navigation_targets_with_cancel(fw_db.as_ref(), &symbol, &ctx.cancel)
-            .into_iter()
-            .map(|target| NavigationTarget {
-                file: target.file,
-                span: target.span,
-                label: target.label,
-            })
-            .collect()
-    }
-}
-
-impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
-    fn id(&self) -> &str {
-        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
-    }
-
-    fn provide_inlay_hints(
-        &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
-        params: InlayHintParams,
-    ) -> Vec<InlayHint> {
-        if self.fast_noop || ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
-            return Vec::new();
-        };
-
-        self.registry
-            .framework_inlay_hints_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
-            .into_iter()
-            .map(|hint| InlayHint {
-                span: hint.span,
-                label: hint.label,
-            })
-            .collect()
-    }
-}
-
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
     db: Arc<DB>,
     config: Arc<NovaConfig>,

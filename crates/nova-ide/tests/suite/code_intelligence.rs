@@ -884,6 +884,23 @@ class A {}
 }
 
 #[test]
+fn completion_includes_static_import_star() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"*"),
+        "expected completion list to contain `*`; got {labels:?}"
+    );
+}
+
+#[test]
 fn static_import_completion_replaces_only_member_segment() {
     let text_with_caret = r#"
 import static java.lang.Math.ma<|>;

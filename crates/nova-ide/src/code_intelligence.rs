@@ -2666,12 +2666,14 @@ fn static_import_completions(
     let mut items = Vec::with_capacity(names.len() + 1);
 
     // `import static Foo.*;`
-    items.push(CompletionItem {
-        label: "*".to_string(),
-        kind: Some(CompletionItemKind::KEYWORD),
-        insert_text: Some("*".to_string()),
-        ..Default::default()
-    });
+    if member_prefix.is_empty() {
+        items.push(CompletionItem {
+            label: "*".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            insert_text: Some("*".to_string()),
+            ..Default::default()
+        });
+    }
 
     for name in names {
         let kind = if static_methods.contains(&name) {
