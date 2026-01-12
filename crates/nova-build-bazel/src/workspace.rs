@@ -47,6 +47,34 @@ const CORE_BAZEL_CONFIG_FILES: [&str; 8] = [
     "bazelisk.rc",
 ];
 
+fn strip_outer_matching_quotes(value: &str) -> &str {
+    let value = value.trim();
+    if value.len() < 2 {
+        return value;
+    }
+
+    if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+fn bazel_use_bsp_from_env() -> bool {
+    let Ok(raw) = std::env::var("NOVA_BAZEL_USE_BSP") else {
+        return true;
+    };
+
+    let raw = strip_outer_matching_quotes(raw.trim()).trim();
+    if raw.is_empty() {
+        return true;
+    }
+
+    raw != "0" && !raw.eq_ignore_ascii_case("false")
+}
+
 #[derive(Debug, Clone)]
 struct WorkspacePathOutsideRootError {
     path: PathBuf,
@@ -546,14 +574,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             // `buildTarget/inverseSources` does not support restricting the universe to a
             // run-target closure; only use it for the full-workspace owning-target query.
             if run_target.is_none() {
-                let prefer_bsp = std::env::var("NOVA_BAZEL_USE_BSP")
-                    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-                    .unwrap_or(true);
+                let prefer_bsp = bazel_use_bsp_from_env();
 
                 if prefer_bsp {
                     if let Some(owners) = self.java_owning_targets_for_file_via_bsp(_file) {
                         self.java_owning_targets_cache
-                            .insert(cache_key, owners.clone());
+                            .insert(cache_key.clone(), owners.clone());
                         return Ok(owners);
                     }
                 }
@@ -704,9 +730,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
         #[cfg(feature = "bsp")]
         {
-            let prefer_bsp = std::env::var("NOVA_BAZEL_USE_BSP")
-                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-                .unwrap_or(true);
+            let prefer_bsp = bazel_use_bsp_from_env();
 
             if prefer_bsp {
                 if let Ok(Some(workspace)) = self.bsp_workspace_mut() {
@@ -1139,10 +1163,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     /// Resolve Java compilation information for a Bazel target.
     pub fn target_compile_info(&mut self, target: &str) -> Result<JavaCompileInfo> {
-        let prefer_bsp = cfg!(feature = "bsp")
-            && std::env::var("NOVA_BAZEL_USE_BSP")
-                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-                .unwrap_or(true);
+        let prefer_bsp = cfg!(feature = "bsp") && bazel_use_bsp_from_env();
 
         if prefer_bsp {
             if let Some(entry) = self.cache.get(
@@ -2231,6 +2252,47 @@ mod bsp_config_tests {
         let config = workspace.bsp_config_from_env();
         assert_eq!(config.program, "env-prog");
         assert_eq!(config.args, vec!["--env".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod bazel_use_bsp_env_tests {
+    use super::*;
+    use crate::test_support::EnvVarGuard;
+
+    #[test]
+    fn bazel_use_bsp_from_env_defaults_true_when_unset_or_empty() {
+        let _lock = crate::test_support::env_lock();
+
+        let _unset = EnvVarGuard::remove("NOVA_BAZEL_USE_BSP");
+        assert!(bazel_use_bsp_from_env());
+
+        let _empty = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some(""));
+        assert!(bazel_use_bsp_from_env());
+
+        let _quoted_empty = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some(r#""""#));
+        assert!(bazel_use_bsp_from_env());
+    }
+
+    #[test]
+    fn bazel_use_bsp_from_env_parses_false_values_with_optional_quotes() {
+        let _lock = crate::test_support::env_lock();
+
+        for raw in ["0", "false", "FALSE", r#""0""#, r#""false""#, "'0'", "'false'"] {
+            let _guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some(raw));
+            assert!(
+                !bazel_use_bsp_from_env(),
+                "expected NOVA_BAZEL_USE_BSP={raw:?} to disable BSP"
+            );
+        }
+
+        for raw in ["1", "true", r#""1""#, r#""true""#] {
+            let _guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some(raw));
+            assert!(
+                bazel_use_bsp_from_env(),
+                "expected NOVA_BAZEL_USE_BSP={raw:?} to enable BSP"
+            );
+        }
     }
 }
 
