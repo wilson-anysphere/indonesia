@@ -707,6 +707,11 @@ pub fn decompiled_uri_for_classfile(bytes: &[u8], internal_name: &str) -> String
 
 /// Attempts to parse a canonical decompiled virtual-document URI.
 pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
+    // Canonical form does not include query/fragment (ADR0006).
+    if uri.contains('?') || uri.contains('#') {
+        return None;
+    }
+
     let prefix = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/");
     let rest = uri.strip_prefix(&prefix)?;
     let (content_hash, filename) = rest.split_once('/')?;
@@ -717,27 +722,27 @@ pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
 
     // Avoid parsing unrelated `nova:///decompiled/...` URIs.
     //
-    // Content hashes are produced by `nova_cache::Fingerprint` and are always
-    // lowercase hex.
-    if content_hash.len() != 64
-        || !content_hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
-    {
+    // Canonical content hashes are lowercase hex (as produced by
+    // `nova_cache::Fingerprint`), but accept uppercase hex and normalize so
+    // downstream always sees a single canonical representation.
+    if content_hash.len() != 64 || !content_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
+    let content_hash = content_hash.to_ascii_lowercase();
 
     let binary_name = filename.strip_suffix(".java")?;
     if binary_name.is_empty()
         || binary_name.contains('/')
         || binary_name.contains('\\')
         || matches!(binary_name, "." | "..")
+        || binary_name.starts_with('.')
+        || binary_name.ends_with('.')
     {
         return None;
     }
 
     Some(ParsedDecompiledUri {
-        content_hash: content_hash.to_string(),
+        content_hash,
         binary_name: binary_name.to_string(),
     })
 }
