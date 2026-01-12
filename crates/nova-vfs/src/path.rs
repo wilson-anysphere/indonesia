@@ -72,6 +72,13 @@ impl VfsPath {
         let binary_name = binary_name.into();
         let content_hash = normalize_decompiled_hash(content_hash);
         let binary_name = normalize_decompiled_binary_name(binary_name);
+        if binary_name.is_empty() || binary_name.contains('?') || binary_name.contains('#') {
+            // Don't allow construction of the structured decompiled variant with a non-canonical
+            // binary name; callers that need to preserve arbitrary URIs can use `VfsPath::uri`.
+            return Self::Uri(format!(
+                "nova:///decompiled/{content_hash}/{binary_name}.java"
+            ));
+        }
         if !is_decompiled_hash(&content_hash) {
             // Don't allow construction of the structured decompiled variant with a non-canonical
             // hash; callers that need to preserve arbitrary URIs can use `VfsPath::uri`.
@@ -850,6 +857,23 @@ mod tests {
         let uri = path.to_uri().expect("decompiled uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, path);
+    }
+
+    #[test]
+    fn decompiled_constructor_rejects_empty_binary_name() {
+        assert!(matches!(VfsPath::decompiled(HASH_64, ""), VfsPath::Uri(_)));
+    }
+
+    #[test]
+    fn decompiled_constructor_rejects_query_fragment_characters() {
+        assert!(matches!(
+            VfsPath::decompiled(HASH_64, "Foo?bar"),
+            VfsPath::Uri(_)
+        ));
+        assert!(matches!(
+            VfsPath::decompiled(HASH_64, "Foo#bar"),
+            VfsPath::Uri(_)
+        ));
     }
 
     #[test]
