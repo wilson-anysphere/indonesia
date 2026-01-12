@@ -1207,6 +1207,14 @@ expression: schema
               "jdk_home"
             ]
           }
+        },
+        {
+          "not": {
+            "required": [
+              "release",
+              "target_release"
+            ]
+          }
         }
       ],
       "properties": {
@@ -1232,6 +1240,17 @@ expression: schema
         "release": {
           "description": "Default Java feature release used for `--release`-style API selection when callers don't provide one explicitly.",
           "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "target_release": {
+          "description": "Deprecated alias for `jdk.release`.",
+          "default": null,
+          "deprecated": true,
           "type": [
             "integer",
             "null"

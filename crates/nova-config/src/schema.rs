@@ -426,6 +426,20 @@ fn allow_deprecated_aliases(schema: &mut RootSchema) {
 
     add_deprecated_property(
         schema,
+        "JdkConfig",
+        "target_release",
+        schema_from_json(json!({
+            "deprecated": true,
+            "description": "Deprecated alias for `jdk.release`.",
+            "default": null,
+            "type": ["integer", "null"],
+            "format": "uint16",
+            "minimum": 0
+        })),
+    );
+
+    add_deprecated_property(
+        schema,
         "AiPrivacyConfig",
         "anonymize",
         schema_from_json(json!({
@@ -442,6 +456,7 @@ fn disallow_alias_collisions(schema: &mut RootSchema) {
     // both forms, deserialization fails with a duplicate-field error. Encode the same constraint in
     // the schema so editor/CI validation can catch it early.
     disallow_both_required(schema, "JdkConfig", "home", "jdk_home");
+    disallow_both_required(schema, "JdkConfig", "release", "target_release");
     disallow_both_required(
         schema,
         "AiPrivacyConfig",

@@ -1217,6 +1217,13 @@ fn deprecation_warnings(value: &toml::Value) -> Vec<ConfigWarning> {
                 message: "jdk.jdk_home is deprecated; use jdk.home instead".to_string(),
             });
         }
+
+        if jdk.contains_key("target_release") {
+            out.push(ConfigWarning::DeprecatedKey {
+                path: "jdk.target_release".to_string(),
+                message: "jdk.target_release is deprecated; use jdk.release instead".to_string(),
+            });
+        }
     }
 
     if let Some(privacy) = value

@@ -43,6 +43,26 @@ jdk_home = "/tmp/jdk"
 }
 
 #[test]
+fn reports_deprecated_jdk_target_release_alias() {
+    let text = r#"
+[jdk]
+target_release = 17
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::DeprecatedKey {
+            path: "jdk.target_release".to_string(),
+            message: "jdk.target_release is deprecated; use jdk.release instead".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn reports_deprecated_ai_privacy_anonymize_alias() {
     let text = r#"
 [ai]

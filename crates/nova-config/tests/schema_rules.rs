@@ -141,6 +141,28 @@ fn json_schema_disallows_jdk_home_alias_collision() {
 }
 
 #[test]
+fn json_schema_includes_deprecated_jdk_target_release_alias() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let target_release = value
+        .pointer("/definitions/JdkConfig/properties/target_release")
+        .expect("target_release schema property exists");
+    assert_eq!(
+        target_release.get("deprecated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn json_schema_disallows_jdk_target_release_alias_collision() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_schema_disallows_alias_collision(&value, "JdkConfig", "release", "target_release");
+}
+
+#[test]
 fn json_schema_includes_deprecated_ai_privacy_anonymize_alias() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");
