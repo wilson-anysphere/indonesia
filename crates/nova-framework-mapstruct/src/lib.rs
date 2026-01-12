@@ -18,7 +18,7 @@ use nova_core::ProjectId;
 use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, VirtualMember};
 use nova_framework_parse::{
     annotation_string_value_span, clean_type, collect_annotations, find_named_child, node_text,
-    parse_java, visit_nodes, ParsedAnnotation,
+    parse_annotation_text, parse_java, visit_nodes, ParsedAnnotation,
 };
 use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
@@ -824,8 +824,15 @@ fn parse_mapping_method(
 
     let mappings = annotations
         .iter()
-        .filter(|a| a.simple_name == "Mapping")
-        .filter_map(|a| parse_mapping_annotation(a))
+        .flat_map(|a| {
+            if a.simple_name == "Mapping" {
+                return parse_mapping_annotation(a).into_iter().collect::<Vec<_>>();
+            }
+            if a.simple_name == "Mappings" {
+                return parse_mappings_container_annotation(a);
+            }
+            Vec::new()
+        })
         .collect();
 
     Some(MappingMethodModel {
@@ -901,6 +908,163 @@ fn parse_mapping_annotation(annotation: &ParsedAnnotation) -> Option<PropertyMap
         target,
         target_span,
     })
+}
+
+fn parse_mappings_container_annotation(annotation: &ParsedAnnotation) -> Vec<PropertyMappingModel> {
+    nested_annotations_named(annotation, "Mapping")
+        .into_iter()
+        .filter_map(|ann| parse_mapping_annotation(&ann))
+        .collect()
+}
+
+fn nested_annotations_named(annotation: &ParsedAnnotation, simple_name: &str) -> Vec<ParsedAnnotation> {
+    let Some(haystack) = annotation.text.as_deref() else {
+        return Vec::new();
+    };
+
+    let bytes = haystack.as_bytes();
+    let mut out = Vec::new();
+
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_string || in_char {
+            if escape {
+                escape = false;
+                i += 1;
+                continue;
+            }
+            if b == b'\\' {
+                escape = true;
+                i += 1;
+                continue;
+            }
+            if in_string && b == b'"' {
+                in_string = false;
+            } else if in_char && b == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_char = true;
+            i += 1;
+            continue;
+        }
+
+        if b != b'@' {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+
+        let mut end = i;
+        while end < bytes.len() {
+            let ch = bytes[end] as char;
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        if end == i {
+            i = end;
+            continue;
+        }
+
+        let name = &haystack[i..end];
+        let simple = name.rsplit('.').next().unwrap_or(name);
+        if simple != simple_name {
+            i = end;
+            continue;
+        }
+
+        // Skip whitespace after the name.
+        let mut j = end;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+            j += 1;
+        }
+
+        let mut ann_end = j;
+        if j < bytes.len() && bytes[j] == b'(' {
+            if let Some(close) = find_matching_paren(haystack, j) {
+                ann_end = close + 1;
+            } else {
+                ann_end = bytes.len();
+            }
+        }
+
+        let snippet = &haystack[start..ann_end];
+        let span = Span::new(annotation.span.start + start, annotation.span.start + ann_end);
+        if let Some(parsed) = parse_annotation_text(snippet, span) {
+            out.push(parsed);
+        }
+
+        i = ann_end;
+    }
+
+    out
+}
+
+fn find_matching_paren(haystack: &str, open_idx: usize) -> Option<usize> {
+    if open_idx >= haystack.len() || !haystack[open_idx..].starts_with('(') {
+        return None;
+    }
+
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (rel, ch) in haystack[open_idx..].char_indices() {
+        let idx = open_idx + rel;
+
+        if in_string || in_char {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                continue;
+            }
+            if in_string && ch == '"' {
+                in_string = false;
+            } else if in_char && ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '\'' => in_char = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn parse_formal_parameter_types(
