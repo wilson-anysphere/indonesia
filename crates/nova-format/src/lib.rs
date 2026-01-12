@@ -649,7 +649,7 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
         }
 
         edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
-        return edits;
+        return coalesce_adjacent_text_edits(edits);
     }
 
     let ops = myers_diff_ops(&original_lines, &formatted_lines);
@@ -754,7 +754,27 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
     }
 
     edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
-    edits
+    coalesce_adjacent_text_edits(edits)
+}
+
+fn coalesce_adjacent_text_edits(mut edits: Vec<TextEdit>) -> Vec<TextEdit> {
+    // `minimal_text_edits` is intended to return non-overlapping edits suitable for LSP. In
+    // practice, the diffing strategy can produce multiple insert edits at the same offset (most
+    // notably around mixed newline styles, where one edit inserts a missing `\n` to form `\r\n`
+    // and another edit inserts indentation at the start of the following line). Coalesce any
+    // adjacent edits (including same-offset inserts) into a single replacement.
+    let mut merged: Vec<TextEdit> = Vec::with_capacity(edits.len());
+    for edit in edits.drain(..) {
+        if let Some(last) = merged.last_mut() {
+            if last.range.end() == edit.range.start() {
+                last.range = TextRange::new(last.range.start(), edit.range.end());
+                last.replacement.push_str(&edit.replacement);
+                continue;
+            }
+        }
+        merged.push(edit);
+    }
+    merged
 }
 
 fn minimal_text_edits_for_line(original: &str, formatted: &str) -> Vec<TextEdit> {
