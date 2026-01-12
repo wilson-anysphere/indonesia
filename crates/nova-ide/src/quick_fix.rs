@@ -218,6 +218,17 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     continue;
                 }
 
+                // If Salsa also emitted an `unresolved-method` diagnostic for this call, prefer
+                // the create-symbol quick fix (it can better infer e.g. `static` context).
+                if diagnostics.iter().any(|other| {
+                    other.code.as_ref() == "unresolved-method"
+                        && other
+                            .span
+                            .is_some_and(|span| spans_intersect(span, diag_span))
+                }) {
+                    continue;
+                }
+
                 let Some(name) = extract_unresolved_member_name(diag, source, diag_span) else {
                     continue;
                 };
@@ -698,7 +709,6 @@ fn line_indent<'a>(text: &'a str, line_start: usize) -> &'a str {
     // SAFETY: we only advance on ASCII bytes, which are always char boundaries.
     &text[line_start..end]
 }
-
 fn remove_unreachable_code_action(uri: &Uri, source: &str, diag_span: Span) -> Option<CodeAction> {
     // Best-effort: remove the entire line containing the unreachable statement, rather than just
     // the diagnostic span. The span may not cover the full statement text (e.g. `x = 1` inside
@@ -719,4 +729,69 @@ fn remove_unreachable_code_action(uri: &Uri, source: &str, diag_span: Span) -> O
         )),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_reference_offers_create_method_quickfix_when_no_unresolved_method_diag() {
+        let source = "class A { void m() { foo(); } }";
+        let foo_start = source.find("foo").expect("foo in fixture");
+        let foo_span = Span::new(foo_start, foo_start + "foo".len());
+
+        let diagnostics = vec![Diagnostic::error(
+            "UNRESOLVED_REFERENCE",
+            "Cannot resolve symbol 'foo'",
+            Some(foo_span),
+        )];
+        let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+        let actions = quick_fixes_for_diagnostics(&uri, source, foo_span, &diagnostics);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                CodeActionOrCommand::CodeAction(CodeAction { title, .. })
+                    if title == "Create method 'foo'"
+            )),
+            "expected create method quick fix; got {actions:#?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_reference_does_not_duplicate_create_symbol_unresolved_method_quickfix() {
+        let source = "class A { static void m() { foo(); } }";
+        let foo_start = source.find("foo").expect("foo in fixture");
+        let foo_span = Span::new(foo_start, foo_start + "foo".len());
+        let call_end = source[foo_start..]
+            .find(')')
+            .map(|rel| foo_start + rel + 1)
+            .unwrap_or(foo_span.end);
+        let call_span = Span::new(foo_span.start, call_end);
+
+        let diagnostics = vec![
+            Diagnostic::error(
+                "UNRESOLVED_REFERENCE",
+                "Cannot resolve symbol 'foo'",
+                Some(foo_span),
+            ),
+            Diagnostic::error(
+                "unresolved-method",
+                "unresolved method `foo` for receiver `A` with arguments ()",
+                Some(call_span),
+            ),
+        ];
+        let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+        let actions = quick_fixes_for_diagnostics(&uri, source, foo_span, &diagnostics);
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                CodeActionOrCommand::CodeAction(CodeAction { title, .. })
+                    if title == "Create method 'foo'"
+            )),
+            "expected UNRESOLVED_REFERENCE quick fix to be suppressed when unresolved-method exists; got {actions:#?}"
+        );
+    }
 }
