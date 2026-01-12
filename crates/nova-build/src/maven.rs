@@ -1286,30 +1286,73 @@ pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn discover_maven_modules(root: &Path, build_files: &[PathBuf]) -> Vec<PathBuf> {
-    let root_pom = root.join("pom.xml");
-    let mut modules = Vec::new();
-    for file in build_files {
-        if file.file_name().and_then(|s| s.to_str()) != Some("pom.xml") {
-            continue;
-        }
-        if file == &root_pom {
-            continue;
-        }
-        let Ok(rel) = file.strip_prefix(root) else {
-            continue;
+fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf> {
+    fn parse_modules(pom_xml: &str) -> Vec<PathBuf> {
+        let Ok(doc) = roxmltree::Document::parse(pom_xml) else {
+            return Vec::new();
         };
-        let Some(dir) = rel.parent() else {
-            continue;
+        let project = doc.root_element();
+        let Some(modules) = child_element(&project, "modules") else {
+            return Vec::new();
         };
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        modules.push(dir.to_path_buf());
+
+        modules
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "module")
+            .filter_map(|n| n.text())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            // Best-effort: skip module paths that require property interpolation.
+            .filter(|s| !s.contains("${"))
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty() && !p.is_absolute())
+            .collect()
     }
-    modules.sort();
-    modules.dedup();
-    modules
+
+    let root_pom = root.join("pom.xml");
+    let Ok(root_pom_xml) = std::fs::read_to_string(&root_pom) else {
+        return Vec::new();
+    };
+    let root_modules = parse_modules(&root_pom_xml);
+    if root_modules.is_empty() {
+        return Vec::new();
+    }
+
+    // Recursively walk aggregator modules by reading each module's `pom.xml` and parsing
+    // its `<modules>` list. Missing/invalid child POMs are ignored best-effort.
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for module in root_modules {
+        if seen.insert(module.clone()) {
+            stack.push(module.clone());
+            out.push(module);
+        }
+    }
+
+    while let Some(parent_rel) = stack.pop() {
+        let child_pom = root.join(&parent_rel).join("pom.xml");
+        let Ok(child_xml) = std::fs::read_to_string(&child_pom) else {
+            continue;
+        };
+        let child_modules = parse_modules(&child_xml);
+        for child in child_modules {
+            let rel = parent_rel.join(child);
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            if seen.insert(rel.clone()) {
+                stack.push(rel.clone());
+                out.push(rel);
+            }
+        }
+    }
+
+    // Stable sort for deterministic cache keys / tests.
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -1399,7 +1442,7 @@ mod tests {
 
         std::fs::write(
             root.join("pom.xml"),
-            "<project><modelVersion>4.0.0</modelVersion></project>",
+            "<project><modelVersion>4.0.0</modelVersion><modules><module>module-a</module></modules></project>",
         )
         .unwrap();
         std::fs::create_dir_all(root.join("module-a")).unwrap();
@@ -1416,6 +1459,36 @@ mod tests {
                 .join("wrapper")
                 .join("maven-wrapper.properties"),
             "distributionUrl=https://example.invalid/maven.zip\n",
+        )
+        .unwrap();
+
+        let build_files = collect_maven_build_files(root).unwrap();
+        let modules = discover_maven_modules(root, &build_files);
+        assert_eq!(modules, vec![PathBuf::from("module-a")]);
+    }
+
+    #[test]
+    fn discover_maven_modules_ignores_unlisted_poms() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion><modules><module>module-a</module></modules></project>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("module-a")).unwrap();
+        std::fs::write(
+            root.join("module-a").join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        // Not listed in `<modules>`, should not be treated as part of the reactor.
+        std::fs::create_dir_all(root.join("unrelated")).unwrap();
+        std::fs::write(
+            root.join("unrelated").join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
         )
         .unwrap();
 
