@@ -5510,9 +5510,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 )
                             )
                         {
+                            let found = format_type(&*loader.store, &index_ty);
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-array-index",
-                                "array index must be an integral type",
+                                format!(
+                                    "array index must be an integral type (byte, short, char, or int), found {found}"
+                                ),
                                 Some(self.body.exprs[*index].range()),
                             ));
                         }
@@ -5526,10 +5529,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         ty,
                         is_type_ref: false,
                     },
-                    _ => {
+                    ty => {
+                        let found = format_type(&*loader.store, &ty);
                         self.diagnostics.push(Diagnostic::error(
                             "invalid-array-access",
-                            "cannot index non-array type",
+                            format!("cannot index non-array type {found}"),
                             Some(*range),
                         ));
                         ExprInfo {
