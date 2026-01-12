@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getNovaBuildFileGlobPatterns, getNovaWatchedFileGlobPatterns } from '../fileWatchers';
+import {
+  getNovaBuildFileGlobPatterns,
+  getNovaWatchedFileGlobPatterns,
+  NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB,
+  NOVA_CONFIG_GLOB,
+  NOVA_GRADLE_SNAPSHOT_GLOB,
+} from '../fileWatchers';
 
 test('getNovaWatchedFileGlobPatterns returns the expected default glob list', () => {
   assert.deepEqual(getNovaWatchedFileGlobPatterns(), [
@@ -51,9 +57,9 @@ test('getNovaWatchedFileGlobPatterns returns the expected default glob list', ()
     '**/nova.toml',
     '**/.nova.toml',
     '**/nova.config.toml',
-    '**/.nova/apt-cache/generated-roots.json',
-    '**/.nova/queries/gradle.json',
-    '**/.nova/config.toml',
+    NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB,
+    NOVA_GRADLE_SNAPSHOT_GLOB,
+    NOVA_CONFIG_GLOB,
   ]);
 });
 
@@ -98,9 +104,9 @@ test('getNovaBuildFileGlobPatterns returns the expected default glob list', () =
     '**/nova.toml',
     '**/.nova.toml',
     '**/nova.config.toml',
-    '**/.nova/apt-cache/generated-roots.json',
-    '**/.nova/queries/gradle.json',
-    '**/.nova/config.toml',
+    NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB,
+    NOVA_GRADLE_SNAPSHOT_GLOB,
+    NOVA_CONFIG_GLOB,
   ]);
 });
 

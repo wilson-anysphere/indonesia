@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { NOVA_GRADLE_SNAPSHOT_REL_PATH } from '../fileWatchers';
 
 beforeEach(() => {
   vi.resetModules();
@@ -227,8 +228,8 @@ describe('buildFileWatch', () => {
     };
 
     const fileUri = {
-      fsPath: '/workspace/.nova/queries/gradle.json',
-      toString: () => 'file:///workspace/.nova/queries/gradle.json',
+      fsPath: `/workspace/${NOVA_GRADLE_SNAPSHOT_REL_PATH}`,
+      toString: () => `file:///workspace/${NOVA_GRADLE_SNAPSHOT_REL_PATH}`,
     };
 
     const output = { appendLine: vi.fn() };
