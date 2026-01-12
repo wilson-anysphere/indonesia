@@ -192,7 +192,12 @@ export function registerNovaProjectExplorer(
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_REVEAL_PATH, async (uri: vscode.Uri) => {
+    vscode.commands.registerCommand(COMMAND_REVEAL_PATH, async (arg?: unknown) => {
+      const uri = extractUri(arg ?? view.selection?.[0]);
+      if (!uri) {
+        void vscode.window.showErrorMessage('Nova: no path selected.');
+        return;
+      }
       await revealPath(uri);
     }),
   );
@@ -1420,6 +1425,44 @@ function extractPathText(arg: unknown): string | undefined {
   const label = (arg as { label?: unknown }).label;
   if (typeof label === 'string' && label.trim().length > 0) {
     return label.trim();
+  }
+
+  return undefined;
+}
+
+function extractUri(arg: unknown): vscode.Uri | undefined {
+  if (arg instanceof vscode.Uri) {
+    return arg;
+  }
+
+  const asFolder = asWorkspaceFolder(arg);
+  if (asFolder) {
+    return asFolder.uri;
+  }
+
+  if (!arg || typeof arg !== 'object') {
+    return undefined;
+  }
+
+  const uri = (arg as { uri?: unknown }).uri;
+  if (uri instanceof vscode.Uri) {
+    return uri;
+  }
+
+  const resourceUri = (arg as { resourceUri?: unknown }).resourceUri;
+  if (resourceUri instanceof vscode.Uri) {
+    return resourceUri;
+  }
+
+  const workspace = (arg as { workspace?: unknown }).workspace;
+  const asNestedFolder = asWorkspaceFolder(workspace);
+  if (asNestedFolder) {
+    return asNestedFolder.uri;
+  }
+
+  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
+  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+    return vscode.Uri.file(projectRoot.trim());
   }
 
   return undefined;
