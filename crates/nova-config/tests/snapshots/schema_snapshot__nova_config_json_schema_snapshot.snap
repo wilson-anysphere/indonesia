@@ -673,7 +673,8 @@ expression: schema
         "model_dir": {
           "description": "Directory containing embedding model files / cache.",
           "default": ".nova/models/embeddings",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false
@@ -965,7 +966,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         }
       },
       "additionalProperties": false
@@ -1014,7 +1016,8 @@ expression: schema
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "wasm_timeout_ms": {
@@ -1038,7 +1041,8 @@ expression: schema
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "enabled": {
@@ -1054,7 +1058,8 @@ expression: schema
             "null"
           ],
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "minItems": 1
         }
@@ -1083,7 +1088,8 @@ expression: schema
         },
         "model_path": {
           "description": "Path to a GGUF model file on disk.",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "temperature": {
           "description": "Sampling temperature.",
@@ -1129,7 +1135,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         },
         "jdk_home": {
           "description": "Deprecated alias for `jdk.home`.",
@@ -1138,7 +1145,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         }
       },
       "additionalProperties": false
@@ -1159,7 +1167,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         },
         "include_backtrace": {
           "description": "Capture and include backtraces in panic reports.",

@@ -47,9 +47,29 @@ impl NovaConfig {
 }
 
 fn validate_generated_sources(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    for (idx, path) in config.generated_sources.additional_roots.iter().enumerate() {
+        if path.as_os_str().is_empty() {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: format!("generated_sources.additional_roots[{idx}]"),
+                message: "must be non-empty".to_string(),
+            });
+        }
+    }
+
     if matches!(&config.generated_sources.override_roots, Some(roots) if roots.is_empty()) {
         out.warnings
             .push(ConfigWarning::GeneratedSourcesOverrideRootsEmpty);
+    }
+
+    if let Some(roots) = config.generated_sources.override_roots.as_ref() {
+        for (idx, path) in roots.iter().enumerate() {
+            if path.as_os_str().is_empty() {
+                out.warnings.push(ConfigWarning::InvalidValue {
+                    toml_path: format!("generated_sources.override_roots[{idx}]"),
+                    message: "must be non-empty".to_string(),
+                });
+            }
+        }
     }
 }
 
@@ -61,6 +81,14 @@ fn validate_jdk(
     let Some(home) = config.jdk.home.as_ref() else {
         return;
     };
+
+    if home.as_os_str().is_empty() {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: "must be non-empty".to_string(),
+        });
+        return;
+    }
 
     let base_dir = ctx.base_dir();
     let resolved = if home.is_absolute() {
@@ -152,6 +180,14 @@ fn validate_extensions(
     let base_dir = ctx.base_dir();
 
     for (idx, path) in config.extensions.wasm_paths.iter().enumerate() {
+        if path.as_os_str().is_empty() {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: format!("extensions.wasm_paths[{idx}]"),
+                message: "must be non-empty".to_string(),
+            });
+            continue;
+        }
+
         let resolved = if path.is_absolute() {
             path.clone()
         } else if let Some(base_dir) = base_dir {
@@ -314,23 +350,30 @@ fn validate_ai(
     if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama) {
         if let Some(cfg) = config.ai.provider.in_process_llama.as_ref() {
             let base_dir = ctx.base_dir();
-            let resolved = if cfg.model_path.is_absolute() {
-                Some(cfg.model_path.clone())
+            if cfg.model_path.as_os_str().is_empty() {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+                    message: "must be non-empty".to_string(),
+                });
             } else {
-                base_dir.map(|base| base.join(&cfg.model_path))
-            };
+                let resolved = if cfg.model_path.is_absolute() {
+                    Some(cfg.model_path.clone())
+                } else {
+                    base_dir.map(|base| base.join(&cfg.model_path))
+                };
 
-            if let Some(resolved) = resolved {
-                if !resolved.exists() {
-                    out.errors.push(ConfigValidationError::InvalidValue {
-                        toml_path: "ai.provider.in_process_llama.model_path".to_string(),
-                        message: format!("path does not exist: {}", resolved.display()),
-                    });
-                } else if !resolved.is_file() {
-                    out.errors.push(ConfigValidationError::InvalidValue {
-                        toml_path: "ai.provider.in_process_llama.model_path".to_string(),
-                        message: format!("path is not a file: {}", resolved.display()),
-                    });
+                if let Some(resolved) = resolved {
+                    if !resolved.exists() {
+                        out.errors.push(ConfigValidationError::InvalidValue {
+                            toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+                            message: format!("path does not exist: {}", resolved.display()),
+                        });
+                    } else if !resolved.is_file() {
+                        out.errors.push(ConfigValidationError::InvalidValue {
+                            toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+                            message: format!("path is not a file: {}", resolved.display()),
+                        });
+                    }
                 }
             }
         }
@@ -353,6 +396,13 @@ fn validate_ai(
     }
 
     if config.ai.embeddings.enabled {
+        if config.ai.embeddings.model_dir.as_os_str().is_empty() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.model_dir".to_string(),
+                message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
+            });
+        }
+
         if config.ai.embeddings.batch_size == 0 {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.embeddings.batch_size".to_string(),

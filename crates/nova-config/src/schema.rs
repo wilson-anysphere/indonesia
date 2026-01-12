@@ -325,10 +325,19 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     set_min_length(schema, "AiProviderConfig", "azure_deployment", 1);
     set_min_length(schema, "AiProviderConfig", "azure_api_version", 1);
     set_min_length(schema, "AiConfig", "api_key", 1);
+    set_min_length(schema, "JdkConfig", "home", 1);
+    set_min_length(schema, "JdkConfig", "jdk_home", 1);
+    set_min_length(schema, "LoggingConfig", "file", 1);
+    set_min_length(schema, "AuditLogConfig", "path", 1);
+    set_min_length(schema, "AiEmbeddingsConfig", "model_dir", 1);
+    set_min_length(schema, "InProcessLlamaConfig", "model_path", 1);
     set_array_item_min_length(schema, "AiPrivacyConfig", "excluded_paths", 1);
     set_array_item_min_length(schema, "AiPrivacyConfig", "redact_patterns", 1);
+    set_array_item_min_length(schema, "ExtensionsConfig", "wasm_paths", 1);
     set_array_item_min_length(schema, "ExtensionsConfig", "allow", 1);
     set_array_item_min_length(schema, "ExtensionsConfig", "deny", 1);
+    set_array_item_min_length(schema, "GeneratedSourcesConfig", "additional_roots", 1);
+    set_array_item_min_length(schema, "GeneratedSourcesConfig", "override_roots", 1);
     set_property_write_only(schema, "AiConfig", "api_key", true);
 }
 

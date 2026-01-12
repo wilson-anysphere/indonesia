@@ -92,6 +92,25 @@ kind = "open_ai"
 }
 
 #[test]
+fn validates_jdk_home_is_non_empty() {
+    let text = r#"
+[jdk]
+home = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_provider_url_scheme_is_http() {
     let text = r#"
 [ai]
@@ -200,6 +219,31 @@ model_path = "missing.gguf"
 }
 
 #[test]
+fn validates_in_process_llama_model_path_is_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "in_process_llama"
+
+[ai.provider.in_process_llama]
+model_path = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_privacy_excluded_paths_are_valid_globs() {
     let text = r#"
 [ai]
@@ -274,6 +318,31 @@ redact_patterns = [""]
 }
 
 #[test]
+fn validates_ai_embeddings_model_dir_is_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+model_dir = ""
+batch_size = 1
+max_memory_bytes = 1
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.embeddings.model_dir".to_string(),
+            message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn warns_when_extensions_allow_is_empty() {
     let text = r#"
 [extensions]
@@ -333,6 +402,27 @@ deny = [""]
         diagnostics.warnings,
         vec![ConfigWarning::InvalidValue {
             toml_path: "extensions.deny[0]".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn warns_when_extensions_wasm_paths_contains_empty_path() {
+    let text = r#"
+[extensions]
+enabled = true
+wasm_paths = [""]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "extensions.wasm_paths[0]".to_string(),
             message: "must be non-empty".to_string(),
         }]
     );
@@ -406,6 +496,33 @@ override_roots = []
     assert_eq!(
         diagnostics.warnings,
         vec![ConfigWarning::GeneratedSourcesOverrideRootsEmpty]
+    );
+}
+
+#[test]
+fn warns_when_generated_sources_roots_contain_empty_paths() {
+    let text = r#"
+[generated_sources]
+additional_roots = [""]
+override_roots = [""]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![
+            ConfigWarning::InvalidValue {
+                toml_path: "generated_sources.additional_roots[0]".to_string(),
+                message: "must be non-empty".to_string(),
+            },
+            ConfigWarning::InvalidValue {
+                toml_path: "generated_sources.override_roots[0]".to_string(),
+                message: "must be non-empty".to_string(),
+            },
+        ]
     );
 }
 

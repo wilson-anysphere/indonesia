@@ -243,3 +243,71 @@ fn json_schema_requires_non_empty_ai_privacy_patterns() {
         Some(1)
     );
 }
+
+#[test]
+fn json_schema_requires_non_empty_path_strings() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/home/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/jdk_home/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/LoggingConfig/properties/file/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/AuditLogConfig/properties/path/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/AiEmbeddingsConfig/properties/model_dir/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/InProcessLlamaConfig/properties/model_path/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}
+
+#[test]
+fn json_schema_requires_non_empty_paths_in_arrays() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/ExtensionsConfig/properties/wasm_paths/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/GeneratedSourcesConfig/properties/additional_roots/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/GeneratedSourcesConfig/properties/override_roots/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}
