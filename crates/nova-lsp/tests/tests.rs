@@ -27,6 +27,8 @@ mod extract_method;
 mod file_operations;
 #[path = "suite/framework_analyzer_adapter.rs"]
 mod framework_analyzer_adapter;
+#[path = "suite/framework_analyzer_integration.rs"]
+mod framework_analyzer_integration;
 #[path = "suite/framework_analyzer_registry_integration.rs"]
 mod framework_analyzer_registry_integration;
 #[path = "suite/ide_extensions_completion.rs"]
