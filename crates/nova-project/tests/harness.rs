@@ -72,6 +72,9 @@ mod build_system_backends;
 #[path = "cases/discovery.rs"]
 mod discovery;
 
+#[path = "cases/gradle_buildsrc.rs"]
+mod gradle_buildsrc;
+
 #[path = "cases/gradle_cache.rs"]
 mod gradle_cache;
 
