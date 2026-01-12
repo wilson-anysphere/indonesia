@@ -1,17 +1,18 @@
-use httpmock::prelude::*;
 use lsp_types::{CompletionItem, CompletionList, Position, TextEdit, Uri};
 use nova_lsp::MoreCompletionsResult;
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 use tempfile::TempDir;
 
+mod support;
+
 #[test]
 fn stdio_server_supports_ai_multi_token_completion_polling() {
-    let mock_server = MockServer::start();
+    let _lock = support::stdio_server_lock();
     let completion_payload = r#"
     {
       "completions": [
@@ -26,12 +27,8 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
     }
     "#;
 
-    let endpoint = format!("{}/complete", mock_server.base_url());
-    let mock = mock_server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": completion_payload }));
-    });
+    let ai_server = support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
@@ -88,7 +85,7 @@ model = "default"
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -97,14 +94,14 @@ model = "default"
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
     // 2) open document
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -115,7 +112,7 @@ model = "default"
 
     // 3) request baseline completions.
     let cursor = Position::new(8, 15); // end of "stream."
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -127,7 +124,7 @@ model = "default"
             }
         }),
     );
-    let completion_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let completion_resp = support::read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
         .get("result")
         .cloned()
@@ -152,7 +149,7 @@ model = "default"
     let mut resolved: Option<MoreCompletionsResult> = None;
     for attempt in 0..50 {
         let request_id = 3 + attempt as i64;
-        write_jsonrpc_message(
+        support::write_jsonrpc_message(
             &mut stdin,
             &json!({
                 "jsonrpc": "2.0",
@@ -161,7 +158,7 @@ model = "default"
                 "params": { "context_id": context_id.clone() }
             }),
         );
-        let resp = read_jsonrpc_response_with_id(&mut stdout, request_id);
+        let resp = support::read_response_with_id(&mut stdout, request_id);
         let result = resp.get("result").cloned().expect("result");
         let more: MoreCompletionsResult =
             serde_json::from_value(result).expect("decode more completions");
@@ -177,11 +174,11 @@ model = "default"
         !more.items.is_empty(),
         "expected at least one AI completion item"
     );
-    mock.assert();
+    assert!(ai_server.hits() > 0, "expected at least one AI provider request");
 
     // 5) Resolve an AI completion item to compute its import additionalTextEdits.
     let unresolved_ai_item = more.items[0].clone();
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -190,7 +187,7 @@ model = "default"
             "params": unresolved_ai_item
         }),
     );
-    let resolved_resp = read_jsonrpc_response_with_id(&mut stdout, 999);
+    let resolved_resp = support::read_response_with_id(&mut stdout, 999);
     let resolved_item: CompletionItem = serde_json::from_value(
         resolved_resp
             .get("result")
@@ -230,12 +227,12 @@ model = "default"
     assert_eq!(insert_pos.character, 0);
 
     // 6) shutdown + exit
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 100);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 100);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -244,7 +241,7 @@ model = "default"
 
 #[test]
 fn stdio_server_does_not_request_ai_completions_when_multi_token_feature_is_disabled() {
-    let mock_server = MockServer::start();
+    let _lock = support::stdio_server_lock();
     let completion_payload = r#"
     {
       "completions": [
@@ -259,12 +256,8 @@ fn stdio_server_does_not_request_ai_completions_when_multi_token_feature_is_disa
     }
     "#;
 
-    let endpoint = format!("{}/complete", mock_server.base_url());
-    let mock = mock_server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": completion_payload }));
-    });
+    let ai_server = support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
@@ -314,7 +307,7 @@ model = "default"
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -323,13 +316,13 @@ model = "default"
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -339,7 +332,7 @@ model = "default"
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -351,7 +344,7 @@ model = "default"
             }
         }),
     );
-    let completion_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let completion_resp = support::read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
         .get("result")
         .cloned()
@@ -376,7 +369,7 @@ model = "default"
         })
         .expect("completion_context_id present on at least one item");
 
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -385,25 +378,25 @@ model = "default"
             "params": { "context_id": context_id }
         }),
     );
-    let more_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let more_resp = support::read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
     let more: MoreCompletionsResult =
         serde_json::from_value(more_result).expect("decode more completions");
     assert!(!more.is_incomplete);
     assert!(more.items.is_empty());
 
-    write_jsonrpc_message(
+    support::write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 4);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
 
-    mock.assert_hits(0);
+    ai_server.assert_hits(0);
 }
 
 fn apply_lsp_edits(source: &str, edits: &[TextEdit]) -> String {
@@ -462,47 +455,5 @@ fn position_to_offset_utf16(text: &str, pos: Position) -> Option<usize> {
         Some(idx)
     } else {
         None
-    }
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
     }
 }

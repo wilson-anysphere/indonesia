@@ -1,3 +1,8 @@
+#[cfg(test)]
+mod codec;
+mod rpc_out;
+
+use rpc_out::RpcOut;
 use crossbeam_channel::{Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
@@ -140,6 +145,30 @@ impl LspClient {
             method: method.into(),
             params,
         }))
+    }
+}
+
+impl RpcOut for LspClient {
+    fn send_notification(&self, method: &str, params: serde_json::Value) -> std::io::Result<()> {
+        self.notify(method.to_string(), params)
+    }
+
+    fn send_request(
+        &self,
+        id: RequestId,
+        method: &str,
+        params: serde_json::Value,
+    ) -> std::io::Result<()> {
+        self.request(id, method.to_string(), params)
+    }
+
+    fn send_response(
+        &self,
+        id: RequestId,
+        result: Option<serde_json::Value>,
+        error: Option<ResponseError>,
+    ) -> std::io::Result<()> {
+        self.respond(Response { id, result, error })
     }
 }
 
@@ -2117,7 +2146,7 @@ fn handle_notification(
 }
 
 fn flush_memory_status_notifications(
-    client: &LspClient,
+    out: &impl RpcOut,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     let mut events = state.memory_events.lock().unwrap();
@@ -2137,12 +2166,12 @@ fn flush_memory_status_notifications(
         top_components,
     })
     .unwrap_or(serde_json::Value::Null);
-    client.notify(nova_lsp::MEMORY_STATUS_NOTIFICATION, params)?;
+    out.send_notification(nova_lsp::MEMORY_STATUS_NOTIFICATION, params)?;
     Ok(())
 }
 
 fn flush_safe_mode_notifications(
-    client: &LspClient,
+    out: &impl RpcOut,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     let (enabled, reason) = nova_lsp::hardening::safe_mode_snapshot();
@@ -2159,7 +2188,7 @@ fn flush_safe_mode_notifications(
         reason: reason.map(ToString::to_string),
     })
     .unwrap_or(serde_json::Value::Null);
-    client.notify(nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION, params)?;
+    out.send_notification(nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION, params)?;
     Ok(())
 }
 
@@ -2599,7 +2628,7 @@ fn handle_java_organize_imports(
     let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
         .map_err(|e| (-32603, e.to_string()))?;
     client
-        .request(
+        .send_request(
             id,
             "workspace/applyEdit",
             json!({
@@ -3742,7 +3771,7 @@ fn handle_execute_command(
                         let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
                             .map_err(|e| (-32603, e.to_string()))?;
                         client
-                            .request(
+                            .send_request(
                                 id,
                                 "workspace/applyEdit",
                                 json!({
@@ -3962,8 +3991,7 @@ mod tests {
             range: None,
         };
 
-        let (tx, rx) = crossbeam_channel::unbounded::<Message>();
-        let client = LspClient::new(tx);
+        let client = crate::rpc_out::WriteRpcOut::new(Vec::<u8>::new());
         let result = run_ai_explain_error(
             args,
             work_done_token,
@@ -3974,47 +4002,53 @@ mod tests {
         .unwrap();
         let expected = result.as_str().expect("string result");
 
-        let messages: Vec<Message> = rx.try_iter().collect();
+        let bytes = client.into_inner();
+        let mut reader = std::io::BufReader::new(bytes.as_slice());
+        let mut messages = Vec::new();
+        loop {
+            match crate::codec::read_json_message(&mut reader) {
+                Ok(value) => messages.push(value),
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(err) => panic!("failed to read JSON-RPC message: {err}"),
+            }
+        }
 
         assert!(
-            messages.iter().any(|msg| match msg {
-                Message::Notification(notification) if notification.method == "$/progress" => {
-                    notification
-                        .params
-                        .get("value")
+            messages.iter().any(|msg| {
+                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                    && msg
+                        .get("params")
+                        .and_then(|p| p.get("value"))
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
                         == Some("begin")
-                }
-                _ => false,
             }),
             "expected a work-done progress begin notification"
         );
 
         assert!(
-            messages.iter().any(|msg| match msg {
-                Message::Notification(notification) if notification.method == "$/progress" => {
-                    notification
-                        .params
-                        .get("value")
+            messages.iter().any(|msg| {
+                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                    && msg
+                        .get("params")
+                        .and_then(|p| p.get("value"))
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
                         == Some("end")
-                }
-                _ => false,
             }),
             "expected a work-done progress end notification"
         );
 
         let mut output_chunks = Vec::new();
         for msg in &messages {
-            let Message::Notification(notification) = msg else {
-                continue;
-            };
-            if notification.method != "window/logMessage" {
+            if msg.get("method").and_then(|m| m.as_str()) != Some("window/logMessage") {
                 continue;
             }
-            let Some(text) = notification.params.get("message").and_then(|m| m.as_str()) else {
+            let Some(text) = msg
+                .get("params")
+                .and_then(|p| p.get("message"))
+                .and_then(|m| m.as_str())
+            else {
                 continue;
             };
             if !text.starts_with("AI explainError") {
@@ -4167,7 +4201,7 @@ fn run_ai_explain_error(
     args: ExplainErrorArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    client: &LspClient,
+    rpc_out: &impl RpcOut,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
@@ -4179,9 +4213,9 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(client, work_done_token.as_ref(), "AI: Explain this error")?;
-    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(client, "AI: explaining error…")?;
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
+    send_log_message(rpc_out, "AI: explaining error…")?;
     let mut ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -4206,24 +4240,24 @@ fn run_ai_explain_error(
         message: args.diagnostic_message.clone(),
         kind: Some(ContextDiagnosticKind::Other),
     });
-    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
-    let out = runtime
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+    let output = runtime
         .block_on(ai.explain_error(&args.diagnostic_message, ctx, cancel.clone()))
         .map_err(|e| {
-            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(client, "AI: explanation ready")?;
-    send_ai_output(client, "AI explainError", &out)?;
-    send_progress_end(client, work_done_token.as_ref(), "Done")?;
-    Ok(serde_json::Value::String(out))
+    send_log_message(rpc_out, "AI: explanation ready")?;
+    send_ai_output(rpc_out, "AI explainError", &output)?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(serde_json::Value::String(output))
 }
 
 fn run_ai_generate_method_body(
     args: GenerateMethodBodyArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    client: &LspClient,
+    rpc_out: &impl RpcOut,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
@@ -4235,9 +4269,9 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(client, work_done_token.as_ref(), "AI: Generate method body")?;
-    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(client, "AI: generating method body…")?;
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
+    send_log_message(rpc_out, "AI: generating method body…")?;
     let ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -4246,24 +4280,24 @@ fn run_ai_generate_method_body(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
-    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
-    let out = runtime
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+    let output = runtime
         .block_on(ai.generate_method_body(&args.method_signature, ctx, cancel.clone()))
         .map_err(|e| {
-            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(client, "AI: method body ready")?;
-    send_ai_output(client, "AI generateMethodBody", &out)?;
-    send_progress_end(client, work_done_token.as_ref(), "Done")?;
-    Ok(serde_json::Value::String(out))
+    send_log_message(rpc_out, "AI: method body ready")?;
+    send_ai_output(rpc_out, "AI generateMethodBody", &output)?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(serde_json::Value::String(output))
 }
 
 fn run_ai_generate_tests(
     args: GenerateTestsArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    client: &LspClient,
+    rpc_out: &impl RpcOut,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
@@ -4275,9 +4309,9 @@ fn run_ai_generate_tests(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(client, work_done_token.as_ref(), "AI: Generate tests")?;
-    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(client, "AI: generating tests…")?;
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
+    send_log_message(rpc_out, "AI: generating tests…")?;
     let ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -4286,17 +4320,17 @@ fn run_ai_generate_tests(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
-    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
-    let out = runtime
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+    let output = runtime
         .block_on(ai.generate_tests(&args.target, ctx, cancel.clone()))
         .map_err(|e| {
-            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(client, "AI: tests ready")?;
-    send_ai_output(client, "AI generateTests", &out)?;
-    send_progress_end(client, work_done_token.as_ref(), "Done")?;
-    Ok(serde_json::Value::String(out))
+    send_log_message(rpc_out, "AI: tests ready")?;
+    send_ai_output(rpc_out, "AI generateTests", &output)?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(serde_json::Value::String(output))
 }
 
 const AI_LOG_MESSAGE_CHUNK_BYTES: usize = 6 * 1024;
@@ -4325,7 +4359,7 @@ fn chunk_utf8_by_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
     chunks
 }
 
-fn send_ai_output(client: &LspClient, label: &str, output: &str) -> Result<(), (i32, String)> {
+fn send_ai_output(out: &impl RpcOut, label: &str, output: &str) -> Result<(), (i32, String)> {
     let chunks = chunk_utf8_by_bytes(output, AI_LOG_MESSAGE_CHUNK_BYTES);
     let total = chunks.len();
     for (idx, chunk) in chunks.into_iter().enumerate() {
@@ -4334,46 +4368,44 @@ fn send_ai_output(client: &LspClient, label: &str, output: &str) -> Result<(), (
         } else {
             format!("{label} ({}/{total}): {chunk}", idx + 1)
         };
-        send_log_message(client, &message)?;
+        send_log_message(out, &message)?;
     }
     Ok(())
 }
 
-fn send_log_message(client: &LspClient, message: &str) -> Result<(), (i32, String)> {
-    client
-        .notify(
-            "window/logMessage",
-            json!({ "type": 3, "message": message }),
-        )
-        .map_err(|e| (-32603, e.to_string()))
+fn send_log_message(out: &impl RpcOut, message: &str) -> Result<(), (i32, String)> {
+    out.send_notification(
+        "window/logMessage",
+        json!({ "type": 3, "message": message }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_begin(
-    client: &LspClient,
+    out: &impl RpcOut,
     token: Option<&serde_json::Value>,
     title: &str,
 ) -> Result<(), (i32, String)> {
     let Some(token) = token else {
         return Ok(());
     };
-    client
-        .notify(
-            "$/progress",
-            json!({
-                "token": token,
-                "value": {
-                    "kind": "begin",
-                    "title": title,
-                    "cancellable": false,
-                    "message": "",
-                }
-            }),
-        )
-        .map_err(|e| (-32603, e.to_string()))
+    out.send_notification(
+        "$/progress",
+        json!({
+            "token": token,
+            "value": {
+                "kind": "begin",
+                "title": title,
+                "cancellable": false,
+                "message": "",
+            }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_report(
-    client: &LspClient,
+    out: &impl RpcOut,
     token: Option<&serde_json::Value>,
     message: &str,
     percentage: Option<u32>,
@@ -4387,37 +4419,35 @@ fn send_progress_report(
     if let Some(percentage) = percentage {
         value.insert("percentage".to_string(), json!(percentage));
     }
-    client
-        .notify(
-            "$/progress",
-            json!({
-                "token": token,
-                "value": value
-            }),
-        )
-        .map_err(|e| (-32603, e.to_string()))
+    out.send_notification(
+        "$/progress",
+        json!({
+            "token": token,
+            "value": value
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_end(
-    client: &LspClient,
+    out: &impl RpcOut,
     token: Option<&serde_json::Value>,
     message: &str,
 ) -> Result<(), (i32, String)> {
     let Some(token) = token else {
         return Ok(());
     };
-    client
-        .notify(
-            "$/progress",
-            json!({
-                "token": token,
-                "value": {
-                    "kind": "end",
-                    "message": message,
-                }
-            }),
-        )
-        .map_err(|e| (-32603, e.to_string()))
+    out.send_notification(
+        "$/progress",
+        json!({
+            "token": token,
+            "value": {
+                "kind": "end",
+                "message": message,
+            }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
 }
 
 fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRequest {

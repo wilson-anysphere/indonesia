@@ -1043,10 +1043,9 @@ pub fn parse_maven_evaluate_scalar_output(output: &str) -> Option<String> {
             continue;
         }
         let candidate = line.trim_matches('"');
-        // Scalar expressions can still emit bracketed lists when the underlying build tool is
-        // misconfigured (or when a wrapper script prints list output unconditionally). Treat
-        // those as invalid scalars so callers can fall back to safer defaults.
-        if candidate.starts_with('[') && candidate.ends_with(']') {
+        // `help:evaluate` may print a bracketed list when the expression resolves to a list.
+        // Treat that as invalid for scalar extraction so callers can fall back to defaults.
+        if candidate.starts_with('[') {
             continue;
         }
         last = Some(candidate.to_string());

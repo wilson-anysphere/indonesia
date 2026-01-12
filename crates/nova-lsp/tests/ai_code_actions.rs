@@ -20,19 +20,15 @@ fn uri_for_path(path: &Path) -> String {
 
 #[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
-    let mock_server = MockServer::start();
-    let mock = mock_server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": "mock explanation" }));
-    });
+    let _lock = support::stdio_server_lock();
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock explanation" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
-            format!("{}/complete", mock_server.base_url()),
+            format!("{}/complete", ai_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
         .stdin(Stdio::piped())
@@ -173,7 +169,7 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     assert!(progress_kinds.contains(&"begin".to_string()));
     assert!(progress_kinds.contains(&"end".to_string()));
 
-    mock.assert_hits(1);
+    ai_server.assert_hits(1);
 
     // 5) shutdown + exit
     write_jsonrpc_message(
@@ -659,21 +655,17 @@ completion_ranking = true
 
 #[test]
 fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
-    let mock_server = MockServer::start();
+    let _lock = support::stdio_server_lock();
     // The code action request itself should not invoke the provider, but we need
     // a valid endpoint so the server considers AI configured.
-    let _mock = mock_server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": "unused in this test" }));
-    });
+    let ai_server = support::TestAiServer::start(json!({ "completion": "unused in this test" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
-            format!("{}/complete", mock_server.base_url()),
+            format!("{}/complete", ai_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
         .stdin(Stdio::piped())
@@ -767,6 +759,11 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         .and_then(|v| v.as_str())
         .expect("target");
     assert_eq!(target, "😀");
+    assert_eq!(
+        ai_server.hits(),
+        0,
+        "codeAction should not call the AI provider"
+    );
 
     // shutdown + exit
     write_jsonrpc_message(
@@ -783,19 +780,15 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
 
 #[test]
 fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
-    let mock_server = MockServer::start();
-    let _mock = mock_server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": "unused in this test" }));
-    });
+    let _lock = support::stdio_server_lock();
+    let ai_server = support::TestAiServer::start(json!({ "completion": "unused in this test" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
-            format!("{}/complete", mock_server.base_url()),
+            format!("{}/complete", ai_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
         .stdin(Stdio::piped())
@@ -871,6 +864,11 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
             .iter()
             .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Generate tests with AI")),
         "expected no generate tests action for invalid UTF-16 range, got: {actions:#?}"
+    );
+    assert_eq!(
+        ai_server.hits(),
+        0,
+        "codeAction should not call the AI provider"
     );
 
     write_jsonrpc_message(
