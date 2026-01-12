@@ -239,27 +239,46 @@ npm run compile
 ## Other Editors
 
 ### Neovim
-
+ 
 ```lua
 -- editors/neovim/init.lua
-require('lspconfig').nova.setup {
-    cmd = { 'nova-lsp' },
-    filetypes = { 'java' },
-    root_dir = require('lspconfig.util').root_pattern('pom.xml', 'build.gradle'),
-}
+local lspconfig = require('lspconfig')
+local configs = require('lspconfig.configs')
+local util = require('lspconfig.util')
+
+if not configs.nova_lsp then
+  configs.nova_lsp = {
+    default_config = {
+      cmd = { 'nova-lsp', '--stdio' },
+      filetypes = { 'java' },
+      root_dir = util.root_pattern(
+        'pom.xml',
+        'build.gradle',
+        'build.gradle.kts',
+        'settings.gradle',
+        'settings.gradle.kts',
+        'MODULE.bazel',
+        'WORKSPACE',
+        'WORKSPACE.bazel',
+        '.git',
+        '.nova'
+      ),
+    },
+  }
+end
+
+lspconfig.nova_lsp.setup({})
 ```
-
+ 
 ### Emacs
-
+ 
 ```elisp
 ;; editors/emacs/nova.el
-(use-package lsp-mode
-  :config
-  (lsp-register-client
-    (make-lsp-client
-      :new-connection (lsp-stdio-connection '("nova-lsp"))
-      :major-modes '(java-mode)
-      :server-id 'nova)))
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '(java-mode . ("nova-lsp" "--stdio"))))
+
+(add-hook 'java-mode-hook #'eglot-ensure)
 ```
 
 ---

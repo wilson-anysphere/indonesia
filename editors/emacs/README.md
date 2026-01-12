@@ -2,6 +2,8 @@
 
 This template configures Emacs to launch `nova-lsp` over stdio for `java-mode`.
 
+The repo includes a copy/paste-ready config file at [`editors/emacs/nova.el`](./nova.el).
+
 ## Prerequisites
 
 - Emacs 28+
@@ -10,23 +12,17 @@ This template configures Emacs to launch `nova-lsp` over stdio for `java-mode`.
 ## Option A: `eglot` (built-in in Emacs 29+)
 
 ```elisp
-(with-eval-after-load 'eglot
-  (add-to-list 'eglot-server-programs
-               '(java-mode . ("nova-lsp" "--stdio"))))
-
-(add-hook 'java-mode-hook #'eglot-ensure)
+(require 'nova) ;; or (load-file "/path/to/editors/emacs/nova.el")
 ```
 
 ## Option B: `lsp-mode`
 
 ```elisp
-(with-eval-after-load 'lsp-mode
-  (lsp-register-client
-   (make-lsp-client
-    :new-connection (lsp-stdio-connection '("nova-lsp" "--stdio"))
-    :activation-fn (lsp-activate-on "java")
-    :server-id 'nova-lsp)))
-
-(add-hook 'java-mode-hook #'lsp)
+;; See `editors/emacs/nova.el` for an optional `lsp-mode` snippet.
 ```
 
+## Organize imports
+
+```elisp
+(global-set-key (kbd "C-c o") #'nova-organize-imports)
+```
