@@ -7226,11 +7226,16 @@ fn method_body_insertion_range(
 }
 
 fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String> {
-    // Only attempt to derive a `src/test/java/...` path when the source file looks like it comes
-    // from a standard Maven/Gradle layout (`src/main/java`). For ad-hoc files, fall back to
-    // inserting tests into the current file.
-    let source_path_slash = source_path.to_string_lossy().replace('\\', "/");
-    if !source_path_slash.contains("src/main/java/") {
+    // Only attempt to derive a `src/test/java/...` path when the source file is already in a
+    // conventional Maven/Gradle layout (`src/main/java`). For ad-hoc single-file projects, fall
+    // back to generating tests inline in the current file.
+    let has_main_java = source_path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .windows(3)
+        .any(|w| w[0].as_ref() == "src" && w[1].as_ref() == "main" && w[2].as_ref() == "java");
+    if !has_main_java {
         return None;
     }
 
@@ -8704,7 +8709,9 @@ fn apply_code_action_outcome<O: RpcOut>(
                 )
                 .map_err(|e| (-32603, e.to_string()))?;
 
-            Ok(json!({ "applied": true, "edit": edit }))
+            // LSP clients generally ignore the `workspace/executeCommand` result for
+            // edit-producing commands; tests and existing integrations expect `null`.
+            Ok(serde_json::Value::Null)
         }
         CodeActionOutcome::Explanation(text) => Ok(serde_json::Value::String(text)),
     }

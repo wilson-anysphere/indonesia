@@ -2990,9 +2990,11 @@ local_only = true
         "expected generated method body in new text: {new_text}"
     );
 
-    // ExecuteCommand result should mirror the edit.
-    let result = exec_resp.get("result").expect("executeCommand result");
-    assert_eq!(result.get("applied"), Some(&json!(true)));
+    // ExecuteCommand result is `null`; the actual edit is delivered via `workspace/applyEdit`.
+    assert!(
+        exec_resp.get("result").map_or(false, |v| v.is_null()),
+        "expected executeCommand result null, got: {exec_resp:#?}"
+    );
 
     // Work-done progress should begin and end.
     let progress_kinds: Vec<String> = notifications
