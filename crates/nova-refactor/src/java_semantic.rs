@@ -14,6 +14,7 @@ use nova_resolve::{
     ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
 };
 use nova_syntax::{ast, AstNode};
+use nova_syntax::java as java_syntax;
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo};
@@ -2703,6 +2704,38 @@ fn resolve_type_from_segments(
     resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &qn)
 }
 
+/// Record references for each prefix of a qualified name that resolves to a source type.
+///
+/// This is required so `Outer.Inner` counts as a reference to both `Outer` and `Inner`.
+fn record_type_prefix_references(
+    file: &FileId,
+    scope: nova_resolve::ScopeId,
+    segments: &[(String, TextRange)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    for idx in 0..segments.len() {
+        let prefix = &segments[..=idx];
+        let Some(TypeResolution::Source(item)) =
+            resolve_type_from_segments(resolver, &scope_result.scopes, scope, prefix)
+        else {
+            continue;
+        };
+        let range = prefix[idx].1;
+        record_reference(
+            file,
+            range,
+            ResolutionKey::Type(item),
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
 fn process_name_expression(
     file: &FileId,
     scope: nova_resolve::ScopeId,
@@ -3150,6 +3183,18 @@ fn record_syntax_only_references(
             let member_name = member[0].0.as_str();
             let member_range = member[0].1;
 
+            // Record type references in the owner prefix (`import static p.Outer.Inner.MEMBER;`).
+            record_type_prefix_references(
+                file,
+                scope_result.file_scope,
+                owner_segments,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+
             let Some(TypeResolution::Source(owner)) = resolve_type_from_segments(
                 resolver,
                 &scope_result.scopes,
@@ -3170,27 +3215,33 @@ fn record_syntax_only_references(
                 );
             }
         } else {
-            let Some(TypeResolution::Source(item)) = resolve_type_from_segments(
-                resolver,
-                &scope_result.scopes,
+            // Record type references for each resolvable prefix so `Outer.Inner` counts as a
+            // reference to both `Outer` and `Inner`.
+            record_type_prefix_references(
+                file,
                 scope_result.file_scope,
                 &segments,
-            ) else {
-                continue;
-            };
-            let Some((_, last_range)) = segments.last() else {
-                continue;
-            };
-            record_reference(
-                file,
-                *last_range,
-                ResolutionKey::Type(item),
+                scope_result,
+                resolver,
                 resolution_to_symbol,
                 references,
                 spans,
             );
         }
     }
+
+    // Type references in signatures / local variable declarations / `new` expressions. These are
+    // not lowered into `hir::Expr::Name` and therefore need a syntax-level walk.
+    record_lightweight_type_references(
+        file,
+        text,
+        &type_scopes,
+        scope_result,
+        resolver,
+        resolution_to_symbol,
+        references,
+        spans,
+    );
 
     // Walk all annotation argument expressions (including nested annotations).
     let mut seen_annotations: HashSet<(usize, usize)> = HashSet::new();
@@ -3339,6 +3390,21 @@ fn record_syntax_only_references(
             }
         }
 
+        // Record the annotation name itself as a type reference (`@Foo`, `@p.Foo`).
+        if let Some(name) = annotation.name() {
+            let segments = collect_ident_segments(name.syntax());
+            record_type_prefix_references(
+                file,
+                scope,
+                &segments,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+
         visit_annotation(
             file,
             annotation,
@@ -3394,4 +3460,984 @@ fn record_syntax_only_references(
             );
         }
     }
+}
+
+fn record_lightweight_type_references(
+    file: &FileId,
+    text: &str,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let parsed = java_syntax::parse(text);
+    let unit = parsed.compilation_unit();
+
+    for ty in &unit.types {
+        record_lightweight_type_decl(
+            file,
+            text,
+            ty,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn record_lightweight_type_decl(
+    file: &FileId,
+    text: &str,
+    ty: &java_syntax::ast::TypeDecl,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    use java_syntax::ast::{MemberDecl, TypeDecl};
+
+    let members = match ty {
+        TypeDecl::Class(decl) => &decl.members,
+        TypeDecl::Interface(decl) => &decl.members,
+        TypeDecl::Enum(decl) => &decl.members,
+        TypeDecl::Record(decl) => &decl.members,
+        TypeDecl::Annotation(decl) => &decl.members,
+    };
+
+    for member in members {
+        match member {
+            MemberDecl::Field(field) => {
+                record_type_names_in_range(
+                    file,
+                    text,
+                    TextRange::new(field.ty.range.start, field.ty.range.end),
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            MemberDecl::Method(method) => {
+                record_type_names_in_range(
+                    file,
+                    text,
+                    TextRange::new(method.return_ty.range.start, method.return_ty.range.end),
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                for param in &method.params {
+                    record_type_names_in_range(
+                        file,
+                        text,
+                        TextRange::new(param.ty.range.start, param.ty.range.end),
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                if let Some(body) = &method.body {
+                    record_lightweight_block(
+                        file,
+                        text,
+                        body,
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+            }
+            MemberDecl::Constructor(ctor) => {
+                for param in &ctor.params {
+                    record_type_names_in_range(
+                        file,
+                        text,
+                        TextRange::new(param.ty.range.start, param.ty.range.end),
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                record_lightweight_block(
+                    file,
+                    text,
+                    &ctor.body,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            MemberDecl::Initializer(init) => record_lightweight_block(
+                file,
+                text,
+                &init.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            MemberDecl::Type(child) => record_lightweight_type_decl(
+                file,
+                text,
+                child,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+        }
+    }
+}
+
+fn record_lightweight_block(
+    file: &FileId,
+    text: &str,
+    block: &java_syntax::ast::Block,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    for stmt in &block.statements {
+        record_lightweight_stmt(
+            file,
+            text,
+            stmt,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn record_lightweight_stmt(
+    file: &FileId,
+    text: &str,
+    stmt: &java_syntax::ast::Stmt,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    use java_syntax::ast::Stmt;
+
+    match stmt {
+        Stmt::LocalVar(local) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(local.ty.range.start, local.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            if let Some(init) = &local.initializer {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    init,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::Expr(expr) => record_lightweight_expr(
+            file,
+            text,
+            &expr.expr,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Stmt::Return(ret) => {
+            if let Some(expr) = &ret.expr {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    expr,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::Block(block) => record_lightweight_block(
+            file,
+            text,
+            block,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Stmt::If(stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.condition,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_stmt(
+                file,
+                text,
+                &stmt.then_branch,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            if let Some(else_branch) = &stmt.else_branch {
+                record_lightweight_stmt(
+                    file,
+                    text,
+                    else_branch,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::While(stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.condition,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_stmt(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Stmt::For(stmt) => {
+            for init in &stmt.init {
+                record_lightweight_stmt(
+                    file,
+                    text,
+                    init,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            if let Some(cond) = &stmt.condition {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    cond,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for update in &stmt.update {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    update,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            record_lightweight_stmt(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Stmt::ForEach(stmt) => {
+            let var = &stmt.var;
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(var.ty.range.start, var.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            if let Some(init) = &var.initializer {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    init,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.iterable,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_stmt(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Stmt::Switch(stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.selector,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_block(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Stmt::Try(stmt) => {
+            record_lightweight_block(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for catch in &stmt.catches {
+                let param = &catch.param;
+                record_type_names_in_range(
+                    file,
+                    text,
+                    TextRange::new(param.ty.range.start, param.ty.range.end),
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                record_lightweight_block(
+                    file,
+                    text,
+                    &catch.body,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            if let Some(finally) = &stmt.finally {
+                record_lightweight_block(
+                    file,
+                    text,
+                    finally,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::Throw(stmt) => record_lightweight_expr(
+            file,
+            text,
+            &stmt.expr,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Empty(_) => {}
+    }
+}
+
+fn record_lightweight_expr(
+    file: &FileId,
+    text: &str,
+    expr: &java_syntax::ast::Expr,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    use java_syntax::ast::Expr;
+    match expr {
+        Expr::New(new_expr) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(new_expr.class.range.start, new_expr.class.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for arg in &new_expr.args {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    arg,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::Call(call) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &call.callee,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for arg in &call.args {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    arg,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::FieldAccess(access) => record_lightweight_expr(
+            file,
+            text,
+            &access.receiver,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Expr::Unary(expr) => record_lightweight_expr(
+            file,
+            text,
+            &expr.expr,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Expr::Binary(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.lhs,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.rhs,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Expr::Instanceof(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Expr::Assign(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.lhs,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.rhs,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Expr::Conditional(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.condition,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.then_expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.else_expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Expr::Lambda(expr) => match &expr.body {
+            java_syntax::ast::LambdaBody::Expr(expr) => record_lightweight_expr(
+                file,
+                text,
+                expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            java_syntax::ast::LambdaBody::Block(block) => record_lightweight_block(
+                file,
+                text,
+                block,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+        },
+        Expr::MethodReference(expr) => record_lightweight_expr(
+            file,
+            text,
+            &expr.receiver,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Expr::ConstructorReference(expr) => record_lightweight_expr(
+            file,
+            text,
+            &expr.receiver,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Expr::ClassLiteral(expr) => record_lightweight_expr(
+            file,
+            text,
+            &expr.ty,
+            type_scopes,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        Expr::Invalid { children, .. } => {
+            for child in children {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    child,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::Name(_)
+        | Expr::IntLiteral(_)
+        | Expr::StringLiteral(_)
+        | Expr::BoolLiteral(_)
+        | Expr::NullLiteral(_)
+        | Expr::This(_)
+        | Expr::Super(_)
+        | Expr::Missing(_) => {}
+    }
+}
+
+fn record_type_names_in_range(
+    file: &FileId,
+    text: &str,
+    range: TextRange,
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let scope = scope_for_offset_in_type_scopes(type_scopes, scope_result.file_scope, range.start);
+    for segments in scan_qualified_name_occurrences(text, range) {
+        record_type_prefix_references(
+            file,
+            scope,
+            &segments,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn scope_for_offset_in_type_scopes(
+    type_scopes: &[(TextRange, nova_resolve::ScopeId)],
+    default_scope: nova_resolve::ScopeId,
+    offset: usize,
+) -> nova_resolve::ScopeId {
+    let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
+    for (body_range, class_scope) in type_scopes {
+        if body_range.start <= offset && offset < body_range.end {
+            let len = body_range.len();
+            if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                best = Some((len, *class_scope));
+            }
+        }
+    }
+    best.map(|(_, scope)| scope).unwrap_or(default_scope)
+}
+
+fn scan_qualified_name_occurrences(text: &str, range: TextRange) -> Vec<Vec<(String, TextRange)>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+
+    let mut i = range.start.min(bytes.len());
+    let end = range.end.min(bytes.len());
+
+    while i < end {
+        i = skip_ws_and_comments(text, i, end);
+        if i >= end {
+            break;
+        }
+
+        // Skip literals defensively.
+        if bytes[i] == b'"' {
+            i = skip_string_literal(text, i, end);
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            i = skip_char_literal(text, i, end);
+            continue;
+        }
+
+        if !is_ident_start(bytes[i]) {
+            i += 1;
+            continue;
+        }
+
+        let (first, first_range, next) = match read_ident(text, i, end) {
+            Some(v) => v,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        let mut segments = vec![(first.to_string(), first_range)];
+        i = next;
+
+        loop {
+            let after = skip_ws_and_comments(text, i, end);
+            if after >= end || bytes[after] != b'.' {
+                break;
+            }
+            let mut j = after + 1;
+            j = skip_ws_and_comments(text, j, end);
+            if j >= end || !is_ident_start(bytes[j]) {
+                break;
+            }
+            let (seg, seg_range, next2) = match read_ident(text, j, end) {
+                Some(v) => v,
+                None => break,
+            };
+            segments.push((seg.to_string(), seg_range));
+            i = next2;
+        }
+
+        out.push(segments);
+    }
+
+    out
+}
+
+fn is_ident_start(b: u8) -> bool {
+    (b as char).is_ascii_alphabetic() || b == b'_' || b == b'$'
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    is_ident_start(b) || (b as char).is_ascii_digit()
+}
+
+fn skip_ws_and_comments(text: &str, mut i: usize, end: usize) -> usize {
+    let bytes = text.as_bytes();
+    while i < end {
+        match bytes[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+            b'/' if i + 1 < end && bytes[i + 1] == b'/' => {
+                i += 2;
+                while i < end && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < end && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < end {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    i
+}
+
+fn read_ident<'a>(text: &'a str, i: usize, end: usize) -> Option<(&'a str, TextRange, usize)> {
+    let bytes = text.as_bytes();
+    if i >= end || !is_ident_start(bytes[i]) {
+        return None;
+    }
+    let start = i;
+    let mut j = i + 1;
+    while j < end && is_ident_continue(bytes[j]) {
+        j += 1;
+    }
+    Some((&text[start..j], TextRange::new(start, j), j))
+}
+
+fn skip_string_literal(text: &str, mut i: usize, end: usize) -> usize {
+    let bytes = text.as_bytes();
+    if i >= end || bytes[i] != b'"' {
+        return i;
+    }
+    i += 1;
+    while i < end {
+        let b = bytes[i];
+        if b == b'\\' {
+            i = (i + 2).min(end);
+            continue;
+        }
+        i += 1;
+        if b == b'"' {
+            break;
+        }
+    }
+    i
+}
+
+fn skip_char_literal(text: &str, mut i: usize, end: usize) -> usize {
+    let bytes = text.as_bytes();
+    if i >= end || bytes[i] != b'\'' {
+        return i;
+    }
+    i += 1;
+    while i < end {
+        let b = bytes[i];
+        if b == b'\\' {
+            i = (i + 2).min(end);
+            continue;
+        }
+        i += 1;
+        if b == b'\'' {
+            break;
+        }
+    }
+    i
 }
