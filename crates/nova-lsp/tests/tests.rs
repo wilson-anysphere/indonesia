@@ -134,3 +134,26 @@ mod watched_files;
 mod workspace_config;
 #[path = "suite/workspace_notifications.rs"]
 mod workspace_notifications;
+
+#[test]
+fn tests_dir_contains_only_tests_rs_at_root() {
+    let tests_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+
+    let mut root_rs_files: Vec<String> = std::fs::read_dir(&tests_dir)
+        .unwrap_or_else(|err| panic!("failed to read tests dir `{}`: {err}", tests_dir.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .collect();
+    root_rs_files.sort();
+
+    assert_eq!(
+        root_rs_files,
+        vec!["tests.rs"],
+        "expected only `tests.rs` at the root of `crates/nova-lsp/tests/`.\n\
+         Put other integration tests under `crates/nova-lsp/tests/suite/` and include them from \
+         `crates/nova-lsp/tests/tests.rs` using `#[path = \"suite/<file>.rs\"] mod <name>;`.\n\
+         Found: {root_rs_files:?}",
+    );
+}
