@@ -287,6 +287,8 @@ Run these from the crate directory:
 cd crates/nova-remote-proto
 bash ../../scripts/cargo_agent.sh +nightly fuzz list
 bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
 
 cd ../nova-remote-rpc
 bash ../../scripts/cargo_agent.sh +nightly fuzz list

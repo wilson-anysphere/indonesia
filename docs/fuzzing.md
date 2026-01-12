@@ -254,6 +254,8 @@ Run these from the crate directory (not the repo root):
 cd crates/nova-remote-proto
 cargo +nightly fuzz list
 cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
 
 cd ../nova-remote-rpc
 cargo +nightly fuzz list

@@ -61,9 +61,9 @@ cargo install cargo-binstall --locked
 cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 cd crates/nova-remote-proto
-cargo +nightly fuzz run decode_framed_message
-cargo +nightly fuzz run decode_v3_wire_frame
-cargo +nightly fuzz run decode_v3_rpc_payload
+cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
 ```
 
 Targets:
