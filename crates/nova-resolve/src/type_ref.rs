@@ -868,32 +868,14 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        // Type-use annotations are ignored in the resulting `Type` (Nova does not model them yet),
-        // but we still want best-effort diagnostics for missing annotation *types* when we can
-        // anchor spans correctly.
+        // Type-use annotation names can appear anywhere inside a type reference (`@A String`,
+        // `Outer.@A Inner`, `String @A []`, ...).
         //
-        // `TypeRef.text` is frequently whitespace-stripped by the syntax layer. If the caller
-        // provides `base_span` from the original source, its length may not match the stripped
-        // text. In that case, diagnosing would likely produce mis-anchored spans; skip it.
-        let Some(base_span) = self.base_span else {
-            return;
-        };
-        if base_span.len() != self.text.len() {
-            return;
-        }
-
-        let name = self.text[name_range.clone()].to_string();
-        if name.is_empty() {
-            return;
-        }
-
-        let segments: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
-        if segments.is_empty() {
-            return;
-        }
-
-        let per_segment_args = vec![Vec::new(); segments.len()];
-        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
+        // Nova does not model type-use annotations in `nova_types::Type` yet, and surfacing
+        // diagnostics for missing annotation *types* is noisy (it reports errors for annotation
+        // libraries the user may not have available, even though the underlying type reference is
+        // valid).
+        let _ = name_range;
     }
 
     fn find_best_annotation_name_end(
