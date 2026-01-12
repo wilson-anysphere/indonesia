@@ -8,9 +8,8 @@ import { registerNovaBuildFileWatchers } from './buildFileWatch';
 import { registerNovaBuildIntegration } from './buildIntegration';
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
-import { registerFrameworkDashboardCommands } from './frameworkDashboard';
-import { registerNovaFrameworksView, type NovaFrameworksViewController } from './frameworksView';
-import { registerNovaFrameworkSearch } from './frameworkSearch';
+import { registerNovaFrameworkDashboard } from './frameworkDashboard';
+import type { NovaFrameworksViewController } from './frameworksView';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
@@ -265,24 +264,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   registerNovaDebugAdapter(context, { serverManager, output: serverOutput });
   registerNovaDebugConfigurations(context, sendNovaRequest);
-  registerNovaFrameworkSearch(context, requestWithFallback);
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
-  registerFrameworkDashboardCommands(context);
-  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, async (method, params) => {
-    // The Frameworks view should not auto-start the language server (or trigger install prompts)
-    // just to populate its tree. If nova-lsp isn't already running, keep the view in its welcome
-    // state with inline guidance instead.
-    if (!client) {
-      throw new Error('language client is not running');
-    }
-    return await sendNovaRequest(method, params, { allowMethodFallback: true });
-  });
-  context.subscriptions.push(
-    vscode.commands.registerCommand('nova.frameworks.refresh', () => {
-      frameworksView.refresh();
-    }),
-  );
+  const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest);
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
     isServerRunning: () => Boolean(client),
   });
