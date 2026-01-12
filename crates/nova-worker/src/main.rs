@@ -763,7 +763,7 @@ mod tests {
     fn parse_executions(db: &SalsaDatabase) -> u64 {
         db.query_stats()
             .by_query
-            .get("parse")
+            .get("parse_java")
             .map(|stat| stat.executions)
             .unwrap_or(0)
     }
@@ -787,7 +787,10 @@ mod tests {
 
         let _ = state.build_index().await?;
         let first_parse = parse_executions(&state.db);
-        assert_eq!(first_parse, 2, "expected initial index to parse both files");
+        assert_eq!(
+            first_parse, 2,
+            "expected initial index to parse_java both files"
+        );
 
         state.revision = 2;
         state.apply_file_update(FileText {
