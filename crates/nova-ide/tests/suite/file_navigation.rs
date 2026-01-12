@@ -424,6 +424,51 @@ class Main { Foo$Bar x = new Foo$Bar(); $0Foo$Bar y = x; }
 }
 
 #[test]
+fn go_to_type_definition_on_this_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Bar.java
+class $1Bar {}
+//- /Foo.java
+class Foo {
+    Bar bar;
+    void test() { this.$0bar.toString(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_type_definition_on_super_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Bar.java
+class $1Bar {}
+//- /Base.java
+class Base { Bar bar; }
+//- /Derived.java
+class Derived extends Base {
+    void test() { super.$0bar.toString(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_declaration_on_override_returns_interface_declaration() {
     let fixture = FileIdFixture::parse(
         r#"
