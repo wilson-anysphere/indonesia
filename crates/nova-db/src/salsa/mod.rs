@@ -1741,7 +1741,6 @@ impl Database {
     pub fn new_with_memory_manager(manager: &MemoryManager) -> Self {
         let db = Self::new();
         db.register_salsa_memo_evictor(manager);
-        db.register_java_parse_cache_evictor(manager);
         db.register_salsa_cancellation_on_memory_pressure(manager);
         db
     }

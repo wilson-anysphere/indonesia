@@ -71,18 +71,17 @@ impl JavaParseCache {
     }
 
     pub fn register(self: &Arc<Self>, manager: &MemoryManager) {
-        if self.registration.get().is_some() {
-            return;
-        }
+        // `Database::register_salsa_memo_evictor` is expected to be called during workspace
+        // initialization, but can be reached from multiple entrypoints. Use `OnceLock`'s
+        // initialization primitives to avoid panicking if the cache is registered concurrently.
+        let registration = self.registration.get_or_init(|| {
+            manager.register_evictor(self.name.clone(), MemoryCategory::SyntaxTrees, self.clone())
+        });
+        let _ = self.tracker.get_or_init(|| registration.tracker());
 
-        let registration =
-            manager.register_evictor(self.name.clone(), MemoryCategory::SyntaxTrees, self.clone());
-        self.tracker
-            .set(registration.tracker())
-            .expect("tracker only set once");
-        self.registration
-            .set(registration)
-            .expect("registration only set once");
+        // Ensure the initial 0-byte accounting is visible immediately.
+        let inner = self.lock_inner();
+        self.update_tracker_locked(&inner);
     }
 
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, JavaParseCacheInner> {
