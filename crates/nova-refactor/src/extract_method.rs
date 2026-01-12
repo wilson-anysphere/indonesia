@@ -964,6 +964,63 @@ fn collect_declared_types(
             out.insert(span_of_token(&name_tok), ty_text);
         }
     }
+
+    // Catch clause parameters aren't represented as a `Parameter` node in the typed AST, but they
+    // do introduce locals that we may need to type for extractions within the catch body.
+    for catch in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::CatchClause::cast)
+    {
+        let Some(body) = catch.body() else {
+            continue;
+        };
+        let body_start = syntax_range(body.syntax()).start;
+        let header_tokens: Vec<_> = catch
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| u32::from(tok.text_range().end()) as usize <= body_start)
+            .collect();
+
+        let Some(name_tok) = header_tokens
+            .iter()
+            .rev()
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
+            continue;
+        };
+        let Some(lparen) = header_tokens.iter().find(|tok| tok.kind() == SyntaxKind::LParen) else {
+            continue;
+        };
+
+        let lparen_end = u32::from(lparen.text_range().end()) as usize;
+        let name_start = u32::from(name_tok.text_range().start()) as usize;
+        if lparen_end >= name_start || name_start > source.len() {
+            continue;
+        }
+        let ty_text = source
+            .get(lparen_end..name_start)
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
+        out.insert(span_of_token(name_tok), ty_text);
+    }
+
+    // Catch parameters, enhanced-for variables, explicitly typed lambda parameters, etc. are all
+    // represented as `Parameter` nodes but are not part of the enclosing method's `ParameterList`.
+    // Collect them too so we can recover types for extractions inside nested blocks.
+    for param in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::Parameter::cast)
+    {
+        let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
+            continue;
+        };
+        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+        out.insert(span_of_token(&name_tok), ty_text);
+    }
     out
 }
 

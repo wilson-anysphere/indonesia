@@ -1009,3 +1009,49 @@ class C {
         .expect_err("should reject selection");
     assert!(err.contains("InvalidSelection"));
 }
+
+#[test]
+fn extract_method_in_catch_block_uses_catch_param_type() {
+    let fixture = r#"
+class C {
+    void m() {
+        try {
+            System.out.println("ok");
+        } catch (RuntimeException e) {
+            /*start*/System.out.println(e.getMessage());/*end*/
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "handle".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        try {
+            System.out.println("ok");
+        } catch (RuntimeException e) {
+            handle(e);
+        }
+    }
+
+    private void handle(RuntimeException e) {
+        System.out.println(e.getMessage());
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
