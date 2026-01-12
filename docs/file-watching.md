@@ -139,6 +139,7 @@ timeout_ms = 120000
 
 Notes:
 
+- `mode = "off"` disables build-tool invocation deterministically (heuristics only).
 - `mode = "auto"` is the default to avoid surprising slow startup costs; it uses cached build
   metadata when available but does not invoke Maven/Gradle when the cache is missing.
 - `mode = "on"` enables build-tool invocations during workspace load/reload (time-bounded by the
