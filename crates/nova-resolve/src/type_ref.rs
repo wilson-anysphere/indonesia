@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use nova_core::{Name, QualifiedName};
-use nova_types::{lub, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
+use nova_types::{
+    lub, ClassDef, ClassKind, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId,
+    WildcardBound,
+};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::{Resolver, ScopeGraph, ScopeId, TypeNameResolution};
@@ -435,10 +438,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // - implicit `java.lang.*` for simple names (`Cloneable`)
         if segments.len() == 1 {
             let java_lang = format!("java.lang.{}", segments[0]);
-            if let Some(class_id) = self.env.lookup_class(&java_lang) {
+            if let Some(class_id) = self.lookup_non_placeholder_class(&java_lang) {
                 return Type::class(class_id, args_for_class(class_id));
             }
-        } else if let Some(class_id) = self.env.lookup_class(&dotted) {
+        } else if let Some(class_id) = self.lookup_non_placeholder_class(&dotted) {
             return Type::class(class_id, args_for_class(class_id));
         }
 
@@ -464,7 +467,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
         // If we successfully guessed a binary nested name, try resolving it in the environment
         // before reporting an unresolved-type diagnostic.
-        if let Some(class_id) = self.env.lookup_class(&best_guess) {
+        if let Some(class_id) = self.lookup_non_placeholder_class(&best_guess) {
             return Type::class(class_id, args_for_class(class_id));
         }
 
@@ -475,6 +478,12 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         ));
 
         Type::Named(best_guess)
+    }
+
+    fn lookup_non_placeholder_class(&self, name: &str) -> Option<nova_types::ClassId> {
+        let id = self.env.lookup_class(name)?;
+        let def = self.env.class(id)?;
+        (!is_placeholder_class_def(def)).then_some(id)
     }
 
     fn parse_type_args(&mut self) -> Vec<Type> {
@@ -1064,6 +1073,17 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
         Some(Span::new(start, end))
     }
+}
+
+fn is_placeholder_class_def(def: &ClassDef) -> bool {
+    def.kind == ClassKind::Class
+        && def.name != "java.lang.Object"
+        && def.super_class.is_none()
+        && def.type_params.is_empty()
+        && def.interfaces.is_empty()
+        && def.fields.is_empty()
+        && def.constructors.is_empty()
+        && def.methods.is_empty()
 }
 
 fn type_rank(ty: &Type) -> u8 {
