@@ -6346,8 +6346,34 @@ fn member_completions(
     let mut types = completion_type_store(db, file);
     let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
 
-    let (receiver_ty, call_kind) =
-        infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
+    // Explicitly handle `this.` / `super.` member access.
+    //
+    // These receivers are not regular identifiers/locals, so the lexical receiver inference path
+    // (`infer_receiver`) would otherwise fail to resolve a type.
+    let (receiver_ty, call_kind) = match receiver {
+        "this" => {
+            let Some(class) = enclosing_class(&analysis, receiver_offset) else {
+                return Vec::new();
+            };
+            (
+                parse_source_type_in_context(&mut types, &file_ctx, &class.name),
+                CallKind::Instance,
+            )
+        }
+        "super" => {
+            let Some(class) = enclosing_class(&analysis, receiver_offset) else {
+                return Vec::new();
+            };
+            let Some(super_name) = class.extends.as_deref() else {
+                return Vec::new();
+            };
+            (
+                parse_source_type_in_context(&mut types, &file_ctx, super_name),
+                CallKind::Instance,
+            )
+        }
+        _ => infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset),
+    };
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         if call_kind == CallKind::Static {
             return static_member_completions(text, receiver, prefix);

@@ -122,6 +122,45 @@ class A {
 }
 
 #[test]
+fn completion_includes_this_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { int x; }
+class B extends A {
+  int y;
+  void m() { this.<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"y"),
+        "expected completion list to contain member of current class; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_super_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { int x; }
+class B extends A {
+  void m() { super.<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain superclass member; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_import_is_non_empty() {
     let (db, file, pos) = fixture(
         r#"
