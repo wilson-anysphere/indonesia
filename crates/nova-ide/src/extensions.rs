@@ -1016,6 +1016,10 @@ where
         file: nova_ext::FileId,
         span: Option<Span>,
     ) -> Vec<lsp_types::CodeActionOrCommand> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let mut actions = Vec::new();
 
         let source = self.db.file_content(file);
@@ -1165,6 +1169,10 @@ where
                     }
                 }
             }
+        }
+
+        if cancel.is_cancelled() {
+            return actions;
         }
 
         if let (Some(uri), Some(span)) = (uri, span) {
@@ -1674,7 +1682,6 @@ fn return_mismatch_quick_fixes_from_context(
 
     actions
 }
-
 fn unused_import_quick_fixes_from_context(
     cancel: &CancellationToken,
     source: &str,

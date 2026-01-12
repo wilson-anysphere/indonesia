@@ -79,12 +79,15 @@ fn action_titles(actions: &[CodeActionOrCommand]) -> Vec<&str> {
         .collect()
 }
 
-#[test]
-fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
-    let source = "class A {\n  void m() {\n    int x = y;\n  }\n}\n";
-
+fn ide_for_source(
+    path: &str,
+    source: &str,
+) -> (
+    IdeExtensions<dyn nova_db::Database + Send + Sync>,
+    nova_db::FileId,
+) {
     let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
+    let path = PathBuf::from(path);
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, source.to_string());
 
@@ -93,6 +96,15 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
     let view = SalsaDbView::from_source_db(&db);
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    (ide, file)
+}
+
+#[test]
+fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
+    let source = "class A {\n  void m() {\n    int x = y;\n  }\n}\n";
+
+    let (ide, file) = ide_for_source("/test.java", source);
 
     let y_offset = source.find("y;").expect("expected `y` in fixture");
     let y_span = Span::new(y_offset, y_offset + 1);
@@ -110,6 +122,7 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
             action_titles(&actions)
         )
     });
+
     // Local variable: inserted on the line before `int x = y;` (i.e. at the start of that line).
     let updated = apply_lsp_edits(source, std::slice::from_ref(first_text_edit(local)));
     assert!(
@@ -129,16 +142,8 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
 
 #[test]
 fn void_method_return_value_offers_remove_returned_value_quickfix() {
-    let source = r#"class A { void m() { return 1; } }"#.to_string();
-
-    let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
-    let file = db.file_id_for_path(&path);
-    db.set_file_text(file, source.clone());
-
-    let view = SalsaDbView::from_source_db(&db);
-    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let source = r#"class A { void m() { return 1; } }"#;
+    let (ide, file) = ide_for_source("/return_void.java", source);
 
     let expr_start = source.find("return 1").expect("expected return statement") + "return ".len();
     let expr_span = Span::new(expr_start, expr_start + 1);
@@ -151,7 +156,7 @@ fn void_method_return_value_offers_remove_returned_value_quickfix() {
         Some(&lsp_types::CodeActionKind::QUICKFIX)
     );
 
-    let updated = apply_lsp_edits(&source, std::slice::from_ref(first_text_edit(action)));
+    let updated = apply_lsp_edits(source, std::slice::from_ref(first_text_edit(action)));
     assert!(
         updated.contains("return ;"),
         "expected returned value to be removed; got {updated:?}"
@@ -219,23 +224,15 @@ fn code_actions_with_context_void_method_return_value_offers_remove_returned_val
 
 #[test]
 fn return_type_mismatch_offers_cast_quickfix() {
-    let source = r#"class A { String m() { Object o = ""; return o; } }"#.to_string();
-
-    let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
-    let file = db.file_id_for_path(&path);
-    db.set_file_text(file, source.clone());
-
-    let view = SalsaDbView::from_source_db(&db);
-    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let source = r#"class A { String m() { Object o = ""; return o; } }"#;
+    let (ide, file) = ide_for_source("/return_cast.java", source);
 
     let expr_start = source.find("return o").expect("expected return statement") + "return ".len();
     let expr_span = Span::new(expr_start, expr_start + 1);
 
     let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(expr_span));
     let action = find_code_action(&actions, "Cast to String").expect("missing cast quick fix");
-    let updated = apply_lsp_edits(&source, std::slice::from_ref(first_text_edit(action)));
+    let updated = apply_lsp_edits(source, std::slice::from_ref(first_text_edit(action)));
     assert!(
         updated.contains("return (String) (o);"),
         "expected return expression to be cast; got {updated:?}"
@@ -257,17 +254,7 @@ fn return_type_mismatch_offers_cast_quickfix() {
 #[test]
 fn unresolved_type_offers_create_class_quick_fix() {
     let source = "class A { MissingType x; }";
-
-    let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
-    let file = db.file_id_for_path(&path);
-    db.set_file_text(file, source.to_string());
-
-    // `IdeExtensions` requires a `Send + Sync` database; wrap our in-memory store in a
-    // snapshot-like view.
-    let view = SalsaDbView::from_source_db(&db);
-    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let (ide, file) = ide_for_source("/create_class.java", source);
 
     let missing_start = source
         .find("MissingType")
@@ -325,17 +312,7 @@ fn unresolved_type_offers_create_class_quick_fix() {
 #[test]
 fn create_field_quick_fix_in_single_line_file_inserts_before_final_brace() {
     let source = "class A { void m() { int x = y; } }";
-
-    let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
-    let file = db.file_id_for_path(&path);
-    db.set_file_text(file, source.to_string());
-
-    // `IdeExtensions` requires a `Send + Sync` database; wrap our in-memory store in a
-    // snapshot-like view.
-    let view = SalsaDbView::from_source_db(&db);
-    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let (ide, file) = ide_for_source("/field_inline.java", source);
 
     let y_offset = source.find("y;").expect("expected `y` in fixture");
     let y_span = Span::new(y_offset, y_offset + 1);
@@ -429,5 +406,113 @@ class A {
             .iter()
             .any(|t| *t == "Use fully qualified name 'java.util.List'"),
         "expected fully qualified name quick fix; got {titles:?}"
+    );
+}
+
+#[test]
+fn type_mismatch_offers_cast_quick_fix() {
+    let source = r#"class A {
+  void m() {
+    Object o = "";
+    String s = o;
+  }
+}
+"#;
+
+    let (ide, file) = ide_for_source("/type_mismatch.java", source);
+
+    let stmt = "String s = o;";
+    let stmt_start = source.find(stmt).expect("missing assignment statement");
+    let o_start = stmt_start
+        + source[stmt_start..]
+            .find("o;")
+            .expect("missing `o;` in assignment");
+    let span = Span::new(o_start, o_start + 1);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+
+    let cast = actions
+        .iter()
+        .filter_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => Some(action),
+            CodeActionOrCommand::Command(_) => None,
+        })
+        .find(|action| {
+            action.kind.as_ref() == Some(&lsp_types::CodeActionKind::QUICKFIX)
+                && action.title.contains("Cast")
+        })
+        .expect("expected cast quick fix");
+
+    let edit = cast.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected edit.changes");
+    let edits = changes.values().next().expect("expected edit entry");
+    assert_eq!(edits.len(), 1, "expected a single text edit; got {edits:?}");
+    assert!(
+        edits[0].new_text.contains("(String)"),
+        "expected cast to String; got {:?}",
+        edits[0].new_text
+    );
+    assert!(
+        edits[0].new_text.contains('o'),
+        "expected original expr to be preserved; got {:?}",
+        edits[0].new_text
+    );
+}
+
+#[test]
+fn unresolved_import_offers_remove_quick_fix() {
+    let source = "import foo.Bar;\nclass A {}\n";
+    let (ide, file) = ide_for_source("/imports.java", source);
+
+    let needle = "foo.Bar";
+    let start = source.find(needle).expect("missing import path");
+    let span = Span::new(start, start + 1);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+    let action = find_code_action(&actions, "Remove unresolved import")
+        .expect("expected remove import quick fix");
+
+    assert_eq!(action.kind.as_ref(), Some(&lsp_types::CodeActionKind::QUICKFIX));
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+
+    let updated = apply_workspace_edit(source, edit);
+    assert_eq!(updated, "class A {}\n");
+}
+
+#[test]
+fn unresolved_type_offers_import_quick_fix() {
+    let source = "class A { List<String> xs; }\n";
+    let (ide, file) = ide_for_source("/types.java", source);
+
+    let start = source.find("List").expect("missing `List`");
+    let span = Span::new(start, start + "List".len());
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+    let action = find_code_action(&actions, "Import java.util.List")
+        .expect("expected import java.util.List quick fix");
+
+    assert_eq!(action.kind.as_ref(), Some(&lsp_types::CodeActionKind::QUICKFIX));
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+
+    let updated = apply_workspace_edit(source, edit);
+    assert!(
+        updated.contains("import java.util.List;"),
+        "expected updated source to contain import; got:\n{updated}"
+    );
+}
+
+#[test]
+fn quick_fixes_are_filtered_by_requested_span() {
+    let source = "class A { List<String> xs; }\n";
+    let (ide, file) = ide_for_source("/filter.java", source);
+
+    let class_start = source.find("class").expect("missing `class`");
+    let span = Span::new(class_start, class_start + "class".len());
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+    assert!(
+        find_code_action(&actions, "Import java.util.List").is_none(),
+        "expected import quick fix to be filtered out; got {:?}",
+        action_titles(&actions)
     );
 }
