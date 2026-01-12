@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use indexmap::IndexMap;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
@@ -67,7 +68,8 @@ pub struct JdkConfig {
     /// toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
     /// ```
     #[serde(default)]
-    pub toolchains: BTreeMap<String, PathBuf>,
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub toolchains: IndexMap<String, PathBuf>,
 }
 
 fn default_generated_sources_enabled() -> bool {
@@ -1083,7 +1085,7 @@ impl NovaConfig {
         // may still be usable.
         //
         // If multiple keys parse to the same numeric release (for example `"8"` and `"08"`), the
-        // last one processed wins.
+        // last one processed wins (which is the last one specified in the TOML file).
         let mut toolchains_by_release: BTreeMap<u16, PathBuf> = BTreeMap::new();
         for (release_key, home) in &self.jdk.toolchains {
             match release_key.parse::<u16>() {
@@ -1905,6 +1907,25 @@ toolchains = { "bogus" = "/opt/jdks/bogus", "17" = "/opt/jdks/jdk-17" }
             vec![nova_core::JdkToolchain {
                 release: 17,
                 home: PathBuf::from("/opt/jdks/jdk-17")
+            }]
+        );
+    }
+
+    #[test]
+    fn toml_jdk_toolchains_duplicate_numeric_release_last_wins() {
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+toolchains = { "8" = "/opt/jdks/jdk8-a", "08" = "/opt/jdks/jdk8-b" }
+"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            config.jdk_config().toolchains,
+            vec![nova_core::JdkToolchain {
+                release: 8,
+                home: PathBuf::from("/opt/jdks/jdk8-b"),
             }]
         );
     }

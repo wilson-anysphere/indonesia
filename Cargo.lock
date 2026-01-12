@@ -3492,6 +3492,7 @@ name = "nova-config"
 version = "0.1.0"
 dependencies = [
  "globset",
+ "indexmap",
  "insta",
  "nova-core",
  "regex",

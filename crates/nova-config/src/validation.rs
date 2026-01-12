@@ -134,9 +134,8 @@ fn validate_jdk(
         };
 
         if let Some(prev) = seen_releases.insert(release, release_key.clone()) {
-            // Note: toolchains are deserialized as a map, so the iteration order is derived from the
-            // map's key ordering (not necessarily the original file order). We still make the
-            // override behavior explicit for clarity.
+            // Note: toolchains are deserialized into an insertion-ordered map, so later entries in
+            // the TOML file win.
             out.warnings.push(ConfigWarning::InvalidValue {
                 toml_path: toml_path.clone(),
                 message: format!(
