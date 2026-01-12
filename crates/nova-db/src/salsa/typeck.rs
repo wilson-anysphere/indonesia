@@ -7515,7 +7515,7 @@ fn resolve_type_ref_text<'idx>(
     // We still pass the original text into `resolve_type_ref_text` so unresolved type-use
     // annotation names (e.g. `List<@Missing String>`) can be diagnosed when anchored.
     preload_type_names(resolver, scopes, scope_id, loader, text);
-    let mut resolved = nova_resolve::type_ref::resolve_type_ref_text(
+    nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
         scopes,
         scope_id,
@@ -7523,46 +7523,7 @@ fn resolve_type_ref_text<'idx>(
         type_vars,
         text,
         base_span,
-    );
-    strip_type_use_annotation_type_diagnostics(text, base_span, &mut resolved.diagnostics);
-    resolved
-}
-
-fn strip_type_use_annotation_type_diagnostics(
-    text: &str,
-    base_span: Option<Span>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let Some(base_span) = base_span else {
-        return;
-    };
-
-    diagnostics.retain(|diag| {
-        let Some(span) = diag.span else {
-            return true;
-        };
-        if span.start < base_span.start {
-            return true;
-        }
-        let local_start = span.start - base_span.start;
-        if local_start == 0 || local_start > text.len() || !text.is_char_boundary(local_start) {
-            return true;
-        }
-
-        // Type-use annotations appear inline in `TypeRef.text`, so missing annotation types can
-        // produce `unresolved-type` diagnostics during type-ref parsing. Until Nova models
-        // type-use annotations, suppress those diagnostics to avoid noise (they are still parsed
-        // so the underlying type can be resolved).
-        let mut prev_non_ws = None;
-        for ch in text[..local_start].chars().rev() {
-            if ch.is_whitespace() {
-                continue;
-            }
-            prev_non_ws = Some(ch);
-            break;
-        }
-        !matches!(prev_non_ws, Some('@'))
-    });
+    )
 }
 
 #[derive(Default)]
@@ -9056,10 +9017,11 @@ fn collect_resolved_type_names<'idx>(
     });
 }
 
-/// Rewrites type reference text so type-use annotations do not participate in type resolution.
+/// Rewrites type reference text so type-use annotation *names* do not participate in the
+/// lightweight signature-scanning heuristics used for preloading.
 ///
 /// This is intentionally *position preserving*: we replace annotation spans with spaces rather than
-/// removing them so diagnostics for the underlying types keep their original offsets.
+/// removing them so any offset-based consumers remain stable.
 fn mask_type_use_annotations(text: &str) -> Cow<'_, str> {
     if !text.as_bytes().contains(&b'@') {
         return Cow::Borrowed(text);

@@ -896,7 +896,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if segments.is_empty() {
             return;
         }
-
         let per_segment_args = vec![Vec::new(); segments.len()];
         let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }

@@ -127,10 +127,7 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTree
     let _span = tracing::debug_span!("query", name = "scope_graph", ?file).entered();
 
     cancel::check_cancelled(db);
-    let tree = db.hir_item_tree(file);
-    let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
 
-    let result = Arc::new(built);
     // Touch the file text so edits invalidate `scope_graph` and force a re-run.
     //
     // Even though the scope graph is derived from structural HIR (`hir_item_tree`) and often
@@ -140,6 +137,10 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTree
     if db.file_exists(file) {
         let _ = db.file_content(file);
     }
+    let tree = db.hir_item_tree(file);
+    let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
+
+    let result = Arc::new(built);
     // NOTE: This is a best-effort estimate used for memory pressure heuristics.
     let declared_items = (tree.items.len()
         + tree.imports.len()

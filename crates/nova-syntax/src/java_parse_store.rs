@@ -134,7 +134,7 @@ impl JavaParseStore {
     ) -> Option<Arc<JavaParseResult>> {
         let (cached, removed) = {
             let mut inner = self.inner.lock().unwrap();
-            let mut removed = self.prune_closed_files_locked(&mut inner);
+            let removed = self.prune_closed_files_locked(&mut inner);
 
             if !self.open_docs.is_open(file) {
                 if !removed.is_empty() {
@@ -152,12 +152,10 @@ impl JavaParseStore {
                     }
                     (cached, removed)
                 } else {
-                    // Stale entry (file still open but text changed). Drop it now so the
-                    // next computed tree can replace it.
-                    let removed_entry = inner.remove(&file);
-                    if let Some(entry) = removed_entry {
-                        removed.push((file, entry.text.len() as u64));
-                    }
+                    // Keep the previous entry even if the text snapshot no longer matches. The
+                    // pinned parse can still be used as an incremental reparse base (e.g. across
+                    // Salsa memo eviction) and will be replaced on the next successful parse of the
+                    // updated text (see `insert`).
                     if !removed.is_empty() {
                         self.update_tracker_locked(&inner);
                     }
@@ -176,7 +174,7 @@ impl JavaParseStore {
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
         let removed = {
             let mut inner = self.inner.lock().unwrap();
-            let removed = self.prune_closed_files_locked(&mut inner);
+            let mut removed = self.prune_closed_files_locked(&mut inner);
 
             if !self.open_docs.is_open(file) {
                 if !removed.is_empty() {
@@ -184,7 +182,11 @@ impl JavaParseStore {
                 }
                 removed
             } else {
-                inner.insert(file, JavaParseEntry { text, parse });
+                if let Some(prev) = inner.insert(file, JavaParseEntry { text, parse }) {
+                    // Replacing an existing pinned parse is effectively a removal of the old entry;
+                    // notify the callback so callers can update any external memory accounting.
+                    removed.push((file, prev.text.len() as u64));
+                }
                 self.update_tracker_locked(&inner);
                 removed
             }

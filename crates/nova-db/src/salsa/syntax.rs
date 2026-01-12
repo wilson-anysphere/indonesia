@@ -228,6 +228,27 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
                 }
             }
         }
+    } else if let Some(store) = db.java_parse_store() {
+        // `JavaParseCache` is cleared on Salsa memo eviction to avoid retaining large trees. When
+        // the file is an open document, we can still access the previous parse result via the
+        // open-document `JavaParseStore` using the `file_prev_content` snapshot.
+        //
+        // This enables incremental reparsing even when the Java parse cache has been evicted.
+        if let Some(edit) = db.file_last_edit(file) {
+            let old_text = db.file_prev_content(file);
+            if let Some(old_parse) = store.get_if_text_matches(file, &old_text) {
+                let cached_len = u32::from(old_parse.syntax().text_range().end()) as usize;
+                if cached_len == old_text.len()
+                    && edit_applies_exactly(old_text.as_str(), &edit, new_text)
+                {
+                    parsed = Some(nova_syntax::parse_java_incremental(
+                        Some((old_parse.as_ref(), old_text.as_str())),
+                        Some(edit),
+                        new_text,
+                    ));
+                }
+            }
+        }
     }
 
     let parsed = parsed.unwrap_or_else(|| nova_syntax::parse_java(new_text));
