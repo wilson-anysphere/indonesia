@@ -12,4 +12,3 @@
 # One crate name per line. `#` comments and blank lines are ignored.
 
 nova-refactor
-nova-ide
