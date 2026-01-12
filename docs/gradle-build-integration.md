@@ -153,7 +153,7 @@ and **skipping** these directories:
 - `.nova/`
 - `.idea/`
 
-Included inputs (current `nova-build` implementation):
+Included inputs (current implementation, shared via `nova-build-model`):
 
 - `build.gradle*` (e.g. `build.gradle`, `build.gradle.kts`)
 - `settings.gradle*` (e.g. `settings.gradle`, `settings.gradle.kts`)
