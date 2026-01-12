@@ -11273,7 +11273,6 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Expr { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
-        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -11794,9 +11793,16 @@ fn find_enclosing_call_with_arg_in_expr(
     target_range: Span,
     best: &mut Option<(HirExprId, usize)>,
 ) {
-    let range = body.exprs[expr].range();
-    let may_contain = range.start <= target_range.start && target_range.end <= range.end;
-    if !may_contain {
+    let expr_node = &body.exprs[expr];
+    let range = expr_node.range();
+
+    // Best-effort pruning: avoid pruning `Invalid` nodes (parse recovery can yield surprising
+    // spans) and only skip when we have a non-empty range and the target start is clearly outside.
+    let can_prune = !matches!(expr_node, HirExpr::Invalid { .. });
+    if can_prune
+        && !range.is_empty()
+        && !(range.start <= target_range.start && target_range.start < range.end)
+    {
         return;
     }
 
