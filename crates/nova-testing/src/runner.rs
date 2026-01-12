@@ -989,9 +989,12 @@ mod tests {
         let service_b_root = tmp.path().join("service-b");
         let service_a_reports = service_a_root.join("target/surefire-reports");
         let service_b_reports = service_b_root.join("target/surefire-reports");
+
         std::fs::create_dir_all(&service_a_reports).unwrap();
         std::fs::create_dir_all(&service_b_reports).unwrap();
 
+        // The actual Maven output location (`target/surefire-reports`) is ignored by git, so the
+        // module-prefixing tests construct minimal reports at runtime.
         let xml = r#"<testsuite name="suite" tests="1" failures="0" errors="0" skipped="0">
   <testcase classname="com.example.DuplicateTest" name="ok" time="0.001" />
 </testsuite>"#;

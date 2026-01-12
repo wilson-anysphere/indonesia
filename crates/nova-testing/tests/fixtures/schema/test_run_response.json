@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "tool": "maven",
+  "success": false,
+  "exitCode": 1,
+  "stdout": "… junit output …",
+  "stderr": "… build error …",
+  "tests": [
+    {
+      "id": "com.example.CalculatorTest#adds",
+      "status": "passed",
+      "durationMs": 12
+    },
+    {
+      "id": "com.example.CalculatorTest#fails",
+      "status": "failed",
+      "durationMs": 34,
+      "failure": {
+        "message": "expected:<1> but was:<2>",
+        "stackTrace": "stack\ntrace"
+      }
+    },
+    {
+      "id": "com.example.CalculatorTest#skipped",
+      "status": "skipped"
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 1,
+    "failed": 1,
+    "skipped": 1
+  }
+}

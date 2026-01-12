@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "id": "com.example.CalculatorTest",
+      "label": "CalculatorTest",
+      "kind": "class",
+      "framework": "junit5",
+      "path": "src/test/java/com/example/CalculatorTest.java",
+      "range": {
+        "start": {
+          "line": 0,
+          "character": 0
+        },
+        "end": {
+          "line": 42,
+          "character": 1
+        }
+      },
+      "children": [
+        {
+          "id": "com.example.CalculatorTest#adds",
+          "label": "adds",
+          "kind": "test",
+          "framework": "junit5",
+          "path": "src/test/java/com/example/CalculatorTest.java",
+          "range": {
+            "start": {
+              "line": 10,
+              "character": 2
+            },
+            "end": {
+              "line": 12,
+              "character": 3
+            }
+          }
+        },
+        {
+          "id": "com.example.CalculatorTest#subtracts",
+          "label": "subtracts",
+          "kind": "test",
+          "framework": "junit5",
+          "path": "src/test/java/com/example/CalculatorTest.java",
+          "range": {
+            "start": {
+              "line": 20,
+              "character": 2
+            },
+            "end": {
+              "line": 22,
+              "character": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "com.example.EmptyTestClass",
+      "label": "EmptyTestClass",
+      "kind": "class",
+      "framework": "unknown",
+      "path": "src/test/java/com/example/EmptyTestClass.java",
+      "range": {
+        "start": {
+          "line": 0,
+          "character": 0
+        },
+        "end": {
+          "line": 1,
+          "character": 0
+        }
+      }
+    }
+  ]
+}

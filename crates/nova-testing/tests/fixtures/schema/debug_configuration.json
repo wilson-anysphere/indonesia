@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "Debug com.example.CalculatorTest#adds",
+  "cwd": "/path/to/project",
+  "command": "mvn",
+  "args": [
+    "-Dmaven.surefire.debug",
+    "-Dtest=com.example.CalculatorTest#adds",
+    "test"
+  ]
+}

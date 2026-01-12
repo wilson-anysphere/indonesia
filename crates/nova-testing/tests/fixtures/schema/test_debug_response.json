@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "tool": "gradle",
+  "configuration": {
+    "schemaVersion": 1,
+    "name": "Debug com.example.CalculatorTest#adds",
+    "cwd": "/path/to/project",
+    "command": "gradle",
+    "args": [
+      "test",
+      "--tests",
+      "com.example.CalculatorTest.adds",
+      "--debug-jvm"
+    ],
+    "env": {
+      "JAVA_HOME": "/opt/java",
+      "NOVADAP": "1"
+    }
+  }
+}
