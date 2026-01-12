@@ -833,6 +833,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.workspace.name, vscode.TreeItemCollapsibleState.Collapsed);
         item.id = element.id;
         item.description = element.workspace.uri.fsPath;
+        item.tooltip = element.workspace.uri.fsPath;
         item.contextValue = CONTEXT_WORKSPACE;
         item.iconPath = vscode.ThemeIcon.Folder;
         return item;
@@ -849,6 +850,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
         item.id = element.id;
         item.description = element.description;
+        item.tooltip = element.description ? `${element.label}\n${element.description}` : element.label;
         item.iconPath = new vscode.ThemeIcon('info');
         return item;
       }
@@ -867,6 +869,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
         item.id = element.id;
         item.description = element.description;
+        item.tooltip = element.description ? `${element.label}\n${element.description}` : element.label;
         item.iconPath = new vscode.ThemeIcon('symbol-property');
         return item;
       }
@@ -935,6 +938,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
         item.id = element.id;
         item.description = element.description;
+        item.tooltip = element.description ? `${element.label}\n${element.description}` : element.label;
         if (element.uri) {
           item.resourceUri = element.uri;
         }
@@ -952,6 +956,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
         item.id = element.id;
         item.description = element.description;
+        item.tooltip = element.description ? `${element.label}\n${element.description}` : element.label;
         item.iconPath = element.icon ?? new vscode.ThemeIcon('warning');
         if (element.command) {
           item.command = element.command;
