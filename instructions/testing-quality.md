@@ -404,6 +404,9 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::go
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+
+# Update `nova-testing` schema fixtures
+UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test -p nova-testing --test integration suite::schema_json
 ```
 
 **NEVER run:**
