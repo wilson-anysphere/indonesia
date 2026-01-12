@@ -11,16 +11,11 @@ mod utils;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Keep this fuzz target fast and avoid quadratic behavior in the parser.
-const MAX_OLD_TEXT_BYTES: usize = 32 * 1024;
-const MAX_REPLACEMENT_BYTES: usize = 8 * 1024;
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Input {
     old_text: String,
-    start_raw: u32,
-    end_raw: u32,
-    replacement: String,
+    new_text: String,
+    edit: nova_syntax::TextEdit,
 }
 
 struct Runner {
@@ -36,7 +31,17 @@ fn runner() -> &'static Runner {
 
         std::thread::spawn(move || {
             for input in input_rx {
-                run_one(input);
+                let old_parse = nova_syntax::parse_java(&input.old_text);
+                let full_new = nova_syntax::parse_java(&input.new_text);
+                let incr_new =
+                    nova_syntax::reparse_java(&old_parse, &input.old_text, input.edit, &input.new_text);
+
+                // Reparsing must remain lossless.
+                assert_eq!(incr_new.syntax().text().to_string(), input.new_text);
+
+                // Differential check: incremental reparsing should match a full parse.
+                assert_eq!(incr_new, full_new);
+
                 let _ = output_tx.send(());
             }
         });
@@ -48,105 +53,85 @@ fn runner() -> &'static Runner {
     })
 }
 
-fn cap_str_prefix<'a>(s: &'a str, cap: usize) -> &'a str {
-    let cap = cap.min(s.len());
-    let mut end = cap;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
+fn read_u32_le(data: &[u8]) -> u32 {
+    let mut buf = [0u8; 4];
+    for (i, b) in data.iter().take(4).enumerate() {
+        buf[i] = *b;
     }
-    &s[..end]
+    u32::from_le_bytes(buf)
 }
 
-fn align_to_char_boundary(s: &str, mut idx: usize) -> usize {
-    idx = idx.min(s.len());
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
+fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
     }
-    idx
+    offset
 }
 
-fn run_one(input: Input) {
-    // The edit range is specified in bytes (like the real editor integration),
-    // but must still land on UTF-8 boundaries for `String::replace_range`.
-    let old_text = input.old_text;
-    let replacement = input.replacement;
+fn apply_edit(old_text: &str, start: usize, end: usize, replacement: &str) -> String {
+    debug_assert!(start <= end);
+    debug_assert!(old_text.is_char_boundary(start));
+    debug_assert!(old_text.is_char_boundary(end));
 
-    let len = old_text.len();
-    let mut start = if len == 0 {
-        0
-    } else {
-        (input.start_raw as usize) % (len + 1)
-    };
-    let mut end = if len == 0 {
-        0
-    } else {
-        (input.end_raw as usize) % (len + 1)
-    };
-
-    start = align_to_char_boundary(&old_text, start);
-    end = align_to_char_boundary(&old_text, end);
-    if start > end {
-        std::mem::swap(&mut start, &mut end);
-    }
-
-    let edit = nova_syntax::TextEdit::new(
-        nova_syntax::TextRange {
-            start: start as u32,
-            end: end as u32,
-        },
-        replacement.clone(),
-    );
-
-    let mut new_text = old_text.clone();
-    new_text.replace_range(start..end, &replacement);
-
-    let old_parse = nova_syntax::parse_java(&old_text);
-    let new_parse = nova_syntax::reparse_java(&old_parse, &old_text, edit, &new_text);
-
-    // Incremental reparsing must be lossless: never drop or duplicate text.
-    assert_eq!(new_parse.syntax().text().to_string(), new_text);
-
-    // A stronger invariant: incremental reparsing should match a full reparse's
-    // diagnostics. (The unit tests already depend on this for targeted cases.)
-    let full = nova_syntax::parse_java(&new_text);
-    assert_eq!(new_parse.errors, full.errors);
+    let mut new_text = String::with_capacity(old_text.len() - (end - start) + replacement.len());
+    new_text.push_str(&old_text[..start]);
+    new_text.push_str(replacement);
+    new_text.push_str(&old_text[end..]);
+    new_text
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Some(text) = utils::truncate_utf8(data) else {
+    // Split the input into:
+    // - a UTF-8 prefix for the "old" Java file text
+    // - a suffix used to describe a single edit (start, delete-len, replacement)
+    //
+    // `\0` is used as a delimiter so existing `*.java` corpus seeds can be used directly:
+    // without a delimiter there are no extra edit bytes (a no-op edit).
+    let cap = data.len().min(utils::MAX_INPUT_SIZE);
+    let delimiter = data[..cap].iter().position(|b| *b == 0);
+
+    let (old_bytes, edit_bytes) = match delimiter {
+        Some(pos) => (&data[..pos], &data[pos.saturating_add(1)..]),
+        None => (&data[..cap], &data[cap..]),
+    };
+
+    let Some(old_text) = utils::truncate_utf8(old_bytes) else {
         return;
     };
 
-    // Use the first few bytes to influence the edit offsets. `truncate_utf8` guarantees `text`
-    // references a prefix of `data`, so indexing into `data` is safe as long as we bounds-check.
-    if data.len() < 8 {
-        return;
-    }
-    let start_raw = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    let end_raw = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    let start_raw = read_u32_le(edit_bytes);
+    let delete_raw = read_u32_le(edit_bytes.get(4..).unwrap_or(&[]));
+    let replacement_bytes = edit_bytes.get(8..).unwrap_or(&[]);
+    let replacement = utils::truncate_utf8(replacement_bytes).unwrap_or("");
 
-    // Derive (old_text, replacement) from the same UTF-8 input. This keeps the input format
-    // simple for libFuzzer (plain text corpus entries), while still producing a wide variety of
-    // edits.
-    let split_seed = start_raw ^ end_raw;
-    let mut split = if text.is_empty() {
-        0
+    let mut start = (start_raw as usize) % (old_text.len() + 1);
+    start = clamp_to_char_boundary(old_text, start);
+
+    let max_delete = old_text.len().saturating_sub(start);
+    let mut end = if max_delete == 0 {
+        start
     } else {
-        (split_seed as usize) % (text.len() + 1)
+        start + (delete_raw as usize) % (max_delete + 1)
     };
-    split = align_to_char_boundary(text, split);
+    end = clamp_to_char_boundary(old_text, end);
+    if end < start {
+        end = start;
+    }
 
-    let old_text = cap_str_prefix(&text[..split], MAX_OLD_TEXT_BYTES).to_owned();
-    let replacement = cap_str_prefix(&text[split..], MAX_REPLACEMENT_BYTES).to_owned();
+    let edit = nova_syntax::TextEdit::new(
+        nova_syntax::TextRange::new(start, end),
+        replacement.to_owned(),
+    );
+    let new_text = apply_edit(old_text, start, end, replacement);
 
     let runner = runner();
     runner
         .input_tx
         .send(Input {
-            old_text,
-            start_raw,
-            end_raw,
-            replacement,
+            old_text: old_text.to_owned(),
+            new_text,
+            edit,
         })
         .expect("fuzz_reparse_java worker thread exited");
 
@@ -158,7 +143,9 @@ fuzz_target!(|data: &[u8]| {
     {
         Ok(()) => {}
         Err(mpsc::RecvTimeoutError::Timeout) => panic!("fuzz_reparse_java fuzz target timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("fuzz_reparse_java worker panicked"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("fuzz_reparse_java worker thread panicked")
+        }
     }
 });
 
