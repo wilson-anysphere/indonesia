@@ -23,6 +23,7 @@ fn stdio_server_loads_config_from_flag_and_initializes() {
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
         .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

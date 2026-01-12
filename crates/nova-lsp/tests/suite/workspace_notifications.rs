@@ -183,6 +183,7 @@ fn stdio_did_change_configuration_reloads_nova_config_and_keeps_server_responsiv
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
         .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env("NOVA_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

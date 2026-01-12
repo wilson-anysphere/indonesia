@@ -57,6 +57,7 @@ excluded_paths = ["secret/**"]
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
         .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")

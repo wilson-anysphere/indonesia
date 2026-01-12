@@ -77,6 +77,7 @@ model = "default"
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
         .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         // Ensure the only overrides in effect are the ones explicitly under test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
