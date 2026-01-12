@@ -254,6 +254,48 @@ class C {
 }
 
 #[test]
+fn missing_expression_statement_does_not_emit_invalid_statement_expression() {
+    let src = r#"
+class C {
+    void m() {
+        ();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let owner = first_method_with_body(&db, file);
+    let body = match owner {
+        DefWithBodyId::Method(m) => db.hir_body(m),
+        DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+        DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+    };
+
+    let expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected an expression statement");
+
+    assert!(
+        matches!(&body.exprs[expr], nova_hir::hir::Expr::Missing { .. }),
+        "expected expression statement to lower to Missing, got {:?}",
+        body.exprs[expr]
+    );
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn rejects_non_statement_expression_in_for_update() {
     let src = r#"
 class C {
