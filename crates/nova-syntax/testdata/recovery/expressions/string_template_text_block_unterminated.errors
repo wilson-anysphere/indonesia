@@ -1,4 +1,4 @@
-3:17: unterminated text block template
+7:1: unterminated text block template
 7:1: expected template text or interpolation, found Error ``
 7:1: expected closing string template delimiter, found end of file
 7:1: expected `;` after local variable declaration, found end of file

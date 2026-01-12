@@ -747,6 +747,10 @@ impl MethodDeclaration {
         support::child::<ParameterList>(&self.syntax)
     }
 
+    pub fn throws_clause(&self) -> Option<ThrowsClause> {
+        support::child::<ThrowsClause>(&self.syntax)
+    }
+
     pub fn default_value(&self) -> Option<DefaultValue> {
         support::child::<DefaultValue>(&self.syntax)
     }
@@ -792,6 +796,10 @@ impl ConstructorDeclaration {
         support::child::<ParameterList>(&self.syntax)
     }
 
+    pub fn throws_clause(&self) -> Option<ThrowsClause> {
+        support::child::<ThrowsClause>(&self.syntax)
+    }
+
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
@@ -827,6 +835,10 @@ impl CompactConstructorDeclaration {
 
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
+    }
+
+    pub fn throws_clause(&self) -> Option<ThrowsClause> {
+        support::child::<ThrowsClause>(&self.syntax)
     }
 
     pub fn body(&self) -> Option<Block> {
@@ -3204,6 +3216,31 @@ impl AstNode for ImplementsClause {
 }
 
 impl ImplementsClause {
+    pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        support::children::<Type>(&self.syntax)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThrowsClause {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ThrowsClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ThrowsClause
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ThrowsClause {
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
         support::children::<Type>(&self.syntax)
     }
