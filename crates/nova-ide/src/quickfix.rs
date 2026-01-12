@@ -5,6 +5,25 @@ use lsp_types::{
 };
 use nova_core::{Name, PackageName, TypeIndex};
 use nova_types::{Diagnostic, Span};
+use once_cell::sync::Lazy;
+
+static COMMON_PACKAGE_STRS: &[&str] = &[
+    "java.util",
+    "java.util.function",
+    "java.io",
+    "java.time",
+    "java.nio",
+    "java.nio.file",
+    "java.net",
+    "java.math",
+    "java.util.regex",
+    "java.util.concurrent",
+    "java.util.stream",
+    "java.lang",
+];
+
+static COMMON_PACKAGE_NAMES: Lazy<Vec<PackageName>> =
+    Lazy::new(|| COMMON_PACKAGE_STRS.iter().map(|pkg| PackageName::from_dotted(pkg)).collect());
 
 /// Generate quick fixes for unresolved type diagnostics.
 ///
@@ -88,25 +107,12 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
         return Vec::new();
     }
 
-    // NOTE: This list is intentionally small and ordered by rough "how likely is a missing import
-    // from here?" heuristics. We still sort/dedupe the final output for deterministic results.
+    // NOTE: `COMMON_PACKAGE_STRS` is intentionally small and ordered by rough "how likely is a
+    // missing import from here?" heuristics. We still sort/dedupe the final output for
+    // deterministic results.
     //
     // Keep this bounded: quick-fix code actions run on latency-sensitive paths, and probing the
     // entire JDK index (e.g. by enumerating all class names) can be extremely expensive.
-    const COMMON_PACKAGES: &[&str] = &[
-        "java.util",
-        "java.util.function",
-        "java.io",
-        "java.time",
-        "java.nio",
-        "java.nio.file",
-        "java.net",
-        "java.math",
-        "java.util.regex",
-        "java.util.concurrent",
-        "java.util.stream",
-        "java.lang",
-    ];
 
     // Some very common nested types are referred to by their simple inner name (e.g. `Entry`)
     // and can be imported directly (`import java.util.Map.Entry;`). Those types are stored in
@@ -119,9 +125,8 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
     let name = Name::from(needle);
 
     let mut out = Vec::new();
-    for pkg_str in COMMON_PACKAGES {
-        let pkg = PackageName::from_dotted(pkg_str);
-        if let Some(ty) = index.resolve_type_in_package(&pkg, &name) {
+    for (pkg_str, pkg) in COMMON_PACKAGE_STRS.iter().zip(COMMON_PACKAGE_NAMES.iter()) {
+        if let Some(ty) = index.resolve_type_in_package(pkg, &name) {
             // JDK indices use binary names for nested types (`Outer$Inner`). Java imports use source
             // names (`Outer.Inner`), so replace `$` with `.` as a best-effort.
             out.push(ty.as_str().replace('$', "."));
@@ -133,9 +138,13 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
             _ => &[],
         };
 
-        for outer in nested_outers {
-            let nested = Name::from(format!("{outer}${needle}"));
-            if let Some(ty) = index.resolve_type_in_package(&pkg, &nested) {
+        for &outer in nested_outers {
+            let mut nested_name = String::with_capacity(outer.len() + 1 + needle.len());
+            nested_name.push_str(outer);
+            nested_name.push('$');
+            nested_name.push_str(needle);
+            let nested = Name::from(nested_name);
+            if let Some(ty) = index.resolve_type_in_package(pkg, &nested) {
                 out.push(ty.as_str().replace('$', "."));
             }
         }
