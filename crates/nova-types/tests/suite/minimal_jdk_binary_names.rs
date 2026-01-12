@@ -6,8 +6,8 @@ use nova_types::{TypeEnv, TypeStore, MINIMAL_JDK_BINARY_NAMES};
 fn minimal_jdk_binary_names_are_in_sync_with_type_store() {
     let store = TypeStore::with_minimal_jdk();
 
-    // The list should be free of duplicates so consumers (like the workspace loader)
-    // can rely on it as an identity-map seed.
+    // The list should be free of duplicates so callers can rely on it as an
+    // identity-map seed.
     let unique: HashSet<&str> = MINIMAL_JDK_BINARY_NAMES.iter().copied().collect();
     assert_eq!(
         unique.len(),

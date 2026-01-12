@@ -753,12 +753,9 @@ impl Default for TypeStore {
 
 /// Binary names of the classes materialized by [`TypeStore::with_minimal_jdk`].
 ///
-/// This list is the single source of truth for Nova's "minimal JDK" model and is
-/// used by:
-/// - `nova-types` to eagerly reserve stable [`ClassId`]s before defining the
-///   placeholder class bodies, and
-/// - `nova-db`'s workspace loader to seed stable, host-managed `ClassId`
-///   assignments for these well-known JDK types.
+/// This list is the single source of truth for Nova's "minimal JDK" **type model**
+/// within `nova-types`. `TypeStore::with_minimal_jdk` uses it to eagerly reserve
+/// stable [`ClassId`]s before defining the placeholder class bodies.
 ///
 /// The set is intentionally small and **must** stay in sync with
 /// `TypeStore::with_minimal_jdk()` (the implementation and the list are checked
