@@ -37,7 +37,7 @@ pub enum SymbolKind {
     Field,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +98,8 @@ pub struct Index {
     /// This allows common queries like "symbol at cursor" to avoid scanning every symbol in the
     /// workspace.
     symbols_by_file: HashMap<String, Vec<usize>>,
+    /// O(1) lookup by `SymbolId` (index into `symbols`).
+    symbols_by_id: HashMap<SymbolId, usize>,
     /// Maps (class_name, method_name) -> method symbol ids (one per overload).
     method_symbols: HashMap<(String, String), Vec<SymbolId>>,
     class_extends: HashMap<String, String>,
@@ -109,6 +111,7 @@ impl Index {
             files,
             symbols: Vec::new(),
             symbols_by_file: HashMap::new(),
+            symbols_by_id: HashMap::new(),
             method_symbols: HashMap::new(),
             class_extends: HashMap::new(),
         };
@@ -250,7 +253,10 @@ impl Index {
     }
 
     pub fn find_symbol(&self, id: SymbolId) -> Option<&Symbol> {
-        self.symbols.iter().find(|sym| sym.id == id)
+        self.symbols_by_id
+            .get(&id)
+            .copied()
+            .and_then(|idx| self.symbols.get(idx))
     }
 
     /// Finds candidates for a name across the workspace.
@@ -279,6 +285,7 @@ impl Index {
     fn rebuild(&mut self) {
         self.symbols.clear();
         self.symbols_by_file.clear();
+        self.symbols_by_id.clear();
         self.method_symbols.clear();
         self.class_extends.clear();
 
@@ -303,8 +310,11 @@ impl Index {
                     extends: class.extends.clone(),
                 };
                 next_id += 1;
+
                 let class_idx = self.symbols.len();
+                let class_id = class_sym.id;
                 self.symbols.push(class_sym);
+                self.symbols_by_id.insert(class_id, class_idx);
                 self.symbols_by_file
                     .entry(file.clone())
                     .or_default()
@@ -331,6 +341,7 @@ impl Index {
                         is_override: method.is_override,
                         extends: None,
                     });
+                    self.symbols_by_id.insert(id, method_idx);
                     self.symbols_by_file
                         .entry(file.clone())
                         .or_default()
@@ -354,6 +365,7 @@ impl Index {
                         is_override: false,
                         extends: None,
                     });
+                    self.symbols_by_id.insert(id, field_idx);
                     self.symbols_by_file
                         .entry(file.clone())
                         .or_default()

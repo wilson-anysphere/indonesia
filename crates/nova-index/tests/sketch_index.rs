@@ -1,4 +1,4 @@
-use nova_index::{Index, SymbolKind};
+use nova_index::{Index, SymbolId, SymbolKind};
 use std::collections::BTreeMap;
 
 #[test]
@@ -18,9 +18,7 @@ class A {
         .symbols()
         .iter()
         .filter(|sym| {
-            sym.kind == SymbolKind::Method
-                && sym.container.as_deref() == Some("A")
-                && sym.name == "foo"
+            sym.kind == SymbolKind::Method && sym.container.as_deref() == Some("A") && sym.name == "foo"
         })
         .collect();
     assert_eq!(foo_methods.len(), 1);
@@ -33,9 +31,7 @@ class A {
         .symbols()
         .iter()
         .filter(|sym| {
-            sym.kind == SymbolKind::Field
-                && sym.container.as_deref() == Some("A")
-                && sym.name == "x"
+            sym.kind == SymbolKind::Field && sym.container.as_deref() == Some("A") && sym.name == "x"
         })
         .collect();
     assert_eq!(x_fields.len(), 1);
@@ -107,3 +103,85 @@ class A {
     assert_eq!(no_args.param_types.as_deref(), Some(&[][..]));
     assert_eq!(int_arg.param_types.as_deref(), Some(&["int".to_string()][..]));
 }
+
+#[test]
+fn find_symbol_returns_some_for_known_ids() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "Foo.java".to_string(),
+        r#"
+class Foo {
+    void bar() {}
+    int baz(int x) { return x; }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+
+    let bar_id = index
+        .method_symbol_id("Foo", "bar")
+        .expect("expected Foo.bar to be indexed");
+    let bar = index
+        .find_symbol(bar_id)
+        .expect("expected find_symbol to return Foo.bar");
+    assert_eq!(bar.kind, SymbolKind::Method);
+    assert_eq!(bar.name, "bar");
+    assert_eq!(bar.container.as_deref(), Some("Foo"));
+
+    let foo_class_id = index
+        .symbols()
+        .iter()
+        .find(|sym| sym.kind == SymbolKind::Class && sym.name == "Foo")
+        .expect("expected Foo class symbol")
+        .id;
+    let foo_class = index
+        .find_symbol(foo_class_id)
+        .expect("expected find_symbol to return Foo class");
+    assert_eq!(foo_class.kind, SymbolKind::Class);
+    assert_eq!(foo_class.name, "Foo");
+    assert_eq!(foo_class.container, None);
+}
+
+#[test]
+fn find_symbol_returns_none_for_unknown_ids() {
+    let mut files = BTreeMap::new();
+    files.insert("Foo.java".to_string(), "class Foo {}".to_string());
+    let index = Index::new(files);
+
+    assert_eq!(index.find_symbol(SymbolId(999_999)), None);
+}
+
+#[test]
+fn find_symbol_is_consistent_for_all_indexed_symbols() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    void a() {}
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "B.java".to_string(),
+        r#"
+class B {
+    void b() {}
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+
+    for sym in index.symbols() {
+        let found = index
+            .find_symbol(sym.id)
+            .unwrap_or_else(|| panic!("missing symbol id: {:?}", sym.id));
+        assert!(std::ptr::eq(sym, found));
+    }
+}
+
