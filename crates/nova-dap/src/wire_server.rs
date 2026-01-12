@@ -372,6 +372,7 @@ async fn handle_request_inner(
                 "supportsRestartRequest": true,
                 "supportsSetVariable": true,
                 "supportsStepInTargetsRequest": true,
+                "supportsDelayedStackTraceLoading": true,
                 "supportsStepBack": false,
                 "supportsFunctionBreakpoints": true,
                 "supportsVariablePaging": true,
