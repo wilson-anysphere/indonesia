@@ -5884,16 +5884,6 @@ fn collect_switch_contexts(
                     );
                 }
             }
-            hir::Stmt::Assert {
-                condition,
-                message,
-                ..
-            } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
-                if let Some(expr) = message {
-                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-                }
-            }
             hir::Stmt::Throw { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
             }
@@ -5960,21 +5950,6 @@ fn collect_switch_contexts(
                 }
                 if let Some(initializer) = initializer {
                     walk_expr(body, *initializer, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::Unary { expr, .. }
@@ -7398,32 +7373,6 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
-        Stmt::Assert(stmt) => {
-            record_lightweight_expr(
-                file,
-                text,
-                &stmt.condition,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            if let Some(message) = &stmt.message {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    message,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Empty(_) => {}
     }
 }
