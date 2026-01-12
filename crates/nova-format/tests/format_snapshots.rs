@@ -554,6 +554,14 @@ fn ast_formatting_is_idempotent_on_broken_fixture() {
 }
 
 #[test]
+fn ast_formatting_is_idempotent_on_unterminated_block_comment() {
+    // Unterminated block comments are lexed as a single `Error` token that consumes the remainder
+    // of the file. Formatting must preserve the remainder verbatim to avoid changing the comment
+    // extent across passes.
+    assert_ast_idempotent("class Foo{void m(){int x=1; /* unterminated\n");
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     assert_ast_idempotent(
         r#"
