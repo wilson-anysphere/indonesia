@@ -14,6 +14,9 @@ fn stabilize_environment() {
     ONCE.call_once(|| {
         // Ensure the benchmark doesn't depend on the host's environment/JDK.
         std::env::remove_var("NOVA_CONFIG_PATH");
+        // `NOVA_JDK_CACHE_DIR` is a deprecated escape hatch that bypasses the normal persistence
+        // policy checks; clear it to keep benchmark runs deterministic.
+        std::env::remove_var("NOVA_JDK_CACHE_DIR");
         std::env::set_var("NOVA_PERSISTENCE", "disabled");
 
         let fake_jdk_root =
