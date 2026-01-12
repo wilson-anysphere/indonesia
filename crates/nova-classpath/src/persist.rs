@@ -46,8 +46,8 @@ where
 
     let cache_path = cache_file_path(cache_dir, fingerprint);
     let lock_path = cache_lock_file_path(&cache_path);
-    let _lock = nova_cache::CacheLock::lock_exclusive(&lock_path)
-        .map_err(|err| io::Error::other(err))?;
+    let _lock =
+        nova_cache::CacheLock::lock_exclusive(&lock_path).map_err(|err| io::Error::other(err))?;
 
     if let Some(stubs) = try_load_entry_cache(&cache_path, entry, fingerprint) {
         return Ok(stubs);

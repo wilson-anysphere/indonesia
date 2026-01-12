@@ -766,8 +766,9 @@ impl Debugger {
                     Some(resolved) => {
                         first_resolved_line.get_or_insert(resolved.line);
                         saw_location = true;
-                        let mut modifiers =
-                            vec![EventModifier::LocationOnly { location: resolved.location }];
+                        let mut modifiers = vec![EventModifier::LocationOnly {
+                            location: resolved.location,
+                        }];
                         if let Some(count) = count_modifier {
                             modifiers.push(EventModifier::Count { count });
                         }
@@ -775,7 +776,7 @@ impl Debugger {
                             cancel,
                             self.jdwp.event_request_set(2, suspend_policy, modifiers),
                         )
-                            .await
+                        .await
                         {
                             Ok(request_id) => {
                                 verified = true;
@@ -2681,7 +2682,13 @@ impl Debugger {
             };
 
             if replace {
-                best = Some((distance, is_previous_line, candidate_line, method_id, code_index));
+                best = Some((
+                    distance,
+                    is_previous_line,
+                    candidate_line,
+                    method_id,
+                    code_index,
+                ));
             }
         }
 
@@ -2745,8 +2752,9 @@ impl Debugger {
                 };
 
                 if let Some(resolved) = self.location_for_line(&cancel, &class, spec_line).await? {
-                    let mut modifiers =
-                        vec![EventModifier::LocationOnly { location: resolved.location }];
+                    let mut modifiers = vec![EventModifier::LocationOnly {
+                        location: resolved.location,
+                    }];
                     if let Some(count) = count_modifier {
                         modifiers.push(EventModifier::Count { count });
                     }
