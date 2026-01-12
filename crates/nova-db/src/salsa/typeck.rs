@@ -153,6 +153,11 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
 
 #[ra_salsa::query_group(NovaTypeckStorage)]
 pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
+    /// Project-scoped base [`TypeStore`] used as the starting point for per-body type checking.
+    ///
+    /// This store pre-interns project-local and external types (by name) so cloned body-local
+    /// stores allocate stable [`nova_types::ClassId`]s independent of per-body loading order.
+    fn project_base_type_store(&self, project: ProjectId) -> ArcEq<TypeStore>;
     /// Per-body expression scope mapping used for lexical name resolution inside bodies.
     ///
     /// This is memoized independently from `typeck_body` so demand-driven, per-expression type
@@ -160,12 +165,6 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     fn expr_scopes(&self, owner: DefWithBodyId) -> ArcEq<ExprScopes>;
 
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
-
-    /// Project-scoped base `TypeStore` used as the starting point for per-body type checking.
-    ///
-    /// This store pre-interns external classpath types (by name only) so cloned body-local stores
-    /// allocate stable `ClassId`s independent of per-body loading order.
-    fn project_base_type_store(&self, project: ProjectId) -> ArcEq<TypeStore>;
 
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
     fn type_of_def(&self, def: DefWithBodyId) -> Type;
@@ -563,12 +562,205 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
 
     cancel::check_cancelled(db);
 
-    // Start with the built-in minimal JDK so type-system algorithms have
-    // a stable core (`Object`, `String`, boxing types, etc).
+    let cfg = db.project_config(project);
+    let jdk = db.jdk_index(project);
+    let classpath = db.classpath_index(project);
+    let workspace = db.workspace_def_map(project);
+    let jpms_env = db.jpms_compilation_env(project);
+
+    // Stable, project-relative file order.
+    let mut files: Vec<(Arc<String>, FileId)> = db
+        .project_files(project)
+        .iter()
+        .map(|&file| (db.file_rel_path(file), file))
+        .collect();
+    files.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    let files: Vec<FileId> = files.into_iter().map(|(_, file)| file).collect();
+
+    // Start with the built-in minimal JDK so type-system algorithms have a stable core (`Object`,
+    // `String`, boxing types, etc).
     let mut store = TypeStore::with_minimal_jdk();
 
-    // Pre-intern external classpath types in deterministic order so `ClassId`s are stable
-    // across body-local clones even when external types are loaded in different orders.
+    // 1) Pre-intern all workspace source types in a stable order so their `ClassId`s do not depend
+    // on which body/file happens to be typechecked first.
+    let mut source_type_names: Vec<String> = Vec::new();
+    for (idx, file) in files.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 32);
+
+        let scopes = db.scope_graph(*file);
+        let tree = db.hir_item_tree(*file);
+
+        let mut item_ids = Vec::new();
+        for item in &tree.items {
+            collect_item_ids(&tree, *item, &mut item_ids);
+        }
+
+        for item in item_ids {
+            if let Some(name) = scopes.scopes.type_name(item) {
+                source_type_names.push(name.as_str().to_string());
+            }
+        }
+    }
+    source_type_names.sort();
+    source_type_names.dedup();
+
+    for (idx, name) in source_type_names.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 128);
+        store.intern_class_id(name);
+    }
+
+    // 2) Pre-intern referenced types (from signatures and bodies) so that subsequent per-body
+    // loading does not allocate `ClassId`s in a body-dependent order.
+    let mut referenced_type_names: Vec<String> = Vec::new();
+    for (idx, file) in files.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 16);
+
+        let scopes = db.scope_graph(*file);
+        let tree = db.hir_item_tree(*file);
+
+        // Build a resolver for this file; JPMS projects require per-file module context.
+        let jpms_index = jpms_env.as_deref().map(|env| {
+            let file_rel = db.file_rel_path(*file);
+            let from = module_for_file(&cfg, file_rel.as_str());
+            JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+        });
+        let workspace_index = WorkspaceFirstIndex {
+            workspace: &workspace,
+            classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+        };
+
+        let resolver = if let Some(index) = jpms_index.as_ref() {
+            nova_resolve::Resolver::new(index).with_workspace(&workspace)
+        } else {
+            nova_resolve::Resolver::new(&*jdk)
+                .with_classpath(&workspace_index)
+                .with_workspace(&workspace)
+        };
+
+        let mut item_ids = Vec::new();
+        for item in &tree.items {
+            collect_item_ids(&tree, *item, &mut item_ids);
+        }
+
+        for item in item_ids.iter().copied() {
+            let class_scope = scopes
+                .class_scopes
+                .get(&item)
+                .copied()
+                .unwrap_or(scopes.file_scope);
+
+            for member in item_members(&tree, item) {
+                match member {
+                    nova_hir::item_tree::Member::Field(fid) => {
+                        let field = tree.field(*fid);
+                        collect_resolved_type_names(
+                            &resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            &field.ty,
+                            &mut referenced_type_names,
+                        );
+                    }
+                    nova_hir::item_tree::Member::Method(mid) => {
+                        let method = tree.method(*mid);
+                        let scope = scopes
+                            .method_scopes
+                            .get(mid)
+                            .copied()
+                            .unwrap_or(class_scope);
+                        collect_resolved_type_names(
+                            &resolver,
+                            &scopes.scopes,
+                            scope,
+                            &method.return_ty,
+                            &mut referenced_type_names,
+                        );
+                        for p in &method.params {
+                            collect_resolved_type_names(
+                                &resolver,
+                                &scopes.scopes,
+                                scope,
+                                &p.ty,
+                                &mut referenced_type_names,
+                            );
+                        }
+                    }
+                    nova_hir::item_tree::Member::Constructor(cid) => {
+                        let ctor = tree.constructor(*cid);
+                        let scope = scopes
+                            .constructor_scopes
+                            .get(cid)
+                            .copied()
+                            .unwrap_or(class_scope);
+                        for p in &ctor.params {
+                            collect_resolved_type_names(
+                                &resolver,
+                                &scopes.scopes,
+                                scope,
+                                &p.ty,
+                                &mut referenced_type_names,
+                            );
+                        }
+                    }
+                    nova_hir::item_tree::Member::Initializer(_)
+                    | nova_hir::item_tree::Member::Type(_) => {}
+                }
+            }
+        }
+
+        // Best-effort: scan body locals and `new` expressions for type names so external types used
+        // only in method bodies still receive stable `ClassId`s.
+        let owners = collect_body_owners(&tree);
+        for (owner_idx, owner) in owners.iter().enumerate() {
+            cancel::checkpoint_cancelled_every(db, owner_idx as u32, 32);
+
+            let body_scope = match *owner {
+                DefWithBodyId::Method(m) => scopes.method_scopes.get(&m).copied(),
+                DefWithBodyId::Constructor(c) => scopes.constructor_scopes.get(&c).copied(),
+                DefWithBodyId::Initializer(i) => scopes.initializer_scopes.get(&i).copied(),
+            }
+            .unwrap_or(scopes.file_scope);
+
+            let body = match *owner {
+                DefWithBodyId::Method(m) => db.hir_body(m),
+                DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+                DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+            };
+
+            for (_, local) in body.locals.iter() {
+                collect_resolved_type_names(
+                    &resolver,
+                    &scopes.scopes,
+                    body_scope,
+                    &local.ty_text,
+                    &mut referenced_type_names,
+                );
+            }
+
+            for (_, expr) in body.exprs.iter() {
+                if let HirExpr::New { class, .. } = expr {
+                    collect_resolved_type_names(
+                        &resolver,
+                        &scopes.scopes,
+                        body_scope,
+                        class,
+                        &mut referenced_type_names,
+                    );
+                }
+            }
+        }
+    }
+
+    referenced_type_names.sort();
+    referenced_type_names.dedup();
+    for (idx, name) in referenced_type_names.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 128);
+        store.intern_class_id(name);
+    }
+
+    // 3) Pre-intern external types from the (legacy) classpath in deterministic order so
+    // `ClassId`s are stable across body-local clones even when external types are loaded in
+    // different orders.
     //
     // NOTE: In JPMS mode we intentionally *do not* pre-intern types from the legacy
     // `classpath_index` input. Workspace loading historically merged module-path jars into this
@@ -579,8 +771,8 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // Also mirror the resolver's `java.*` handling: application class loaders cannot define
     // `java.*` packages, so classpath stubs should not be able to "rescue" unresolved `java.*`
     // references.
-    if db.jpms_compilation_env(project).is_none() {
-        if let Some(cp) = db.classpath_index(project).as_deref() {
+    if jpms_env.is_none() {
+        if let Some(cp) = classpath.as_deref() {
             for (idx, name) in cp.iter_binary_names().enumerate() {
                 cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
                 if name.starts_with("java.") {
@@ -603,6 +795,53 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // The current approach relies on `TypeStore::with_minimal_jdk()` for a small
     // but semantically useful set of core types, and loads other JDK types on
     // demand.
+
+    // 4) Define all source types in the store so cross-file references can observe them via
+    // `Type::Class` and member resolution can consult their (best-effort) members.
+    let provider = if let Some(env) = jpms_env.as_deref() {
+        nova_types::ChainTypeProvider::new(vec![
+            &env.classpath as &dyn TypeProvider,
+            &*jdk as &dyn TypeProvider,
+        ])
+    } else {
+        match classpath.as_deref() {
+            Some(cp) => nova_types::ChainTypeProvider::new(vec![
+                cp as &dyn TypeProvider,
+                &*jdk as &dyn TypeProvider,
+            ]),
+            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        }
+    };
+
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+    for (idx, file) in files.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 16);
+
+        let scopes = db.scope_graph(*file);
+        let tree = db.hir_item_tree(*file);
+
+        let jpms_index = jpms_env.as_deref().map(|env| {
+            let file_rel = db.file_rel_path(*file);
+            let from = module_for_file(&cfg, file_rel.as_str());
+            JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+        });
+        let workspace_index = WorkspaceFirstIndex {
+            workspace: &workspace,
+            classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+        };
+
+        let resolver = if let Some(index) = jpms_index.as_ref() {
+            nova_resolve::Resolver::new(index).with_workspace(&workspace)
+        } else {
+            nova_resolve::Resolver::new(&*jdk)
+                .with_classpath(&workspace_index)
+                .with_workspace(&workspace)
+        };
+
+        let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
+    }
+
+    drop(loader);
 
     db.record_query_stat("project_base_type_store", start.elapsed());
     ArcEq::new(Arc::new(store))
@@ -4020,6 +4259,30 @@ fn preload_type_names<'idx>(
     loader: &mut ExternalTypeLoader<'_>,
     text: &str,
 ) {
+    for_each_resolved_type_name(resolver, scopes, scope_id, text, |name| {
+        loader.store.intern_class_id(name);
+    });
+}
+
+fn collect_resolved_type_names<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    text: &str,
+    out: &mut Vec<String>,
+) {
+    for_each_resolved_type_name(resolver, scopes, scope_id, text, |name| {
+        out.push(name.to_string());
+    });
+}
+
+fn for_each_resolved_type_name<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    text: &str,
+    mut f: impl FnMut(&str),
+) {
     let mut i = 0usize;
     let bytes = text.as_bytes();
 
@@ -4059,7 +4322,7 @@ fn preload_type_names<'idx>(
         let Some(resolved) = resolver.resolve_qualified_type_in_scope(scopes, scope_id, &q) else {
             continue;
         };
-        let _ = loader.ensure_class(resolved.as_str());
+        f(resolved.as_str());
     }
 }
 

@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_db::salsa::FileExprId;
 use nova_db::{
     ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
 };
+use nova_hir::item_tree::{Item, Member};
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
 use nova_resolve::ids::DefWithBodyId;
@@ -64,6 +66,29 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     set_file(&mut db, project, file, "src/Test.java", text);
     db.set_project_files(project, Arc::new(vec![file]));
     (db, file)
+}
+
+fn first_method_with_body(db: &SalsaRootDatabase, file: FileId) -> DefWithBodyId {
+    let tree = db.hir_item_tree(file);
+    for item in &tree.items {
+        let members = match item {
+            Item::Class(id) => &tree.class(*id).members,
+            Item::Interface(id) => &tree.interface(*id).members,
+            Item::Enum(id) => &tree.enum_(*id).members,
+            Item::Record(id) => &tree.record(*id).members,
+            Item::Annotation(id) => &tree.annotation(*id).members,
+        };
+
+        for member in members {
+            if let Member::Method(m) = member {
+                if tree.method(*m).body.is_some() {
+                    return DefWithBodyId::Method(*m);
+                }
+            }
+        }
+    }
+
+    panic!("no method with body found in file {:?}", file);
 }
 
 #[test]
@@ -1405,5 +1430,201 @@ class C {
     assert_eq!(
         typeck_body_executions, 0,
         "type_of_def should not execute typeck_body"
+    );
+}
+
+#[test]
+fn class_ids_are_stable_across_files_for_workspace_source_types() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "src/p/Shared.java",
+        r#"
+package p;
+
+class Shared {
+    Shared id(Shared x) { return x; }
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "src/p/User.java",
+        r#"
+package p;
+
+class User {
+    Shared id(Shared x) { return x; }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let body_a = db.typeck_body(first_method_with_body(&db, file_a));
+    let body_b = db.typeck_body(first_method_with_body(&db, file_b));
+
+    let shared_a = body_a
+        .env
+        .lookup_class("p.Shared")
+        .expect("expected p.Shared to be interned in env");
+    let shared_b = body_b
+        .env
+        .lookup_class("p.Shared")
+        .expect("expected p.Shared to be interned in env");
+    assert_eq!(
+        shared_a, shared_b,
+        "expected stable ClassId for workspace type p.Shared"
+    );
+}
+
+#[test]
+fn class_ids_are_stable_across_files_for_jdk_nested_types() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+
+    // `java.util.Map` is present in the built-in JDK name index but not in
+    // `TypeStore::with_minimal_jdk`. This test ensures we still assign stable
+    // `ClassId`s for it (and its nested `Entry` type) across bodies/files.
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "src/A.java",
+        r#"
+class A {
+    void entry(java.util.Map.Entry e) {}
+    void map(java.util.Map m) {}
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "src/B.java",
+        r#"
+class B {
+    void map(java.util.Map m) {}
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let body_a = db.typeck_body(first_method_with_body(&db, file_a));
+    let body_b = db.typeck_body(first_method_with_body(&db, file_b));
+
+    let map_a = body_a
+        .env
+        .lookup_class("java.util.Map")
+        .expect("expected java.util.Map to be interned in env");
+    let map_b = body_b
+        .env
+        .lookup_class("java.util.Map")
+        .expect("expected java.util.Map to be interned in env");
+    assert_eq!(map_a, map_b, "expected stable ClassId for java.util.Map");
+
+    let entry_a = body_a
+        .env
+        .lookup_class("java.util.Map$Entry")
+        .expect("expected java.util.Map$Entry to be interned in env");
+    let entry_b = body_b
+        .env
+        .lookup_class("java.util.Map$Entry")
+        .expect("expected java.util.Map$Entry to be interned in env");
+    assert_eq!(
+        entry_a, entry_b,
+        "expected stable ClassId for nested type java.util.Map$Entry"
+    );
+}
+
+#[test]
+fn class_ids_are_stable_across_files_for_classpath_types() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    let classdir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/classdir");
+    let classpath = ClasspathIndex::build(&[ClasspathEntry::ClassDir(classdir)], None).unwrap();
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "src/C1.java",
+        r#"
+import com.example.dep.Bar;
+import com.example.dep.Foo;
+
+class C1 {
+    void a(Bar b) {}
+    void b(Foo f) {}
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "src/C2.java",
+        r#"
+import com.example.dep.Foo;
+
+class C2 {
+    void m(Foo f) {}
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let body_a = db.typeck_body(first_method_with_body(&db, file_a));
+    let body_b = db.typeck_body(first_method_with_body(&db, file_b));
+
+    let foo_a = body_a
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("expected com.example.dep.Foo to be interned in env");
+    let foo_b = body_b
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("expected com.example.dep.Foo to be interned in env");
+    assert_eq!(
+        foo_a, foo_b,
+        "expected stable ClassId for classpath type com.example.dep.Foo"
     );
 }
