@@ -95,6 +95,20 @@ fn path_to_label_root_package() {
 }
 
 #[test]
+fn path_to_label_root_package_subdir_file() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join("BUILD"), "# root package\n").unwrap();
+    create_file(&dir.path().join("subdir/Hello.java"));
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("subdir/Hello.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//:subdir/Hello.java"));
+}
+
+#[test]
 fn path_to_label_nested_package() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
@@ -200,6 +214,14 @@ fn minimal_java_package(workspace_root: &Path) -> PathBuf {
     std::fs::write(workspace_root.join("WORKSPACE"), "# test\n").unwrap();
     write_file(&workspace_root.join("java/BUILD"), "# java package\n");
     let file = workspace_root.join("java/Hello.java");
+    create_file(&file);
+    file
+}
+
+fn minimal_root_package(workspace_root: &Path) -> PathBuf {
+    std::fs::write(workspace_root.join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(workspace_root.join("BUILD"), "# root package\n").unwrap();
+    let file = workspace_root.join("subdir/Foo.java");
     create_file(&file);
     file
 }
@@ -563,6 +585,30 @@ fn owning_targets_are_cached_per_file() {
     assert_eq!(owners1, vec!["//java:hello_lib".to_string()]);
     assert_eq!(owners2, owners1);
 
+    assert_eq!(
+        runner.calls(),
+        vec![vec![
+            "query".to_string(),
+            format!("same_pkg_direct_rdeps({file_label})"),
+            "--output=label_kind".to_string()
+        ]]
+    );
+}
+
+#[test]
+fn root_package_owner_resolution_uses_root_file_label() {
+    let dir = tempdir().unwrap();
+    let file = minimal_root_package(dir.path());
+    let file_label = "//:subdir/Foo.java";
+
+    let runner = QueryRunner::new([(
+        format!("same_pkg_direct_rdeps({file_label})"),
+        MockResponse::Ok("java_library rule //:lib\n".to_string()),
+    )]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners, vec!["//:lib".to_string()]);
     assert_eq!(
         runner.calls(),
         vec![vec![
