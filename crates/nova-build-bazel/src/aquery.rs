@@ -1177,9 +1177,7 @@ mod tests {
         let line_limit = 64;
 
         let long_arg = "A".repeat(512);
-        let output = format!(
-            "action {{\n  mnemonic: \"Javac\"\n  arguments: \"{long_arg}\"\n}}\n"
-        );
+        let output = format!("action {{\n  mnemonic: \"Javac\"\n  arguments: \"{long_arg}\"\n}}\n");
 
         let reader = std::io::BufReader::new(std::io::Cursor::new(output.as_bytes()));
         let mut actions =

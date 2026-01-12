@@ -4895,7 +4895,8 @@ fn at_primitive_method_reference_start(tokens: &VecDeque<Token>, idx: usize) -> 
 }
 
 fn at_primitive_type_suffix_start(tokens: &VecDeque<Token>, idx: usize) -> bool {
-    at_primitive_class_literal_start(tokens, idx) || at_primitive_method_reference_start(tokens, idx)
+    at_primitive_class_literal_start(tokens, idx)
+        || at_primitive_method_reference_start(tokens, idx)
 }
 
 fn skip_reference_type_array_suffix(tokens: &VecDeque<Token>, mut idx: usize) -> usize {

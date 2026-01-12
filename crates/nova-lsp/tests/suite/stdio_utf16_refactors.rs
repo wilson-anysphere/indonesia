@@ -186,10 +186,7 @@ fn stdio_server_rename_type_emits_file_rename_and_updates_references() {
     let foo_source = "package p; public class Foo { Foo() {} }";
     let use_source = "package p; class Use { Foo f; void m(){ new Foo(); } }";
 
-    let foo_start = foo_source
-        .find("class Foo")
-        .expect("class declaration")
-        + "class ".len();
+    let foo_start = foo_source.find("class Foo").expect("class declaration") + "class ".len();
     let foo_end = foo_start + "Foo".len();
     let foo_position = lsp_position_utf16(foo_source, foo_start + 1);
     let foo_range = lsp_range_utf16(foo_source, foo_start, foo_end);

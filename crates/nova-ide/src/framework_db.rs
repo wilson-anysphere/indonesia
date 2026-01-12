@@ -97,15 +97,13 @@ impl FrameworkDbShared {
         static UNKNOWN: OnceLock<ClassData> = OnceLock::new();
 
         let idx = class.to_raw() as usize;
-        self.classes
-            .get(idx)
-            .unwrap_or_else(|| {
-                UNKNOWN.get_or_init(|| {
-                    let mut data = ClassData::default();
-                    data.name = "<unknown>".to_string();
-                    data
-                })
+        self.classes.get(idx).unwrap_or_else(|| {
+            UNKNOWN.get_or_init(|| {
+                let mut data = ClassData::default();
+                data.name = "<unknown>".to_string();
+                data
             })
+        })
     }
 
     fn all_classes(&self) -> Vec<ClassId> {
@@ -881,8 +879,7 @@ mod tests {
     #[test]
     fn unknown_class_id_is_best_effort() {
         let mut store = InMemoryFileStore::new();
-        let file_path =
-            PathBuf::from("/__nova_test__/framework_db_unknown_class_id/src/Main.java");
+        let file_path = PathBuf::from("/__nova_test__/framework_db_unknown_class_id/src/Main.java");
         let file = store.file_id_for_path(&file_path);
         store.set_file_text(file, "package test; class Main {}".to_string());
 

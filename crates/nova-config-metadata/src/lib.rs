@@ -345,10 +345,7 @@ mod tests {
 
         let mut index = MetadataIndex::new();
         index
-            .ingest_classpath(&[
-                ClasspathEntry::Jar(missing),
-                ClasspathEntry::Jar(jar_path),
-            ])
+            .ingest_classpath(&[ClasspathEntry::Jar(missing), ClasspathEntry::Jar(jar_path)])
             .unwrap();
 
         assert!(

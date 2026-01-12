@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use lsp_types::{CompletionParams, NumberOrString, TextDocumentIdentifier, TextDocumentPositionParams, Uri};
+use lsp_types::{
+    CompletionParams, NumberOrString, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
+};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{CompletionItem, Diagnostic, ProjectId, Span};
@@ -154,4 +156,3 @@ fn framework_analyzer_runs_via_extension_registry_in_lsp_pipeline_and_respects_c
         "expected cancelled completion response to omit framework completion item; got {cancelled_labels:?}"
     );
 }
-

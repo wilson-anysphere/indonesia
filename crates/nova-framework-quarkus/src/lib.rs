@@ -783,16 +783,25 @@ fn collect_config_files_inner(
 fn classify_config_file(path: &std::path::Path) -> Option<(ConfigFileKind, bool)> {
     let file_name = path.file_name().and_then(|n| n.to_str())?;
     let file_name_lower = file_name.to_ascii_lowercase();
-    let ext = path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
 
     if ext == "properties" {
         let is_application = file_name_lower.starts_with("application");
         let is_microprofile = file_name_lower == "microprofile-config.properties";
-        return Some((ConfigFileKind::Properties, is_application || is_microprofile));
+        return Some((
+            ConfigFileKind::Properties,
+            is_application || is_microprofile,
+        ));
     }
 
     if ext == "yml" || ext == "yaml" {
-        return Some((ConfigFileKind::Yaml, file_name_lower.starts_with("application")));
+        return Some((
+            ConfigFileKind::Yaml,
+            file_name_lower.starts_with("application"),
+        ));
     }
 
     None

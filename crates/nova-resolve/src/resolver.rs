@@ -1262,7 +1262,6 @@ pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
     next
 }
 
-
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {

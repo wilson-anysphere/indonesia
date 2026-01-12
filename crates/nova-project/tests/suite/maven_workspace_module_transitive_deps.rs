@@ -724,10 +724,7 @@ fn maven_workspace_model_includes_missing_transitive_external_deps_of_workspace_
     );
 
     let dep_a_jar = repo_jar_path(&maven_repo, "com.dep", "dep-a", "1.0.0");
-    assert!(
-        !dep_a_jar.is_file(),
-        "jar should not exist for this test"
-    );
+    assert!(!dep_a_jar.is_file(), "jar should not exist for this test");
 
     let options = LoadOptions {
         maven_repo: Some(maven_repo),

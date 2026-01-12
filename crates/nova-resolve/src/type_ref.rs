@@ -949,9 +949,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // where `Map` is ambiguous), avoid misreporting an `unresolved-type` diagnostic.
         if let Some(first_segment) = name_text.split('.').next() {
             let first = Name::from(first_segment);
-            if let TypeNameResolution::Ambiguous(candidates) =
-                self.resolver
-                    .resolve_type_name_detailed(self.scopes, self.scope, &first)
+            if let TypeNameResolution::Ambiguous(candidates) = self
+                .resolver
+                .resolve_type_name_detailed(self.scopes, self.scope, &first)
             {
                 let mut candidate_names: Vec<String> = candidates
                     .iter()

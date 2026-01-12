@@ -115,9 +115,7 @@ static BUILTIN_COLLECTIONS_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
                 name: "singletonList".to_string(),
                 descriptor: "(Ljava/lang/Object;)Ljava/util/List;".to_string(),
                 // <T>(TT;)Ljava/util/List<TT;>;
-                signature: Some(
-                    "<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;".to_string(),
-                ),
+                signature: Some("<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;".to_string()),
             },
         ],
     })

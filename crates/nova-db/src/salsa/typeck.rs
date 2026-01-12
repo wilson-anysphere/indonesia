@@ -709,8 +709,18 @@ fn type_of_expr_demand_result(
         java_level,
         true,
     );
-    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, signature_diags);
-    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, param_diags);
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        signature_diags,
+    );
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        param_diags,
+    );
 
     // Best-effort expected-type seeding.
     //
@@ -3563,15 +3573,30 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         java_level,
         false,
     );
-    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, signature_diags);
-    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, param_diags);
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        signature_diags,
+    );
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        param_diags,
+    );
     extend_type_ref_diagnostics(
         &mut checker.diagnostics,
         &file_tokens,
         file_text,
         type_param_bound_diags,
     );
-    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, throws_diags);
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        throws_diags,
+    );
 
     checker.check_body(&mut loader);
 
@@ -5395,8 +5420,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             range.start.saturating_add(err.span.start),
                             range.start.saturating_add(err.span.end),
                         );
-                        self.diagnostics
-                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-literal",
+                            err.message,
+                            Some(span),
+                        ));
                         ExprInfo {
                             ty: Type::Error,
                             is_type_ref: false,
@@ -5414,8 +5442,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             range.start.saturating_add(err.span.start),
                             range.start.saturating_add(err.span.end),
                         );
-                        self.diagnostics
-                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-literal",
+                            err.message,
+                            Some(span),
+                        ));
                         ExprInfo {
                             ty: Type::Error,
                             is_type_ref: false,

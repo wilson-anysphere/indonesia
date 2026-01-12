@@ -6239,7 +6239,8 @@ class A {
     }
 
     #[test]
-    fn core_file_diagnostics_cancelable_matches_core_file_diagnostics_for_bodyless_unresolved_type() {
+    fn core_file_diagnostics_cancelable_matches_core_file_diagnostics_for_bodyless_unresolved_type()
+    {
         let mut db = InMemoryFileStore::new();
         let file = db.file_id_for_path(PathBuf::from("/test.java"));
         db.set_file_text(file, "class A { MissingType f; }".to_string());
@@ -6256,7 +6257,9 @@ class A {
             "cancelable diagnostics should match core_file_diagnostics even for bodyless files"
         );
         assert!(
-            expected.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+            expected
+                .iter()
+                .any(|d| d.code.as_ref() == "unresolved-type"),
             "expected an unresolved-type diagnostic in core diagnostics; got {expected:?}"
         );
     }
