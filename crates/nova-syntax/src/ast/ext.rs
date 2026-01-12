@@ -66,6 +66,12 @@ impl super::FieldDeclaration {
     }
 }
 
+impl super::CompactConstructorDeclaration {
+    pub fn modifiers(&self) -> Option<super::Modifiers> {
+        support::child::<super::Modifiers>(self.syntax())
+    }
+}
+
 impl super::SwitchBlock {
     /// Returns all [`SwitchLabel`] nodes in source order, regardless of whether they came from a
     /// traditional `case ...:` group or an arrow `case ... ->` rule.

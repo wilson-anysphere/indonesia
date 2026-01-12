@@ -166,6 +166,9 @@ impl ExtrasCollector {
                     }
                 }
             }
+            ast::ClassMember::CompactConstructorDeclaration(it) => {
+                self.collect_modifiers(it.modifiers());
+            }
             ast::ClassMember::InitializerBlock(it) => self.collect_modifiers(it.modifiers()),
             ast::ClassMember::EmptyDeclaration(_) => {}
 
