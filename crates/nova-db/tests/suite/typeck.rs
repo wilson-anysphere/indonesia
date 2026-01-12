@@ -2421,7 +2421,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "static-access-via-instance"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-access-via-instance"),
         "expected no static-access-via-instance warning for unqualified static call, got {diags:?}"
     );
 }

@@ -1884,7 +1884,11 @@ impl Lowerer {
             let mut var = var_node
                 .as_ref()
                 .map(|node| self.lower_local_var_stmt(node))
-                .or_else(|| self.lower_local_var_decls_in_range(&header, colon).into_iter().next())
+                .or_else(|| {
+                    self.lower_local_var_decls_in_range(&header, colon)
+                        .into_iter()
+                        .next()
+                })
                 .unwrap_or_else(|| ast::LocalVarStmt {
                     modifiers: ast::Modifiers::default(),
                     annotations: Vec::new(),
@@ -1925,9 +1929,9 @@ impl Lowerer {
             .map(|tok| self.spans.map_token(tok).start)
             .unwrap_or(range.end);
         let cond_end = semicolons
-                .get(1)
-                .map(|tok| self.spans.map_token(tok).start)
-                .unwrap_or(range.end);
+            .get(1)
+            .map(|tok| self.spans.map_token(tok).start)
+            .unwrap_or(range.end);
 
         let init = {
             let local_decl = header.descendants().find(|child| {
@@ -3275,7 +3279,10 @@ mod tests {
 
         assert_eq!(block.statements.len(), 1);
         let ast::Stmt::Synchronized(sync) = &block.statements[0] else {
-            panic!("expected synchronized statement, got {:?}", block.statements[0]);
+            panic!(
+                "expected synchronized statement, got {:?}",
+                block.statements[0]
+            );
         };
 
         let ast::Expr::Name(lock) = &sync.expr else {

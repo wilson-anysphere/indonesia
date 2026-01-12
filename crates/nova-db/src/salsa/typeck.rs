@@ -8245,8 +8245,7 @@ fn define_source_types<'idx>(
                         .map(|(idx, p)| {
                             let is_varargs_param = is_varargs && idx + 1 == method.params.len();
                             let ty_text = if is_varargs_param {
-                                p.ty
-                                    .trim_end()
+                                p.ty.trim_end()
                                     .strip_suffix("...")
                                     .unwrap_or(p.ty.trim_end())
                                     .trim_end()
@@ -8320,8 +8319,7 @@ fn define_source_types<'idx>(
                         .map(|(idx, p)| {
                             let is_varargs_param = is_varargs && idx + 1 == ctor.params.len();
                             let ty_text = if is_varargs_param {
-                                p.ty
-                                    .trim_end()
+                                p.ty.trim_end()
                                     .strip_suffix("...")
                                     .unwrap_or(p.ty.trim_end())
                                     .trim_end()

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::{collections::BTreeSet, net::SocketAddr};
 use std::time::Duration;
+use std::{collections::BTreeSet, net::SocketAddr};
 
 use crate::{
     FrameId, JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId,

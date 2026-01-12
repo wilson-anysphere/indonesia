@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use nova_refactor::{
-    apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams,
-};
+use nova_refactor::{apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams};
 
 #[test]
 fn rename_field_renames_accessors_and_call_sites() {
@@ -76,13 +74,27 @@ fn rename_field_renames_accessors_and_call_sites() {
     assert!(foo_after.contains("setFullName(\"name\");"), "{foo_after}");
 
     // Call sites in another file (qualified).
-    assert!(use_after.contains("foo.setFullName(\"name\");"), "{use_after}");
+    assert!(
+        use_after.contains("foo.setFullName(\"name\");"),
+        "{use_after}"
+    );
     assert!(use_after.contains("foo.getFullName()"), "{use_after}");
 
     // Strings/comments should not be touched.
-    assert!(foo_after.contains("// getName should not change in comment"), "{foo_after}");
-    assert!(foo_after.contains("String s = \"getName name\";"), "{foo_after}");
-    assert!(use_after.contains("// foo.getName should not change in comment"), "{use_after}");
-    assert!(use_after.contains("String s = \"foo.getName name\";"), "{use_after}");
+    assert!(
+        foo_after.contains("// getName should not change in comment"),
+        "{foo_after}"
+    );
+    assert!(
+        foo_after.contains("String s = \"getName name\";"),
+        "{foo_after}"
+    );
+    assert!(
+        use_after.contains("// foo.getName should not change in comment"),
+        "{use_after}"
+    );
+    assert!(
+        use_after.contains("String s = \"foo.getName name\";"),
+        "{use_after}"
+    );
 }
-

@@ -3705,7 +3705,9 @@ fn handle_notification(
                     let is_standard_config_name = local_path
                         .as_ref()
                         .and_then(|path| path.file_name().and_then(|name| name.to_str()))
-                        .is_some_and(|name| matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml"));
+                        .is_some_and(|name| {
+                            matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml")
+                        });
 
                     let is_legacy_config_path = local_path
                         .as_ref()
@@ -3714,10 +3716,9 @@ fn handle_notification(
                     let matches_configured_path = match (&configured_config_path, &local_path) {
                         (Some(configured), Some(path)) => {
                             path == configured
-                                || path
-                                    .canonicalize()
-                                    .ok()
-                                    .is_some_and(|resolved| resolved.as_path() == configured.as_path())
+                                || path.canonicalize().ok().is_some_and(|resolved| {
+                                    resolved.as_path() == configured.as_path()
+                                })
                         }
                         _ => false,
                     };

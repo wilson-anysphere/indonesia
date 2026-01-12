@@ -2459,7 +2459,9 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
                     }
                     for edit in &doc_edit.edits {
                         match edit {
-                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Left(edit) => {
+                                all_new_texts.push(edit.new_text.clone())
+                            }
                             lsp_types::OneOf::Right(edit) => {
                                 all_new_texts.push(edit.text_edit.new_text.clone())
                             }

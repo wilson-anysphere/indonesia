@@ -127,7 +127,13 @@ class Foo {
 }
 "#;
     let foo_file = FileId::from_raw(1);
-    set_file(&mut db, project, foo_file, "src/java/fake/Foo.java", foo_src);
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/java/fake/Foo.java",
+        foo_src,
+    );
 
     let test_src = r#"
 class C {
@@ -217,10 +223,7 @@ class B {
     set_file(&mut db, project, b_file, "src/p/B.java", src_b);
     db.set_project_files(project, Arc::new(vec![a_file, b_file]));
 
-    let offset = src_b
-        .find("A.m()")
-        .expect("snippet should contain A.m()")
-        + "A.m".len();
+    let offset = src_b.find("A.m()").expect("snippet should contain A.m()") + "A.m".len();
     let ty = db
         .type_at_offset_display(b_file, offset as u32)
         .expect("expected a type at offset for A.m()");
