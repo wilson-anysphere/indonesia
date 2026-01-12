@@ -1249,3 +1249,50 @@ fn maven_jar_path_resolves_timestamped_snapshot_from_local_metadata() {
     assert_eq!(resolved, jar2);
     assert!(resolved.is_file());
 }
+
+#[test]
+fn maven_jar_path_resolves_timestamped_snapshot_from_repo_scoped_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+
+    let group_id = "com.example";
+    let artifact_id = "proc";
+    let version = "1.0-SNAPSHOT";
+
+    let version_dir = repo
+        .join(group_id.replace('.', "/"))
+        .join(artifact_id)
+        .join(version);
+    std::fs::create_dir_all(&version_dir).unwrap();
+
+    let value = "1.0-20260112.123456-1";
+    let jar = version_dir.join(format!("{artifact_id}-{value}.jar"));
+    std::fs::write(&jar, "").unwrap();
+
+    // Maven can store snapshot metadata from remote repos under a repo-scoped filename like
+    // `maven-metadata-central.xml`.
+    std::fs::write(
+        version_dir.join("maven-metadata-central.xml"),
+        format!(
+            r#"
+<metadata>
+  <groupId>{group_id}</groupId>
+  <artifactId>{artifact_id}</artifactId>
+  <versioning>
+    <snapshotVersions>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>{value}</value>
+      </snapshotVersion>
+    </snapshotVersions>
+  </versioning>
+</metadata>
+"#
+        ),
+    )
+    .unwrap();
+
+    let resolved = maven_jar_path(repo, group_id, artifact_id, version, None).unwrap();
+    assert_eq!(resolved, jar);
+    assert!(resolved.is_file());
+}

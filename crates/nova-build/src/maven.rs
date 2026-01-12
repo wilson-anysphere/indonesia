@@ -1282,7 +1282,52 @@ fn snapshot_jar_value_from_local_metadata(
     // Maven writes metadata files like:
     // - `maven-metadata-local.xml` (installed snapshots)
     // - `maven-metadata.xml` (downloaded snapshots)
-    for file in ["maven-metadata-local.xml", "maven-metadata.xml"] {
+    //
+    // For remote snapshots, it can also write repo-scoped files like `maven-metadata-central.xml`.
+    let mut metadata_names = vec![
+        "maven-metadata-local.xml".to_string(),
+        "maven-metadata.xml".to_string(),
+    ];
+    if let Ok(entries) = std::fs::read_dir(version_dir) {
+        let mut extra = Vec::new();
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            if file_name == "maven-metadata-local.xml" || file_name == "maven-metadata.xml" {
+                continue;
+            }
+            if file_name.starts_with("maven-metadata-") && file_name.ends_with(".xml") {
+                extra.push(file_name.to_string());
+            }
+        }
+        extra.sort();
+        extra.dedup();
+        metadata_names.extend(extra);
+    }
+
+    fn parse_snapshot_timestamp_and_build(value: &str) -> Option<(&str, u32)> {
+        let (prefix_and_timestamp, build) = value.rsplit_once('-')?;
+        let (_prefix, timestamp) = prefix_and_timestamp.rsplit_once('-')?;
+        let build = build.parse().ok()?;
+        Some((timestamp, build))
+    }
+
+    fn snapshot_value_is_newer(candidate: &str, best: &str) -> bool {
+        match (
+            parse_snapshot_timestamp_and_build(candidate),
+            parse_snapshot_timestamp_and_build(best),
+        ) {
+            (Some((candidate_timestamp, candidate_build)), Some((best_timestamp, best_build))) => {
+                candidate_timestamp > best_timestamp
+                    || (candidate_timestamp == best_timestamp && candidate_build > best_build)
+            }
+            _ => candidate > best,
+        }
+    }
+
+    for file in metadata_names {
         let path = version_dir.join(file);
         let Ok(xml) = std::fs::read_to_string(&path) else {
             continue;
@@ -1296,7 +1341,10 @@ fn snapshot_jar_value_from_local_metadata(
             .filter(|n| n.is_element() && n.has_tag_name("snapshotVersion"))
         {
             let ext = child_text(&sv, "extension");
-            if ext.as_deref() != Some("jar") {
+            if !ext
+                .as_deref()
+                .is_some_and(|e| e.trim().eq_ignore_ascii_case("jar"))
+            {
                 continue;
             }
 
@@ -1314,7 +1362,7 @@ fn snapshot_jar_value_from_local_metadata(
             };
             match &best {
                 None => best = Some(value),
-                Some(current) if value > *current => best = Some(value),
+                Some(current) if snapshot_value_is_newer(&value, current) => best = Some(value),
                 _ => {}
             }
         }
