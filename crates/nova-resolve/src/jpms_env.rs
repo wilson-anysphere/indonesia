@@ -249,7 +249,9 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::jpms::JpmsResolver;
-    use nova_build_model::{BuildSystem, JavaConfig, JavaVersion, JpmsModuleRoot, Module, ProjectConfig};
+    use nova_build_model::{
+        BuildSystem, JavaConfig, JavaVersion, JpmsModuleRoot, Module, ProjectConfig,
+    };
     use nova_classpath::ModuleNameKind;
     use nova_core::{QualifiedName, TypeName};
     use nova_hir::module_info::lower_module_info_source_strict;
@@ -484,7 +486,7 @@ mod tests {
 
         let ws = ProjectConfig {
             workspace_root: root.clone(),
-            build_system: BuildSystem::Gradle,
+            build_system: BuildSystem::Simple,
             java: JavaConfig::default(),
             modules: vec![Module {
                 name: "dummy".to_string(),
