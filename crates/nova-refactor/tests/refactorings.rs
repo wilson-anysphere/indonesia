@@ -176,6 +176,108 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_rejects_empty_name() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InvalidIdentifier { .. }),
+        "expected invalid identifier error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "invalid variable name `<empty>`: name is empty (after trimming whitespace)"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_name_starting_with_digit() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "1x".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InvalidIdentifier { .. }),
+        "expected invalid identifier error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "invalid variable name `1x`: must start with '_' or an ASCII letter"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_keyword_name() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "class".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InvalidIdentifier { .. }),
+        "expected invalid identifier error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "invalid variable name `class`: is a reserved Java keyword"
+    );
+}
+
+#[test]
 fn extract_variable_use_var_false_emits_explicit_type() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

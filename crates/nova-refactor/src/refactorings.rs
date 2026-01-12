@@ -20,6 +20,8 @@ pub enum RefactorError {
     Materialize(#[from] MaterializeError),
     #[error("unknown file {0:?}")]
     UnknownFile(FileId),
+    #[error("invalid variable name `{name}`: {reason}")]
+    InvalidIdentifier { name: String, reason: &'static str },
     #[error("expected a variable with initializer for inline")]
     InlineNotSupported,
     #[error("no variable usage at the given cursor/usage range")]
@@ -128,6 +130,19 @@ pub fn extract_variable(
     db: &dyn RefactorDatabase,
     params: ExtractVariableParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
+    let name = crate::java::validate_java_identifier(&params.name).map_err(|err| {
+        let trimmed = params.name.trim();
+        let display_name = if trimmed.is_empty() {
+            "<empty>".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        RefactorError::InvalidIdentifier {
+            name: display_name,
+            reason: err.reason(),
+        }
+    })?;
+
     let text = db
         .file_text(&params.file)
         .ok_or_else(|| RefactorError::UnknownFile(params.file.clone()))?;
@@ -245,7 +260,6 @@ pub fn extract_variable(
     };
 
     let newline = NewlineStyle::detect(text).as_str();
-    let name = params.name;
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
     let mut edit = WorkspaceEdit::new(vec![

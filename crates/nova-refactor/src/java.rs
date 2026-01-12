@@ -379,3 +379,130 @@ pub(crate) fn is_boundary(text: &[u8], idx: usize) -> bool {
     }
     !is_ident_char_byte(text[idx])
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JavaIdentifierError {
+    Empty,
+    InvalidStartChar,
+    InvalidChar,
+    Keyword,
+}
+
+impl JavaIdentifierError {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            JavaIdentifierError::Empty => "name is empty (after trimming whitespace)",
+            JavaIdentifierError::InvalidStartChar => "must start with '_' or an ASCII letter",
+            JavaIdentifierError::InvalidChar => "must contain only ASCII letters, digits, or '_'",
+            JavaIdentifierError::Keyword => "is a reserved Java keyword",
+        }
+    }
+}
+
+/// Validate and sanitize a Java identifier.
+///
+/// This currently implements a conservative ASCII-only subset:
+/// - non-empty after trimming whitespace
+/// - first character: `_` or ASCII letter
+/// - remaining characters: `_` or ASCII alphanumeric
+/// - rejects Java keywords (including Nova's contextual keyword tokens)
+pub(crate) fn validate_java_identifier(name: &str) -> Result<String, JavaIdentifierError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(JavaIdentifierError::Empty);
+    }
+
+    let mut chars = name.chars();
+    let first = chars.next().expect("non-empty");
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(JavaIdentifierError::InvalidStartChar);
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(JavaIdentifierError::InvalidChar);
+    }
+
+    if is_java_keyword(name) {
+        return Err(JavaIdentifierError::Keyword);
+    }
+
+    Ok(name.to_string())
+}
+
+fn is_java_keyword(ident: &str) -> bool {
+    // Keep in sync with `nova_syntax::SyntaxKind` keyword token kinds. We include Nova's
+    // contextual keywords as well because Nova's lexer tokenizes them as distinct kinds and we
+    // don't want refactorings to produce code that becomes unparseable.
+    matches!(
+        ident,
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            | "true"
+            | "false"
+            | "null"
+            | "var"
+            | "yield"
+            | "record"
+            | "sealed"
+            | "permits"
+            | "non-sealed"
+            | "when"
+            | "module"
+            | "open"
+            | "opens"
+            | "requires"
+            | "transitive"
+            | "exports"
+            | "to"
+            | "uses"
+            | "provides"
+            | "with"
+    )
+}
