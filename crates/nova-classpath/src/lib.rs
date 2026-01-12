@@ -1454,7 +1454,9 @@ fn index_class_dir(
     // it when extracting. We treat the directory as multi-release if either:
     // - the manifest opts into multi-release behavior, or
     // - a `META-INF/versions` directory is present.
-    let is_multi_release = dir_is_multi_release(dir) || dir.join("META-INF/versions").is_dir();
+    let is_multi_release = dir_is_multi_release(dir)
+        || dir.join("META-INF/versions").is_dir()
+        || dir.join("classes/META-INF/versions").is_dir();
 
     // Ensure deterministic directory iteration (WalkDir does not guarantee ordering).
     let mut class_files: Vec<PathBuf> = Vec::new();
@@ -1739,7 +1741,14 @@ fn index_zip(
 
     match kind {
         ZipKind::Jmod => {
-            let mut out = Vec::new();
+            // JMODs place class files under `classes/`.
+            //
+            // Some builds also surface multi-release JAR contents in a JMOD-style layout
+            // (`classes/META-INF/versions/<n>/...`). Treat them using the same version-selection
+            // semantics as `META-INF/versions/<n>/...` in standard multi-release JARs.
+            let mut best: HashMap<String, (u32, ClasspathClassStub)> = HashMap::new();
+            let target_release = options.target_release.map(|r| r as u32);
+
             for i in 0..archive.len() {
                 let mut file = archive.by_index(i)?;
                 if !file.is_file() {
@@ -1751,9 +1760,30 @@ fn index_zip(
                     continue;
                 }
 
-                // JMODs place class files under `classes/`.
                 if !name.starts_with("classes/") {
                     continue;
+                }
+
+                let mr_version = if let Some(rest) = name.strip_prefix("classes/META-INF/versions/")
+                {
+                    let Some((version, _path)) = rest.split_once('/') else {
+                        continue;
+                    };
+                    match version.parse::<u32>() {
+                        Ok(v) => Some(v),
+                        Err(_) => continue,
+                    }
+                } else if name.starts_with("classes/META-INF/") {
+                    continue;
+                } else {
+                    None
+                };
+
+                let version = mr_version.unwrap_or(0);
+                if let Some(target) = target_release {
+                    if version > target {
+                        continue;
+                    }
                 }
 
                 let mut bytes = Vec::with_capacity(file.size() as usize);
@@ -1763,8 +1793,43 @@ fn index_zip(
                 if is_ignored_class(&cf.this_class) {
                     continue;
                 }
-                out.push(stub_from_classfile(cf));
+
+                let stub = stub_from_classfile(cf);
+                let key = stub.binary_name.clone();
+
+                match target_release {
+                    Some(_) => match best.get(&key) {
+                        None => {
+                            best.insert(key, (version, stub));
+                        }
+                        Some((existing_version, _)) => {
+                            if version > *existing_version {
+                                best.insert(key, (version, stub));
+                            }
+                        }
+                    },
+                    None => match best.get(&key) {
+                        None => {
+                            best.insert(key, (version, stub));
+                        }
+                        Some((existing_version, _)) => {
+                            if *existing_version == 0 {
+                                // Base entry already exists; keep it.
+                                continue;
+                            }
+
+                            if version == 0 || version > *existing_version {
+                                // Prefer base over any MR entry, otherwise pick the highest MR version.
+                                best.insert(key, (version, stub));
+                            }
+                        }
+                    },
+                }
             }
+
+            let mut out: Vec<ClasspathClassStub> =
+                best.into_values().map(|(_, stub)| stub).collect();
+            out.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
             Ok(out)
         }
         ZipKind::Jar => {
@@ -1802,12 +1867,21 @@ fn index_zip(
                             Ok(v) => Some(v),
                             Err(_) => continue,
                         }
-                    } else if name.starts_with("META-INF/") {
+                    } else if let Some(rest) = name.strip_prefix("classes/META-INF/versions/") {
+                        let Some((version, _path)) = rest.split_once('/') else {
+                            continue;
+                        };
+                        match version.parse::<u32>() {
+                            Ok(v) => Some(v),
+                            Err(_) => continue,
+                        }
+                    } else if name.starts_with("META-INF/") || name.starts_with("classes/META-INF/")
+                    {
                         continue;
                     } else {
                         None
                     }
-                } else if name.starts_with("META-INF/") {
+                } else if name.starts_with("META-INF/") || name.starts_with("classes/META-INF/") {
                     continue;
                 } else {
                     None
@@ -1874,26 +1948,22 @@ fn index_zip(
 }
 
 fn jar_is_multi_release<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> bool {
-    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
-        Ok(file) => file,
-        Err(zip::result::ZipError::FileNotFound) => return false,
-        Err(_) => return false,
-    };
-
-    let mut manifest = String::new();
-    if file.read_to_string(&mut manifest).is_err() {
-        return false;
-    }
-
-    manifest_is_multi_release(&manifest)
+    module_name::zip_manifest_main_attribute(archive, "Multi-Release")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 fn dir_is_multi_release(dir: &Path) -> bool {
-    let manifest_path = dir.join("META-INF/MANIFEST.MF");
-    let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
-        return false;
-    };
-    manifest_is_multi_release(&manifest)
+    for candidate in MANIFEST_CANDIDATES {
+        let manifest_path = dir.join(candidate);
+        let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
+            continue;
+        };
+        if manifest_is_multi_release(&manifest) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Determines the multi-release version for a `.class` file in an exploded (directory) entry.
@@ -1907,6 +1977,13 @@ fn mr_version_from_dir_path(rel: &Path, is_multi_release: bool) -> Option<Option
 
     let mut components = rel.components();
     let first = components.next()?;
+
+    // JMOD-style layouts place classes under `classes/`.
+    let first = if matches!(first, Component::Normal(name) if name == "classes") {
+        components.next()?
+    } else {
+        first
+    };
 
     if matches!(first, Component::Normal(name) if name == "META-INF") {
         if !is_multi_release {
@@ -1930,15 +2007,8 @@ fn mr_version_from_dir_path(rel: &Path, is_multi_release: bool) -> Option<Option
 }
 
 fn manifest_is_multi_release(manifest: &str) -> bool {
-    for line in manifest.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        if key.trim().eq_ignore_ascii_case("Multi-Release") {
-            return value.trim().eq_ignore_ascii_case("true");
-        }
-    }
-    false
+    module_name::manifest_main_attribute(manifest, "Multi-Release")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
