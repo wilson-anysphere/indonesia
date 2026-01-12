@@ -262,6 +262,59 @@ fn bazelrc_import_with_quoted_path_is_tracked() {
 }
 
 #[test]
+fn bazelrc_import_with_workspace_placeholder_is_tracked() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::write(root.join(".bazelrc"), "try-import %workspace%/tools/bazel.rc").unwrap();
+    fs::create_dir_all(root.join("tools")).unwrap();
+    fs::write(root.join("tools/bazel.rc"), "build --javacopt=-Xlint").unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Editing the imported file should invalidate the cache.
+    fs::write(root.join("tools/bazel.rc"), "build --javacopt=-Xlint:unchecked").unwrap();
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
+fn bazelrc_import_with_absolute_path_is_tracked() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::create_dir_all(root.join("tools")).unwrap();
+    let imported = root.join("tools/bazel.rc");
+    fs::write(&imported, "build --javacopt=-Xlint").unwrap();
+    fs::write(root.join(".bazelrc"), format!("try-import {}", imported.display())).unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Editing the imported file should invalidate the cache.
+    fs::write(&imported, "build --javacopt=-Xlint:unchecked").unwrap();
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
 fn target_compile_info_cache_is_invalidated_when_any_build_definition_input_changes() {
     let dir = tempdir().unwrap();
     let workspace_root = dir.path().join("workspace");
