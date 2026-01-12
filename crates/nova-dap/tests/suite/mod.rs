@@ -44,3 +44,8 @@ mod wire_stream_debug_deadlock;
 mod wire_stream_debug_internal_eval;
 mod wire_stream_eval;
 mod wire_variables_preview;
+
+#[tokio::test]
+async fn dap_hot_swap_can_compile_changed_files_with_javac() {
+    dap_session::dap_hot_swap_can_compile_changed_files_with_javac().await;
+}

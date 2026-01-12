@@ -708,8 +708,7 @@ async fn dap_can_hot_swap_multiple_classes_per_file() {
     server_task.await.unwrap().unwrap();
 }
 
-#[tokio::test]
-async fn dap_hot_swap_can_compile_changed_files_with_javac() {
+pub(super) async fn dap_hot_swap_can_compile_changed_files_with_javac() {
     if !tool_available("javac") {
         // CI images may not include a JDK; skip rather than failing.
         return;
