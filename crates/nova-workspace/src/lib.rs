@@ -601,6 +601,10 @@ impl Workspace {
         files_to_index: &[String],
         cancel: &CancellationToken,
     ) -> Result<(usize, u64, std::collections::BTreeMap<String, Fingerprint>)> {
+        use nova_core::{LineIndex, TextSize};
+        use nova_db::NovaHir;
+        use nova_hir::ast_id::AstId;
+
         let db = SalsaDatabase::new_with_persistence(
             snapshot.project_root(),
             PersistenceConfig::from_env(),
@@ -622,11 +626,59 @@ impl Workspace {
             file_fingerprints.insert(file.clone(), Fingerprint::from_bytes(content.as_bytes()));
 
             let file_id = FileId::from_raw(idx as u32);
-            db.set_file_text(file_id, content);
+            db.set_file_text(file_id, content.clone());
             db.set_file_rel_path(file_id, Arc::new(file.clone()));
 
-            let delta = db.with_snapshot(|snap| snap.file_index_delta(file_id));
-            indexes.merge_from((*delta).clone());
+            let (delta, hir) = db.with_snapshot(|snap| {
+                let delta = snap.file_index_delta(file_id);
+                let hir = snap.hir_item_tree(file_id);
+                (delta, hir)
+            });
+
+            // Patch (line, col) from HIR name ranges, using UTF-16 positions.
+            let line_index = LineIndex::new(&content);
+            let mut delta = (*delta).clone();
+            for symbols in delta.symbols.symbols.values_mut() {
+                for entry in symbols.iter_mut() {
+                    let ast_id = AstId::new(entry.ast_id);
+                    let offset = match entry.kind {
+                        nova_index::IndexSymbolKind::Class => {
+                            hir.classes.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Interface => {
+                            hir.interfaces.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Enum => {
+                            hir.enums.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Record => {
+                            hir.records.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Annotation => {
+                            hir.annotations.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Field => {
+                            hir.fields.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Method => {
+                            hir.methods.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                        nova_index::IndexSymbolKind::Constructor => {
+                            hir.constructors.get(&ast_id).map(|it| it.name_range.start)
+                        }
+                    };
+
+                    let Some(offset) = offset else {
+                        continue;
+                    };
+
+                    let pos = line_index.position(&content, TextSize::from(offset as u32));
+                    entry.location.line = pos.line;
+                    entry.location.column = pos.character;
+                }
+            }
+
+            indexes.merge_from(delta);
         }
 
         Ok((files_indexed, bytes_indexed, file_fingerprints))
@@ -1446,6 +1498,66 @@ mod fuzzy_symbol_tests {
 
         let dup_count = first.iter().filter(|sym| sym.name == "Dup").count();
         assert_eq!(dup_count, 2, "expected duplicate entries for the same name");
+    }
+
+    #[test]
+    fn workspace_symbol_locations_are_computed_from_hir_name_ranges() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let java_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&java_dir).expect("mkdir");
+        fs::write(
+            java_dir.join("Main.java"),
+            "package com.example;\n\npublic class Main {\n    public void methodName() {}\n}\n",
+        )
+        .expect("write");
+
+        let ws = Workspace::open(root).expect("workspace open");
+        let results = ws
+            .workspace_symbols("methodName")
+            .expect("workspace symbols");
+
+        let sym = results
+            .iter()
+            .find(|sym| sym.qualified_name == "com.example.Main.methodName")
+            .expect("expected com.example.Main.methodName in results");
+
+        assert_eq!(sym.location.file, "src/main/java/com/example/Main.java");
+        assert_eq!(sym.location.line, 3);
+        assert_eq!(sym.location.column, 16);
+    }
+
+    #[test]
+    fn workspace_symbol_search_disambiguates_by_qualified_name() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let dir_a = root.join("src/main/java/com/a");
+        fs::create_dir_all(&dir_a).expect("mkdir a");
+        fs::write(dir_a.join("Foo.java"), "package com.a; public class Foo {}\n").expect("write");
+
+        let dir_b = root.join("src/main/java/com/b");
+        fs::create_dir_all(&dir_b).expect("mkdir b");
+        fs::write(dir_b.join("Foo.java"), "package com.b; public class Foo {}\n").expect("write");
+
+        let ws = Workspace::open(root).expect("workspace open");
+
+        let by_name = ws.workspace_symbols("Foo").expect("workspace symbols");
+        assert!(
+            by_name.iter().any(|sym| sym.qualified_name == "com.a.Foo"),
+            "expected com.a.Foo in results"
+        );
+        assert!(
+            by_name.iter().any(|sym| sym.qualified_name == "com.b.Foo"),
+            "expected com.b.Foo in results"
+        );
+
+        let qualified = ws.workspace_symbols("com.b.Foo").expect("workspace symbols");
+        assert_eq!(qualified[0].qualified_name, "com.b.Foo");
     }
 }
 

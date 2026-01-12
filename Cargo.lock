@@ -4425,6 +4425,7 @@ dependencies = [
  "nova-framework-jpa",
  "nova-framework-spring",
  "nova-fuzzy",
+ "nova-hir",
  "nova-ide",
  "nova-index",
  "nova-jdk",

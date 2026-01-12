@@ -22,9 +22,13 @@ pub struct SymbolLocation {
 
 #[derive(
     Clone,
+    Copy,
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
+    Hash,
     Serialize,
     Deserialize,
     rkyv::Archive,
@@ -32,6 +36,7 @@ pub struct SymbolLocation {
     rkyv::Deserialize,
 )]
 #[archive(check_bytes)]
+#[serde(rename_all = "snake_case")]
 pub enum IndexSymbolKind {
     Class,
     Interface,

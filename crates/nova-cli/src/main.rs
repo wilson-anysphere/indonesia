@@ -1452,104 +1452,29 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
             result
         })?;
 
-        // Note: The in-process workspace API returns `nova_workspace::WorkspaceSymbol`, but the
-        // distributed router returns `nova_remote_proto::Symbol` (name + path, plus any future
-        // fields). Build a `WorkspaceSymbol` payload via JSON so this stays compatible across
-        // protocol/model changes (old: `{name, locations: [...]}`; new: `{name, qualified_name,
-        // container_name, kind, location}`).
         let mut out = Vec::new();
         for sym in symbols {
-            let sym_value = serde_json::to_value(&sym)?;
-            let name = sym_value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
+            let name = sym.name;
             if name.is_empty() {
                 continue;
             }
-
-            let path = sym_value
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
+            let path = sym.path;
             let file_path = PathBuf::from(path.as_str());
             let file =
                 path_relative_to(&workspace_root, &file_path).unwrap_or_else(|_| path.clone());
 
-            let line = sym_value
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0);
-            let column = sym_value
-                .get("column")
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0);
-
-            let location = serde_json::json!({
-                "file": file,
-                "line": line,
-                "column": column,
+            out.push(WorkspaceSymbol {
+                qualified_name: name.clone(),
+                name,
+                kind: nova_index::IndexSymbolKind::Class,
+                container_name: None,
+                location: nova_index::SymbolLocation {
+                    file,
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
             });
-            let locations = serde_json::Value::Array(vec![location.clone()]);
-
-            let qualified_name = sym_value
-                .get("qualified_name")
-                .or_else(|| sym_value.get("qualifiedName"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| name.clone());
-
-            let container_name = sym_value
-                .get("container_name")
-                .or_else(|| sym_value.get("containerName"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            // Provide both `location` and `locations` to support both WorkspaceSymbol
-            // representations. Old readers ignore `location`; new readers ignore `locations`.
-            let base = serde_json::json!({
-                "name": name,
-                "qualified_name": qualified_name,
-                "container_name": container_name,
-                "location": location,
-                "locations": locations,
-                // Required for the flattened WorkspaceSymbol representation.
-                "ast_id": 0,
-            });
-
-            // Try a handful of `kind` encodings (enum-as-string vs LSP numeric kind) to match
-            // whatever the current `WorkspaceSymbol.kind` type uses.
-            let kind_candidates = [
-                sym_value.get("kind").cloned(),
-                // Default kind for remote symbols when the protocol does not include it.
-                Some(serde_json::json!("Unknown")),
-            ];
-
-            let mut parsed: Option<WorkspaceSymbol> = None;
-            for kind in kind_candidates.into_iter().flatten() {
-                let mut candidate = base.clone();
-                if let serde_json::Value::Object(map) = &mut candidate {
-                    map.insert("kind".to_string(), kind);
-                }
-                if let Ok(sym) = serde_json::from_value::<WorkspaceSymbol>(candidate) {
-                    parsed = Some(sym);
-                    break;
-                }
-            }
-
-            // Fall back to the base payload without `kind` (if `kind` is optional/defaulted).
-            if parsed.is_none() {
-                parsed = serde_json::from_value::<WorkspaceSymbol>(base).ok();
-            }
-
-            if let Some(sym) = parsed {
-                out.push(sym);
-            }
         }
 
         Ok(out)

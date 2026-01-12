@@ -6563,7 +6563,10 @@ fn handle_workspace_symbol(
                     "object" => LspSymbolKind::OBJECT,
                     "key" => LspSymbolKind::KEY,
                     "null" => LspSymbolKind::NULL,
-                    "enummember" | "enum_member" => LspSymbolKind::ENUM_MEMBER,
+                    "enumconstant"
+                    | "enum_constant"
+                    | "enummember"
+                    | "enum_member" => LspSymbolKind::ENUM_MEMBER,
                     "struct" => LspSymbolKind::STRUCT,
                     "event" => LspSymbolKind::EVENT,
                     "operator" => LspSymbolKind::OPERATOR,
@@ -6713,7 +6716,6 @@ fn handle_workspace_symbol(
         let Some((file, line, column)) = json_location(&value) else {
             continue;
         };
-
         let mut path = PathBuf::from(&file);
         if !path.is_absolute() {
             path = workspace.root().join(path);
@@ -6746,6 +6748,7 @@ fn handle_workspace_symbol(
             #[allow(deprecated)]
             deprecated: None,
             location,
+            container_name,
             container_name,
         });
     }

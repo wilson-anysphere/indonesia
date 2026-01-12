@@ -16,4 +16,5 @@ mod main_bin;
 // When `main.rs` is compiled as a module (via `main_bin` above), helpers defined at the binary
 // crate root are no longer available at `crate::...`. Re-export the small set of utilities used by
 // sibling modules so `cargo test -p nova-cli --lib` continues to typecheck.
+#[allow(unused_imports)]
 pub(crate) use main_bin::{display_path, path_relative_to};
