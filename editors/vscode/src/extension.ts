@@ -2173,6 +2173,56 @@ export async function activate(context: vscode.ExtensionContext) {
     })();
   };
 
+  const configurationChangeDebounceMs = 200;
+  let didChangeConfigurationTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleDidChangeConfigurationNotification = () => {
+    const existing = didChangeConfigurationTimer;
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    didChangeConfigurationTimer = setTimeout(() => {
+      didChangeConfigurationTimer = undefined;
+
+      const languageClient = client;
+      const startPromise = clientStart;
+      if (!languageClient || !startPromise) {
+        return;
+      }
+
+      // Wait for the client to finish starting up (or restart) before sending the notification.
+      void startPromise
+        .catch(() => undefined)
+        .then(() => {
+          // If the language server restarted, don't attempt to use stale state or send against a
+          // disposed client instance.
+          if (client !== languageClient) {
+            return;
+          }
+          if (languageClient.state !== State.Running) {
+            return;
+          }
+          try {
+            void languageClient
+              .sendNotification('workspace/didChangeConfiguration', { settings: null })
+              .catch(() => undefined);
+          } catch {
+            // Best-effort: ignore failures if the client/server is shutting down.
+          }
+        });
+    }, configurationChangeDebounceMs);
+  };
+
+  context.subscriptions.push(
+    new vscode.Disposable(() => {
+      const existing = didChangeConfigurationTimer;
+      if (existing) {
+        clearTimeout(existing);
+      }
+      didChangeConfigurationTimer = undefined;
+    }),
+  );
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       const effects = getNovaConfigChangeEffects(event);
@@ -2196,6 +2246,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
       if (effects.shouldClearAiCompletionCache) {
         clearAiCompletionCache();
+      }
+
+      // Trigger a server-side config reload / extension registry refresh when any Nova setting
+      // changes, without requiring a client restart.
+      if (event.affectsConfiguration('nova')) {
+        scheduleDidChangeConfigurationNotification();
       }
     }),
   );
