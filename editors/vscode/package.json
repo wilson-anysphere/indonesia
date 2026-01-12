@@ -248,17 +248,17 @@
       {
         "view": "novaFrameworks",
         "contents": "This version of Nova does not support web endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
-        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.webEndpointsSupported"
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.safeMode && !nova.frameworks.webEndpointsSupported"
       },
       {
         "view": "novaFrameworks",
         "contents": "This version of Nova does not support Micronaut endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
-        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautEndpointsSupported"
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.safeMode && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautEndpointsSupported"
       },
       {
         "view": "novaFrameworks",
         "contents": "This version of Nova does not support Micronaut bean discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
-        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautBeansSupported"
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.safeMode && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautBeansSupported"
       },
       {
         "view": "novaProjectExplorer",
@@ -272,8 +272,13 @@
       },
       {
         "view": "novaProjectExplorer",
+        "contents": "Nova is running in safe mode.\n\n[Generate Bug Report](command:nova.bugReport)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.safeMode"
+      },
+      {
+        "view": "novaProjectExplorer",
         "contents": "This version of Nova does not support the project model.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
-        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.projectExplorer.projectModelSupported"
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.safeMode && !nova.projectExplorer.projectModelSupported"
       }
     ],
     "menus": {

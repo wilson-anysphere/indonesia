@@ -156,7 +156,7 @@ export function registerNovaProjectExplorer(
   context: vscode.ExtensionContext,
   request: NovaRequest,
   cache?: ProjectModelCache,
-  opts?: { isServerRunning?: () => boolean },
+  opts?: { isServerRunning?: () => boolean; isSafeMode?: () => boolean },
 ): NovaProjectExplorerController {
   const projectModelCache = cache ?? new ProjectModelCache(request);
   const provider = new NovaProjectExplorerProvider(projectModelCache, opts);
@@ -214,12 +214,14 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
   private lastContextProjectModelSupported: boolean | undefined;
 
   private readonly isServerRunning: () => boolean;
+  private readonly isSafeMode: () => boolean;
 
   constructor(
     private readonly cache: ProjectModelCache,
-    opts?: { isServerRunning?: () => boolean },
+    opts?: { isServerRunning?: () => boolean; isSafeMode?: () => boolean },
   ) {
     this.isServerRunning = opts?.isServerRunning ?? (() => true);
+    this.isSafeMode = opts?.isSafeMode ?? (() => false);
   }
 
   get onDidChangeTreeData(): vscode.Event<NovaProjectExplorerNode | undefined | null> {
@@ -267,6 +269,12 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
       const serverRunning = this.isServerRunning();
       if (!serverRunning) {
         await this.setContexts({ serverRunning: false, projectModelSupported: true });
+        return [];
+      }
+
+      if (this.isSafeMode()) {
+        // Keep the view empty so `contributes.viewsWelcome` can direct users to bug report generation.
+        await this.setContexts({ serverRunning: true, projectModelSupported: true });
         return [];
       }
 

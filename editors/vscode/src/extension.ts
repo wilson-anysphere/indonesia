@@ -286,6 +286,7 @@ export async function activate(context: vscode.ExtensionContext) {
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
     isServerRunning: () => client?.state === State.Running || client?.state === State.Starting,
+    isSafeMode: () => frameworksSafeMode,
   });
 
   // Keep capability entries for workspace-folder keys in sync as folders are added/removed.
@@ -1632,6 +1633,7 @@ export async function activate(context: vscode.ExtensionContext) {
       // Clear/collapse the Frameworks view while safe-mode is active so the view's welcome
       // message can direct users to bug report generation.
       frameworksView.refresh();
+      projectExplorerView.refresh();
     }
 
     if (!enabled) {
