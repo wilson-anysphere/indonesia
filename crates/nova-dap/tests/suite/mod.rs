@@ -26,6 +26,7 @@ mod enable_method_return_values;
 mod exception_breakpoints;
 mod jdwp_client;
 mod logpoints_hitcounts;
+mod process_event;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
 mod real_jvm;
