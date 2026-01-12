@@ -546,6 +546,28 @@ mod tests {
     }
 
     #[test]
+    fn jmod_uri_parsing_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("java.base.jmod");
+        let with_dotdot = dir
+            .path()
+            .join("x")
+            .join("..")
+            .join("java.base.jmod");
+
+        let abs = AbsPathBuf::new(with_dotdot).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+        let uri = format!("jmod:{archive_uri}!/classes/java/lang/String.class");
+
+        let parsed = VfsPath::uri(uri);
+        assert_eq!(
+            parsed,
+            VfsPath::jmod(normalized, "classes/java/lang/String.class"),
+            "jmod: URIs should normalize dot segments in the embedded archive file URI"
+        );
+    }
+
+    #[test]
     fn archive_entries_normalize_backslashes() {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("lib.jar");
