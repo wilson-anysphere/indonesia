@@ -1994,31 +1994,30 @@ impl Database {
         }
     }
 
-    /// Apply a single byte-offset-based text edit to `file`.
+    /// Apply a single byte-offset-based text edit to `file` and set its new contents.
     ///
-    /// This updates the stored file text by applying `edit` to the current snapshot.
-    /// Callers are expected to provide a valid edit range and UTF-8 boundaries.
+    /// Callers provide both:
+    /// - the edit range/replacement (`edit`), used for validation and incremental parsing metadata
+    /// - the full post-edit text snapshot (`new_text`), which becomes the new `file_content` input
     ///
-    /// NOTE: This is primarily intended for incremental parsing benchmarks and LSP-style
-    /// incremental document updates. Query-level incremental reparsing is implemented
-    /// separately (see `parse_java_incremental` in `nova-syntax`).
-    pub fn apply_file_text_edit<E>(&self, file: FileId, edit: E)
-    where
-        E: TryInto<nova_syntax::TextEdit>,
-        E::Error: std::fmt::Debug,
-    {
-        let edit: nova_syntax::TextEdit =
-            edit.try_into().expect("failed to convert edit into nova_syntax::TextEdit");
+    /// This is primarily intended for LSP-style incremental document updates where the host
+    /// already computed the updated text. Using the provided `new_text` avoids reconstructing the
+    /// full file contents inside the database.
+    ///
+    /// The edit is stored in the `file_prev_content` / `file_last_edit` inputs so `parse_java`
+    /// can attempt incremental reparsing with `nova_syntax::reparse_java`.
+    pub fn apply_file_text_edit(
+        &self,
+        file: FileId,
+        edit: nova_core::TextEdit,
+        new_text: Arc<String>,
+    ) {
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
 
-        let (
-            old_text,
-            new_text,
-            set_default_project,
-            set_default_root,
-            project_files_update,
-        ) = {
+        let new_text_len = new_text.len() as u64;
+
+        let (old_text, syntax_edit, set_default_project, set_default_root, project_files_update) = {
             let mut inputs = self.inputs.lock();
 
             inputs.file_exists.insert(file, true);
@@ -2042,8 +2041,8 @@ impl Database {
                 .cloned()
                 .unwrap_or_else(|| Arc::new(String::new()));
 
-            let start = edit.range.start as usize;
-            let end = edit.range.end as usize;
+            let start = u32::from(edit.range.start()) as usize;
+            let end = u32::from(edit.range.end()) as usize;
             assert!(
                 start <= end && end <= old_text.len(),
                 "apply_file_text_edit: range out of bounds (start={start}, end={end}, len={})",
@@ -2054,14 +2053,25 @@ impl Database {
                 "apply_file_text_edit: edit range is not on UTF-8 character boundaries (start={start}, end={end})"
             );
 
-            let mut new_text = old_text.as_str().to_string();
-            new_text.replace_range(start..end, &edit.replacement);
-            let new_text = Arc::new(new_text);
+            #[cfg(debug_assertions)]
+            {
+                let mut expected = old_text.as_str().to_string();
+                expected.replace_range(start..end, &edit.replacement);
+                debug_assert_eq!(
+                    expected.as_str(),
+                    new_text.as_str(),
+                    "apply_file_text_edit: new_text did not match applying edit to current contents"
+                );
+            }
+
+            let syntax_edit: TextEdit = (&edit)
+                .try_into()
+                .expect("failed to convert edit into nova_syntax::TextEdit");
 
             // Store incremental parsing metadata so `parse_java` can attempt `reparse_java`.
             inputs.file_prev_content.insert(file, old_text.clone());
             inputs.file_content.insert(file, new_text.clone());
-            inputs.file_last_edit.insert(file, Some(edit.clone()));
+            inputs.file_last_edit.insert(file, Some(syntax_edit.clone()));
             inputs.file_is_dirty.insert(file, true);
 
             // Ensure `project_files(project)` includes the edited file.
@@ -2087,7 +2097,7 @@ impl Database {
 
             (
                 old_text,
-                new_text,
+                syntax_edit,
                 set_default_project,
                 set_default_root,
                 update.map(|v| (project, v)),
@@ -2095,7 +2105,7 @@ impl Database {
         };
 
         self.input_footprint
-            .record_file_content_len(file, new_text.len() as u64);
+            .record_file_content_len(file, new_text_len);
 
         let mut db = self.inner.lock();
         db.set_file_is_dirty(file, true);
@@ -2111,7 +2121,7 @@ impl Database {
         }
         db.set_file_content(file, new_text);
         db.set_file_prev_content(file, old_text);
-        db.set_file_last_edit(file, Some(edit));
+        db.set_file_last_edit(file, Some(syntax_edit));
     }
 
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
@@ -3573,7 +3583,7 @@ class Foo {
             nova_core::TextRange::new(nova_core::TextSize::from(1), nova_core::TextSize::from(2)),
             "xxxx",
         );
-        db.apply_file_text_edit(file, edit);
+        db.apply_file_text_edit(file, edit, Arc::new("axxxxc".to_string()));
 
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
         assert_eq!(manager.report().usage.other, 6);

@@ -1,9 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use nova_core::{TextEdit as CoreTextEdit, TextRange as CoreTextRange, TextSize};
-use nova_db::{FileId, NovaSyntax as _, SalsaDatabase};
 use nova_core::{TextEdit, TextRange, TextSize};
+use nova_db::{FileId, NovaSyntax as _, SalsaDatabase};
 
 fn large_java_source() -> String {
     let mut out = String::from("package bench;\n\npublic class Large {\n");
@@ -52,13 +52,12 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
     let edit_to_1 = TextEdit::new(range, "1");
     let edit_to_0 = TextEdit::new(range, "0");
     let src1 = apply_edit(&src0, &edit_to_1);
+    let src0_arc = Arc::new(src0.clone());
+    let src1_arc = Arc::new(src1.clone());
 
-    let core_range = CoreTextRange::new(
-        TextSize::from(range.start),
-        TextSize::from(range.end),
-    );
-    let core_edit_to_1 = CoreTextEdit::new(core_range, "1");
-    let core_edit_to_0 = CoreTextEdit::new(core_range, "0");
+    let core_range = TextRange::new(range.start(), range.end());
+    let core_edit_to_1 = TextEdit::new(core_range, "1");
+    let core_edit_to_0 = TextEdit::new(core_range, "0");
 
     let mut group = c.benchmark_group("db_parse_java_incremental");
     group.measurement_time(Duration::from_secs(2));
@@ -101,12 +100,12 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
         let mut toggle = false;
         b.iter(|| {
             toggle = !toggle;
-            let edit = if toggle {
-                core_edit_to_1.clone()
+            let (edit, new_text) = if toggle {
+                (core_edit_to_1.clone(), Arc::clone(&src1_arc))
             } else {
-                core_edit_to_0.clone()
+                (core_edit_to_0.clone(), Arc::clone(&src0_arc))
             };
-            db.apply_file_text_edit(file, edit);
+            db.apply_file_text_edit(file, edit, new_text);
             let snap = db.snapshot();
             black_box(snap.parse_java(file));
         })

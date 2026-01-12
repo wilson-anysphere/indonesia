@@ -1239,7 +1239,11 @@ impl WorkspaceEngine {
             self.query_db.set_file_exists(file_id, true);
             match edits.as_slice() {
                 [edit] => {
-                    self.query_db.apply_file_text_edit(file_id, edit.clone());
+                    self.query_db.apply_file_text_edit(
+                        file_id,
+                        edit.clone(),
+                        Arc::clone(&text_for_db),
+                    );
                 }
                 [] => {
                     // No-op change batch (shouldn't happen). Treat as a full update.
@@ -1250,7 +1254,11 @@ impl WorkspaceEngine {
                         .as_deref()
                         .and_then(|old| synthetic_single_edit(old, text_for_db.as_str()));
                     if let Some(edit) = synthetic {
-                        self.query_db.apply_file_text_edit(file_id, edit);
+                        self.query_db.apply_file_text_edit(
+                            file_id,
+                            edit,
+                            Arc::clone(&text_for_db),
+                        );
                     } else {
                         self.query_db.set_file_content(file_id, text_for_db);
                     }
