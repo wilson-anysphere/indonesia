@@ -435,6 +435,7 @@ fn is_lombok_annotation(name: &str) -> bool {
             | "Value"
             | "Builder"
             | "SuperBuilder"
+            | "With"
             | "NoArgsConstructor"
             | "AllArgsConstructor"
             | "RequiredArgsConstructor"
@@ -442,6 +443,9 @@ fn is_lombok_annotation(name: &str) -> bool {
             | "EqualsAndHashCode"
             | "Slf4j"
             | "Log4j2"
+            | "Log"
+            | "CommonsLog"
+            | "Log4j"
     )
 }
 

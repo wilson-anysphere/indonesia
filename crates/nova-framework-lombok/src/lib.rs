@@ -459,7 +459,7 @@ mod tests {
     use nova_resolve::{
         complete_member_names, resolve_constructor_call, resolve_method_call, CallKind,
     };
-    use nova_types::{PrimitiveType, Type};
+    use nova_types::{PrimitiveType, Span, Type};
 
     use super::LombokAnalyzer;
 
@@ -802,5 +802,156 @@ mod tests {
             .expect("expected Lombok logger field");
 
         assert_eq!(logger.ty, Type::Named("org.apache.log4j.Logger".into()));
+    }
+
+    #[test]
+    fn withers_exclude_static_fields() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("With")],
+                fields: vec![
+                    FieldData {
+                        name: "x".into(),
+                        ty: Type::int(),
+                        is_static: true,
+                        is_final: false,
+                        annotations: vec![],
+                    },
+                    FieldData {
+                        name: "y".into(),
+                        ty: Type::int(),
+                        is_static: false,
+                        is_final: false,
+                        annotations: vec![],
+                    },
+                ],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withY"), "{members:?}");
+        assert!(!members.iter().any(|m| m == "withX"), "{members:?}");
+    }
+
+    #[test]
+    fn withers_include_final_fields() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("With")],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: true,
+                    annotations: vec![],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+    }
+
+    #[test]
+    fn wither_span_prefers_field_annotation_span() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_span = Span::new(1, 2);
+        let field_span = Span::new(10, 20);
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new_with_span("With", class_span)],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![Annotation::new_with_span("With", field_span)],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let members = registry.virtual_members_for_class(&db, class_id);
+        let wither = members
+            .into_iter()
+            .find_map(|m| match m {
+                VirtualMember::Method(m) if m.name == "withX" => Some(m),
+                _ => None,
+            })
+            .expect("expected wither method");
+
+        assert_eq!(wither.span, Some(field_span));
+        // Ensure we didn't accidentally use the class span.
+        assert_ne!(wither.span, Some(class_span));
+    }
+
+    #[test]
+    fn wither_span_falls_back_to_class_annotation_span() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_span = Span::new(1, 2);
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new_with_span("With", class_span)],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let members = registry.virtual_members_for_class(&db, class_id);
+        let wither = members
+            .into_iter()
+            .find_map(|m| match m {
+                VirtualMember::Method(m) if m.name == "withX" => Some(m),
+                _ => None,
+            })
+            .expect("expected wither method");
+
+        assert_eq!(wither.span, Some(class_span));
     }
 }
