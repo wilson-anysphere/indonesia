@@ -439,8 +439,9 @@ Templates shipped with this repo:
 
 Example / sketch of wiring up a **Frameworks dashboard** view (`novaFrameworks`) that queries
 framework-introspection endpoints. The canonical method list + JSON schemas are in
-[`protocol-extensions.md`](protocol-extensions.md); clients should treat JSON-RPC `-32601 Method not found`
-as capability gating (older servers) and degrade gracefully.
+[`protocol-extensions.md`](protocol-extensions.md); clients should treat "method not found" as capability gating
+(older servers) and degrade gracefully (some Nova builds report unknown custom methods as `-32601` or `-32602` with an
+“unknown (stateless) method” message).
 
 The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, labeled “Nova Frameworks”) that:
 
@@ -469,8 +470,9 @@ Payload notes (see `protocol-extensions.md` for full schemas):
 // VS Code extension for Nova (example / sketch).
 //
 // Note: `protocol-extensions.md` is the source of truth for supported `nova/*` methods and
-// JSON schemas. Extensions should treat "method not found" (-32601) as capability gating for
-// older server builds, and degrade gracefully.
+// JSON schemas. Extensions should treat unknown methods as capability gating for older server builds,
+// and degrade gracefully (some Nova builds report unknown custom methods as `-32601` or `-32602` with an
+// “unknown (stateless) method” message).
 
 type WebEndpoint = {
   path: string;
