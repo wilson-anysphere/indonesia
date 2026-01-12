@@ -36,6 +36,48 @@ fn root_project_has_sources(root: &Path) -> bool {
     })
 }
 
+/// Stable synthetic project path for Gradle's special `buildSrc/` build.
+///
+/// `buildSrc` is not a normal Gradle subproject and does not appear in `settings.gradle`,
+/// but it is compiled by Gradle and often contains build logic developers want indexed.
+const GRADLE_BUILDSRC_PROJECT_PATH: &str = ":__buildSrc";
+
+fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, workspace_root: &Path) {
+    let buildsrc_root = workspace_root.join("buildSrc");
+    if !buildsrc_root.is_dir() {
+        return;
+    }
+    if !root_project_has_sources(&buildsrc_root) {
+        return;
+    }
+
+    // Avoid collisions/duplicates if the workspace already contains a project with the same
+    // synthetic path or an explicit `buildSrc` module mapping.
+    if module_refs.iter().any(|m| {
+        m.project_path == GRADLE_BUILDSRC_PROJECT_PATH || m.dir_rel == "buildSrc"
+    }) {
+        return;
+    }
+
+    // Deterministic ordering:
+    // - root project first (if present)
+    // - buildSrc next
+    // - other subprojects after
+    let insert_idx = module_refs
+        .iter()
+        .position(|m| m.dir_rel == ".")
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+
+    module_refs.insert(
+        insert_idx,
+        GradleModuleRef {
+            project_path: GRADLE_BUILDSRC_PROJECT_PATH.to_string(),
+            dir_rel: "buildSrc".to_string(),
+        },
+    );
+}
+
 const GRADLE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +401,8 @@ pub(crate) fn load_gradle_project(
         module_refs.insert(0, GradleModuleRef::root());
     }
 
+    maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
     if let Some(snapshot) = snapshot.as_ref() {
@@ -675,6 +719,8 @@ pub(crate) fn load_gradle_workspace_model(
     {
         module_refs.insert(0, GradleModuleRef::root());
     }
+
+    maybe_insert_buildsrc_module_ref(&mut module_refs, root);
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -2490,11 +2536,15 @@ fn canonicalize_or_fallback(path: &Path) -> PathBuf {
 }
 
 fn sort_dedup_modules(modules: &mut Vec<Module>, workspace_root: &Path) {
+    let buildsrc_root = workspace_root.join("buildSrc");
     modules.sort_by(|a, b| {
         let a_is_root = a.root == workspace_root;
         let b_is_root = b.root == workspace_root;
+        let a_is_buildsrc = a.root == buildsrc_root;
+        let b_is_buildsrc = b.root == buildsrc_root;
         b_is_root
             .cmp(&a_is_root)
+            .then_with(|| b_is_buildsrc.cmp(&a_is_buildsrc))
             .then_with(|| a.root.cmp(&b.root))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -2511,9 +2561,18 @@ fn sort_dedup_workspace_modules(modules: &mut Vec<WorkspaceModuleConfig>) {
             &b.build_id,
             WorkspaceModuleBuildId::Gradle { project_path } if project_path == ":"
         );
+        let a_is_buildsrc = matches!(
+            &a.build_id,
+            WorkspaceModuleBuildId::Gradle { project_path } if project_path == GRADLE_BUILDSRC_PROJECT_PATH
+        );
+        let b_is_buildsrc = matches!(
+            &b.build_id,
+            WorkspaceModuleBuildId::Gradle { project_path } if project_path == GRADLE_BUILDSRC_PROJECT_PATH
+        );
 
         b_is_root
             .cmp(&a_is_root)
+            .then_with(|| b_is_buildsrc.cmp(&a_is_buildsrc))
             .then_with(|| a.root.cmp(&b.root))
             .then_with(|| a.id.cmp(&b.id))
     });
