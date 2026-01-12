@@ -136,7 +136,8 @@ Prefer one of these deterministic approaches:
 ### 1) Inject a manual watcher (`ManualFileWatcher`)
 
 When a component accepts a `nova_vfs::FileWatcher`, tests can pass a deterministic in-memory
-implementation (often called `ManualFileWatcher`) and explicitly enqueue events.
+implementation (`ManualFileWatcher`) and explicitly enqueue events. This also lets tests assert
+which paths were registered via `watch_path(.., WatchMode::...)` without involving the OS.
 
 Conceptually:
 
