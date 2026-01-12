@@ -1,6 +1,42 @@
+//! Wire-level stream debugging runtime.
+//!
+//! The legacy DAP adapter relies on JDI's built-in expression evaluator, while the
+//! wire-level adapter must compile and inject helper bytecode into the debuggee
+//! (typically via `javac` + `ClassLoaderReference.DefineClass`) before it can
+//! evaluate stream pipeline stages.
+//!
+//! ## Timeout semantics
+//!
+//! `nova_stream_debug::StreamDebugConfig::max_total_time` is intended to budget the
+//! *evaluation* phase (per-stage JDWP invocations). Helper compilation / injection
+//! is treated as setup and is therefore **excluded** from `max_total_time`.
+//!
+//! To avoid hanging indefinitely in setup, we apply a separate, fixed setup
+//! timeout (`SETUP_TIMEOUT`). The returned `StreamDebugResult.total_duration_ms`
+//! includes setup time so clients can surface total latency, but setup time alone
+//! will not cause a `max_total_time` timeout.
+
+use std::{
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    process::Stdio,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
+
 use nova_jdwp::wire::{
     inspect, JdwpClient, JdwpError, JdwpValue, MethodId, ObjectId, ReferenceTypeId, ThreadId,
 };
+use nova_scheduler::CancellationToken;
+use nova_stream_debug::{analyze_stream_expression, StreamAnalysisError, StreamDebugConfig};
+use nova_stream_debug::{StreamDebugResult, StreamSample};
+use thiserror::Error;
+use tokio::process::Command;
+
+const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Temporarily pins a JDWP object id (best-effort) by issuing
 /// `ObjectReference.DisableCollection` on creation and `EnableCollection` on drop.
@@ -114,9 +150,409 @@ pub async fn sample_object_children_via_invoke_method(
     inspect::object_children(jdwp, object_id).await
 }
 
+#[derive(Debug, Error)]
+pub enum WireStreamDebugError {
+    #[error(transparent)]
+    Analysis(#[from] StreamAnalysisError),
+    #[error("evaluation cancelled")]
+    Cancelled,
+    /// Setup (helper compilation / injection) exceeded the fixed setup timeout.
+    #[error("setup exceeded time limit")]
+    SetupTimeout,
+    /// Evaluation exceeded the configured `max_total_time` budget.
+    #[error("evaluation exceeded time limit")]
+    Timeout,
+    #[error(transparent)]
+    Jdwp(#[from] JdwpError),
+    #[error("no threads available in target VM")]
+    NoThreads,
+    #[error("no classes available in target VM")]
+    NoClasses,
+    #[error("helper class did not expose required method `{0}`")]
+    MissingHelperMethod(&'static str),
+    #[error("failed to compile helper class: {0}")]
+    Compile(String),
+}
+
+#[derive(Debug, Clone)]
+struct CompiledHelperClass {
+    name: String,
+    bytecode: Vec<u8>,
+}
+
+trait HelperClassCompiler {
+    fn compile<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>>;
+}
+
+#[derive(Debug, Clone)]
+struct JavacHelperCompiler {
+    javac: String,
+}
+
+impl Default for JavacHelperCompiler {
+    fn default() -> Self {
+        Self {
+            javac: "javac".to_string(),
+        }
+    }
+}
+
+impl HelperClassCompiler for JavacHelperCompiler {
+    fn compile<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>>
+    {
+        Box::pin(async move { compile_helper_with_javac(cancel, &self.javac).await })
+    }
+}
+
+async fn cancellable_jdwp<T>(
+    cancel: &CancellationToken,
+    fut: impl Future<Output = Result<T, JdwpError>>,
+) -> Result<T, WireStreamDebugError> {
+    tokio::select! {
+        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
+        res = fut => Ok(res?),
+    }
+}
+
+async fn budgeted_jdwp<T>(
+    cancel: &CancellationToken,
+    budget_start: Instant,
+    budget: Duration,
+    fut: impl Future<Output = Result<T, JdwpError>>,
+) -> Result<T, WireStreamDebugError> {
+    if cancel.is_cancelled() {
+        return Err(WireStreamDebugError::Cancelled);
+    }
+
+    let elapsed = budget_start.elapsed();
+    let remaining = budget.checked_sub(elapsed).unwrap_or(Duration::ZERO);
+    if remaining.is_zero() {
+        return Err(WireStreamDebugError::Timeout);
+    }
+
+    tokio::select! {
+        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
+        res = tokio::time::timeout(remaining, fut) => match res {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_elapsed) => Err(WireStreamDebugError::Timeout),
+        }
+    }
+}
+
+/// Evaluate a stream pipeline with wire-level JDWP.
+///
+/// NOTE: The wire-level stream debugger is still evolving. This entrypoint exists
+/// primarily to codify timeout + cancellation semantics around helper compilation /
+/// injection. The runtime currently performs a minimal helper invocation to
+/// validate wiring.
+pub async fn debug_stream_wire(
+    jdwp: &JdwpClient,
+    expression: &str,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+) -> Result<StreamDebugResult, WireStreamDebugError> {
+    let chain = analyze_stream_expression(expression)?;
+    debug_stream_wire_with_compiler(
+        jdwp,
+        &chain,
+        config,
+        cancel,
+        &JavacHelperCompiler::default(),
+    )
+    .await
+}
+
+async fn debug_stream_wire_with_compiler(
+    jdwp: &JdwpClient,
+    chain: &nova_stream_debug::StreamChain,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+    compiler: &impl HelperClassCompiler,
+) -> Result<StreamDebugResult, WireStreamDebugError> {
+    let started = Instant::now();
+
+    // --- Setup phase (excluded from max_total_time) -------------------------
+    let (thread, helper_class, helper_method) = setup_helper(jdwp, cancel, compiler).await?;
+
+    // --- Evaluation phase (budgeted by max_total_time) ----------------------
+    let eval_started = Instant::now();
+    let (value, source_duration_ms) = timed_async(|| async {
+        budgeted_jdwp(
+            cancel,
+            eval_started,
+            config.max_total_time,
+            jdwp.class_type_invoke_method(
+                helper_class,
+                thread,
+                helper_method,
+                &[JdwpValue::Int(1)],
+                0,
+            ),
+        )
+        .await
+    })
+    .await?;
+
+    let source_sample = StreamSample {
+        elements: vec![format_wire_value(&value.0)],
+        truncated: false,
+        element_type: None,
+        collection_type: None,
+    };
+
+    Ok(StreamDebugResult {
+        expression: chain.expression.clone(),
+        source: chain.source.clone(),
+        source_sample,
+        source_duration_ms,
+        steps: Vec::new(),
+        terminal: None,
+        total_duration_ms: started.elapsed().as_millis(),
+    })
+}
+
+async fn setup_helper(
+    jdwp: &JdwpClient,
+    cancel: &CancellationToken,
+    compiler: &impl HelperClassCompiler,
+) -> Result<(ThreadId, ReferenceTypeId, MethodId), WireStreamDebugError> {
+    let setup = async {
+        let compiled = compiler.compile(cancel).await?;
+        let threads = cancellable_jdwp(cancel, jdwp.all_threads()).await?;
+        let thread = threads
+            .into_iter()
+            .next()
+            .ok_or(WireStreamDebugError::NoThreads)?;
+
+        let classes = cancellable_jdwp(cancel, jdwp.all_classes()).await?;
+        let class_id = classes
+            .into_iter()
+            .next()
+            .map(|c| c.type_id)
+            .ok_or(WireStreamDebugError::NoClasses)?;
+
+        let loader = cancellable_jdwp(cancel, jdwp.reference_type_class_loader(class_id)).await?;
+
+        let helper_class = cancellable_jdwp(
+            cancel,
+            jdwp.class_loader_define_class(loader, &compiled.name, &compiled.bytecode),
+        )
+        .await?;
+
+        let methods = cancellable_jdwp(cancel, jdwp.reference_type_methods(helper_class)).await?;
+        let Some(method_id) = methods
+            .into_iter()
+            .find(|m| m.name == "ping")
+            .map(|m| m.method_id)
+        else {
+            return Err(WireStreamDebugError::MissingHelperMethod("ping"));
+        };
+
+        Ok::<_, WireStreamDebugError>((thread, helper_class, method_id))
+    };
+
+    tokio::select! {
+        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
+        res = tokio::time::timeout(SETUP_TIMEOUT, setup) => match res {
+            Ok(res) => res,
+            Err(_elapsed) => Err(WireStreamDebugError::SetupTimeout),
+        }
+    }
+}
+
+fn format_wire_value(value: &JdwpValue) -> String {
+    match value {
+        JdwpValue::Boolean(v) => v.to_string(),
+        JdwpValue::Byte(v) => v.to_string(),
+        JdwpValue::Char(v) => char::from_u32(*v as u32).unwrap_or('\u{FFFD}').to_string(),
+        JdwpValue::Short(v) => v.to_string(),
+        JdwpValue::Int(v) => v.to_string(),
+        JdwpValue::Long(v) => v.to_string(),
+        JdwpValue::Float(v) => v.to_string(),
+        JdwpValue::Double(v) => v.to_string(),
+        JdwpValue::Void => "void".to_string(),
+        JdwpValue::Object { tag: _, id } => format!("object#{id}"),
+    }
+}
+
+async fn timed_async<T, E, Fut>(f: impl FnOnce() -> Fut) -> Result<(T, u128), E>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    let start = Instant::now();
+    let value = f().await?;
+    Ok((value, start.elapsed().as_millis()))
+}
+
+async fn compile_helper_with_javac(
+    cancel: &CancellationToken,
+    javac: &str,
+) -> Result<CompiledHelperClass, WireStreamDebugError> {
+    // The helper is intentionally tiny; its purpose is to validate class injection + method
+    // invocation plumbing.
+    const CLASS_NAME: &str = "NovaStreamDebugHelper";
+    const SOURCE: &str = r#"
+public class NovaStreamDebugHelper {
+  public static Object ping(Object x) {
+    return x;
+  }
+}
+"#;
+
+    let dir = stream_debug_temp_dir()
+        .map_err(|err| WireStreamDebugError::Compile(err.to_string()))?;
+    let out_dir = dir.join("out");
+    if let Err(err) = std::fs::create_dir(&out_dir) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(WireStreamDebugError::Compile(format!(
+            "failed to create temp output dir: {err}"
+        )));
+    }
+
+    let src_path = dir.join(format!("{CLASS_NAME}.java"));
+    if let Err(err) = std::fs::write(&src_path, SOURCE) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(WireStreamDebugError::Compile(format!(
+            "failed to write temp helper source: {err}"
+        )));
+    }
+
+    let mut cmd = Command::new(javac);
+    cmd.arg("-J-Xms16m");
+    cmd.arg("-J-Xmx256m");
+    cmd.arg("-J-XX:CompressedClassSpaceSize=64m");
+    cmd.arg("-g");
+    cmd.arg("-encoding");
+    cmd.arg("UTF-8");
+    cmd.arg("-d");
+    cmd.arg(&out_dir);
+    cmd.arg(&src_path);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|err| {
+        WireStreamDebugError::Compile(format!("failed to spawn {javac}: {err}"))
+    })?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| WireStreamDebugError::Compile("javac stdout unavailable".to_string()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| WireStreamDebugError::Compile("javac stderr unavailable".to_string()))?;
+
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut buf).await;
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf).await;
+        buf
+    });
+
+    let status = tokio::select! {
+        _ = cancel.cancelled() => {
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(WireStreamDebugError::Cancelled);
+        }
+        res = tokio::time::timeout(SETUP_TIMEOUT, child.wait()) => match res {
+            Ok(Ok(status)) => status,
+            Ok(Err(err)) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(WireStreamDebugError::Compile(format!("javac failed: {err}")));
+            }
+            Err(_elapsed) => {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                stdout_task.abort();
+                stderr_task.abort();
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(WireStreamDebugError::SetupTimeout);
+            }
+        },
+    };
+
+    let stdout = stdout_task.await.unwrap_or_default();
+    let stderr = stderr_task.await.unwrap_or_default();
+
+    if !status.success() {
+        let message = format_javac_failure(&stdout, &stderr);
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(WireStreamDebugError::Compile(message));
+    }
+
+    let class_file = out_dir.join(format!("{CLASS_NAME}.class"));
+    let bytecode = match std::fs::read(&class_file) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(WireStreamDebugError::Compile(format!(
+                "failed to read compiled helper class: {err}"
+            )));
+        }
+    };
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(CompiledHelperClass {
+        name: CLASS_NAME.to_string(),
+        bytecode,
+    })
+}
+
+fn stream_debug_temp_dir() -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir().join("nova-dap-stream-debug");
+    std::fs::create_dir_all(&base)?;
+    let id = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = base.join(format!("compile-{id}-{}", std::process::id()));
+    std::fs::create_dir(&dir)?;
+    Ok(dir)
+}
+
+fn format_javac_failure(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut combined = String::new();
+    if !stdout.is_empty() {
+        combined.push_str(&String::from_utf8_lossy(stdout));
+    }
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&String::from_utf8_lossy(stderr));
+    }
+    truncate_message(combined.trim().to_string(), 8 * 1024)
+}
+
+fn truncate_message(mut message: String, max_len: usize) -> String {
+    if message.len() <= max_len {
+        return message;
+    }
+    message.truncate(max_len);
+    message.push_str("…");
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::time::Duration;
 
     use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
@@ -174,5 +610,202 @@ mod tests {
             server.pinned_object_ids().await.is_empty(),
             "expected pin to be released after sampling"
         );
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestCompiler {
+        delay: Duration,
+    }
+
+    impl HelperClassCompiler for TestCompiler {
+        fn compile<'a>(
+            &'a self,
+            cancel: &'a CancellationToken,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                tokio::select! {
+                    _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
+                    _ = tokio::time::sleep(self.delay) => Ok(CompiledHelperClass {
+                        name: "NovaStreamDebugHelper".to_string(),
+                        // The mock JDWP server does not validate class bytes.
+                        bytecode: vec![0xCA, 0xFE, 0xBA, 0xBE],
+                    }),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_delay_does_not_count_towards_max_total_time() {
+        let jdwp_server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            delayed_replies: vec![DelayedReply {
+                command_set: 14,
+                command: 2, // ClassLoaderReference.DefineClass
+                delay: Duration::from_millis(300),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let cfg = StreamDebugConfig::default(); // 250ms max_total_time
+        let chain = analyze_stream_expression("list.stream().map(x -> x).count()").unwrap();
+
+        let result = debug_stream_wire_with_compiler(
+            &jdwp,
+            &chain,
+            &cfg,
+            &cancel,
+            &TestCompiler {
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+        let runtime = result.unwrap();
+        assert!(
+            runtime.total_duration_ms >= 250,
+            "expected setup time to contribute to total_duration_ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn compilation_delay_does_not_count_towards_max_total_time() {
+        let jdwp_server = MockJdwpServer::spawn().await.unwrap();
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let cfg = StreamDebugConfig::default(); // 250ms max_total_time
+        let chain = analyze_stream_expression("list.stream().map(x -> x).count()").unwrap();
+
+        // Simulate a slow `javac` compilation (> default max_total_time).
+        let result = debug_stream_wire_with_compiler(
+            &jdwp,
+            &chain,
+            &cfg,
+            &cancel,
+            &TestCompiler {
+                delay: Duration::from_millis(300),
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn evaluation_timeout_does_not_wait_for_delayed_jdwp_reply() {
+        let jdwp_server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            delayed_replies: vec![DelayedReply {
+                command_set: 3,
+                command: 3, // ClassType.InvokeMethod
+                delay: Duration::from_millis(300),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let chain = analyze_stream_expression("list.stream().map(x -> x).count()").unwrap();
+        let cfg = StreamDebugConfig {
+            max_total_time: Duration::from_millis(50),
+            ..StreamDebugConfig::default()
+        };
+
+        let result = debug_stream_wire_with_compiler(
+            &jdwp,
+            &chain,
+            &cfg,
+            &cancel,
+            &TestCompiler {
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+
+        match result {
+            Err(WireStreamDebugError::Timeout) => {}
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_compilation() {
+        let jdwp_server = MockJdwpServer::spawn().await.unwrap();
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let chain = analyze_stream_expression("list.stream().map(x -> x).count()").unwrap();
+        let cfg = StreamDebugConfig::default();
+
+        let compiler = TestCompiler {
+            delay: Duration::from_millis(200),
+        };
+
+        let handle = {
+            let jdwp = jdwp.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &compiler).await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel.cancel();
+
+        let result = handle.await.unwrap();
+        match result {
+            Err(WireStreamDebugError::Cancelled) => {}
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_evaluation() {
+        let jdwp_server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            delayed_replies: vec![DelayedReply {
+                command_set: 3,
+                command: 3, // ClassType.InvokeMethod
+                delay: Duration::from_secs(1),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let chain = analyze_stream_expression("list.stream().map(x -> x).count()").unwrap();
+        let cfg = StreamDebugConfig {
+            max_total_time: Duration::from_secs(5),
+            ..StreamDebugConfig::default()
+        };
+        let compiler = TestCompiler {
+            delay: Duration::from_millis(0),
+        };
+
+        let handle = {
+            let jdwp = jdwp.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &compiler).await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel.cancel();
+
+        let result = handle.await.unwrap();
+        match result {
+            Err(WireStreamDebugError::Cancelled) => {}
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
     }
 }

@@ -7067,8 +7067,9 @@ fn expected_argument_type_for_completion(
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
 
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
     let (receiver_ty, call_kind) =
-        infer_call_receiver_for_argument_completion(types, analysis, call)?;
+        infer_call_receiver_lexical(types, analysis, &file_ctx, text, call);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
@@ -7130,35 +7131,7 @@ fn call_expr_for_argument_list<'a>(
 
     Some((call, active_parameter))
 }
-
-fn infer_call_receiver_for_argument_completion(
-    types: &mut TypeStore,
-    analysis: &Analysis,
-    call: &CallExpr,
-) -> Option<(Type, CallKind)> {
-    if let Some(receiver) = call.receiver.as_deref() {
-        let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
-        let (mut receiver_ty, call_kind) =
-            infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
-        receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
-        return Some((receiver_ty, call_kind));
-    }
-
-    // Unqualified calls are treated as `this.<name>(...)`. Best-effort: use the enclosing class
-    // name as the receiver type and load local methods so we can resolve the call.
-    let class = analysis
-        .classes
-        .iter()
-        .find(|c| span_contains(c.span, call.name_span.start))?;
-    let class_id = ensure_local_class_id(types, analysis, class);
-    Some((Type::class(class_id, vec![]), CallKind::Instance))
-}
-
-fn ensure_local_class_receiver(
-    types: &mut TypeStore,
-    analysis: &Analysis,
-    receiver_ty: Type,
-) -> Type {
+fn ensure_local_class_receiver(types: &mut TypeStore, analysis: &Analysis, receiver_ty: Type) -> Type {
     let name = match &receiver_ty {
         Type::Named(name) => Some(name.as_str()),
         Type::Class(nova_types::ClassType { def, .. }) => {

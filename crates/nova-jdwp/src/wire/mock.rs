@@ -841,6 +841,7 @@ pub struct MockExceptionRequest {
 
 const CLASS_LOADER_ID: u64 = 0x8001;
 const DEFINED_CLASS_ID: u64 = 0x9001;
+const DEFINED_CLASS_PING_METHOD_ID: u64 = 0x9002;
 
 #[derive(Debug, Clone, Copy)]
 struct MockFrame {
@@ -1515,11 +1516,16 @@ async fn handle_packet(
             let mut w = JdwpWriter::new();
             match class_id {
                 DEFINED_CLASS_ID => {
-                    w.write_u32(1);
+                    w.write_u32(2);
 
                     w.write_id(DEFINED_STAGE0_METHOD_ID, sizes.method_id);
                     w.write_string("stage0");
                     w.write_string("()Ljava/lang/Object;");
+                    w.write_u32(1);
+
+                    w.write_id(DEFINED_CLASS_PING_METHOD_ID, sizes.method_id);
+                    w.write_string("ping");
+                    w.write_string("(Ljava/lang/Object;)Ljava/lang/Object;");
                     w.write_u32(1);
                 }
                 CLASS_ID => {

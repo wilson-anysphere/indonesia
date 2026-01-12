@@ -394,7 +394,6 @@ impl CtSymReleaseIndex {
     pub(crate) fn module_graph(&self) -> Option<&ModuleGraph> {
         self.module_graph.as_ref()
     }
-
     pub(crate) fn module_info(&self, name: &ModuleName) -> Option<&ModuleInfo> {
         self.module_graph.as_ref()?.get(name)
     }

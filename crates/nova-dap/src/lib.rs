@@ -26,7 +26,6 @@ pub mod format;
 pub mod object_registry;
 pub mod session;
 pub mod wire_format;
-pub mod wire_stream_debug;
 
 pub use crate::dap::types::{
     EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint,
@@ -42,6 +41,12 @@ pub mod dap_tokio;
 
 /// Shared `javac` helpers used by hot swap and expression evaluation.
 pub(crate) mod javac;
+/// Stream-debug runtime for the wire-level JDWP adapter.
+///
+/// The legacy adapter relies on `JDI`'s built-in expression evaluation. The wire-level
+/// adapter needs to compile/load helper classes before it can evaluate user expressions,
+/// so timeout semantics differ slightly (see module docs).
+pub mod wire_stream_debug;
 
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;

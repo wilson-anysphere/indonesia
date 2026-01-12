@@ -1160,11 +1160,11 @@ fn record_body_references(
                     let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                         return;
                     };
-                    let Some(method) = methods.first().map(|m| m.id) else {
+                    let Some(method) = methods.first().copied() else {
                         return;
                     };
                     let Some(&symbol) =
-                        resolution_to_symbol.get(&ResolutionKey::Method(method))
+                        resolution_to_symbol.get(&ResolutionKey::Method(method.id))
                     else {
                         return;
                     };
@@ -1193,10 +1193,12 @@ fn record_body_references(
                 let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                     return;
                 };
-                let Some(method) = methods.first().map(|m| m.id) else {
+                let Some(method) = methods.first().copied() else {
                     return;
                 };
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
+                let Some(&symbol) =
+                    resolution_to_symbol.get(&ResolutionKey::Method(method.id))
+                else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);
