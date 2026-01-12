@@ -255,14 +255,16 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     /// This is a convenience API intended for IDE-style, on-demand loading:
     ///
     /// 1) find the owning `java_*` Bazel target(s) for `file`
-    /// 2) return [`JavaCompileInfo`] for the first owner (chosen deterministically)
+    /// 2) return [`JavaCompileInfo`] for the first owner that yields compile info (chosen
+    ///    deterministically)
     ///
     /// Returns `Ok(None)` when:
     /// - `file` is not contained in any Bazel package under the workspace root (no `BUILD` /
     ///   `BUILD.bazel` file found up to the workspace root), or
     /// - no owning `java_*` targets were found for `file`.
     ///
-    /// When multiple owning targets exist, this chooses the first label in lexicographic order.
+    /// When multiple owning targets exist, they are tried in lexicographic order and the first
+    /// target that yields compile info is returned.
     pub fn compile_info_for_file(
         &mut self,
         file: impl AsRef<Path>,
@@ -311,11 +313,22 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         owners.sort();
         owners.dedup();
 
-        let target = owners
-            .first()
-            .expect("owners checked non-empty")
-            .to_string();
-        Ok(Some(self.target_compile_info(&target)?))
+        let mut errors: Vec<String> = Vec::new();
+        for target in owners {
+            match self.target_compile_info(&target) {
+                Ok(info) => return Ok(Some(info)),
+                Err(err) => errors.push(format!("{target}: {err}")),
+            }
+        }
+
+        // The file had one or more owning java_* targets, but none produced a usable `JavaCompileInfo`.
+        // Surface this as an error rather than returning `None` (which is reserved for "not in a
+        // Bazel package / no owners found").
+        bail!(
+            "failed to resolve Java compile info for {}. Tried targets:\n{}",
+            file.display(),
+            errors.join("\n")
+        );
     }
 
     fn java_owning_targets_for_file_with_universe(

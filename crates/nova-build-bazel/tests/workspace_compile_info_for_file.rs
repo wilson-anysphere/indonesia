@@ -84,6 +84,91 @@ action {
 }
 
 #[derive(Clone, Debug, Default)]
+struct FallbackRunner {
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl FallbackRunner {
+    fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl CommandRunner for FallbackRunner {
+    fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        assert_eq!(program, "bazel");
+        self.calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+
+        match args {
+            ["query", expr, "--output=label_kind"]
+                if *expr == "same_pkg_direct_rdeps(//java:Hello.java)" =>
+            {
+                Ok(CommandOutput {
+                    // Return two owners; `compile_info_for_file` should try `lib_a` first then fall
+                    // back to `lib_b` when compile info extraction fails for `lib_a`.
+                    stdout: "java_library rule //java:lib_a\njava_library rule //java:lib_b\n"
+                        .to_string(),
+                    stderr: String::new(),
+                })
+            }
+            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(deps(") => {
+                Ok(CommandOutput {
+                    stdout: "//java:BUILD\n".to_string(),
+                    stderr: String::new(),
+                })
+            }
+            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(deps(") => {
+                Ok(CommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+            ["aquery", "--output=textproto", expr]
+                if *expr == r#"mnemonic("Javac", //java:lib_a)"# =>
+            {
+                // Simulate a target that has no Javac actions.
+                Ok(CommandOutput {
+                    stdout: r#"
+action {
+  mnemonic: "Symlink"
+  owner: "//java:lib_a"
+  arguments: "ignored"
+}
+"#
+                    .to_string(),
+                    stderr: String::new(),
+                })
+            }
+            ["aquery", "--output=textproto", expr]
+                if *expr == r#"mnemonic("Javac", //java:lib_b)"# =>
+            {
+                Ok(CommandOutput {
+                    stdout: r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java:lib_b"
+  arguments: "javac"
+  arguments: "-classpath"
+  arguments: "b.jar"
+  arguments: "java/Hello.java"
+}
+"#
+                    .to_string(),
+                    stderr: String::new(),
+                })
+            }
+            ["aquery", "--output=textproto", expr] => {
+                anyhow::bail!("unexpected aquery expression: {expr}")
+            }
+            other => anyhow::bail!("unexpected bazel invocation: {other:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct NoopRunner;
 
 impl CommandRunner for NoopRunner {
@@ -208,5 +293,35 @@ fn compile_info_for_file_in_run_target_closure_uses_scoped_rdeps_and_caches() {
         scoped_owner_queries.len(),
         1,
         "expected scoped owning-target query to be cached"
+    );
+}
+
+#[test]
+fn compile_info_for_file_falls_back_to_second_owner_when_first_owner_has_no_javac_actions() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# test\n");
+    let file = dir.path().join("java/Hello.java");
+    create_file(&file);
+
+    let runner = FallbackRunner::default();
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let info = workspace.compile_info_for_file(&file).unwrap().unwrap();
+    assert_eq!(info.classpath, vec!["b.jar".to_string()]);
+
+    let calls = runner.calls();
+    let aquery_exprs: Vec<String> = calls
+        .into_iter()
+        .filter(|args| args.first().map(String::as_str) == Some("aquery"))
+        .map(|args| args[2].clone())
+        .collect();
+    assert_eq!(
+        aquery_exprs,
+        vec![
+            r#"mnemonic("Javac", //java:lib_a)"#.to_string(),
+            r#"mnemonic("Javac", deps(//java:lib_a))"#.to_string(),
+            r#"mnemonic("Javac", //java:lib_b)"#.to_string()
+        ]
     );
 }
