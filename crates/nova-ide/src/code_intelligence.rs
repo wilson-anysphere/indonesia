@@ -2187,7 +2187,6 @@ fn import_path_completions(
             .all_binary_class_names()
             .or_else(|_| fallback_jdk.all_binary_class_names())
             .unwrap_or(&[]);
-
         let start = class_names.partition_point(|name| name.as_str() < parent_prefix.as_str());
         let mut added = 0usize;
         for name in &class_names[start..] {
@@ -2197,15 +2196,21 @@ fn import_path_completions(
             if !name.starts_with(parent_prefix.as_str()) {
                 break;
             }
+
+            let name = name.as_str();
             let rest = &name[parent_prefix.len()..];
             // Only expose direct members, not subpackages.
-            if rest.contains('.') || rest.contains('$') {
+            if rest.contains('.') {
+                break;
+            }
+            if rest.contains('$') {
                 continue;
             }
+
             items.push(CompletionItem {
                 label: rest.to_string(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: Some(name.to_owned()),
+                detail: Some(name.to_string()),
                 ..Default::default()
             });
             added += 1;
@@ -2410,7 +2415,6 @@ fn new_expression_type_completions(
 
         let pkg_prefix = format!("{pkg}.");
         let start = class_names.partition_point(|name| name.as_str() < pkg_prefix.as_str());
-
         let mut added_for_pkg = 0usize;
         for name in &class_names[start..] {
             if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
@@ -2421,6 +2425,7 @@ fn new_expression_type_completions(
                 break;
             }
 
+            let name = name.as_str();
             let rest = &name[pkg_prefix.len()..];
             // Star-imports only expose direct package members (no subpackages).
             if rest.contains('.') {
@@ -2437,11 +2442,10 @@ fn new_expression_type_completions(
                 continue;
             }
 
-            let binary = name.as_str();
-            let mut item = constructor_completion_item(simple, Some(binary.to_owned()));
-            if java_type_needs_import(&imports, binary) {
+            let mut item = constructor_completion_item(simple, Some(name.to_string()));
+            if java_type_needs_import(&imports, name) {
                 item.additional_text_edits =
-                    Some(vec![java_import_text_edit(text, text_index, binary)]);
+                    Some(vec![java_import_text_edit(text, text_index, name)]);
             }
             items.push(item);
             added_for_pkg += 1;
@@ -4470,7 +4474,7 @@ fn jdk_type_completions(
             out.push(CompletionItem {
                 label: simple.clone(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: Some(binary.to_owned()),
+                detail: Some(binary.to_string()),
                 insert_text: Some(simple),
                 ..Default::default()
             });
@@ -5555,7 +5559,6 @@ fn type_name_completions(
             let pkg_prefix = format!("{pkg}.");
             let query = format!("{pkg_prefix}{prefix}");
             let start = class_names.partition_point(|name| name.as_str() < query.as_str());
-
             let mut added_for_pkg = 0usize;
             for binary in &class_names[start..] {
                 if added_for_pkg >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE {
@@ -5593,7 +5596,7 @@ fn type_name_completions(
                 let mut item = CompletionItem {
                     label: simple,
                     kind: Some(kind),
-                    detail: Some(binary.to_owned()),
+                    detail: Some(binary.to_string()),
                     ..Default::default()
                 };
                 if java_type_needs_import(&imports, binary) {
