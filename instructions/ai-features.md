@@ -299,9 +299,7 @@ fn select_model(task: &AiTask, available: &[Arc<dyn AiModel>]) -> Arc<dyn AiMode
 bash scripts/cargo_agent.sh test --locked -p nova-ai --lib
 
 # AI evaluation / regression suite (privacy filtering, patch safety, completion validation)
-bash scripts/cargo_agent.sh test --locked -p nova-ai --test ai_eval
-# (Alternative: run the consolidated integration test binary and filter to the suite module)
-# bash scripts/cargo_agent.sh test --locked -p nova-ai --test tests suite::ai_eval
+bash scripts/cargo_agent.sh test --locked -p nova-ai --test tests suite::ai_eval
 
 # Code generation tests
 bash scripts/cargo_agent.sh test --locked -p nova-ai-codegen --lib

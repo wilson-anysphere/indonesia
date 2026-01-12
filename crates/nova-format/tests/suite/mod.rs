@@ -4,3 +4,4 @@ mod format_fixtures;
 mod format_resilience_proptests;
 mod format_snapshots;
 mod java_comments;
+mod minimal_text_edits;
