@@ -254,6 +254,10 @@ export async function activate(context: vscode.ExtensionContext) {
   void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', true);
   void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', true);
   void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', true);
+  // Keep Project Explorer welcome state optimistic until we can probe capabilities or observe a
+  // method-not-found error. Without an explicit default, the `viewsWelcome` "unsupported" entry
+  // can briefly render when the language server is running but the tree hasn't populated yet.
+  void vscode.commands.executeCommand('setContext', 'nova.projectExplorer.projectModelSupported', true);
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
