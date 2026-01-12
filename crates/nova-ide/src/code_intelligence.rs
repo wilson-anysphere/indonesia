@@ -11721,7 +11721,10 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
 
 fn looks_like_mapstruct_file(text: &str) -> bool {
     // Cheap substring checks before we do any filesystem work.
-    text.contains("org.mapstruct")
+    //
+    // Keep this heuristic narrow: other frameworks (e.g. MyBatis) also use `@Mapper`,
+    // so prefer MapStruct-specific markers.
+    text.contains("org.mapstruct") || text.contains("@Mapping") || text.contains("@Mappings")
 }
 
 pub fn find_references(
