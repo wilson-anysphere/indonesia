@@ -70,6 +70,15 @@ fn writes_gradle_snapshot_after_java_compile_config() {
     std::fs::create_dir_all(&project_root).unwrap();
     std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
 
+    // Gradle dependency locking can change resolved classpaths without modifying build scripts.
+    // Ensure snapshot fingerprinting includes lockfiles.
+    let dependency_locks_dir = project_root.join("gradle/dependency-locks");
+    std::fs::create_dir_all(&dependency_locks_dir).unwrap();
+    let dependency_lockfile = dependency_locks_dir.join("compileClasspath.lockfile");
+    std::fs::write(&dependency_lockfile, "locked=1\n").unwrap();
+    let root_lockfile = project_root.join("gradle.lockfile");
+    std::fs::write(&root_lockfile, "locked=1\n").unwrap();
+
     let app_src = project_root.join("app/src/custom/java");
     std::fs::create_dir_all(&app_src).unwrap();
 
@@ -124,6 +133,14 @@ NOVA_JSON_END
     assert!(snapshot_path.is_file(), "snapshot file should be created");
 
     let build_files = collect_gradle_build_files(&project_root).expect("collect build files");
+    assert!(
+        build_files.contains(&root_lockfile),
+        "expected collect_gradle_build_files to include gradle.lockfile"
+    );
+    assert!(
+        build_files.contains(&dependency_lockfile),
+        "expected collect_gradle_build_files to include gradle/dependency-locks/*.lockfile"
+    );
     let expected_fingerprint =
         BuildFileFingerprint::from_files(&project_root, build_files).expect("fingerprint");
 

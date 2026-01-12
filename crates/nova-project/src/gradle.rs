@@ -117,6 +117,28 @@ fn collect_gradle_build_files_rec(
 
         let name = file_name.as_ref();
 
+        // Gradle dependency locking can change resolved classpaths without modifying any build
+        // scripts, so include lockfiles in the fingerprint.
+        //
+        // Patterns:
+        // - `gradle.lockfile` at any depth.
+        // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
+        //   `gradle/dependency-locks/` location).
+        if name == "gradle.lockfile" {
+            out.push(path);
+            continue;
+        }
+        if name.ends_with(".lockfile")
+            && path.parent().is_some_and(|parent| {
+                parent
+                    .ancestors()
+                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+            })
+        {
+            out.push(path);
+            continue;
+        }
+
         // Match `nova-build` build-file watcher semantics by including any
         // `build.gradle*` / `settings.gradle*` variants.
         if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
@@ -149,6 +171,9 @@ fn collect_gradle_build_files_rec(
         }
         match name {
             "gradle.properties" => out.push(path),
+            // Gradle version catalogs can define dependency versions and thus
+            // affect resolved classpaths.
+            "libs.versions.toml" => out.push(path),
             "gradlew" | "gradlew.bat" => {
                 if path == root.join(name) {
                     out.push(path);

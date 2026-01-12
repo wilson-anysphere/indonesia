@@ -550,8 +550,18 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             let is_gradle_version_catalog = !in_ignored_dir && name.ends_with(".versions.toml");
             let is_gradle_script_plugin = !in_ignored_dir
                 && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
+            let is_gradle_dependency_lockfile = !in_ignored_dir
+                && (name == "gradle.lockfile"
+                    || (name.ends_with(".lockfile")
+                        && path.parent().is_some_and(|parent| {
+                            parent.ancestors().any(|dir| {
+                                dir.file_name()
+                                    .is_some_and(|name| name == "dependency-locks")
+                            })
+                        })));
             name == "gradle.properties"
                 || is_gradle_version_catalog
+                || is_gradle_dependency_lockfile
                 || name == "gradlew"
                 || name == "gradlew.bat"
                 || name.starts_with("build.gradle")
@@ -623,6 +633,21 @@ mod tests {
             assert!(
                 is_build_file(BuildSystem::Maven, Path::new(path)),
                 "expected {path} to be treated as a Maven build marker"
+            );
+        }
+    }
+
+    #[test]
+    fn gradle_build_file_detection_includes_dependency_lockfiles() {
+        let gradle_build_markers = [
+            "gradle.lockfile",
+            "gradle/dependency-locks/compileClasspath.lockfile",
+        ];
+
+        for path in gradle_build_markers {
+            assert!(
+                is_build_file(BuildSystem::Gradle, Path::new(path)),
+                "expected {path} to be treated as a Gradle build marker"
             );
         }
     }
