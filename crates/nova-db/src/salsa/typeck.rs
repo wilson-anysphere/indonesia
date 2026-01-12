@@ -79,6 +79,12 @@ pub struct BodyTypeckResult {
 
 #[ra_salsa::query_group(NovaTypeckStorage)]
 pub trait NovaTypeck: NovaResolve + HasQueryStats {
+    /// Per-body expression scope mapping used for lexical name resolution inside bodies.
+    ///
+    /// This is memoized independently from `typeck_body` so demand-driven, per-expression type
+    /// queries can share the same `ExprScopes` without rebuilding it repeatedly.
+    fn expr_scopes(&self, owner: DefWithBodyId) -> ArcEq<ExprScopes>;
+
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
 
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
@@ -180,6 +186,30 @@ fn type_at_offset_display(db: &dyn NovaTypeck, file: FileId, offset: u32) -> Opt
     Some(rendered)
 }
 
+fn expr_scopes(db: &dyn NovaTypeck, owner: DefWithBodyId) -> ArcEq<ExprScopes> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "expr_scopes", ?owner).entered();
+
+    cancel::check_cancelled(db);
+
+    let file = def_file(owner);
+    let tree = db.hir_item_tree(file);
+    let body = match owner {
+        DefWithBodyId::Method(m) => db.hir_body(m),
+        DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+        DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+    };
+
+    let param_ids = params_for_owner(&tree, owner);
+    let scopes = ExprScopes::new(&body, &param_ids, |id| param_name_lookup(&tree, id));
+
+    let result = ArcEq::new(Arc::new(scopes));
+    db.record_query_stat("expr_scopes", start.elapsed());
+    result
+}
+
 fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResult> {
     let start = Instant::now();
 
@@ -217,8 +247,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
     };
 
-    let param_ids = params_for_owner(&tree, owner);
-    let expr_scopes = ExprScopes::new(&body, &param_ids, |id| param_name_lookup(&tree, id));
+    let expr_scopes = db.expr_scopes(owner);
 
     // Build an env for this body.
     let mut store = TypeStore::with_minimal_jdk();
@@ -314,7 +343,7 @@ struct BodyChecker<'a, 'idx> {
     scope_id: nova_resolve::ScopeId,
     tree: &'a nova_hir::item_tree::ItemTree,
     body: &'a HirBody,
-    expr_scopes: ExprScopes,
+    expr_scopes: ArcEq<ExprScopes>,
     expected_return: Type,
     local_types: Vec<Type>,
     param_types: Vec<Type>,
@@ -336,7 +365,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         scope_id: nova_resolve::ScopeId,
         tree: &'a nova_hir::item_tree::ItemTree,
         body: &'a HirBody,
-        expr_scopes: ExprScopes,
+        expr_scopes: ArcEq<ExprScopes>,
         expected_return: Type,
         param_types: Vec<Type>,
         field_types: HashMap<FieldId, Type>,

@@ -341,3 +341,47 @@ class C {
         );
     }
 }
+
+#[test]
+fn expr_scopes_is_memoized_per_body() {
+    let src = r#"
+class C {
+    String m() {
+        String a = "x".substring(1);
+        String b = "y".substring(2);
+        return a + b;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    db.clear_query_stats();
+
+    let offset1 = src
+        .find("substring(1)")
+        .expect("snippet should contain first substring call")
+        + "substring".len();
+    let offset2 = src
+        .rfind("substring(2)")
+        .expect("snippet should contain second substring call")
+        + "substring".len();
+
+    let ty1 = db
+        .type_at_offset_display(file, offset1 as u32)
+        .expect("expected a type at first offset");
+    let ty2 = db
+        .type_at_offset_display(file, offset2 as u32)
+        .expect("expected a type at second offset");
+    assert_eq!(ty1, "String");
+    assert_eq!(ty2, "String");
+
+    let stats = db.query_stats();
+    let expr_scopes_stat = stats
+        .by_query
+        .get("expr_scopes")
+        .expect("expected expr_scopes query stat entry");
+    assert_eq!(
+        expr_scopes_stat.executions, 1,
+        "expected expr_scopes to be memoized per body"
+    );
+}
