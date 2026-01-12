@@ -194,19 +194,37 @@ impl Archive {
         let mut file = File::open(&self.path)
             .with_context(|| format!("failed to open archive {}", self.path.display()))?;
         let mut header = [0u8; 2];
-        let is_jmod = file.read_exact(&mut header).is_ok() && header == *b"JM";
+        let is_jmod_magic = file.read_exact(&mut header).is_ok() && header == *b"JM";
         file.seek(SeekFrom::Start(0))
             .with_context(|| format!("failed to seek {}", self.path.display()))?;
 
-        if is_jmod {
-            let reader = OffsetReader::new(file, JMOD_HEADER_LEN)
-                .with_context(|| format!("failed to seek {}", self.path.display()))?;
-            let mut zip = ZipArchive::new(reader)
-                .with_context(|| format!("failed to read zip {}", self.path.display()))?;
-            return read_from_zip(&mut zip, &self.path, name);
+        // Prefer opening as a standard zip first. This works for:
+        // - regular jar/zip archives
+        // - `.jmod` archives that are also valid zips (including those with a preamble where zip
+        //   offsets are relative to the actual file start).
+        //
+        // If the archive starts with the JMOD magic (`JM`) but can't be read as a standard zip,
+        // fall back to treating it as a zip whose offsets are relative to the zip payload that
+        // begins after the 4-byte header.
+        match ZipArchive::new(file) {
+            Ok(mut zip) => match read_from_zip(&mut zip, &self.path, name) {
+                Ok(res) => return Ok(res),
+                Err(err) if !is_jmod_magic => return Err(err),
+                Err(_) => {}
+            },
+            Err(err) if !is_jmod_magic => {
+                return Err(err).with_context(|| format!("failed to read zip {}", self.path.display()))
+            }
+            Err(_) => {}
         }
 
-        let mut zip = ZipArchive::new(file)
+        // JMOD fallback: interpret the zip offsets relative to the start of the embedded zip
+        // payload (after the `JM<version>` header).
+        let file = File::open(&self.path)
+            .with_context(|| format!("failed to open archive {}", self.path.display()))?;
+        let reader = OffsetReader::new(file, JMOD_HEADER_LEN)
+            .with_context(|| format!("failed to seek {}", self.path.display()))?;
+        let mut zip = ZipArchive::new(reader)
             .with_context(|| format!("failed to read zip {}", self.path.display()))?;
         read_from_zip(&mut zip, &self.path, name)
     }
