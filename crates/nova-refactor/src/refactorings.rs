@@ -3843,15 +3843,19 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
         // Reject when inside a switch *expression* rule body that is not a block, since extracting
         // would either lift evaluation out of the selected case arm or require block/yield
         // conversion (not implemented yet).
-        let container = rule.syntax().ancestors().skip(1).find_map(|node| {
-            if ast::SwitchExpression::cast(node.clone()).is_some() {
-                Some(true)
-            } else if ast::SwitchStatement::cast(node).is_some() {
-                Some(false)
-            } else {
-                None
-            }
-        });
+        let container = rule
+            .syntax()
+            .ancestors()
+            .skip(1)
+            .find_map(|node| {
+                if ast::SwitchExpression::cast(node.clone()).is_some() {
+                    Some(true)
+                } else if ast::SwitchStatement::cast(node).is_some() {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
         if container == Some(true) {
             return Some("cannot extract from switch expression rule body");
         }

@@ -655,6 +655,31 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_for_switch_statement_rule_body_multiline() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        switch (x) {
+            case 1 ->
+                System.out.println(/*start*/1 + 2/*end*/);
+            default -> {}
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn extract_variable_not_offered_inside_try_with_resources_resource_specification() {
     let fixture = r#"
 class C {
