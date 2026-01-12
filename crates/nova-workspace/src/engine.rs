@@ -2108,8 +2108,9 @@ fn reload_project_and_sync(
             continue;
         };
 
+        // `nova-db` keeps the non-tracked persistence `file_path` in sync with `file_rel_path`,
+        // sharing the same `Arc<String>` for minimal allocations and stable persistence keys.
         query_db.set_file_rel_path(file_id, Arc::new(rel_path.clone()));
-        query_db.set_file_path(file_id, rel_path.clone());
         query_db.set_file_project(file_id, project);
         let root_id = source_root_for_path(&source_roots, &path).unwrap_or_else(|| {
             source_roots
@@ -2889,11 +2890,16 @@ mod tests {
 
             let file_id = files[0];
             let expected_rel_path = normalize_rel_path("src/Main.java");
-            assert_eq!(snap.file_rel_path(file_id).as_str(), expected_rel_path.as_str());
+            let rel_path = snap.file_rel_path(file_id);
+            assert_eq!(rel_path.as_str(), expected_rel_path.as_str());
 
             let file_path = snap.file_path(file_id).expect("file_path should be set");
             assert!(!file_path.is_empty());
             assert_eq!(file_path.as_str(), expected_rel_path.as_str());
+            assert!(
+                Arc::ptr_eq(&rel_path, &file_path),
+                "expected file_path to share the same Arc as file_rel_path"
+            );
         });
     }
 
