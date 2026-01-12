@@ -1363,11 +1363,15 @@ async function revealPath(uri: vscode.Uri): Promise<void> {
   try {
     await vscode.commands.executeCommand('revealInExplorer', uri);
   } catch {
-    // Best-effort: fallback to OS file explorer.
     try {
       await vscode.commands.executeCommand('revealFileInOS', uri);
     } catch {
-      // ignore
+      // Best-effort: if we can't reveal (e.g. vscode.dev), at least open it.
+      try {
+        await vscode.commands.executeCommand('vscode.open', uri);
+      } catch {
+        // ignore
+      }
     }
   }
 }
