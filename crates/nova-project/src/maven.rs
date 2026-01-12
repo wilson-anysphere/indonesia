@@ -499,6 +499,10 @@ pub(crate) fn load_maven_workspace_model(
                 }
 
                 classpath.push(ClasspathEntry {
+                    // Support "exploded jar" directories on disk.
+                    //
+                    // Missing artifacts are omitted so downstream indexing doesn't fail trying to
+                    // open them.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {

@@ -631,6 +631,60 @@ fn extract_variable_replace_all_does_not_replace_occurrences_outside_switch_bloc
 }
 
 #[test]
+fn extract_variable_replace_all_does_not_cross_switch_case_group_boundary() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        int a = /*select*/1 / x/*end*/;
+        int b = 1 / x;
+        break;
+      case 2:
+        int c = 1 / x;
+        break;
+    }
+    int d = 1 / x;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "div".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        var div = 1 / x;
+        int a = div;
+        int b = div;
+        break;
+      case 2:
+        int c = 1 / x;
+        break;
+    }
+    int d = 1 / x;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
