@@ -1591,6 +1591,9 @@ Notes:
   - Values are clamped to a reasonable maximum (currently `32`).
   - Empty / invalid values are ignored (the server falls back to config/default behavior).
   - This override is read at process start; a server restart is required for changes to take effect.
+  - This override does **not** enable multi-token completions by itself; it only caps (or disables)
+    multi-token completions when they are otherwise enabled by `nova.toml` and not disabled by other
+    env var overrides.
   - This only affects **async multi-token** AI completions; standard (non-AI) completions returned
     from `textDocument/completion` are unaffected.
   - When enabled, this value influences both:
