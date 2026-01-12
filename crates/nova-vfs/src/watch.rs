@@ -233,6 +233,10 @@ impl<W: ?Sized + FileWatcher> FileWatcher for Box<W> {
 ///
 /// This watcher does not interact with the OS. Callers inject events manually via
 /// [`ManualFileWatcher::push`] or [`ManualFileWatcherHandle`].
+///
+/// Event delivery uses a bounded in-memory queue to avoid unbounded memory growth in tests.
+/// Injection APIs (`push`, `push_error`) are non-blocking and return `io::ErrorKind::WouldBlock` if
+/// the queue is full (tests should drain the receiver if they enqueue many events).
 #[derive(Debug)]
 pub struct ManualFileWatcher {
     tx: channel::Sender<WatchMessage>,
