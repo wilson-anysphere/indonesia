@@ -552,6 +552,14 @@ impl ClasspathIndex {
         &self.binary_names_sorted
     }
 
+    /// Iterate all indexed class binary names (`java.lang.String`, `com.example.Foo`, ...) in
+    /// **stable sorted order**.
+    ///
+    /// This is a convenience wrapper around [`Self::iter_binary_class_names`].
+    pub fn iter_binary_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.iter_binary_class_names()
+    }
+
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.
