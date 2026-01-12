@@ -442,16 +442,33 @@ impl<'a> TypeStoreLoader<'a> {
         tp: &TypeParameter,
         type_vars: &HashMap<String, TypeVarId>,
     ) -> Result<Vec<Type>, TypeLoadError> {
-        let mut out = Vec::new();
+        // JVMS encodes type parameter bounds as:
+        //   Identifier ":" [ClassBound] { ":" InterfaceBound }*
+        //
+        // When the first (effective) bound is an interface (e.g. `T extends Serializable`),
+        // the class bound is *empty* and the interface bound list contains the first bound:
+        //   <T::Ljava/io/Serializable;>...
+        //
+        // In that case the erasure should be `Serializable` (the first bound), not `Object`.
+        // So we only add the implicit `Object` bound when there are *no* explicit bounds at all.
         if let Some(bound) = &tp.class_bound {
+            let mut out = Vec::with_capacity(1 + tp.interface_bounds.len());
             out.push(self.type_sig_to_type(bound, type_vars)?);
-        } else {
-            out.push(self.object_type()?);
+            for bound in &tp.interface_bounds {
+                out.push(self.type_sig_to_type(bound, type_vars)?);
+            }
+            return Ok(out);
         }
-        for bound in &tp.interface_bounds {
-            out.push(self.type_sig_to_type(bound, type_vars)?);
+
+        if !tp.interface_bounds.is_empty() {
+            let mut out = Vec::with_capacity(tp.interface_bounds.len());
+            for bound in &tp.interface_bounds {
+                out.push(self.type_sig_to_type(bound, type_vars)?);
+            }
+            return Ok(out);
         }
-        Ok(out)
+
+        Ok(vec![self.object_type()?])
     }
 
     fn field_type_to_type(&mut self, ty: &FieldType) -> Result<Type, TypeLoadError> {
