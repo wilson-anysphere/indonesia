@@ -25,6 +25,8 @@ This workstream owns the Language Server Protocol implementation and editor inte
 **Required reading:**
 - [11 - Editor Integration](../docs/11-editor-integration.md) - Protocol and extension design
 - [protocol-extensions.md](../docs/protocol-extensions.md) - Custom LSP extensions
+  - For AI multi-token completions, see the `nova/completion/more` section, including the
+    `NOVA_AI_COMPLETIONS_MAX_ITEMS` server startup override (0 disables; restart required).
 
 **ADRs:**
 - [ADR-0003: Protocol Frameworks](../docs/adr/0003-protocol-frameworks-lsp-dap.md)
