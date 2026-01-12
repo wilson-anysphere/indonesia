@@ -943,22 +943,103 @@ impl Database {
             return Ok(());
         };
 
-        let file_fingerprints = snap.project_file_fingerprints(project);
-        let snapshot = nova_cache::ProjectSnapshot::from_parts(
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use nova_cache::{CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot};
+
+        let shard_count = nova_index::DEFAULT_SHARD_COUNT;
+
+        // Build a "fast" snapshot based on file metadata (mtime + size) so we can
+        // determine which files likely changed without hashing every file.
+        let mut path_to_file = BTreeMap::<String, FileId>::new();
+        let mut stamp_map = BTreeMap::<String, Fingerprint>::new();
+        for &file in snap.project_files(project).iter() {
+            if !snap.file_exists(file) {
+                continue;
+            }
+
+            let rel_path = snap.file_rel_path(file);
+            let rel_path = rel_path.as_ref().clone();
+            path_to_file.insert(rel_path.clone(), file);
+
+            let full_path = cache_dir.project_root().join(&rel_path);
+            let fp = Fingerprint::from_file_metadata(full_path)
+                .unwrap_or_else(|_| snap.file_fingerprint(file).as_ref().clone());
+            stamp_map.insert(rel_path, fp);
+        }
+
+        let stamp_snapshot = ProjectSnapshot::from_parts(
             cache_dir.project_root().to_path_buf(),
             cache_dir.project_hash().clone(),
-            file_fingerprints.as_ref().clone(),
+            stamp_map,
+        );
+
+        let existing_paths: BTreeSet<String> = path_to_file.keys().cloned().collect();
+        let all_existing_files: Vec<String> = existing_paths.iter().cloned().collect();
+
+        let metadata_path = cache_dir.metadata_path();
+        let metadata_exists = metadata_path.exists() || cache_dir.metadata_bin_path().exists();
+
+        let mut invalidated_files = if metadata_exists {
+            CacheMetadataArchive::open(&metadata_path)
+                .ok()
+                .flatten()
+                .filter(|m| m.is_compatible() && m.project_hash() == cache_dir.project_hash().as_str())
+                .map(|m| m.diff_files_fast(&stamp_snapshot))
+                .unwrap_or_else(|| all_existing_files.clone())
+        } else {
+            all_existing_files.clone()
+        };
+
+        let invalidated_existing: BTreeSet<String> = invalidated_files
+            .iter()
+            .filter(|path| existing_paths.contains(*path))
+            .cloned()
+            .collect();
+        let indexing_all_files = invalidated_existing == existing_paths;
+
+        let mut content_fingerprints: BTreeMap<String, Fingerprint> = if indexing_all_files {
+            BTreeMap::new()
+        } else if metadata_exists {
+            CacheMetadata::load(&metadata_path)
+                .ok()
+                .filter(|m| m.is_compatible() && &m.project_hash == cache_dir.project_hash())
+                .map(|m| m.file_fingerprints)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        // Ensure every existing file has a content hash; missing entries must be hashed now.
+        for path in &all_existing_files {
+            if !content_fingerprints.contains_key(path) {
+                invalidated_files.push(path.clone());
+            }
+        }
+        invalidated_files.sort();
+        invalidated_files.dedup();
+
+        for path in &invalidated_files {
+            let Some(&file) = path_to_file.get(path) else {
+                continue;
+            };
+
+            let fp = snap.file_fingerprint(file);
+            content_fingerprints.insert(path.clone(), fp.as_ref().clone());
+        }
+
+        // Drop fingerprints for deleted files.
+        content_fingerprints.retain(|path, _| existing_paths.contains(path));
+
+        let snapshot = ProjectSnapshot::from_parts(
+            cache_dir.project_root().to_path_buf(),
+            cache_dir.project_hash().clone(),
+            content_fingerprints,
         );
 
         let shards = snap.project_index_shards(project);
         let mut shards = (*shards).clone();
-
-        nova_index::save_sharded_indexes(
-            cache_dir,
-            &snapshot,
-            nova_index::DEFAULT_SHARD_COUNT,
-            &mut shards,
-        )
+        nova_index::save_sharded_indexes(cache_dir, &snapshot, shard_count, &mut shards)
     }
 }
 

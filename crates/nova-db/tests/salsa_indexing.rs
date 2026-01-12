@@ -31,6 +31,9 @@ fn project_indexes_warm_start_and_invalidation() {
     let b = FileId::from_raw(2);
 
     // First run: build indexes from scratch and persist.
+    std::fs::write(project_root.join("A.java"), "class A {}").unwrap();
+    std::fs::write(project_root.join("B.java"), "class B {}").unwrap();
+
     let db1 = SalsaDatabase::new_with_persistence(&project_root, persistence.clone());
     db1.set_project_files(project, Arc::new(vec![a, b]));
     db1.set_file_rel_path(a, Arc::new("A.java".to_string()));
@@ -61,6 +64,7 @@ fn project_indexes_warm_start_and_invalidation() {
 
     // Change one file so its fingerprint changes; only that file should be re-indexed.
     db2.clear_query_stats();
+    std::fs::write(project_root.join("B.java"), "class B { class C {} }").unwrap();
     db2.set_file_text(b, "class B { class C {} }".to_string());
     let indexes_v3 = db2.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
 
@@ -162,6 +166,60 @@ fn project_index_shards_has_fixed_len_and_merges_to_project_indexes() {
     assert!(
         shards[shard_id].symbols.symbols.contains_key("A"),
         "expected A.java symbols to be placed in its deterministic shard"
+    );
+}
+
+#[test]
+fn persist_project_indexes_reuses_cached_fingerprints_for_unchanged_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    std::fs::write(project_root.join("A.java"), "class A {}").unwrap();
+    std::fs::write(project_root.join("B.java"), "class B {}").unwrap();
+
+    let cache_root = tmp.path().join("cache-root");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let persistence = PersistenceConfig {
+        mode: PersistenceMode::ReadWrite,
+        cache: CacheConfig {
+            cache_root_override: Some(cache_root),
+        },
+    };
+
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    // First run: persist indexes + fingerprints for all files.
+    {
+        let db = SalsaDatabase::new_with_persistence(&project_root, persistence.clone());
+        db.set_project_files(project, Arc::new(vec![a, b]));
+        db.set_file_rel_path(a, Arc::new("A.java".to_string()));
+        db.set_file_rel_path(b, Arc::new("B.java".to_string()));
+        db.set_file_text(a, "class A {}".to_string());
+        db.set_file_text(b, "class B {}".to_string());
+
+        db.persist_project_indexes(project).unwrap();
+    }
+
+    // Second run: modify one file; persistence should only hash that file by reusing fingerprints
+    // from the on-disk metadata for unchanged files.
+    std::fs::write(project_root.join("B.java"), "class B { class C {} }").unwrap();
+    let db2 = SalsaDatabase::new_with_persistence(&project_root, persistence);
+    db2.set_project_files(project, Arc::new(vec![a, b]));
+    db2.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db2.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db2.set_file_text(a, "class A {}".to_string());
+    db2.set_file_text(b, "class B { class C {} }".to_string());
+
+    db2.clear_query_stats();
+    db2.persist_project_indexes(project).unwrap();
+
+    assert_eq!(
+        executions(&db2, "file_fingerprint"),
+        1,
+        "expected persistence to hash only the invalidated file"
     );
 }
 
