@@ -31,9 +31,7 @@ pub struct TestAiServer {
 impl TestAiServer {
     pub fn start(response: Value) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
-        listener
-            .set_nonblocking(true)
-            .expect("set_nonblocking");
+        listener.set_nonblocking(true).expect("set_nonblocking");
 
         let addr = listener.local_addr().expect("local_addr");
         let base_url = format!("http://{addr}");
@@ -63,7 +61,12 @@ impl TestAiServer {
 
             let mut reader = BufReader::new(&mut stream);
             let mut request_line = String::new();
-            if reader.read_line(&mut request_line).ok().filter(|n| *n > 0).is_none() {
+            if reader
+                .read_line(&mut request_line)
+                .ok()
+                .filter(|n| *n > 0)
+                .is_none()
+            {
                 continue;
             }
 
@@ -74,7 +77,12 @@ impl TestAiServer {
             let mut content_length: usize = 0;
             loop {
                 let mut line = String::new();
-                if reader.read_line(&mut line).ok().filter(|n| *n > 0).is_none() {
+                if reader
+                    .read_line(&mut line)
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .is_none()
+                {
                     break;
                 }
                 let line = line.trim_end_matches(['\r', '\n']);

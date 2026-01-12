@@ -6,6 +6,7 @@ use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_exit_without_shutdown_returns_failure_status() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -46,6 +47,7 @@ fn stdio_exit_without_shutdown_returns_failure_status() {
 
 #[test]
 fn initialize_advertises_nova_experimental_capabilities() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -103,6 +105,7 @@ fn initialize_advertises_nova_experimental_capabilities() {
 
 #[test]
 fn stdio_requests_after_shutdown_are_rejected() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -159,6 +162,7 @@ fn stdio_requests_after_shutdown_are_rejected() {
 #[cfg(unix)]
 #[test]
 fn stdio_cancel_request_cancels_inflight_request_by_id() {
+    let _lock = crate::support::stdio_server_lock();
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;

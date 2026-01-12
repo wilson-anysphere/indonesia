@@ -12,6 +12,7 @@ use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_supports_extract_method_code_action_and_execute_command() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Main.java");
 

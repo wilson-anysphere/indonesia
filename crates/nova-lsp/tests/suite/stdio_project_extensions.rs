@@ -6,12 +6,15 @@ use nova_lsp::extensions::project::{
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+use crate::support::{read_response_with_id, write_jsonrpc_message};
+
 #[test]
 fn stdio_server_handles_project_metadata_and_main_class_requests() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("demo");
     fs::create_dir_all(&root).expect("create root");
@@ -111,7 +114,7 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -129,7 +132,7 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
             "params": { "projectRoot": root.to_string_lossy() }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let config: ProjectConfigurationResponse =
         serde_json::from_value(result).expect("decode project configuration");
@@ -225,7 +228,7 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
             "params": { "root": root.to_string_lossy() }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
     let sources: JavaSourcePathsResponse =
         serde_json::from_value(result).expect("decode source paths");
@@ -258,7 +261,7 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
             "params": { "projectRoot": root.to_string_lossy() }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let resp = read_response_with_id(&mut stdout, 4);
     let result = resp.get("result").cloned().expect("result");
     let mains: ResolveMainClassResponse = serde_json::from_value(result).expect("decode mains");
 
@@ -297,7 +300,7 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
             "params": { "projectRoot": root.to_string_lossy(), "includeTests": true }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 5);
+    let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
     let mains_with_tests: ResolveMainClassResponse =
         serde_json::from_value(result).expect("decode mains");
@@ -316,52 +319,10 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
-    }
 }

@@ -17,6 +17,7 @@ fn uri_for_path(path: &Path) -> String {
 
 #[test]
 fn stdio_server_supports_workspace_symbol_requests() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 
@@ -135,6 +136,7 @@ fn stdio_server_supports_workspace_symbol_requests() {
 
 #[test]
 fn stdio_workspace_symbol_supports_root_uri_with_percent_encoding() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("My Project");
     std::fs::create_dir_all(&root).expect("create workspace root");
@@ -223,6 +225,7 @@ fn stdio_workspace_symbol_supports_root_uri_with_percent_encoding() {
 
 #[test]
 fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 

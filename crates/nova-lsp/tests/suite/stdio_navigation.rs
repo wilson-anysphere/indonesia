@@ -20,6 +20,7 @@ fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
 
 #[test]
 fn stdio_server_handles_implementation_declaration_and_type_definition_requests() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 

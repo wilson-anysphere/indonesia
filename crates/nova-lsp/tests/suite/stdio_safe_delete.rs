@@ -29,9 +29,10 @@ fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
 
 #[test]
 fn stdio_server_supports_safe_delete_preview_then_apply() {
+    let _lock = crate::support::stdio_server_lock();
     let fixture = r#"
-class A {
-    public void used() {
+ class A {
+     public void used() {
     }
 
     public void entry() {

@@ -14,6 +14,7 @@ fn uri_for_path(path: &Path) -> String {
 
 #[test]
 fn stdio_server_supports_document_symbol_requests() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 

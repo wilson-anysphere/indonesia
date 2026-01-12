@@ -1,10 +1,14 @@
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+mod support;
+use crate::support::{read_response_with_id, write_jsonrpc_message};
+
 #[test]
 fn stdio_server_exposes_extensions_status_and_navigation_requests() {
+    let _lock = crate::support::stdio_server_lock();
     let tmp = TempDir::new().expect("tempdir");
     let file_path = tmp.path().join("Foo.java");
     std::fs::write(&file_path, "class Foo {}\n").expect("write temp Foo.java");
@@ -32,7 +36,7 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
             "params": { "capabilities": {} }
         }),
     );
-    let initialize_resp = read_jsonrpc_response(&mut stdout, 1);
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let requests = initialize_resp
         .pointer("/result/capabilities/experimental/nova/requests")
@@ -70,7 +74,7 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
             "params": null
         }),
     );
-    let status_resp = read_jsonrpc_response(&mut stdout, 2);
+    let status_resp = read_response_with_id(&mut stdout, 2);
     let status_result = status_resp.get("result").cloned().expect("result");
 
     assert_eq!(
@@ -133,7 +137,7 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let navigation_resp = read_jsonrpc_response(&mut stdout, 3);
+    let navigation_resp = read_response_with_id(&mut stdout, 3);
     let navigation_result = navigation_resp.get("result").cloned().expect("result");
 
     assert_eq!(
@@ -191,7 +195,7 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
             "params": { "schemaVersion": 2, "textDocument": { "uri": uri } }
         }),
     );
-    let navigation_bad_schema = read_jsonrpc_response(&mut stdout, 4);
+    let navigation_bad_schema = read_response_with_id(&mut stdout, 4);
     let error = navigation_bad_schema.get("error").cloned().expect("error");
     assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
     assert!(
@@ -211,7 +215,7 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
             "params": { "schemaVersion": 2 }
         }),
     );
-    let status_bad_schema = read_jsonrpc_response(&mut stdout, 5);
+    let status_bad_schema = read_response_with_id(&mut stdout, 5);
     let error = status_bad_schema.get("error").cloned().expect("error");
     assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
     assert!(
@@ -226,52 +230,10 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response(&mut stdout, 6);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_response(reader: &mut impl BufRead, expected_id: i64) -> serde_json::Value {
-    loop {
-        let message = read_jsonrpc_message(reader);
-        if message.get("id").and_then(|v| v.as_i64()) == Some(expected_id) {
-            return message;
-        }
-    }
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
 }

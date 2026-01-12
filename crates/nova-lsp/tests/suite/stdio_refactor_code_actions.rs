@@ -5,13 +5,16 @@ use nova_core::{
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use url::Url;
 
+use crate::support::{read_response_with_id, write_jsonrpc_message};
+
 #[test]
 fn stdio_server_resolves_extract_constant_code_action() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
@@ -55,7 +58,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -93,7 +96,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
         }),
     );
 
-    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -137,7 +140,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
         }),
     );
 
-    let resolve_resp = read_jsonrpc_message(&mut stdout);
+    let resolve_resp = read_response_with_id(&mut stdout, 3);
     let resolved: CodeAction =
         serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
             .expect("decode resolved CodeAction");
@@ -193,7 +196,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -203,6 +206,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
 
 #[test]
 fn stdio_server_resolves_extract_field_code_action() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
@@ -245,7 +249,7 @@ fn stdio_server_resolves_extract_field_code_action() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -281,7 +285,7 @@ fn stdio_server_resolves_extract_field_code_action() {
         }),
     );
 
-    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -319,7 +323,7 @@ fn stdio_server_resolves_extract_field_code_action() {
         }),
     );
 
-    let resolve_resp = read_jsonrpc_message(&mut stdout);
+    let resolve_resp = read_response_with_id(&mut stdout, 3);
     let resolved: CodeAction =
         serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
             .expect("decode resolved CodeAction");
@@ -369,7 +373,7 @@ fn stdio_server_resolves_extract_field_code_action() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -379,6 +383,7 @@ fn stdio_server_resolves_extract_field_code_action() {
 
 #[test]
 fn stdio_server_offers_convert_to_record_code_action() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Point.java");
 
@@ -424,7 +429,7 @@ public final /* 😀 */ class Point {\n\
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -460,7 +465,7 @@ public final /* 😀 */ class Point {\n\
         }),
     );
 
-    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -494,7 +499,7 @@ public final /* 😀 */ class Point {\n\
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -504,6 +509,7 @@ public final /* 😀 */ class Point {\n\
 
 #[test]
 fn stdio_server_resolves_extract_variable_code_action() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
@@ -547,7 +553,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -585,7 +591,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
         }),
     );
 
-    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -624,7 +630,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
         }),
     );
 
-    let resolve_resp = read_jsonrpc_message(&mut stdout);
+    let resolve_resp = read_response_with_id(&mut stdout, 3);
     let resolved: CodeAction =
         serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
             .expect("decode resolved CodeAction");
@@ -708,7 +714,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -718,6 +724,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
 
 #[test]
 fn stdio_server_offers_inline_variable_code_actions() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
@@ -757,7 +764,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -795,7 +802,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
         }),
     );
 
-    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -830,7 +837,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -857,37 +864,4 @@ fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String
         .collect();
 
     nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
 }

@@ -1,50 +1,9 @@
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize jsonrpc message");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_response(reader: &mut impl BufRead, expected_id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        match msg.get("id").and_then(|v| v.as_i64()) {
-            Some(id) if id == expected_id => return msg,
-            // Ignore notifications or other responses (best-effort; tests are single-client).
-            _ => continue,
-        }
-    }
-}
+mod support;
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn lsp_position(text: &str, offset: usize) -> lsp_types::Position {
     let index = nova_core::LineIndex::new(text);
@@ -55,6 +14,7 @@ fn lsp_position(text: &str, offset: usize) -> lsp_types::Position {
 
 #[test]
 fn stdio_server_supports_hover_and_signature_help() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -75,7 +35,7 @@ fn stdio_server_supports_hover_and_signature_help() {
             "params": { "capabilities": {} }
         }),
     );
-    let initialize_resp = read_response(&mut stdout, 1);
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
     let caps = initialize_resp
         .get("result")
         .and_then(|r| r.get("capabilities"))
@@ -130,7 +90,7 @@ fn stdio_server_supports_hover_and_signature_help() {
             }
         }),
     );
-    let hover_resp = read_response(&mut stdout, 2);
+    let hover_resp = read_response_with_id(&mut stdout, 2);
     let hover_val = hover_resp.get("result").cloned().expect("hover result");
     assert!(!hover_val.is_null(), "expected non-null hover result");
     let hover: lsp_types::Hover = serde_json::from_value(hover_val).expect("decode Hover");
@@ -177,7 +137,7 @@ fn stdio_server_supports_hover_and_signature_help() {
             }
         }),
     );
-    let sig_resp = read_response(&mut stdout, 3);
+    let sig_resp = read_response_with_id(&mut stdout, 3);
     let sig_val = sig_resp
         .get("result")
         .cloned()
@@ -194,7 +154,7 @@ fn stdio_server_supports_hover_and_signature_help() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

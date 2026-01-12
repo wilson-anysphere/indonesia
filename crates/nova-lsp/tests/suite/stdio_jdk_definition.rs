@@ -20,6 +20,7 @@ fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
 
 #[test]
 fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
+    let _lock = crate::support::stdio_server_lock();
     // Point JDK discovery at the tiny fake JDK shipped in this repository.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");

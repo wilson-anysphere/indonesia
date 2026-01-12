@@ -1,9 +1,11 @@
 use lsp_types::{Position, Range, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn uri_for_path(path: &std::path::Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -11,48 +13,6 @@ fn uri_for_path(path: &std::path::Path) -> Uri {
         .expect("file uri")
         .parse()
         .expect("lsp uri")
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
-    }
 }
 
 fn offset_to_position(text: &str, offset: usize) -> Position {
@@ -123,6 +83,7 @@ fn diagnostic_messages(resp: &serde_json::Value) -> Vec<String> {
 
 #[test]
 fn did_change_watched_files_updates_cached_analysis_state() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Main.java");
     let uri = uri_for_path(&file_path);
@@ -147,7 +108,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -163,7 +124,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let resp = read_response_with_id(&mut stdout, 2);
     assert!(diagnostic_messages(&resp).is_empty());
 
     // 2) Create the file on disk, but *don't* notify yet. Diagnostics should remain stale.
@@ -184,7 +145,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let resp = read_response_with_id(&mut stdout, 3);
     assert!(
         diagnostic_messages(&resp).is_empty(),
         "expected cached missing state to stay in effect until didChangeWatchedFiles"
@@ -211,7 +172,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let resp = read_response_with_id(&mut stdout, 4);
     assert!(diagnostic_messages(&resp)
         .iter()
         .any(|m| m.contains("Cannot resolve symbol 'bar'")));
@@ -235,7 +196,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 5);
+    let resp = read_response_with_id(&mut stdout, 5);
     assert!(
         diagnostic_messages(&resp)
             .iter()
@@ -264,7 +225,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri } }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 6);
+    let resp = read_response_with_id(&mut stdout, 6);
     let messages = diagnostic_messages(&resp);
     assert!(
         messages
@@ -286,7 +247,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri }, "position": position }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 7);
+    let resp = read_response_with_id(&mut stdout, 7);
     let location = resp.get("result").cloned().expect("definition result");
     let range: Range =
         serde_json::from_value(location.get("range").cloned().expect("range")).expect("range");
@@ -303,7 +264,7 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri }, "position": position }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 8);
+    let resp = read_response_with_id(&mut stdout, 8);
     assert!(resp.get("result").is_some_and(|v| !v.is_null()));
 
     // 7) Notify about deletion; definition should now treat the file as missing.
@@ -327,14 +288,14 @@ fn did_change_watched_files_updates_cached_analysis_state() {
             "params": { "textDocument": { "uri": uri }, "position": position }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 9);
+    let resp = read_response_with_id(&mut stdout, 9);
     assert!(resp.get("result").is_some_and(|v| v.is_null()));
 
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 10, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 10);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 10);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

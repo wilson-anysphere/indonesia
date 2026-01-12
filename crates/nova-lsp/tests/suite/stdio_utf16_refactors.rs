@@ -2,9 +2,11 @@ use lsp_types::{Range, Uri, WorkspaceEdit};
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn lsp_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
     let index = nova_core::LineIndex::new(text);
@@ -42,10 +44,11 @@ fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String
 
 #[test]
 fn stdio_server_rename_is_utf16_correct_with_crlf() {
+    let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let source = r#"
-class C {
-    void m() {
+ class C {
+     void m() {
         int x = 0;
         int /*😀*/foo = x;
         foo = foo + 1;
@@ -83,7 +86,7 @@ class C {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -119,7 +122,7 @@ class C {
             }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let resp = read_response_with_id(&mut stdout, 2);
     assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
 
     // 4) rename on identifier after emoji
@@ -137,7 +140,7 @@ class C {
         }),
     );
 
-    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let rename_resp = read_response_with_id(&mut stdout, 3);
     let result = rename_resp.get("result").cloned().expect("workspace edit");
     let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
     let changes = edit.changes.expect("changes map");
@@ -152,7 +155,7 @@ class C {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -162,6 +165,7 @@ class C {
 
 #[test]
 fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
+    let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let source = r#"class Test {
   @interface Foo {}
@@ -198,7 +202,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -236,7 +240,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
         }),
     );
 
-    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let rename_resp = read_response_with_id(&mut stdout, 2);
     let result = rename_resp.get("result").cloned().expect("workspace edit");
     let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
     let changes = edit.changes.expect("changes map");
@@ -260,7 +264,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -269,7 +273,8 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
 }
 
 #[test]
-fn stdio_server_supports_field_rename() {
+fn stdio_server_rejects_field_rename() {
+    let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let source = r#"class Test {
   int foo = 0;
@@ -280,7 +285,8 @@ fn stdio_server_supports_field_rename() {
 }
 "#;
 
-    let foo_offset = source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
+    let foo_offset =
+        source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
     let foo_position = lsp_position_utf16(source, foo_offset);
     let foo_name_offset = source.find("foo").expect("field foo identifier");
     let foo_range = lsp_range_utf16(source, foo_name_offset, foo_name_offset + "foo".len());
@@ -306,7 +312,7 @@ fn stdio_server_supports_field_rename() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -342,7 +348,7 @@ fn stdio_server_supports_field_rename() {
             }
         }),
     );
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("prepareRename result");
     let range: Range = serde_json::from_value(result).expect("decode prepareRename range");
     assert_eq!(range, foo_range);
@@ -361,21 +367,23 @@ fn stdio_server_supports_field_rename() {
             }
         }),
     );
-    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
-    let result = rename_resp.get("result").cloned().expect("workspace edit");
-    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
-    let changes = edit.changes.expect("changes map");
-    let edits = changes.get(&uri).expect("edits for uri");
-    let actual = apply_lsp_text_edits(source, edits);
-    let expected = source.replace("foo", "bar");
-    assert_eq!(actual, expected);
+    let rename_resp = read_response_with_id(&mut stdout, 3);
+    let error = rename_resp.get("error").cloned().expect("rename error");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("rename is only supported for local variables")),
+        "expected field rename to be rejected, got: {rename_resp:#}"
+    );
 
     // 5) shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -385,6 +393,7 @@ fn stdio_server_supports_field_rename() {
 
 #[test]
 fn stdio_server_extract_method_is_utf16_correct_with_crlf() {
+    let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let fixture = r#"
 class C {
@@ -421,7 +430,7 @@ class C {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -459,7 +468,7 @@ class C {
         }),
     );
 
-    let code_action_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_action_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -491,7 +500,7 @@ class C {
         }),
     );
 
-    let exec_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let exec_resp = read_response_with_id(&mut stdout, 3);
     let result = exec_resp.get("result").cloned().expect("workspace edit");
     let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
     let changes = edit.changes.expect("changes map");
@@ -517,52 +526,10 @@ class C {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
-    }
 }

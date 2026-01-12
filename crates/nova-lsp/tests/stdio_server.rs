@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 mod support;
 mod suite;
-use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]
 struct LspPosition {
@@ -87,6 +87,7 @@ fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
 
 #[test]
 fn stdio_server_handles_metrics_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -154,6 +155,7 @@ fn stdio_server_handles_metrics_request() {
 
 #[test]
 fn stdio_server_handles_safe_mode_status_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -222,6 +224,7 @@ fn stdio_server_handles_safe_mode_status_request() {
 
 #[test]
 fn stdio_server_handles_extensions_status_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -301,6 +304,7 @@ fn stdio_server_handles_extensions_status_request() {
 
 #[test]
 fn stdio_server_handles_extensions_navigation_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -386,6 +390,7 @@ fn stdio_server_handles_extensions_navigation_request() {
 
 #[test]
 fn stdio_server_handles_test_discover_request() {
+    let _lock = crate::support::stdio_server_lock();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/maven-junit5");
 
@@ -456,6 +461,7 @@ fn stdio_server_handles_test_discover_request() {
 
 #[test]
 fn stdio_server_handles_document_formatting_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -538,6 +544,7 @@ fn stdio_server_handles_document_formatting_request() {
 
 #[test]
 fn stdio_server_handles_change_signature_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -659,6 +666,7 @@ fn stdio_server_handles_change_signature_request() {
 
 #[test]
 fn stdio_server_applies_incremental_did_change_utf16_correctly() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -772,6 +780,7 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
 
 #[test]
 fn stdio_server_resolves_completion_item_imports() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -866,6 +875,7 @@ fn stdio_server_resolves_completion_item_imports() {
 
 #[test]
 fn stdio_server_handles_completion_and_more_completions_request() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -984,6 +994,7 @@ fn stdio_server_handles_completion_and_more_completions_request() {
 
 #[test]
 fn stdio_server_discovers_tests_in_simple_project_fixture() {
+    let _lock = crate::support::stdio_server_lock();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/simple-junit5");
 
@@ -1043,6 +1054,7 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
 
 #[test]
 fn stdio_server_handles_debug_configurations_request() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -1139,6 +1151,7 @@ fn stdio_server_handles_debug_configurations_request() {
 
 #[test]
 fn stdio_server_provides_inline_method_code_action() {
+    let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -1259,6 +1272,7 @@ fn stdio_server_provides_inline_method_code_action() {
 
 #[test]
 fn stdio_server_handles_generated_sources_request() {
+    let _lock = crate::support::stdio_server_lock();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
@@ -1330,6 +1344,7 @@ fn stdio_server_handles_generated_sources_request() {
 
 #[test]
 fn stdio_server_handles_run_annotation_processing_request() {
+    let _lock = crate::support::stdio_server_lock();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
@@ -1394,6 +1409,7 @@ fn stdio_server_handles_run_annotation_processing_request() {
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("maven-project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -1545,6 +1561,7 @@ esac
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_build_project_request_with_fake_maven_diagnostics() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("maven-project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -1727,6 +1744,7 @@ exit 1
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_java_classpath_request_with_fake_gradle_wrapper_and_cache() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("gradle-project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -1867,6 +1885,7 @@ esac
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_build_project_request_with_fake_gradle_diagnostics() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("gradle-project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -2048,6 +2067,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
+    let _lock = crate::support::stdio_server_lock();
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
@@ -2224,6 +2244,7 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
 #[cfg(unix)]
 #[test]
 fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("maven-project");
     fs::create_dir_all(&root).expect("create project dir");
@@ -2430,6 +2451,7 @@ esac
 #[cfg(unix)]
 #[test]
 fn stdio_server_reload_project_invalidates_gradle_classpath_cache() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("gradle-project");
     fs::create_dir_all(&root).expect("create project dir");

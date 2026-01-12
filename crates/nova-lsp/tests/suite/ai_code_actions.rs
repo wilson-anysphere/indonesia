@@ -6,8 +6,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use nova_lsp::text_pos::TextPos;
 use nova_core::{path_to_file_uri, AbsPathBuf};
+use nova_lsp::text_pos::TextPos;
 use tempfile::TempDir;
 
 use crate::support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
@@ -481,6 +481,7 @@ fn stdio_server_handles_ai_explain_error_code_action() {
 
 #[test]
 fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_available() {
+    let _lock = crate::support::stdio_server_lock();
     let mock_server = MockServer::start();
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
@@ -642,6 +643,7 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
 
 #[test]
 fn stdio_server_chunks_long_ai_explain_error_log_messages() {
+    let _lock = crate::support::stdio_server_lock();
     let mock_server = MockServer::start();
 
     // Large enough that `nova-lsp` must split it across multiple `window/logMessage`
@@ -839,6 +841,7 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
 
 #[test]
 fn stdio_server_completion_ranking_misconfiguration_falls_back_to_baseline_completions() {
+    let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
     std::fs::write(
