@@ -10,6 +10,7 @@
 //!   integrations for watch/evaluate expressions.
 
 pub mod ast;
+mod convert;
 mod feature_gate;
 mod incremental;
 mod language_level;
@@ -21,6 +22,7 @@ mod tree_store;
 mod util;
 
 pub use ast::*;
+pub use convert::TextEditConvertError;
 pub use incremental::{parse_java_incremental, reparse_java};
 pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};

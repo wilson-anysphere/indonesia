@@ -20,6 +20,11 @@ impl TextEdit {
     pub fn insert(offset: TextSize, text: impl Into<String>) -> Self {
         Self::new(TextRange::new(offset, offset), text)
     }
+
+    /// Net byte change produced by this edit (`replacement.len() - range.len()`).
+    pub fn delta_bytes(&self) -> isize {
+        self.replacement.len() as isize - u32::from(self.range.len()) as isize
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
