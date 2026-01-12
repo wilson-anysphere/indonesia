@@ -4749,7 +4749,7 @@ fn java_string_escape_completions(
     // Note: `\"` is not an identifier prefix, so it is only offered when `prefix` is empty.
     let mut items = Vec::new();
 
-    let add = |items: &mut Vec<CompletionItem>, label: &str, prefix: &str, trigger: &str| {
+    let add = |items: &mut Vec<CompletionItem>, prefix: &str, trigger: &str, label: &str| {
         if prefix.is_empty() || trigger.starts_with(prefix) {
             items.push(CompletionItem {
                 label: label.to_string(),
@@ -4760,13 +4760,45 @@ fn java_string_escape_completions(
         }
     };
 
-    add(&mut items, r#"\n"#, prefix, "n");
-    add(&mut items, r#"\t"#, prefix, "t");
+    // Standard Java escapes.
+    add(&mut items, prefix, "b", r#"\b"#);
+    add(&mut items, prefix, "t", r#"\t"#);
+    add(&mut items, prefix, "n", r#"\n"#);
+    add(&mut items, prefix, "f", r#"\f"#);
+    add(&mut items, prefix, "r", r#"\r"#);
+    add(&mut items, prefix, "0", r#"\0"#);
+
+    // Unicode escape snippet. We show a concrete label but insert a snippet so users can type the
+    // 4 hex digits quickly.
+    if prefix.is_empty() || "u".starts_with(prefix) {
+        items.push(CompletionItem {
+            label: r#"\u0000"#.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some(r#"\u${1:0000}"#.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    // Non-identifier escapes (`\\`, `\"`, `\'`) are only useful when the user hasn't started
+    // typing an identifier prefix after the backslash.
     if prefix.is_empty() {
+        items.push(CompletionItem {
+            label: r#"\\"#.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some(r#"\\"#.to_string()),
+            ..Default::default()
+        });
         items.push(CompletionItem {
             label: r#"\""#.to_string(),
             kind: Some(CompletionItemKind::SNIPPET),
             insert_text: Some(r#"\""#.to_string()),
+            ..Default::default()
+        });
+        items.push(CompletionItem {
+            label: r#"\'"#.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some(r#"\'"#.to_string()),
             ..Default::default()
         });
     }

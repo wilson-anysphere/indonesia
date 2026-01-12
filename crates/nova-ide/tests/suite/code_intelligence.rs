@@ -3224,6 +3224,25 @@ fn completion_inside_string_literal_escape_sequence_suggests_escapes() {
 }
 
 #[test]
+fn completion_inside_string_literal_unicode_escape_sequence_suggests_unicode_snippet() {
+    let (db, file, pos) = fixture(r#"class A { void m(){ String s = "\u<|>"; } }"#);
+    let items = completions(&db, file, pos);
+
+    let unicode = items
+        .iter()
+        .find(|i| i.label == r#"\u0000"#)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected unicode escape completion inside string literal; got labels {:?}",
+                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u${1:0000}"#));
+    assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
+}
+
+#[test]
 fn completion_inside_char_literal_is_empty() {
     let (db, file, pos) = fixture("class A { void m(){ char c = 'a<|>'; } }");
     let items = completions(&db, file, pos);
