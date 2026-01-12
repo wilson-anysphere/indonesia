@@ -194,6 +194,16 @@ pub fn resolve_extract_member_code_action(
     nova_ide::refactor::resolve_extract_member_code_action(uri, source, action, name)
 }
 
+fn conflicts_resolvable_by_renaming(conflicts: &[Conflict], name: &str) -> bool {
+    conflicts.iter().all(|conflict| match conflict {
+        Conflict::NameCollision { name: n, .. }
+        | Conflict::Shadowing { name: n, .. }
+        | Conflict::FieldShadowing { name: n, .. }
+        | Conflict::ReferenceWillChangeResolution { name: n, .. } => n == name,
+        Conflict::VisibilityLoss { .. } | Conflict::FileAlreadyExists { .. } => false,
+    })
+}
+
 /// Build `Extract variable…` code actions for a selection in a single document.
 ///
 /// The returned action is unresolved (it only carries `data`). Clients can
@@ -243,16 +253,6 @@ pub fn extract_variable_code_actions(
         // use structured semantic conflicts (`Conflicts(NameCollision)`).
         const NAME_CONFLICT_REASON: &str =
             "extracted variable name conflicts with an existing binding";
-
-        fn conflicts_resolvable_by_renaming(conflicts: &[Conflict], name: &str) -> bool {
-            conflicts.iter().all(|conflict| match conflict {
-                Conflict::NameCollision { name: n, .. }
-                | Conflict::Shadowing { name: n, .. }
-                | Conflict::FieldShadowing { name: n, .. }
-                | Conflict::ReferenceWillChangeResolution { name: n, .. } => n == name,
-                Conflict::VisibilityLoss { .. } | Conflict::FileAlreadyExists { .. } => false,
-            })
-        }
 
         for attempt in 0usize..100 {
             let name = if attempt == 0 {
@@ -964,13 +964,13 @@ class B {
     fn extract_variable_not_offered_for_expression_bodied_lambda() {
         let uri = test_uri("Test.java");
         let source = r#"
-import java.util.function.Function;
-class C {
-  void m() {
-    Function<Integer,Integer> f = x -> x + 1;
-  }
-}
-"#;
+ import java.util.function.Function;
+ class C {
+   void m() {
+     Function<Integer,Integer> f = x -> x + 1;
+   }
+ }
+ "#;
         let start = source.find("x + 1").expect("selection exists");
         let end = start + "x + 1".len();
         let selection = Range::new(position_utf16(source, start), position_utf16(source, end));
@@ -980,6 +980,29 @@ class C {
             actions.is_empty(),
             "expected no extract-variable action for expression-bodied lambda, got: {actions:?}"
         );
+    }
+
+    #[test]
+    fn extract_variable_probe_treats_reference_will_change_resolution_as_name_based_conflict() {
+        let file_path = "file:///Test.java".to_string();
+        let file = FileId::new(file_path.clone());
+        let source = "class A { int field; void m() { System.out.println(field); } }";
+        let db = RefactorJavaDatabase::single_file(file_path, source);
+
+        let field_offset = source.find("field;").expect("field declaration exists") + 1;
+        let existing_symbol = db
+            .symbol_at(&file, field_offset)
+            .expect("symbol should exist at field declaration");
+
+        let conflict = Conflict::ReferenceWillChangeResolution {
+            file: file.clone(),
+            usage_range: WorkspaceTextRange::new(0, 0),
+            name: "extracted".to_string(),
+            existing_symbol,
+        };
+
+        assert!(conflicts_resolvable_by_renaming(&[conflict.clone()], "extracted"));
+        assert!(!conflicts_resolvable_by_renaming(&[conflict], "extracted1"));
     }
 
     #[test]
