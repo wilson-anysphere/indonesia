@@ -9117,20 +9117,12 @@ fn resolve_param_types<'idx>(
 
     let is_varargs = params
         .last()
-        .is_some_and(|p| p.is_varargs || p.ty.trim_end().ends_with("..."));
+        .is_some_and(|p| p.is_varargs || p.ty.trim().contains("..."));
 
     for (idx, param) in params.iter().enumerate() {
         let is_varargs_param = is_varargs && idx + 1 == params.len();
-        let ty_text = if is_varargs_param {
-            param
-                .ty
-                .trim_end()
-                .strip_suffix("...")
-                .unwrap_or(param.ty.trim_end())
-                .trim_end()
-        } else {
-            param.ty.trim_end()
-        };
+        let ty_text = param.ty.trim_end();
+        let ty_text_has_ellipsis = ty_text.contains("...");
 
         let resolved = resolve_type_ref_text(
             resolver,
@@ -9158,7 +9150,10 @@ fn resolve_param_types<'idx>(
             continue;
         }
 
-        let ty = if is_varargs_param {
+        // If the signature text already includes the `...` token, `resolve_type_ref_text` will
+        // model it as an array dimension. Only synthesize an extra array layer when we tracked
+        // varargs out-of-band (via `Param::is_varargs`).
+        let ty = if is_varargs_param && !ty_text_has_ellipsis {
             Type::Array(Box::new(resolved.ty))
         } else {
             resolved.ty
@@ -9840,14 +9835,8 @@ fn define_source_types<'idx>(
                         .enumerate()
                         .map(|(idx, p)| {
                             let is_varargs_param = is_varargs && idx + 1 == method.params.len();
-                            let ty_text = if is_varargs_param {
-                                p.ty.trim_end()
-                                    .strip_suffix("...")
-                                    .unwrap_or(p.ty.trim_end())
-                                    .trim_end()
-                            } else {
-                                p.ty.trim_end()
-                            };
+                            let ty_text = p.ty.trim_end();
+                            let ty_text_has_ellipsis = ty_text.contains("...");
 
                             preload_type_names(resolver, &scopes.scopes, scope, loader, ty_text);
                             let ty = nova_resolve::type_ref::resolve_type_ref_text(
@@ -9860,7 +9849,7 @@ fn define_source_types<'idx>(
                                 Some(p.ty_range),
                             )
                             .ty;
-                            if is_varargs_param {
+                            if is_varargs_param && !ty_text_has_ellipsis {
                                 Type::Array(Box::new(ty))
                             } else {
                                 ty
@@ -9914,14 +9903,8 @@ fn define_source_types<'idx>(
                         .enumerate()
                         .map(|(idx, p)| {
                             let is_varargs_param = is_varargs && idx + 1 == ctor.params.len();
-                            let ty_text = if is_varargs_param {
-                                p.ty.trim_end()
-                                    .strip_suffix("...")
-                                    .unwrap_or(p.ty.trim_end())
-                                    .trim_end()
-                            } else {
-                                p.ty.trim_end()
-                            };
+                            let ty_text = p.ty.trim_end();
+                            let ty_text_has_ellipsis = ty_text.contains("...");
 
                             preload_type_names(resolver, &scopes.scopes, scope, loader, ty_text);
                             let ty = nova_resolve::type_ref::resolve_type_ref_text(
@@ -9934,7 +9917,7 @@ fn define_source_types<'idx>(
                                 Some(p.ty_range),
                             )
                             .ty;
-                            if is_varargs_param {
+                            if is_varargs_param && !ty_text_has_ellipsis {
                                 Type::Array(Box::new(ty))
                             } else {
                                 ty
