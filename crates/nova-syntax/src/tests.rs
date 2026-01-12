@@ -3776,6 +3776,36 @@ fn incremental_edit_creating_unterminated_block_comment_falls_back_to_full_repar
     );
 }
 
+#[test]
+fn incremental_edit_creating_unterminated_string_template_falls_back_to_full_reparse() {
+    // Insert a `"` after a `.` inside a method body to start a string template, but allow it to
+    // terminate at an existing `"` outside the method. If we only reparse the method block
+    // fragment, the lexer would hit fragment EOF while still in template mode.
+    //
+    // Incremental reparsing must detect the unterminated lex error (via
+    // `fragment_has_unterminated_lex_error`) and fall back to a full reparse; otherwise we'd splice
+    // a fragment parsed under template lexing into a tree whose preserved suffix was tokenized
+    // under normal lexing.
+    let old_text = "class Foo {\n  void m() { int x = STR.length(); }\n  String tail = \"end\";\n}\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    // Insert right after the `.` in `STR.length()`.
+    let insert_offset = old_text.find("STR.length").unwrap() as u32 + 4; // after `STR.`
+    let edit = TextEdit::insert(insert_offset, "\"");
+
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, "\"");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        !green_ptr_eq(&old_bar, &new_bar),
+        "expected unterminated string template in fragment to force full reparse"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Schema/versioning guardrails
 //
