@@ -75,6 +75,32 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     ..Default::default()
                 }));
             }
+            "unresolved-type" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                let name = source
+                    .get(diag_span.start..diag_span.end)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .or_else(|| unresolved_type_name(&diag.message).map(|s| s.to_string()));
+                let Some(name) = name else {
+                    continue;
+                };
+
+                if !is_simple_type_identifier(&name) {
+                    continue;
+                }
+
+                if let Some(action) = create_class_action(uri, source, &name) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+            }
             _ => {}
         }
     }
@@ -83,7 +109,13 @@ pub(crate) fn quick_fixes_for_diagnostics(
 }
 
 fn spans_intersect(a: Span, b: Span) -> bool {
-    a.start < b.end && a.end > b.start
+    if a.start == a.end {
+        return b.start <= a.start && a.start < b.end;
+    }
+    if b.start == b.end {
+        return a.start <= b.start && b.start < a.end;
+    }
+    a.start < b.end && b.start < a.end
 }
 
 fn looks_like_value_ident(name: &str) -> bool {
@@ -109,6 +141,26 @@ fn extract_backticked(message: &str) -> Option<String> {
     let end_rel = rest.find('`')?;
     let name = &rest[..end_rel];
     (!name.is_empty()).then_some(name.to_string())
+}
+
+fn unresolved_type_name(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("unresolved type `")?;
+    rest.strip_suffix('`')
+}
+
+fn is_simple_type_identifier(name: &str) -> bool {
+    if name.is_empty() || name.contains('.') || name.contains('$') {
+        return false;
+    }
+
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn create_local_variable_action(
@@ -137,6 +189,19 @@ fn create_field_action(uri: &Uri, source: &str, name: &str) -> Option<CodeAction
 
     Some(CodeAction {
         title: format!("Create field '{name}'"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(single_edit(uri, source, insert_offset, new_text)),
+        ..Default::default()
+    })
+}
+
+fn create_class_action(uri: &Uri, source: &str, name: &str) -> Option<CodeAction> {
+    let insert_offset = source.len();
+    let prefix = if source.ends_with('\n') { "\n" } else { "\n\n" };
+    let new_text = format!("{prefix}class {name} {{\n}}\n");
+
+    Some(CodeAction {
+        title: format!("Create class '{name}'"),
         kind: Some(CodeActionKind::QUICKFIX),
         edit: Some(single_edit(uri, source, insert_offset, new_text)),
         ..Default::default()

@@ -145,3 +145,70 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
     };
     assert_eq!(field_edits[0].range.start, Position::new(4, 0));
 }
+
+#[test]
+fn unresolved_type_offers_create_class_quick_fix() {
+    let source = "class A { MissingType x; }";
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, source.to_string());
+
+    // `IdeExtensions` requires a `Send + Sync` database; wrap our in-memory store in a
+    // snapshot-like view.
+    let view = SalsaDbView::from_source_db(&db);
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let missing_start = source.find("MissingType").expect("expected MissingType in fixture");
+    let missing_end = missing_start + "MissingType".len();
+    let missing_span = Span::new(missing_start, missing_end);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(missing_span));
+    let action = actions
+        .iter()
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action)
+                if action.title == "Create class 'MissingType'" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            let titles: Vec<_> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    CodeActionOrCommand::CodeAction(a) => Some(a.title.as_str()),
+                    CodeActionOrCommand::Command(c) => Some(c.title.as_str()),
+                })
+                .collect();
+            panic!("missing Create class quick fix; got titles {titles:?}");
+        });
+
+    let edit = action
+        .edit
+        .as_ref()
+        .expect("create-class quick fix should have edit");
+    let Some(changes) = edit.changes.as_ref() else {
+        panic!("expected WorkspaceEdit.changes");
+    };
+    let (_, edits) = changes.iter().next().expect("expected at least one edit");
+    assert_eq!(edits.len(), 1, "expected exactly one TextEdit");
+
+    let edit = &edits[0];
+    let offset = position_to_offset(source, edit.range.start).expect("start offset");
+    assert_eq!(
+        offset,
+        source.len(),
+        "expected create-class edit to insert at EOF"
+    );
+
+    let updated = apply_single_text_edit(source, edit);
+    assert_eq!(
+        updated,
+        "class A { MissingType x; }\n\nclass MissingType {\n}\n",
+        "unexpected updated text:\n{updated}"
+    );
+}
