@@ -118,6 +118,7 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
     // entire JDK index (e.g. by enumerating all class names) can be extremely expensive.
     const COMMON_PACKAGES: &[&str] = &[
         "java.util",
+        "java.util.function",
         "java.io",
         "java.time",
         "java.nio",
@@ -489,5 +490,16 @@ mod tests {
         let jdk = JdkIndex::new();
         let candidates = import_candidates_with_index("Entry", &jdk);
         assert_eq!(candidates, vec!["java.util.Map.Entry".to_string()]);
+    }
+
+    #[test]
+    fn import_candidates_function_includes_java_util_function_function() {
+        // `java.util.function` is common in modern Java and included in the built-in JDK index.
+        let jdk = JdkIndex::new();
+        let candidates = import_candidates_with_index("Function", &jdk);
+        assert_eq!(
+            candidates,
+            vec!["java.util.function.Function".to_string()]
+        );
     }
 }
