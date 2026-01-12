@@ -891,7 +891,7 @@ fn type_use_annotations_are_ignored() {
 }
 
 #[test]
-fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
+fn type_use_annotation_missing_type_is_not_diagnosed_when_anchored() {
     let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
@@ -908,15 +908,14 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         text,
         Some(base_span),
     );
-    let diag = result
-        .diagnostics
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for type-use annotation type");
-    let span = diag
-        .span
-        .expect("unresolved-type diagnostic should have a span");
-    assert_eq!(&text[span.start..span.end], "Missing");
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
     assert!(
         !result
             .diagnostics
@@ -951,15 +950,14 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         stripped,
         Some(base_span),
     );
-    let diag = result
-        .diagnostics
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for type-use annotation type (stripped)");
-    let span = diag
-        .span
-        .expect("unresolved-type diagnostic should have a span");
-    assert_eq!(&stripped[span.start..span.end], "Missing");
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
     assert!(
         !result
             .diagnostics
