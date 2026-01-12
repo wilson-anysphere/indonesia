@@ -63,31 +63,11 @@ pub fn check(
                 tests_dir.display()
             )
         })?;
-        if root_rs_files.len() <= 1 {
-            continue;
+        if let Some(diag) =
+            diagnostic_for_root_test_files(krate, manifest_path, &tests_dir, &root_rs_files)
+        {
+            diagnostics.push(diag);
         }
-
-        let mut display_files: Vec<String> = root_rs_files
-            .iter()
-            .map(|path| {
-                let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
-                format!("tests/{}", file_name.to_string_lossy())
-            })
-            .collect();
-        display_files.sort();
-
-        diagnostics.push(
-            Diagnostic::error(
-                "multiple-integration-tests",
-                format!(
-                    "crate {krate} has {} integration test binaries (tests/*.rs): {}",
-                    display_files.len(),
-                    display_files.join(", ")
-                ),
-            )
-            .with_file(tests_dir.display().to_string())
-            .with_suggestion(recommended_layout_suggestion()),
-        );
     }
 
     let ok = !diagnostics
@@ -128,31 +108,68 @@ fn root_tests_rs_files(tests_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(root_rs_files)
 }
 
+fn diagnostic_for_root_test_files(
+    krate: &str,
+    manifest_path: &Path,
+    tests_dir: &Path,
+    root_rs_files: &[PathBuf],
+) -> Option<Diagnostic> {
+    let count = root_rs_files.len();
+    if count <= 1 {
+        return None;
+    }
+
+    let mut file_names: Vec<String> = root_rs_files
+        .iter()
+        .filter_map(|path| path.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    file_names.sort();
+
+    let display_files = file_names
+        .iter()
+        .map(|name| format!("tests/{name}"))
+        .collect::<Vec<_>>();
+
+    let diag = if count == 2 {
+        Diagnostic::warning(
+            "test-layout-two-root-tests",
+            format!(
+                "crate {krate} has {count} root-level integration test files in {}: {} (prefer consolidating unless there's a strong reason to keep two harness entrypoints)",
+                tests_dir.display(),
+                display_files.join(", ")
+            ),
+        )
+    } else {
+        Diagnostic::error(
+            "test-layout-too-many-root-tests",
+            format!(
+                "crate {krate} has {count} root-level integration test files in {}: {} (max allowed: 2)",
+                tests_dir.display(),
+                display_files.join(", ")
+            ),
+        )
+    };
+
+    Some(
+        diag.with_file(manifest_path.display().to_string())
+            .with_suggestion(recommended_layout_suggestion()),
+    )
+}
+
 fn recommended_layout_suggestion() -> String {
-    // Keep this actionable and consistent with `AGENTS.md`: only one `tests/*.rs` file per crate.
+    // Keep this actionable and consistent with `AGENTS.md`: avoid test-binary sprawl.
     "\
-Recommended layout: one integration test harness per crate.
+Each `tests/*.rs` file becomes a separate integration test binary.
 
-Each `tests/*.rs` file becomes a separate integration-test binary. Prefer consolidating into a
-single harness file and move the rest into submodules:
+Prefer a single harness file + submodules (so only ONE binary is built):
 
-  tests/tests.rs            # the only tests/*.rs file (one test binary)
-  tests/suite/              # modules used by the harness
-    mod.rs
-    foo.rs
-    bar.rs
-
-Example:
-
-  // tests/tests.rs
-  mod suite;
-
-  // tests/suite/mod.rs
-  mod foo;
-  mod bar;
-
-See AGENTS.md: avoid loose `tests/*.rs` files."
-        .to_string()
+tests/
+├── harness.rs   # or tests.rs; the only tests/*.rs file (one test binary)
+└── suite/       # modules used by the harness
+    ├── mod.rs
+    └── your_new_test.rs
+"
+    .to_string()
 }
 
 #[cfg(test)]
@@ -175,5 +192,41 @@ mod tests {
 
         let files = root_tests_rs_files(&tests_dir).unwrap();
         assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn diagnostic_for_root_test_files_warns_at_two_and_errors_at_three() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("Cargo.toml");
+        let tests_dir = dir.path().join("tests");
+
+        let warn = diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest_path,
+            &tests_dir,
+            &[tests_dir.join("b.rs"), tests_dir.join("a.rs")],
+        )
+        .unwrap();
+        assert_eq!(warn.level, DiagnosticLevel::Warning);
+        assert_eq!(warn.code, "test-layout-two-root-tests");
+        assert!(warn.message.contains("tests/a.rs"));
+        assert!(warn.message.contains("tests/b.rs"));
+
+        let err = diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest_path,
+            &tests_dir,
+            &[
+                tests_dir.join("c.rs"),
+                tests_dir.join("b.rs"),
+                tests_dir.join("a.rs"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(err.level, DiagnosticLevel::Error);
+        assert_eq!(err.code, "test-layout-too-many-root-tests");
+        assert!(err.message.contains("tests/a.rs"));
+        assert!(err.message.contains("tests/b.rs"));
+        assert!(err.message.contains("tests/c.rs"));
     }
 }

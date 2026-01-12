@@ -65,8 +65,9 @@ cargo run --locked -p nova-devtools -- check-protocol-extensions
 
 Validates integration test layout across the workspace:
 
-- each crate should have **at most one** root-level `tests/*.rs` file (since each one is a separate
+- each crate should have **at most two** root-level `tests/*.rs` files (since each one is a separate
   integration test binary)
+- `nova-devtools` warns at **2** and errors at **>2**
 
 ```
 cargo run --locked -p nova-devtools -- check-test-layout

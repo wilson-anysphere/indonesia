@@ -136,15 +136,24 @@ fi
 # Enforce the AGENTS.md integration test harness pattern for `nova-ide`.
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
-# under the agent RLIMIT_AS constraints. `nova-ide` intentionally consolidates its integration
-# tests into a single harness, `tests/tests.rs`, which `mod`s the rest of the suite.
+# under the agent RLIMIT_AS constraints. `nova-ide` keeps its main integration suite in
+# `tests/tests.rs`, and allows one additional isolated binary (`tests/file_navigation_cache.rs`)
+# for tests that need a fresh process/global cache state.
 nova_ide_root_tests=()
 while IFS= read -r file; do
   nova_ide_root_tests+=("$file")
-done < <(find crates/nova-ide/tests -maxdepth 1 -name '*.rs' -print)
+done < <(find crates/nova-ide/tests -maxdepth 1 -name '*.rs' -print | sort)
 
-if [[ ${#nova_ide_root_tests[@]} -ne 1 || "${nova_ide_root_tests[0]}" != "crates/nova-ide/tests/tests.rs" ]]; then
-  echo "repo invariant failed: nova-ide integration tests must be consolidated into crates/nova-ide/tests/tests.rs" >&2
+expected_nova_ide_root_tests=()
+if [[ ${#nova_ide_root_tests[@]} -eq 1 ]]; then
+  expected_nova_ide_root_tests=("crates/nova-ide/tests/tests.rs")
+elif [[ ${#nova_ide_root_tests[@]} -eq 2 ]]; then
+  expected_nova_ide_root_tests=(
+    "crates/nova-ide/tests/file_navigation_cache.rs"
+    "crates/nova-ide/tests/tests.rs"
+  )
+else
+  echo "repo invariant failed: nova-ide integration tests must be capped at 2 root test binaries (tests/*.rs)" >&2
   if [[ ${#nova_ide_root_tests[@]} -eq 0 ]]; then
     echo "  found: <none>" >&2
   else
@@ -153,6 +162,24 @@ if [[ ${#nova_ide_root_tests[@]} -ne 1 || "${nova_ide_root_tests[0]}" != "crates
       echo "    - ${file}" >&2
     done
   fi
+  echo "  suggestion: move additional files into crates/nova-ide/tests/suite/ and add them to crates/nova-ide/tests/suite/mod.rs" >&2
+  exit 1
+fi
+
+if [[ "${nova_ide_root_tests[*]}" != "${expected_nova_ide_root_tests[*]}" ]]; then
+  echo "repo invariant failed: unexpected nova-ide root integration test files (tests/*.rs)" >&2
+  if [[ ${#nova_ide_root_tests[@]} -eq 0 ]]; then
+    echo "  found: <none>" >&2
+  else
+    echo "  found:" >&2
+    for file in "${nova_ide_root_tests[@]}"; do
+      echo "    - ${file}" >&2
+    done
+  fi
+  echo "  expected:" >&2
+  for file in "${expected_nova_ide_root_tests[@]}"; do
+    echo "    - ${file}" >&2
+  done
   echo "  suggestion: move additional files into crates/nova-ide/tests/suite/ and add them to crates/nova-ide/tests/suite/mod.rs" >&2
   exit 1
 fi
