@@ -621,10 +621,18 @@ mod tests {
         let ty = QualifiedName::from_dotted("com.example.dep.Foo");
 
         let from_a = ModuleName::new("workspace.a");
+        assert!(
+            env.env.graph.can_read(&from_a, &env.env.unnamed),
+            "workspace.a should read the unnamed module when classpath entries are present"
+        );
         let resolver_a = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_a);
         assert_eq!(resolver_a.resolve_qualified_name(&ty), None);
 
         let from_b = ModuleName::new("workspace.b");
+        assert!(
+            env.env.graph.can_read(&from_b, &env.env.unnamed),
+            "workspace.b should read the unnamed module when classpath entries are present"
+        );
         let resolver_b = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_b);
         assert_eq!(
             resolver_b.resolve_qualified_name(&ty),
@@ -693,10 +701,18 @@ mod tests {
         let ty = QualifiedName::from_dotted("com.example.dep.Foo");
 
         let from_a = ModuleName::new("workspace.a");
+        assert!(
+            !env.env.graph.can_read(&from_a, &env.env.unnamed),
+            "workspace.a should not read the unnamed module when the classpath is empty"
+        );
         let resolver_a = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_a);
         assert_eq!(resolver_a.resolve_qualified_name(&ty), None);
 
         let from_b = ModuleName::new("workspace.b");
+        assert!(
+            !env.env.graph.can_read(&from_b, &env.env.unnamed),
+            "workspace.b should not read the unnamed module when the classpath is empty"
+        );
         let resolver_b = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_b);
         assert_eq!(
             resolver_b.resolve_qualified_name(&ty),
