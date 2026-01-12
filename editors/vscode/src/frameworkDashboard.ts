@@ -55,6 +55,26 @@ function joinPathForUri(base: vscode.Uri, relativePath: string): vscode.Uri {
   return vscode.Uri.joinPath(base, ...segments);
 }
 
+function workspaceFolderForFsPath(fsPath: string): vscode.WorkspaceFolder | undefined {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  let best: vscode.WorkspaceFolder | undefined;
+  for (const folder of folders) {
+    const root = folder.uri.fsPath;
+    if (!root) {
+      continue;
+    }
+    const rel = path.relative(root, fsPath);
+    const isWithinRoot = rel.length === 0 || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+    if (!isWithinRoot) {
+      continue;
+    }
+    if (!best || root.length > best.uri.fsPath.length) {
+      best = folder;
+    }
+  }
+  return best;
+}
+
 export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; projectRoot?: string }): vscode.Uri | undefined {
   if (value instanceof vscode.Uri) {
     return value;
@@ -83,7 +103,12 @@ export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; p
     }
 
     if (projectRoot) {
-      return vscode.Uri.file(path.join(projectRoot, raw));
+      const absolute = path.join(projectRoot, raw);
+      const uri = vscode.Uri.file(absolute);
+      const folder = workspaceFolderForFsPath(absolute);
+      // Preserve workspace scheme/authority for remote workspaces when we can infer a matching
+      // workspace folder via fsPath prefix matching.
+      return folder && folder.uri.scheme !== 'file' ? uri.with({ scheme: folder.uri.scheme, authority: folder.uri.authority }) : uri;
     }
 
     // Avoid guessing in multi-root workspaces: resolving against an arbitrary workspace folder can
