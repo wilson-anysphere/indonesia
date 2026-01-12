@@ -22,6 +22,7 @@ mod rename_constructor_symbol_at;
 mod rename_members;
 mod rename_package;
 mod rename_type;
+mod rename_type_conflicts;
 mod rename_type_inheritance_and_body_types;
 mod rename_type_qualified_this_super;
 mod rename_types;
