@@ -644,6 +644,7 @@ pub const FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID: &str = "nova.framework.analyz
 pub struct FrameworkAnalyzerRegistryProvider {
     registry: Arc<AnalyzerRegistry>,
     fast_noop: bool,
+    build_metadata_only: bool,
 }
 
 impl FrameworkAnalyzerRegistryProvider {
@@ -651,7 +652,18 @@ impl FrameworkAnalyzerRegistryProvider {
         Self {
             registry,
             fast_noop: false,
+            build_metadata_only: false,
         }
+    }
+
+    /// Restrict this provider to projects that have authoritative build metadata (Maven/Gradle/Bazel).
+    ///
+    /// When enabled, the provider returns empty results for "simple" projects (directories without
+    /// a supported build system). This is useful when running the analyzer registry alongside
+    /// Nova's legacy `framework_cache` providers to avoid duplicate diagnostics/completions.
+    pub fn with_build_metadata_only(mut self) -> Self {
+        self.build_metadata_only = true;
+        self
     }
 
     /// Construct a provider that always returns empty results without attempting to build the
@@ -664,6 +676,7 @@ impl FrameworkAnalyzerRegistryProvider {
         Self {
             registry: Arc::new(AnalyzerRegistry::new()),
             fast_noop: true,
+            build_metadata_only: false,
         }
     }
 
@@ -701,6 +714,9 @@ where
             return Vec::new();
         }
         let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -726,6 +742,9 @@ where
             return Vec::new();
         }
         let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -768,6 +787,9 @@ where
         };
 
         let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), file) {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(host_db, file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -806,6 +828,9 @@ where
             return Vec::new();
         }
         let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -943,7 +968,9 @@ where
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
 
         let fw_registry = nova_framework_builtins::builtin_registry();
-        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
+        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry))
+            .with_build_metadata_only()
+            .into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
         let _ = registry.register_completion_provider(provider.clone());
         let _ = registry.register_navigation_provider(provider.clone());
@@ -1345,6 +1372,9 @@ fn type_mismatch_quick_fixes(
     }
 
     let mut actions = Vec::new();
+    if cancel.is_cancelled() {
+        return actions;
+    }
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
         if cancel.is_cancelled() {

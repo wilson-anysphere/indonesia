@@ -4622,6 +4622,30 @@ fn record_lightweight_expr(
                 spans,
             );
         }
+        Expr::Cast(cast) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(cast.ty.range.start, cast.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &cast.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Assign(expr) => {
             record_lightweight_expr(
                 file,
