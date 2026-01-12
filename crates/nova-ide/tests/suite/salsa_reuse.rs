@@ -87,7 +87,8 @@ class A {
     let flow_after = stat(&salsa, "flow_diagnostics_for_file");
 
     assert_eq!(
-        type_after.executions, type_before.executions,
+        type_after.executions,
+        type_before.executions,
         "expected type_diagnostics to be memoized across calls"
     );
     assert!(
@@ -96,7 +97,8 @@ class A {
     );
 
     assert_eq!(
-        flow_after.executions, flow_before.executions,
+        flow_after.executions,
+        flow_before.executions,
         "expected flow_diagnostics_for_file to be memoized across calls"
     );
     assert!(

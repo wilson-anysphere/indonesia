@@ -31,10 +31,7 @@ fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
 
 fn extract_edit_for_uri(edit: &WorkspaceEdit, uri: &Uri) -> Vec<TextEdit> {
     if let Some(changes) = edit.changes.as_ref() {
-        return changes
-            .get(uri)
-            .cloned()
-            .unwrap_or_else(|| Vec::new());
+        return changes.get(uri).cloned().unwrap_or_else(Vec::new);
     }
     if let Some(document_changes) = edit.document_changes.as_ref() {
         let mut out = Vec::new();

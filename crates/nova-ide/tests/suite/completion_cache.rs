@@ -93,3 +93,4 @@ class Main {
     let labels3: Vec<_> = items3.iter().map(|i| i.label.clone()).collect();
     assert_eq!(labels1, labels3, "expected deterministic completions after rebuild");
 }
+

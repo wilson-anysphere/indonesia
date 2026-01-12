@@ -18,7 +18,11 @@ impl FrameworkAnalyzer for TestFrameworkAnalyzer {
         true
     }
 
-    fn diagnostics(&self, _db: &dyn FrameworkDatabase, _file: nova_ext::FileId) -> Vec<nova_ext::Diagnostic> {
+    fn diagnostics(
+        &self,
+        _db: &dyn FrameworkDatabase,
+        _file: nova_ext::FileId,
+    ) -> Vec<nova_ext::Diagnostic> {
         vec![nova_ext::Diagnostic::warning(
             "FW_REGISTRY_TEST",
             "framework registry diagnostic",
@@ -111,3 +115,4 @@ fn default_registry_registers_analyzer_registry_provider() {
     // test flakiness due to unused fixture).
     assert_eq!(ide_dyn.db().file_content(file), "class Main {}");
 }
+
