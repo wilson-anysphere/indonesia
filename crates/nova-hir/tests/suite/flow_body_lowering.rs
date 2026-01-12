@@ -4,7 +4,7 @@ use nova_core::Name;
 use nova_hir::body::{Body, ExprId, ExprKind, LocalKind, StmtId, StmtKind};
 use nova_hir::body_lowering::lower_flow_body;
 use nova_syntax::ast::{self, AstNode};
-use nova_syntax::parse_java_block_fragment;
+use nova_syntax::{parse_java, parse_java_block_fragment};
 use nova_types::Span;
 
 fn parse_block(text: &str) -> ast::Block {
@@ -161,3 +161,47 @@ fn switch_expression_arms_are_visited_in_flow_lowering() {
     );
 }
 
+#[test]
+fn explicit_constructor_invocation_is_lowered_as_expression_statement() {
+    let src = r#"
+        class C {
+            C() { this(1); }
+            C(int x) {}
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(
+        parse.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        parse.errors
+    );
+
+    let block = parse
+        .syntax()
+        .descendants()
+        .filter_map(ast::Block::cast)
+        .find(|block| {
+            block
+                .statements()
+                .any(|stmt| matches!(stmt, ast::Statement::ExplicitConstructorInvocation(_)))
+        })
+        .expect("expected a constructor body block containing an explicit constructor invocation");
+
+    let body = lower_flow_body(&block, []);
+    let ast_root = body.root();
+    let StmtKind::Block(stmts) = &body.stmt(ast_root).kind else {
+        panic!("expected root to be a block statement");
+    };
+
+    assert_eq!(stmts.len(), 1);
+    let stmt = stmts[0];
+    let StmtKind::Expr(expr) = &body.stmt(stmt).kind else {
+        panic!("expected explicit constructor invocation to lower to an expression statement");
+    };
+
+    assert!(
+        matches!(body.expr(*expr).kind, ExprKind::Call { .. }),
+        "expected explicit constructor invocation to lower to a call expression, got {:?}",
+        body.expr(*expr).kind
+    );
+}

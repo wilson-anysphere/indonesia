@@ -296,6 +296,14 @@ impl<'a> FlowBodyLower<'a> {
                     .stmt_with_span(StmtKind::Continue, span_of_node(cont.syntax()))]
             }
 
+            ast::Statement::ExplicitConstructorInvocation(inv) => {
+                let expr = inv
+                    .call()
+                    .map(|call| self.lower_expr(ast::Expression::MethodCallExpression(call)))
+                    .unwrap_or_else(|| self.alloc_invalid_expr(stmt_span));
+                vec![self.builder.stmt_with_span(StmtKind::Expr(expr), stmt_span)]
+            }
+
             ast::Statement::LocalTypeDeclarationStatement(local) => {
                 // Best-effort: local class/interface/enum declarations do not directly impact the
                 // method's control-flow (their bodies are checked elsewhere).
