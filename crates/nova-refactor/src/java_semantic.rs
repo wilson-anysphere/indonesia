@@ -7,7 +7,7 @@ use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::ids::{FieldId, ItemId, MethodId};
 use nova_hir::item_tree::Modifiers as HirModifiers;
-use nova_hir::item_tree::{Item, Member};
+use nova_hir::item_tree::{FieldKind, Item, Member};
 use nova_hir::queries::HirDatabase;
 use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
@@ -731,6 +731,8 @@ impl RefactorJavaDatabase {
                 text,
                 tree.as_ref(),
                 scope_result,
+                &snap,
+                &item_trees,
                 &resolver,
                 &workspace_def_map,
                 &resolution_to_symbol,
@@ -4923,11 +4925,288 @@ fn record_expression_references(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SwitchContext {
+    scope: ScopeId,
+    selector_enum: Option<ItemId>,
+}
+
+fn collect_switch_contexts(
+    body: &hir::Body,
+    owner: BodyOwner,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
+    out: &mut HashMap<usize, SwitchContext>,
+) {
+    fn walk_stmt(
+        body: &hir::Body,
+        stmt: hir::StmtId,
+        owner: BodyOwner,
+        scope_result: &ScopeBuildResult,
+        resolver: &Resolver<'_>,
+        item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
+        out: &mut HashMap<usize, SwitchContext>,
+    ) {
+        match &body.stmts[stmt] {
+            hir::Stmt::Block { statements, .. } => {
+                for stmt in statements {
+                    walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Stmt::Let { initializer, .. } => {
+                if let Some(expr) = initializer {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Stmt::Expr { expr, .. } => {
+                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::Return { expr, .. } => {
+                if let Some(expr) = expr {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(body, *then_branch, owner, scope_result, resolver, item_trees, out);
+                if let Some(stmt) = else_branch {
+                    walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Stmt::While {
+                condition,
+                body: inner,
+                ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::For {
+                init,
+                condition,
+                update,
+                body: inner,
+                ..
+            } => {
+                for stmt in init {
+                    walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out);
+                }
+                if let Some(expr) = condition {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+                for expr in update {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::ForEach {
+                iterable,
+                body: inner,
+                ..
+            } => {
+                walk_expr(body, *iterable, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::Synchronized { expr, body: inner, .. } => {
+                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::Switch {
+                selector,
+                body: inner,
+                range,
+                ..
+            } => {
+                let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
+                    walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+                    return;
+                };
+
+                let selector_enum = infer_switch_selector_enum_type(
+                    body,
+                    selector,
+                    scope,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                );
+
+                out.entry(range.start).or_insert(SwitchContext {
+                    scope,
+                    selector_enum,
+                });
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::Try {
+                body: inner,
+                catches,
+                finally,
+                ..
+            } => {
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+                for catch in catches {
+                    walk_stmt(
+                        body,
+                        catch.body,
+                        owner,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                        out,
+                    );
+                }
+                if let Some(finally) = finally {
+                    walk_stmt(body, *finally, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Stmt::Throw { expr, .. } => {
+                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } | hir::Stmt::Empty { .. } => {}
+        }
+    }
+
+    fn walk_expr(
+        body: &hir::Body,
+        expr: hir::ExprId,
+        owner: BodyOwner,
+        scope_result: &ScopeBuildResult,
+        resolver: &Resolver<'_>,
+        item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
+        out: &mut HashMap<usize, SwitchContext>,
+    ) {
+        match &body.exprs[expr] {
+            hir::Expr::FieldAccess { receiver, .. }
+            | hir::Expr::MethodReference { receiver, .. }
+            | hir::Expr::ConstructorReference { receiver, .. } => {
+                walk_expr(body, *receiver, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::ArrayAccess { array, index, .. } => {
+                walk_expr(body, *array, owner, scope_result, resolver, item_trees, out);
+                walk_expr(body, *index, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::ClassLiteral { ty, .. } => {
+                walk_expr(body, *ty, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::Call { callee, args, .. } => {
+                walk_expr(body, *callee, owner, scope_result, resolver, item_trees, out);
+                for arg in args {
+                    walk_expr(body, *arg, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::New { args, .. } => {
+                for arg in args {
+                    walk_expr(body, *arg, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::ArrayCreation { dim_exprs, .. } => {
+                for dim in dim_exprs {
+                    walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::Unary { expr, .. }
+            | hir::Expr::Instanceof { expr, .. }
+            | hir::Expr::Cast { expr, .. } => {
+                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::Binary { lhs, rhs, .. } | hir::Expr::Assign { lhs, rhs, .. } => {
+                walk_expr(body, *lhs, owner, scope_result, resolver, item_trees, out);
+                walk_expr(body, *rhs, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(body, *then_expr, owner, scope_result, resolver, item_trees, out);
+                walk_expr(body, *else_expr, owner, scope_result, resolver, item_trees, out);
+            }
+            hir::Expr::Lambda { body: lambda_body, .. } => match lambda_body {
+                hir::LambdaBody::Expr(expr) => {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
+                }
+                hir::LambdaBody::Block(stmt) => {
+                    walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+                }
+            },
+            hir::Expr::Invalid { children, .. } => {
+                for child in children {
+                    walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::Name { .. }
+            | hir::Expr::Literal { .. }
+            | hir::Expr::Null { .. }
+            | hir::Expr::This { .. }
+            | hir::Expr::Super { .. }
+            | hir::Expr::Missing { .. } => {}
+        }
+    }
+
+    walk_stmt(body, body.root, owner, scope_result, resolver, item_trees, out);
+}
+
+fn infer_switch_selector_enum_type(
+    body: &hir::Body,
+    selector: &hir::ExprId,
+    scope: ScopeId,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
+) -> Option<ItemId> {
+    let hir::Expr::Name { name, .. } = &body.exprs[*selector] else {
+        return None;
+    };
+
+    let resolved = resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))?;
+    let ty_text = match resolved {
+        Resolution::Local(local_ref) => body.locals[local_ref.local].ty_text.clone(),
+        Resolution::Parameter(param_ref) => match param_ref.owner {
+            ParamOwner::Method(m) => {
+                let tree = item_trees.get(&m.file)?;
+                tree.method(m).params.get(param_ref.index)?.ty.clone()
+            }
+            ParamOwner::Constructor(c) => {
+                let tree = item_trees.get(&c.file)?;
+                tree.constructor(c).params.get(param_ref.index)?.ty.clone()
+            }
+        },
+        Resolution::Field(field) => {
+            let tree = item_trees.get(&field.file)?;
+            tree.field(field).ty.clone()
+        }
+        _ => return None,
+    };
+
+    let Some(type_name) = type_name_from_ref_text(&ty_text) else {
+        return None;
+    };
+    let resolved = resolver.resolve_qualified_type_resolution_in_scope(
+        &scope_result.scopes,
+        scope,
+        &QualifiedName::from_dotted(&type_name),
+    )?;
+    match resolved {
+        TypeResolution::Source(item @ ItemId::Enum(_)) => Some(item),
+        _ => None,
+    }
+}
+
 fn record_syntax_only_references(
     file: &FileId,
     text: &str,
     tree: &nova_hir::item_tree::ItemTree,
     scope_result: &ScopeBuildResult,
+    snap: &nova_db::salsa::Snapshot,
+    item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
     resolver: &Resolver<'_>,
     workspace: &WorkspaceDefMap,
     resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
@@ -4948,6 +5227,61 @@ fn record_syntax_only_references(
             continue;
         }
         type_scopes.push((TextRange::new(body_span.start, body_span.end), class_scope));
+    }
+
+    let type_scope_at = |start: usize| -> Option<ScopeId> {
+        let mut best: Option<(usize, ScopeId)> = None;
+        for (body_range, class_scope) in &type_scopes {
+            if body_range.start <= start && start < body_range.end {
+                let len = body_range.len();
+                if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                    best = Some((len, *class_scope));
+                }
+            }
+        }
+        best.map(|(_, scope)| scope)
+    };
+
+    // Collect switch statement scopes from HIR (selector is in HIR, labels are not).
+    let mut switch_contexts: HashMap<usize, SwitchContext> = HashMap::new();
+    let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
+    method_ids.sort();
+    for method in method_ids {
+        let body = snap.hir_body(method);
+        collect_switch_contexts(
+            body.as_ref(),
+            BodyOwner::Method(method),
+            scope_result,
+            resolver,
+            item_trees,
+            &mut switch_contexts,
+        );
+    }
+    let mut ctor_ids: Vec<_> = scope_result.constructor_scopes.keys().copied().collect();
+    ctor_ids.sort();
+    for ctor in ctor_ids {
+        let body = snap.hir_constructor_body(ctor);
+        collect_switch_contexts(
+            body.as_ref(),
+            BodyOwner::Constructor(ctor),
+            scope_result,
+            resolver,
+            item_trees,
+            &mut switch_contexts,
+        );
+    }
+    let mut init_ids: Vec<_> = scope_result.initializer_scopes.keys().copied().collect();
+    init_ids.sort();
+    for init in init_ids {
+        let body = snap.hir_initializer_body(init);
+        collect_switch_contexts(
+            body.as_ref(),
+            BodyOwner::Initializer(init),
+            scope_result,
+            resolver,
+            item_trees,
+            &mut switch_contexts,
+        );
     }
 
     // Type references across the full syntax tree.
@@ -5412,6 +5746,153 @@ fn record_syntax_only_references(
                 spans,
             );
         }
+    }
+
+    // Field initializer expressions (`int x = ...;`) are not lowered into stable HIR.
+    for node in unit.syntax().descendants() {
+        let Some(field_decl) = ast::FieldDeclaration::cast(node) else {
+            continue;
+        };
+        let start = u32::from(field_decl.syntax().text_range().start()) as usize;
+        let Some(scope) = type_scope_at(start) else {
+            continue;
+        };
+
+        let Some(list) = field_decl.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            let Some(init) = decl.initializer() else {
+                continue;
+            };
+            record_expression_references(
+                file,
+                text,
+                init,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+
+    // Switch label expressions (`case FOO:`) are not lowered into stable HIR.
+    for node in unit.syntax().descendants() {
+        let Some(switch_stmt) = ast::SwitchStatement::cast(node) else {
+            continue;
+        };
+
+        let start = u32::from(switch_stmt.syntax().text_range().start()) as usize;
+        let (scope, selector_enum) = switch_contexts
+            .get(&start)
+            .map(|ctx| (ctx.scope, ctx.selector_enum))
+            .unwrap_or_else(|| (type_scope_at(start).unwrap_or(scope_result.file_scope), None));
+
+        for label in switch_stmt.labels() {
+            for expr in label.expressions() {
+                record_expression_references(
+                    file,
+                    text,
+                    expr.clone(),
+                    scope,
+                    scope_result,
+                    resolver,
+                    workspace,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+
+                // `case FOO:` inside `switch(enum)` implicitly refers to the enum constant.
+                let Some(enum_item) = selector_enum else {
+                    continue;
+                };
+                let ast::Expression::NameExpression(name_expr) = expr else {
+                    continue;
+                };
+                let segments = collect_ident_segments(name_expr.syntax());
+                if segments.len() != 1 {
+                    continue;
+                }
+                let (name, range) = segments[0].clone();
+
+                // If it resolves in the normal scope, it's not an implicit enum constant label.
+                if resolver
+                    .resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))
+                    .is_some()
+                {
+                    continue;
+                }
+
+                let Some(ty) = workspace.type_def(enum_item) else {
+                    continue;
+                };
+                let Some(field) = ty.fields.get(&Name::from(name.as_str())) else {
+                    continue;
+                };
+                let field_id = field.id;
+                let Some(tree) = item_trees.get(&field_id.file) else {
+                    continue;
+                };
+                if tree.field(field_id).kind != FieldKind::EnumConstant {
+                    continue;
+                }
+                record_reference(
+                    file,
+                    range,
+                    ResolutionKey::Field(field_id),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+    }
+
+    // Best-effort: switch expressions are not modeled in stable HIR, so we cannot recover the
+    // precise resolution scope. Fall back to the innermost enclosing type scope (or file scope).
+    for node in unit.syntax().descendants() {
+        let Some(switch_expr) = ast::SwitchExpression::cast(node) else {
+            continue;
+        };
+        let start = u32::from(switch_expr.syntax().text_range().start()) as usize;
+        let scope = type_scope_at(start).unwrap_or(scope_result.file_scope);
+        for label in switch_expr.labels() {
+            for expr in label.expressions() {
+                record_expression_references(
+                    file,
+                    text,
+                    expr,
+                    scope,
+                    scope_result,
+                    resolver,
+                    workspace,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+    }
+}
+
+fn type_name_from_ref_text(text: &str) -> Option<String> {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            out.push(ch);
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -5989,11 +6470,11 @@ fn record_lightweight_expr(
     use java_syntax::ast::Expr;
 
     match expr {
-        Expr::ArrayCreation(expr) => {
+        Expr::ArrayCreation(array) => {
             record_type_names_in_range(
                 file,
                 text,
-                TextRange::new(expr.elem_ty.range.start, expr.elem_ty.range.end),
+                TextRange::new(array.elem_ty.range.start, array.elem_ty.range.end),
                 type_scopes,
                 scope_result,
                 resolver,
@@ -6001,11 +6482,11 @@ fn record_lightweight_expr(
                 references,
                 spans,
             );
-            for dim in &expr.dim_exprs {
+            for dim_expr in &array.dim_exprs {
                 record_lightweight_expr(
                     file,
                     text,
-                    dim,
+                    dim_expr,
                     type_scopes,
                     scope_result,
                     resolver,
