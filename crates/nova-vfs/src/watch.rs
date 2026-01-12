@@ -168,7 +168,7 @@ pub trait FileWatcher: Send {
 /// Deterministic watcher implementation for tests.
 ///
 /// This watcher does not interact with the OS. Callers inject events manually via
-/// [`ManualFileWatcher::push`].
+/// [`ManualFileWatcher::push`] or [`ManualFileWatcherHandle`].
 #[derive(Debug)]
 pub struct ManualFileWatcher {
     tx: channel::Sender<WatchMessage>,
@@ -229,16 +229,12 @@ impl ManualFileWatcher {
 
     /// Inject a synthetic watcher event.
     pub fn push(&self, event: WatchEvent) -> io::Result<()> {
-        self.tx
-            .send(Ok(event))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+        self.handle().push(event)
     }
 
     /// Inject an asynchronous watcher error.
     pub fn push_error(&self, error: io::Error) -> io::Result<()> {
-        self.tx
-            .send(Err(error))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+        self.handle().push_error(error)
     }
 
     /// Paths passed to [`FileWatcher::watch_root`] (in call order).

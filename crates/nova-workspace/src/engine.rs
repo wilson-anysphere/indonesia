@@ -213,6 +213,29 @@ impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WatchDebounceConfig {
+    pub source: Duration,
+    pub build: Duration,
+}
+
+impl Default for WatchDebounceConfig {
+    fn default() -> Self {
+        Self {
+            source: Duration::from_millis(200),
+            build: Duration::from_millis(200),
+        }
+    }
+}
+
+#[cfg(test)]
+impl WatchDebounceConfig {
+    pub(crate) const ZERO: Self = Self {
+        source: Duration::ZERO,
+        build: Duration::ZERO,
+    };
+}
+
 pub struct WatcherHandle {
     watcher_stop: channel::Sender<()>,
     watcher_thread: Option<thread::JoinHandle<()>>,
@@ -534,10 +557,23 @@ impl WorkspaceEngine {
     }
 
     pub fn start_watching(self: &Arc<Self>) -> Result<WatcherHandle> {
-        self.start_watching_with_watcher_factory(NotifyFileWatcher::new)
+        self.start_watching_with_watcher_factory(NotifyFileWatcher::new, WatchDebounceConfig::default())
     }
 
-    fn start_watching_with_watcher_factory<W, F>(self: &Arc<Self>, watcher_factory: F) -> Result<WatcherHandle>
+    #[cfg(test)]
+    pub(crate) fn start_watching_with_watcher<W: FileWatcher + 'static>(
+        self: &Arc<Self>,
+        watcher: W,
+        debounce: WatchDebounceConfig,
+    ) -> Result<WatcherHandle> {
+        self.start_watching_with_watcher_factory(move || Ok(watcher), debounce)
+    }
+
+    fn start_watching_with_watcher_factory<W, F>(
+        self: &Arc<Self>,
+        watcher_factory: F,
+        debounce: WatchDebounceConfig,
+    ) -> Result<WatcherHandle>
     where
         W: FileWatcher + 'static,
         F: FnOnce() -> std::io::Result<W> + Send + 'static,
@@ -581,8 +617,8 @@ impl WorkspaceEngine {
             .name("workspace-watcher".to_string())
             .spawn(move || {
             let mut debouncer = Debouncer::new([
-                (ChangeCategory::Source, Duration::from_millis(200)),
-                (ChangeCategory::Build, Duration::from_millis(200)),
+                (ChangeCategory::Source, debounce.source),
+                (ChangeCategory::Build, debounce.build),
             ]);
             let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
             let retry_tick = channel::tick(Duration::from_secs(2));
@@ -707,8 +743,8 @@ impl WorkspaceEngine {
                                         if matches!(err, channel::TrySendError::Full(_)) {
                                             rescan_pending = true;
                                             debouncer = Debouncer::new([
-                                                (ChangeCategory::Source, Duration::from_millis(200)),
-                                                (ChangeCategory::Build, Duration::from_millis(200)),
+                                                (ChangeCategory::Source, debounce.source),
+                                                (ChangeCategory::Build, debounce.build),
                                             ]);
                                         } else {
                                             break;
@@ -719,8 +755,8 @@ impl WorkspaceEngine {
                             Ok(WatchEvent::Rescan) | Err(_) => {
                                 rescan_pending = true;
                                 debouncer = Debouncer::new([
-                                    (ChangeCategory::Source, Duration::from_millis(200)),
-                                    (ChangeCategory::Build, Duration::from_millis(200)),
+                                    (ChangeCategory::Source, debounce.source),
+                                    (ChangeCategory::Build, debounce.build),
                                 ]);
                             }
                         }
@@ -732,8 +768,8 @@ impl WorkspaceEngine {
                                 if matches!(err, channel::TrySendError::Full(_)) {
                                     rescan_pending = true;
                                     debouncer = Debouncer::new([
-                                        (ChangeCategory::Source, Duration::from_millis(200)),
-                                        (ChangeCategory::Build, Duration::from_millis(200)),
+                                        (ChangeCategory::Source, debounce.source),
+                                        (ChangeCategory::Build, debounce.build),
                                     ]);
                                 } else {
                                     break;
@@ -3928,7 +3964,7 @@ mod tests {
         let manual = ManualFileWatcher::new();
         let handle: ManualFileWatcherHandle = manual.handle();
         let _watcher = engine
-            .start_watching_with_watcher_factory(move || Ok(manual))
+            .start_watching_with_watcher(manual, WatchDebounceConfig::ZERO)
             .unwrap();
 
         let updated = "class Main { int x; }";
