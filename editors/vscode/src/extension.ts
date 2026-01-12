@@ -3186,7 +3186,7 @@ export function deactivate(): Thenable<void> | undefined {
   return stopPromise;
 }
 
-function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
+function hasExplicitWorkspaceRoutingHint(method: string, params: unknown): boolean {
   if (!params || typeof params !== 'object') {
     return false;
   }
@@ -3227,7 +3227,7 @@ function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
   // `workspace/executeCommand` params wrap routing hints inside an `arguments` array. If those hints
   // are present but don't match any workspace folder, avoid silently routing the request to the
   // active editor's workspace and prompt instead.
-  if (typeof record.command === 'string' && Array.isArray(record.arguments)) {
+  if (method === 'workspace/executeCommand' && typeof record.command === 'string' && Array.isArray(record.arguments)) {
     for (const arg of record.arguments) {
       if (hasHint(arg)) {
         return true;
@@ -3291,7 +3291,7 @@ async function pickWorkspaceFolderForRequest(
 
   // If params contain an explicit routing hint (uri/textDocument/projectRoot), avoid silently routing
   // the request elsewhere. Prompt instead.
-  if (!hasExplicitWorkspaceRoutingHint(params)) {
+  if (!hasExplicitWorkspaceRoutingHint(method, params)) {
     const activeUri = vscode.window.activeTextEditor?.document.uri;
     const activeWorkspace = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
     if (activeWorkspace) {
