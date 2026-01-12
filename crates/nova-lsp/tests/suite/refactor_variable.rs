@@ -169,6 +169,34 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_actions_only_offer_var_when_explicit_type_inference_fails() {
+    // `x` is a name expression. With only `TextDatabase` available, the parser cannot infer an
+    // explicit type for it, but `var` extraction is still applicable.
+    let fixture = r#"
+class C {
+    void m(Object x) {
+        System.out.println(/*start*/x/*end*/);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert_eq!(actions.len(), 1);
+
+    let lsp_types::CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+        panic!("expected code action");
+    };
+    assert_eq!(action.title, "Extract variable…");
+}
+
+#[test]
 fn extract_variable_code_action_not_offered_for_side_effectful_expression() {
     let fixture = r#"
 class C {

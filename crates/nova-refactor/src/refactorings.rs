@@ -939,6 +939,16 @@ pub fn extract_variable(
 
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_range);
 
+        // For explicit-typed extraction we must be confident about the type. If we don't have
+        // type-checker type information and our parser-only inference fell back to the generic
+        // "Object" type, reject the refactoring rather than guessing.
+        //
+        // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
+        // allow it.
+        if typeck_ty.is_none() && parser_ty == "Object" {
+            return Err(RefactorError::TypeInferenceFailed);
+        }
+
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when
         // they are already meaningful and avoid redundant *package* qualification (`Foo` instead
         // of `pkg.Foo`). Keep enclosing-type qualifiers like `Outer.Foo` since dropping them can

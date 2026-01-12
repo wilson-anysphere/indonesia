@@ -2,6 +2,7 @@ use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
     Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
     RefactorDatabase, RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError,
+    TextDatabase,
     WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
@@ -1352,6 +1353,38 @@ class Test {
 }
 "#;
     assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_use_var_false_errors_when_type_inference_unavailable() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    /*start*/foo()/*end*/;
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = TextDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::TypeInferenceFailed),
+        "expected TypeInferenceFailed error, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "could not infer type for extracted expression");
 }
 
 #[test]
