@@ -31,7 +31,7 @@ fn wait_for_semantic_search_indexing(
             &json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "method": "nova/semanticSearch/indexStatus",
+                "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
                 "params": {}
             }),
         );
