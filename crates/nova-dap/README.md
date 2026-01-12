@@ -229,6 +229,80 @@ Once attached:
 - `threads`, `stackTrace`, `scopes`, `variables` read data via JDWP.
 - `evaluate` is best-effort and currently focuses on simple local-variable reads.
 
+## Custom requests (`nova/*`)
+
+The default adapter implementation (`nova_dap::wire_server`) supports a small set of custom DAP
+requests under the `nova/*` namespace. These are sent as normal DAP `request` messages with
+`command` set to the string below.
+
+### `nova/streamDebug` (stream debugger)
+
+Run Nova's stream debugger for a Java Stream pipeline expression in the context of a specific stack
+frame.
+
+**Important:** this request should only be sent while the debuggee is *stopped* (after a breakpoint
+hit or step). `frameId` must refer to a currently-valid stack frame (from the most recent
+`stackTrace` response).
+
+#### Request
+
+- **Command:** `nova/streamDebug`
+- **Arguments:** JSON object with `camelCase` keys:
+  - `expression` (string, required)
+  - `frameId` (number, required)
+  - `maxSampleSize` (number, optional)
+  - `maxTotalTimeMs` (number, optional)
+  - `allowSideEffects` (bool, optional, default `false`)
+  - `allowTerminalOps` (bool, optional, default `false`)
+
+#### Response
+
+Response body:
+
+```jsonc
+{
+  "analysis": { /* nova_stream_debug::StreamChain */ },
+  "runtime": { /* nova_stream_debug::StreamDebugResult */ }
+}
+```
+
+#### Notes
+
+- The wire implementation uses `javac` plus JDWP `DefineClass`/`InvokeMethod` internally; `javac`
+  must be available on `PATH`.
+
+#### Example
+
+```jsonc
+// Request
+{
+  "seq": 42,
+  "type": "request",
+  "command": "nova/streamDebug",
+  "arguments": {
+    "expression": "list.stream().filter(x -> x > 0).map(x -> x * 2).count()",
+    "frameId": 3,
+    "maxSampleSize": 10,
+    "maxTotalTimeMs": 500,
+    "allowSideEffects": false,
+    "allowTerminalOps": true
+  }
+}
+
+// Response
+{
+  "seq": 43,
+  "type": "response",
+  "request_seq": 42,
+  "success": true,
+  "command": "nova/streamDebug",
+  "body": {
+    "analysis": { /* StreamChain */ },
+    "runtime": { /* StreamDebugResult */ }
+  }
+}
+```
+
 ## Real JVM integration test (optional)
 
 `nova-dap` includes an end-to-end smoke test that exercises the adapter against a
