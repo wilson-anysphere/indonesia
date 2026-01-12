@@ -411,23 +411,29 @@ fn loads_gradle_includeflat_workspace() {
         std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
     assert!(
         config.modules.iter().any(|m| m.root == expected_app_root),
-        "expected includeFlat module root to canonicalize to ../app"
+        "expected includeFlat module root to canonicalize to {expected_app_root:?}; got: {:?}",
+        config.modules.iter().map(|m| &m.root).collect::<Vec<_>>(),
     );
     assert!(
         config.modules.iter().any(|m| m.root == expected_lib_root),
-        "expected includeFlat module root to canonicalize to ../lib"
+        "expected includeFlat module root to canonicalize to {expected_lib_root:?}; got: {:?}",
+        config.modules.iter().map(|m| &m.root).collect::<Vec<_>>(),
     );
 
+    let expected_app_src = expected_app_root.join("src/main/java");
+    let expected_lib_src = expected_lib_root.join("src/main/java");
     assert!(
-        config.source_roots.iter().any(|sr| {
-            sr.kind == SourceRootKind::Main && sr.path == expected_app_root.join("src/main/java")
-        }),
+        config
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_app_src),
         "expected includeFlat app source root to be discovered under the canonicalized module root"
     );
     assert!(
-        config.source_roots.iter().any(|sr| {
-            sr.kind == SourceRootKind::Main && sr.path == expected_lib_root.join("src/main/java")
-        }),
+        config
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_lib_src),
         "expected includeFlat lib source root to be discovered under the canonicalized module root"
     );
 }
@@ -450,23 +456,29 @@ fn loads_gradle_includeflat_kts_workspace() {
         std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
     assert!(
         config.modules.iter().any(|m| m.root == expected_app_root),
-        "expected includeFlat module root to canonicalize to ../app"
+        "expected includeFlat module root to canonicalize to {expected_app_root:?}; got: {:?}",
+        config.modules.iter().map(|m| &m.root).collect::<Vec<_>>(),
     );
     assert!(
         config.modules.iter().any(|m| m.root == expected_lib_root),
-        "expected includeFlat module root to canonicalize to ../lib"
+        "expected includeFlat module root to canonicalize to {expected_lib_root:?}; got: {:?}",
+        config.modules.iter().map(|m| &m.root).collect::<Vec<_>>(),
     );
 
+    let expected_app_src = expected_app_root.join("src/main/java");
+    let expected_lib_src = expected_lib_root.join("src/main/java");
     assert!(
-        config.source_roots.iter().any(|sr| {
-            sr.kind == SourceRootKind::Main && sr.path == expected_app_root.join("src/main/java")
-        }),
+        config
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_app_src),
         "expected includeFlat app source root to be discovered under the canonicalized module root"
     );
     assert!(
-        config.source_roots.iter().any(|sr| {
-            sr.kind == SourceRootKind::Main && sr.path == expected_lib_root.join("src/main/java")
-        }),
+        config
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_lib_src),
         "expected includeFlat lib source root to be discovered under the canonicalized module root"
     );
 }
