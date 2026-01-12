@@ -1,6 +1,6 @@
 # Framework Support Workstream
 
-> **⚠️ MANDATORY: Read and follow [AGENTS.md](../AGENTS.md) completely before proceeding.**
+> **MANDATORY: Read and follow [AGENTS.md](../AGENTS.md) completely before proceeding.**
 > **All rules in AGENTS.md apply at all times. This file adds workstream-specific guidance.**
 
 ---
@@ -38,25 +38,50 @@ This workstream owns framework-specific intelligence - understanding Spring, Lom
 
 ```rust
 pub trait FrameworkAnalyzer: Send + Sync {
-    /// Framework identifier
-    fn id(&self) -> &'static str;
-    
-    /// Check if this framework is active in the project
-    fn is_active(&self, project: &ProjectModel) -> bool;
-    
-    /// Generate virtual members (e.g., Lombok getters)
-    fn virtual_members(&self, class: &ClassDecl) -> Vec<VirtualMember>;
-    
-    /// Provide additional diagnostics
-    fn diagnostics(&self, file: FileId) -> Vec<Diagnostic>;
-    
-    /// Provide navigation targets (e.g., Spring bean → injection point)
-    fn navigation(&self, symbol: SymbolId) -> Vec<NavigationTarget>;
-    
-    /// Provide additional completions
-    fn completions(&self, ctx: &CompletionContext) -> Vec<CompletionItem>;
+    /// Check if this analyzer applies to `project`.
+    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool;
+
+    /// Optional: extract framework-specific data from a file.
+    fn analyze_file(&self, _db: &dyn Database, _file: FileId) -> Option<FrameworkData> {
+        None
+    }
+
+    /// Optional: provide additional diagnostics for a file.
+    fn diagnostics(&self, _db: &dyn Database, _file: FileId) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+
+    /// Optional: provide completion items at a cursor location.
+    fn completions(&self, _db: &dyn Database, _ctx: &CompletionContext) -> Vec<CompletionItem> {
+        Vec::new()
+    }
+
+    /// Optional: provide navigation targets for a coarse symbol handle.
+    fn navigation(&self, _db: &dyn Database, _symbol: &Symbol) -> Vec<NavigationTarget> {
+        Vec::new()
+    }
+
+    /// Optional: synthesize framework-generated members (e.g., Lombok).
+    fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
+        Vec::new()
+    }
+
+    /// Optional: provide inlay hints for a file.
+    fn inlay_hints(&self, _db: &dyn Database, _file: FileId) -> Vec<InlayHint> {
+        Vec::new()
+    }
 }
 ```
+
+### IDE Integration Constraint (Database Adapter)
+
+`nova_framework::FrameworkAnalyzer` runs on `nova_framework::Database`, which requires structural
+queries like `class(ClassId) -> &nova_hir::framework::ClassData` (plus dependency/classpath checks).
+The IDE-facing `nova_db::Database` currently provides file text only.
+
+If you want to run framework analyzers inside `nova-ide`, you need an adapter layer that can supply
+`ClassData` and project metadata (often by building a `nova_framework::MemoryDatabase` from parsed
+sources). See `crates/nova-ide/src/lombok_intel.rs` for a complete example.
 
 ### Virtual Members
 
@@ -158,38 +183,27 @@ List<User> findByName(@Param("name") String name);
 
 ```rust
 impl FrameworkAnalyzer for LombokAnalyzer {
-    fn virtual_members(&self, class: &ClassDecl) -> Vec<VirtualMember> {
-        let mut members = Vec::new();
-        
-        if has_annotation(class, "lombok.Data") {
-            for field in class.fields() {
-                members.push(VirtualMember::Method(getter_for(field)));
-                members.push(VirtualMember::Method(setter_for(field)));
-            }
-            members.push(VirtualMember::Method(equals_method(class)));
-            members.push(VirtualMember::Method(hashcode_method(class)));
-            members.push(VirtualMember::Method(tostring_method(class)));
+    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
+        db.has_dependency(project, "org.projectlombok", "lombok")
+    }
+
+    fn virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember> {
+        let class_data = db.class(class);
+        if !class_data.has_annotation("Data") {
+            return Vec::new();
         }
-        
-        members
+
+        // Generate `VirtualMember::{Field,Method,Constructor,InnerClass}` values.
+        Vec::new()
     }
 }
 ```
 
 ### Configuration File Support
 
-Many frameworks use YAML/properties files:
-
-```rust
-// Link code to configuration
-fn config_completions(&self, ctx: &ConfigContext) -> Vec<CompletionItem> {
-    // Offer completions in application.yml based on @ConfigurationProperties
-}
-
-fn config_navigation(&self, key: &str) -> Option<Location> {
-    // Navigate from config key to Java field
-}
-```
+Some frameworks also provide YAML/properties intelligence (e.g. Spring Boot config keys). This is
+not currently part of the `nova_framework::FrameworkAnalyzer` trait; `nova-ide` wires it in
+directly (see `crates/nova-ide/src/framework_cache.rs`).
 
 ---
 
