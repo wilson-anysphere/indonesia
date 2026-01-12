@@ -489,6 +489,12 @@ fn collect_gradle_build_files_rec(
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
+            // Avoid following directory symlinks: a workspace can contain symlink cycles (e.g. a
+            // symlink pointing to an ancestor directory), which would otherwise lead to infinite
+            // recursion and potentially scanning outside the workspace root.
+            if fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                continue;
+            }
             // Avoid scanning huge non-source directories that commonly show up in mono-repos.
             // These trees can contain many files that look like build files but should not
             // influence Nova's build fingerprint (e.g. vendored JS dependencies).
@@ -710,6 +716,29 @@ mod tests {
         .into_iter()
         .collect();
 
+        assert_eq!(rel, expected);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn collect_gradle_build_files_does_not_follow_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        write_file(&root.join("build.gradle"), b"plugins {}");
+        // Create a symlink cycle (`loop/` points back to the workspace root). The file walker
+        // should not recurse into the symlink directory.
+        symlink(root, root.join("loop")).unwrap();
+
+        let files = collect_gradle_build_files(root).unwrap();
+        let rel: BTreeSet<PathBuf> = files
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
+            .collect();
+
+        let expected: BTreeSet<PathBuf> = [PathBuf::from("build.gradle")].into_iter().collect();
         assert_eq!(rel, expected);
     }
 
