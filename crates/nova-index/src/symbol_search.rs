@@ -100,11 +100,12 @@ fn starts_with_case_insensitive(candidate: &[u8], query: &[u8]) -> bool {
     if query.len() > candidate.len() {
         return false;
     }
-    candidate
-        .iter()
-        .zip(query.iter())
-        .take(query.len())
-        .all(|(&c, &q)| c.to_ascii_lowercase() == q.to_ascii_lowercase())
+    for i in 0..query.len() {
+        if candidate[i].to_ascii_lowercase() != query[i].to_ascii_lowercase() {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
