@@ -6232,10 +6232,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     let param_ok = sig.params.len() == 1
                         && (sig.params[0].is_errorish()
-                            || assignment_conversion(env_ro, &sig.params[0], &Type::int()).is_some());
+                            || assignment_conversion(env_ro, &sig.params[0], &Type::int())
+                                .is_some());
                     let return_ok = sig.return_type != Type::Void
                         && (sig.return_type.is_errorish()
-                            || assignment_conversion(env_ro, &recv_info.ty, &sig.return_type).is_some());
+                            || assignment_conversion(env_ro, &recv_info.ty, &sig.return_type)
+                                .is_some());
 
                     if param_ok && return_ok {
                         ExprInfo {
@@ -6283,7 +6285,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         if sig.return_type == Type::Void {
                             return true;
                         }
-                        assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
+                        assignment_conversion(env_ro, &method.return_type, &sig.return_type)
+                            .is_some()
                     };
 
                     let ok = match &res {
@@ -9148,12 +9151,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     // For the innermost class, `call_kind` matches the usual static/instance rules.
                     // For outer classes, decide whether an implicit enclosing instance is available;
                     // if not, only allow static methods.
-                    let call_kind = if is_static_context || !self.has_enclosing_instance_of(owner_name)
-                    {
-                        CallKind::Static
-                    } else {
-                        CallKind::Instance
-                    };
+                    let call_kind =
+                        if is_static_context || !self.has_enclosing_instance_of(owner_name) {
+                            CallKind::Static
+                        } else {
+                            CallKind::Instance
+                        };
 
                     let call = MethodCall {
                         receiver: receiver_ty.clone(),
