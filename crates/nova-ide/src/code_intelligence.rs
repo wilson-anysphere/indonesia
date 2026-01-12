@@ -5512,7 +5512,7 @@ fn expected_argument_type_for_completion(
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
 
-    let (receiver_ty, call_kind) = infer_call_receiver(types, analysis, call)?;
+    let (receiver_ty, call_kind) = infer_call_receiver_for_argument_completion(types, analysis, call)?;
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
@@ -5575,7 +5575,7 @@ fn call_expr_for_argument_list<'a>(
     Some((call, active_parameter))
 }
 
-fn infer_call_receiver(
+fn infer_call_receiver_for_argument_completion(
     types: &mut TypeStore,
     analysis: &Analysis,
     call: &CallExpr,
