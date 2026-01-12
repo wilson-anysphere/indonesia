@@ -156,7 +156,7 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             return true;
         }
 
-        // Text fallback: if we can enumerate files and read contents, look for MapStruct usage in
+        // Source fallback: if we can enumerate files and read contents, look for MapStruct usage in
         // sources. This is the most precise signal available without build metadata.
         let files = db.all_files(project);
         if files

@@ -10181,13 +10181,7 @@ pub fn signature_help(
         .iter()
         .find(|c| c.name_span.start <= offset && offset <= c.close_paren)?;
 
-    let active_parameter = call
-        .arg_starts
-        .iter()
-        .enumerate()
-        .filter(|(_, start)| **start <= offset)
-        .map(|(idx, _)| idx as u32)
-        .last();
+    let active_parameter = Some(active_parameter_for_call(&analysis, call, offset) as u32);
 
     // Prefer semantic resolution (classpath-aware) for method calls with receivers.
     let mut types = TypeStore::with_minimal_jdk();
@@ -10710,20 +10704,41 @@ fn call_expr_for_argument_list<'a>(
     let call = analysis
         .calls
         .iter()
-        .filter(|c| c.name_span.end <= offset && offset <= c.close_paren)
+        .filter(|c| c.open_paren < offset && offset <= c.close_paren)
         .min_by_key(|c| c.close_paren)?;
 
-    let active_parameter = call
-        .arg_starts
-        .iter()
-        .enumerate()
-        .filter(|(_, start)| **start <= offset)
-        .map(|(idx, _)| idx)
-        .last()
-        .unwrap_or(0);
+    let active_parameter = active_parameter_for_call(analysis, call, offset);
 
     Some((call, active_parameter))
 }
+fn active_parameter_for_call(analysis: &Analysis, call: &CallExpr, offset: usize) -> usize {
+    // `CallExpr::arg_starts` only includes *non-empty* arguments. For incomplete calls like
+    // `foo(a, <|>)`, we still want to treat the cursor as being in argument #1 (0-indexed) even
+    // though there is no token for that argument yet.
+    //
+    // Count top-level commas (paren depth 1) between the call's `(` and the cursor.
+    let start_idx = analysis
+        .tokens
+        .partition_point(|t| t.span.start < call.open_paren);
+    let mut paren_depth = 0i32;
+    let mut commas = 0usize;
+
+    for tok in analysis.tokens.iter().skip(start_idx) {
+        if tok.span.start >= offset {
+            break;
+        }
+
+        match tok.kind {
+            TokenKind::Symbol('(') => paren_depth += 1,
+            TokenKind::Symbol(')') => paren_depth -= 1,
+            TokenKind::Symbol(',') if paren_depth == 1 => commas += 1,
+            _ => {}
+        }
+    }
+
+    commas
+}
+
 fn ensure_local_class_receiver(
     types: &mut TypeStore,
     analysis: &Analysis,
