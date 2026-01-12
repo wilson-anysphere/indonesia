@@ -1367,7 +1367,7 @@ fn type_mismatch_quick_fixes(
         let range = source_index.span_to_lsp_range(diag_span);
 
         if expected == "String" {
-            let edit = single_replace_edit(uri, range, format!("String.valueOf({expr})"));
+            let edit = single_replace_edit(uri, range.clone(), format!("String.valueOf({expr})"));
             actions.push(lsp_types::CodeActionOrCommand::CodeAction(
                 lsp_types::CodeAction {
                     title: "Convert to String".to_string(),

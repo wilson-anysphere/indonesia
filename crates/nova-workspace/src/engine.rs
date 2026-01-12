@@ -2878,27 +2878,6 @@ fn is_build_tool_input_file(path: &Path) -> bool {
         return true;
     }
 
-    // Gradle dependency locking can change resolved classpaths without modifying any build scripts.
-    //
-    // Patterns:
-    // - `gradle.lockfile` at any depth.
-    // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
-    //   `gradle/dependency-locks/` location).
-    if !in_ignored_dir && name == "gradle.lockfile" {
-        return true;
-    }
-    if !in_ignored_dir
-        && name.ends_with(".lockfile")
-        && path.parent().is_some_and(|parent| {
-            parent.ancestors().any(|dir| {
-                dir.file_name()
-                    .is_some_and(|name| name == "dependency-locks")
-            })
-        })
-    {
-        return true;
-    }
-
     // Gradle dependency locking can change resolved classpaths without modifying build scripts.
     //
     // Patterns:
@@ -2910,12 +2889,9 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     }
     if !in_ignored_dir
         && name.ends_with(".lockfile")
-        && path.parent().is_some_and(|parent| {
-            parent.ancestors().any(|dir| {
-                dir.file_name()
-                    .is_some_and(|name| name == "dependency-locks")
-            })
-        })
+        && path
+            .ancestors()
+            .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
     {
         return true;
     }
@@ -3655,6 +3631,26 @@ mod tests {
                 "expected file_rel_path and file_path to share the same Arc"
             );
         });
+    }
+
+    #[test]
+    fn build_config_refresh_triggers_for_gradle_dependency_lockfiles() {
+        let root = PathBuf::from("/tmp/workspace");
+        assert!(
+            should_refresh_build_config(&root, &[root.join("gradle.lockfile")]),
+            "expected gradle.lockfile to trigger build config refresh"
+        );
+        assert!(
+            should_refresh_build_config(
+                &root,
+                &[root.join("gradle/dependency-locks/compileClasspath.lockfile")]
+            ),
+            "expected dependency-locks/*.lockfile to trigger build config refresh"
+        );
+        assert!(
+            !should_refresh_build_config(&root, &[root.join("foo.lockfile")]),
+            "expected unrelated *.lockfile not to trigger build config refresh"
+        );
     }
 
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {

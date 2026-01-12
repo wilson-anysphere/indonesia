@@ -231,12 +231,9 @@ pub fn is_build_file(path: &Path) -> bool {
     }
     if !in_ignored_dir
         && name.ends_with(".lockfile")
-        && path.parent().is_some_and(|parent| {
-            parent.ancestors().any(|dir| {
-                dir.file_name()
-                    .is_some_and(|name| name == "dependency-locks")
-            })
-        })
+        && path
+            .ancestors()
+            .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
     {
         return true;
     }
@@ -320,6 +317,12 @@ mod tests {
             root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
             root.join(".nova").join("queries").join("gradle.json"),
+            root.join("gradle.lockfile"),
+            root.join("gradle")
+                .join("dependency-locks")
+                .join("compileClasspath.lockfile"),
+            root.join("dependency-locks")
+                .join("compileClasspath.lockfile"),
             root.join(".bsp").join("server.json"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
@@ -394,6 +397,8 @@ mod tests {
         let non_build_files = [
             root.join("jvm.config"),
             root.join(".bsp").join("server.txt"),
+            root.join("foo.lockfile"),
+            root.join(".gradle").join("gradle.lockfile"),
             // Wrapper jars must be in their canonical wrapper locations.
             root.join("gradle-wrapper.jar"),
             root.join(".mvn").join("maven-wrapper.jar"),
