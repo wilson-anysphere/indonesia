@@ -275,7 +275,6 @@ fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Opti
     // - method calls: `foo(a, b)`
     // - array indexing: `xs[a, b]` (syntactically invalid, but best-effort)
     // - array/anonymous-class initializers: `{ ... ; ... }`
-    // - generics: `<T, U>`
     //
     // `start` can be inside an outer construct (e.g. `for (...)`); we only track
     // nesting relative to `start`, so the semicolon that ends the declaration is
@@ -283,7 +282,6 @@ fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Opti
     let mut paren_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut brace_depth = 0usize;
-    let mut angle_depth = 0usize;
     for idx in start..end {
         match tokens.get(idx).and_then(|t| t.symbol()) {
             Some('(') => paren_depth += 1,
@@ -292,13 +290,8 @@ fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Opti
             Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
             Some('{') => brace_depth += 1,
             Some('}') => brace_depth = brace_depth.saturating_sub(1),
-            Some('<') => angle_depth += 1,
-            Some('>') => angle_depth = angle_depth.saturating_sub(1),
             Some(';')
-                if paren_depth == 0
-                    && bracket_depth == 0
-                    && brace_depth == 0
-                    && angle_depth == 0 =>
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
             {
                 return Some(idx);
             }
@@ -306,6 +299,39 @@ fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Opti
         }
     }
     None
+}
+
+fn angle_block_contains_comma(tokens: &[Token], open_angle: usize, close_angle: usize) -> bool {
+    // We only need to treat `<...>` as "nested" when it contains commas that could be
+    // mistaken for declarator separators (`new Foo<A, B>()`). Without commas, scanning
+    // for `, <ident>` is safe.
+    //
+    // We also ignore commas inside nested constructs like annotation arguments
+    // (`@Ann(x, y)`), which can appear inside type argument lists.
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    let mut i = open_angle.saturating_add(1);
+    while i < close_angle {
+        match tokens.get(i).and_then(|t| t.symbol()) {
+            Some('(') => paren_depth += 1,
+            Some(')') => paren_depth = paren_depth.saturating_sub(1),
+            Some('[') => bracket_depth += 1,
+            Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
+            Some('{') => brace_depth += 1,
+            Some('}') => brace_depth = brace_depth.saturating_sub(1),
+            Some(',')
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    false
 }
 
 fn scan_comma_separated_decl_names(
@@ -320,10 +346,22 @@ fn scan_comma_separated_decl_names(
     let mut paren_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut brace_depth = 0usize;
-    let mut angle_depth = 0usize;
 
     let mut i = start;
     while i < end {
+        // Best-effort: skip generic type-argument lists that contain commas, so we
+        // don't misinterpret `new Foo<A, B>()` as a comma-separated declarator list.
+        if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+            if tokens.get(i).and_then(|t| t.symbol()) == Some('<') {
+                if let Some(close) = find_matching(tokens, i, '<', '>') {
+                    if close < end && angle_block_contains_comma(tokens, i, close) {
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         match tokens.get(i).and_then(|t| t.symbol()) {
             Some('(') => paren_depth += 1,
             Some(')') => paren_depth = paren_depth.saturating_sub(1),
@@ -331,13 +369,8 @@ fn scan_comma_separated_decl_names(
             Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
             Some('{') => brace_depth += 1,
             Some('}') => brace_depth = brace_depth.saturating_sub(1),
-            Some('<') => angle_depth += 1,
-            Some('>') => angle_depth = angle_depth.saturating_sub(1),
             Some(',')
-                if paren_depth == 0
-                    && bracket_depth == 0
-                    && brace_depth == 0
-                    && angle_depth == 0 =>
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
             {
                 if let Some(name_tok) = tokens.get(i + 1) {
                     if let Some(name) = name_tok.ident() {

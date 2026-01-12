@@ -465,6 +465,39 @@ class Main { void test(){ Foo a, $1b; $0b.toString(); } }
 }
 
 #[test]
+fn go_to_declaration_on_second_local_in_comma_separated_decl_with_comparison_in_initializer() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Main.java
+class Main { void test(){ Foo a = (1 < 2) ? new Foo() : new Foo(), $1b = new Foo(); $0b.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_does_not_index_generic_type_args_as_declarators() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Main.java
+class Main { void test(){ Foo a = new Foo<Bar, $1Baz>(), b = new Foo(); $0Baz.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos);
+
+    assert!(got.is_none(), "expected no variable declaration for generic type argument");
+}
+
+#[test]
 fn go_to_implementation_on_second_local_receiver_in_comma_separated_decl() {
     let fixture = FileIdFixture::parse(
         r#"
