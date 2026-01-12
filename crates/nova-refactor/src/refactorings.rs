@@ -2416,51 +2416,9 @@ pub fn inline_variable(
             return Err(RefactorError::InlineNotSupported);
         };
 
-        let decl_stmt = ast::Statement::cast(decl_stmt.syntax().clone())
-            .ok_or(RefactorError::InlineNotSupported)?;
-
-        // 1) Ensure the usage statement is the immediate next statement after the declaration,
-        // within the same enclosing block/switch block.
-        let Some(decl_parent) = decl_stmt.syntax().parent() else {
-            return Err(RefactorError::InlineSideEffects);
-        };
-        let Some(usage_parent) = usage_stmt.syntax().parent() else {
-            return Err(RefactorError::InlineSideEffects);
-        };
-        if decl_parent != usage_parent {
-            return Err(RefactorError::InlineSideEffects);
-        }
-
-        let container_stmts: Vec<ast::Statement> =
-            if let Some(block) = ast::Block::cast(decl_parent.clone()) {
-                block.statements().collect()
-            } else if let Some(block) = ast::SwitchBlock::cast(decl_parent.clone()) {
-                block.statements().collect()
-            } else if let Some(group) = ast::SwitchGroup::cast(decl_parent.clone()) {
-                group.statements().collect()
-            } else {
-                return Err(RefactorError::InlineSideEffects);
-            };
-
-        let mut decl_idx: Option<usize> = None;
-        let mut usage_idx: Option<usize> = None;
-        let usage_stmt_range = syntax_range(usage_stmt.syntax());
-        for (idx, stmt) in container_stmts.iter().enumerate() {
-            let stmt_range = syntax_range(stmt.syntax());
-            if stmt_range == decl.statement_range {
-                decl_idx = Some(idx);
-            }
-            if stmt_range == usage_stmt_range {
-                usage_idx = Some(idx);
-            }
-        }
-
-        let (Some(decl_idx), Some(usage_idx)) = (decl_idx, usage_idx) else {
-            return Err(RefactorError::InlineSideEffects);
-        };
-        if usage_idx != decl_idx + 1 {
-            return Err(RefactorError::InlineSideEffects);
-        }
+        // 1) Ensure the usage statement is the immediate next statement after the declaration.
+        // Side-effectful inlining is only sound when we preserve statement-level evaluation order.
+        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
 
         // 2) Reject when the usage is nested under an execution boundary relative to the
         // declaration (conservative).
