@@ -1660,7 +1660,6 @@ pub fn core_file_diagnostics(
                 return;
             }
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
-            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
         });
     }
 
@@ -1777,7 +1776,6 @@ pub(crate) fn core_file_diagnostics_cancelable(
                 return;
             }
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
-            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
         });
     }
 
