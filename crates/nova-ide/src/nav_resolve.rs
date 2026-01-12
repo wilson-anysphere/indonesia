@@ -1459,25 +1459,86 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
         return None;
     }
 
-    // Best-effort parse of a qualified identifier chain: `a.b.C` (no generics, no method calls).
+    // Best-effort parse of a qualified receiver chain for method references:
     //
-    // We normalize whitespace by joining segments with `.`.
+    // - `Type::method`
+    // - `pkg.Type::method`
+    // - `Type<T>::method` (strip type args)
+    // - `expr.field::method`
+    // - `expr.call()::method` (only empty-arg calls, mirroring `receiver_before_dot`)
+    //
+    // We normalize whitespace by joining segments with `.` and representing empty-arg calls as
+    // `name()`. We intentionally do *not* attempt to parse arbitrary expressions or calls with
+    // arguments.
     let mut segments_rev: Vec<String> = Vec::new();
     let mut end = recv_end;
     loop {
-        // Parse last identifier segment.
-        let mut seg_end = end;
-        while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
-            seg_end -= 1;
+        if end == 0 {
+            return None;
         }
-        let mut seg_start = seg_end;
-        while seg_start > 0 && is_ident_continue(bytes[seg_start - 1]) {
-            seg_start -= 1;
-        }
-        if seg_start == seg_end {
-            break;
-        }
-        segments_rev.push(text[seg_start..seg_end].to_string());
+
+        // Segment can be either:
+        // - identifier (`foo`)
+        // - identifier with type args (`Foo<...>`) (we keep only `Foo`)
+        // - empty-arg call (`foo()`) with optional whitespace inside parens.
+        let (seg_start, seg) = if bytes.get(end - 1) == Some(&b')') {
+            // Best-effort parse `foo()` (no args; allow whitespace inside parens).
+            let close_paren_idx = end - 1;
+            let mut open_search = close_paren_idx;
+            while open_search > 0 && (bytes[open_search - 1] as char).is_ascii_whitespace() {
+                open_search -= 1;
+            }
+            if open_search == 0 || bytes[open_search - 1] != b'(' {
+                return None;
+            }
+            let open_paren_idx = open_search - 1;
+
+            let mut name_end = open_paren_idx;
+            while name_end > 0 && (bytes[name_end - 1] as char).is_ascii_whitespace() {
+                name_end -= 1;
+            }
+            let mut name_start = name_end;
+            while name_start > 0 && is_ident_continue(bytes[name_start - 1]) {
+                name_start -= 1;
+            }
+            if name_start == name_end || !is_ident_start(*bytes.get(name_start)?) {
+                return None;
+            }
+
+            let name = &text[name_start..name_end];
+            (name_start, format!("{name}()"))
+        } else {
+            let mut seg_end = end;
+            while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
+                seg_end -= 1;
+            }
+            if seg_end == 0 {
+                return None;
+            }
+
+            // Strip generic type args: `Foo<...>::method` / `pkg.Foo<...>::method`.
+            if bytes.get(seg_end - 1) == Some(&b'>') {
+                let open_angle_idx = matching_open_angle(bytes, seg_end - 1)?;
+                seg_end = open_angle_idx;
+                while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
+                    seg_end -= 1;
+                }
+                if seg_end == 0 {
+                    return None;
+                }
+            }
+
+            let mut seg_start = seg_end;
+            while seg_start > 0 && is_ident_continue(bytes[seg_start - 1]) {
+                seg_start -= 1;
+            }
+            if seg_start == seg_end || !is_ident_start(*bytes.get(seg_start)?) {
+                return None;
+            }
+            (seg_start, text[seg_start..seg_end].to_string())
+        };
+
+        segments_rev.push(seg);
 
         // Look for a preceding `.`, allowing whitespace around it.
         let mut k = seg_start;
@@ -1490,12 +1551,8 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
         end = k - 1;
     }
 
-    if segments_rev.is_empty() {
-        None
-    } else {
-        segments_rev.reverse();
-        Some(segments_rev.join("."))
-    }
+    segments_rev.reverse();
+    Some(segments_rev.join("."))
 }
 
 fn dot_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
