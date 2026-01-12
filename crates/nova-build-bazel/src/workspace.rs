@@ -953,7 +953,6 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         provider: CompileInfoProvider::Bsp,
                         info: info.clone(),
                     });
-                    self.persist_cache()?;
                     return Ok(info);
                 }
             }
