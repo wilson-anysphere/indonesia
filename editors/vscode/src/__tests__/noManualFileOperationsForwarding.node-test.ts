@@ -154,7 +154,7 @@ function resolveNotificationMethod(
   if (ts.isNewExpression(expr)) {
     const ctorName = lastPropertyName(expr.expression);
     const importedName = ctorName ? (imports.get(ctorName) ?? ctorName) : undefined;
-    if (importedName && /^NotificationType\d*$/.test(importedName)) {
+    if (importedName && (/^NotificationType\d*$/.test(importedName) || /^ProtocolNotificationType\d*$/.test(importedName))) {
       const arg0 = expr.arguments?.[0];
       const method = arg0 ? evalConstString(arg0, env) : undefined;
       if (typeof method === 'string') {
