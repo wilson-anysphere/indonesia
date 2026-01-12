@@ -77,7 +77,6 @@ pub fn lex_with_errors(input: &str) -> (Vec<Token>, Vec<LexError>) {
 }
 
 pub struct Lexer<'a> {
-    source: &'a str,
     input: Cow<'a, str>,
     text_map: TextMap,
     pos: usize,
@@ -88,7 +87,6 @@ impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         let (processed, text_map) = translate_unicode_escapes(input);
         Self {
-            source: input,
             input: processed,
             text_map,
             pos: 0,
