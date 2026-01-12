@@ -278,11 +278,13 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
             message: err.to_string(),
         })?;
 
-    let mut targets = workspace
-        .java_targets()
-        .map_err(|err| ProjectError::Bazel {
-            message: err.to_string(),
-        })?;
+    let mut targets = match options.bazel.target_universe.as_deref() {
+        Some(universe) => workspace.java_targets_in_universe(universe),
+        None => workspace.java_targets(),
+    }
+    .map_err(|err| ProjectError::Bazel {
+        message: err.to_string(),
+    })?;
     targets.sort();
     targets.dedup();
 

@@ -67,6 +67,7 @@ fn options_with_bazel_enabled() -> LoadOptions {
     LoadOptions {
         bazel: BazelLoadOptions {
             enable_target_loading: true,
+            target_universe: None,
             target_limit: 200,
             targets: None,
         },
@@ -204,6 +205,93 @@ fn loads_bazel_targets_as_module_configs() {
             target: Some(JavaVersion(17)),
             preview: false,
         }
+    );
+}
+
+#[test]
+fn loads_bazel_targets_as_module_configs_with_target_universe() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");
+
+    let query = read_fixture("bazel/query.txt");
+    let aquery_lib = read_fixture("bazel/aquery_lib.textproto");
+    let aquery_test = read_fixture("bazel/aquery_lib_test.textproto");
+    let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
+
+    let universe = "deps(//java/com/example:lib_test)";
+    let java_query = format!(r#"kind("java_.* rule", {universe})"#);
+
+    let runner = MockRunner::default()
+        // Intentionally only provide the scoped-universe query; if Nova issues a `//...` query the
+        // mock runner will fail the test.
+        .with_stdout("bazel", &["query", &java_query], query)
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib)"#,
+            ],
+            aquery_lib.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib))"#,
+            ],
+            aquery_lib,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib_test)"#,
+            ],
+            aquery_test.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib_test))"#,
+            ],
+            aquery_test,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:alias)"#,
+            ],
+            aquery_alias.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:alias))"#,
+            ],
+            aquery_alias,
+        );
+
+    let mut options = options_with_bazel_enabled();
+    options.bazel.target_universe = Some(universe.to_string());
+
+    let model = nova_project::load_bazel_workspace_model_with_runner(tmp.path(), &options, runner)
+        .expect("load bazel workspace model");
+
+    assert_eq!(
+        model.modules
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["//java/com/example:lib", "//java/com/example:lib_test"]
     );
 }
 

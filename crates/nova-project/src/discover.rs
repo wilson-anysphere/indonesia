@@ -56,6 +56,15 @@ pub struct BazelLoadOptions {
     /// - `bazel aquery` per target to extract `javac` settings
     pub enable_target_loading: bool,
 
+    /// Optional Bazel query universe expression used for Java target discovery.
+    ///
+    /// When set, Nova will scope target discovery to the provided expression, replacing the
+    /// default `//...` universe. This can dramatically improve startup performance in large
+    /// monorepos.
+    ///
+    /// Example: `deps(//my/app:app)`.
+    pub target_universe: Option<String>,
+
     /// Cap the number of targets for which we will execute `aquery`.
     ///
     /// Large workspaces can have thousands of targets; this avoids loading too much
@@ -73,6 +82,7 @@ impl Default for BazelLoadOptions {
     fn default() -> Self {
         Self {
             enable_target_loading: false,
+            target_universe: None,
             target_limit: 200,
             targets: None,
         }

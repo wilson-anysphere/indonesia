@@ -435,6 +435,49 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         )
     }
 
+    /// Discover `java_*` rule targets within an arbitrary Bazel query universe expression.
+    ///
+    /// This is a performance-focused alternative to [`BazelWorkspace::java_targets`] for large
+    /// workspaces: callers can avoid expensive `//...`-scoped queries by restricting discovery to
+    /// a smaller target graph (e.g. `deps(//my/app:app)`).
+    ///
+    /// Note: this always uses `bazel query` and does **not** use the BSP fast-path that
+    /// [`BazelWorkspace::java_targets`] can take.
+    pub fn java_targets_in_universe(&mut self, universe_expr: &str) -> Result<Vec<String>> {
+        let universe_expr = universe_expr.trim();
+        anyhow::ensure!(
+            !universe_expr.is_empty(),
+            "bazel java target discovery: universe expression is empty"
+        );
+
+        let query = format!(r#"kind("java_.* rule", {universe})"#, universe = universe_expr);
+        self.runner.run_with_stdout(&self.root, "bazel", &["query", &query], |stdout| {
+            let mut targets = Vec::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let bytes = stdout.read_line(&mut line)?;
+                if bytes == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    targets.push(trimmed.to_string());
+                }
+            }
+            Ok(targets)
+        })
+    }
+
+    /// Discover `java_*` rule targets within the transitive closure of `run_target`
+    /// (`deps(run_target)`).
+    ///
+    /// This is a convenience wrapper around [`BazelWorkspace::java_targets_in_universe`].
+    pub fn java_targets_in_run_target_closure(&mut self, run_target: &str) -> Result<Vec<String>> {
+        let universe = format!("deps({run_target})");
+        self.java_targets_in_universe(&universe)
+    }
+
     fn workspace_file_label_and_package(&self, file: &Path) -> Result<Option<(String, String)>> {
         let abs_file = if file.is_absolute() {
             normalize_absolute_path_lexically(file)
