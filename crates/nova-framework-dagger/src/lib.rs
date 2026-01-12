@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_core::{
     Diagnostic as CoreDiagnostic, DiagnosticSeverity, FileId, LineIndex, Position, ProjectId, Range,
@@ -72,7 +73,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
         }
 
         let project_id = db.project_of_file(file);
-        let Some(project) = self.project_analysis(db, project_id) else {
+        let Some(project) = self.project_analysis(db, project_id, file) else {
             return Vec::new();
         };
 
@@ -110,7 +111,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
         }
 
         let project_id = db.project_of_file(file);
-        let Some(project) = self.project_analysis(db, project_id) else {
+        let Some(project) = self.project_analysis(db, project_id, file) else {
             return Vec::new();
         };
 
@@ -193,50 +194,28 @@ impl DaggerAnalyzer {
         &self,
         db: &dyn Database,
         project: ProjectId,
+        current_file: FileId,
     ) -> Option<Arc<CachedDaggerProject>> {
         let mut pairs: Vec<(PathBuf, FileId)> = Vec::new();
-
         for file in db.all_files(project) {
             let Some(path) = db.file_path(file).map(Path::to_path_buf) else {
                 continue;
             };
-
             if path.extension().and_then(|e| e.to_str()) != Some("java") {
                 continue;
             }
-
-            let Some(_) = db.file_text(file) else {
-                continue;
-            };
-
             pairs.push((path, file));
         }
 
+        // If the database doesn't support project-wide enumeration, fall back to a best-effort
+        // filesystem scan rooted at the current file's workspace.
         if pairs.is_empty() {
-            return None;
+            return self.project_analysis_via_filesystem(db, project, current_file);
         }
 
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for (path, file) in &pairs {
-            let Some(text) = db.file_text(*file) else {
-                continue;
-            };
-
-            path.hash(&mut hasher);
-            text.len().hash(&mut hasher);
-
-            let ptr = text.as_ptr();
-            let ptr_again = db.file_text(*file).map(|t| t.as_ptr());
-            if ptr_again.is_some_and(|p| p == ptr) {
-                ptr.hash(&mut hasher);
-            } else {
-                text.hash(&mut hasher);
-            }
-        }
-        let fingerprint = hasher.finish();
-
+        let fingerprint = fingerprint_db_project_sources(db, &pairs);
         if let Some(existing) = self
             .cache
             .lock()
@@ -249,15 +228,16 @@ impl DaggerAnalyzer {
             }
         }
 
-        let mut files: Vec<JavaSourceFile> = Vec::with_capacity(pairs.len());
+        let mut files: Vec<JavaSourceFile> = Vec::new();
         for (path, file_id) in pairs {
-            let Some(text) = db.file_text(file_id) else {
+            let text = db
+                .file_text(file_id)
+                .map(str::to_string)
+                .or_else(|| std::fs::read_to_string(&path).ok());
+            let Some(text) = text else {
                 continue;
             };
-            files.push(JavaSourceFile {
-                path,
-                text: text.to_string(),
-            });
+            files.push(JavaSourceFile { path, text });
         }
 
         if files.is_empty() {
@@ -266,13 +246,219 @@ impl DaggerAnalyzer {
 
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let analysis = analyze_java_files(&files);
-
         let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
         self.cache
             .lock()
             .expect("dagger analysis cache mutex poisoned")
             .insert(project, Arc::clone(&cached));
         Some(cached)
+    }
+
+    fn project_analysis_via_filesystem(
+        &self,
+        db: &dyn Database,
+        project: ProjectId,
+        current_file: FileId,
+    ) -> Option<Arc<CachedDaggerProject>> {
+        let current_path = db.file_path(current_file)?;
+        let root = nova_project::workspace_root(current_path)?;
+
+        let mut java_paths = Vec::new();
+        for src_root in java_source_roots(&root) {
+            collect_java_files_inner(&src_root, &mut java_paths);
+        }
+        if java_paths.is_empty() {
+            return None;
+        }
+
+        java_paths.sort();
+        java_paths.dedup();
+
+        let fingerprint = fingerprint_fs_project_sources(db, &java_paths, current_file);
+        if let Some(existing) = self
+            .cache
+            .lock()
+            .expect("dagger analysis cache mutex poisoned")
+            .get(&project)
+            .cloned()
+        {
+            if existing.fingerprint == fingerprint {
+                return Some(existing);
+            }
+        }
+
+        let current_path_buf = current_path.to_path_buf();
+        let current_text = db.file_text(current_file);
+
+        let mut files: Vec<JavaSourceFile> = Vec::new();
+        for path in java_paths {
+            let text = if path == current_path_buf {
+                current_text
+                    .map(str::to_string)
+                    .or_else(|| std::fs::read_to_string(&path).ok())
+            } else {
+                db.file_id(&path)
+                    .and_then(|id| db.file_text(id).map(str::to_string))
+                    .or_else(|| std::fs::read_to_string(&path).ok())
+            };
+            let Some(text) = text else {
+                continue;
+            };
+            files.push(JavaSourceFile { path, text });
+        }
+
+        if files.is_empty() {
+            return None;
+        }
+
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let analysis = analyze_java_files(&files);
+        let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
+        self.cache
+            .lock()
+            .expect("dagger analysis cache mutex poisoned")
+            .insert(project, Arc::clone(&cached));
+        Some(cached)
+    }
+}
+
+fn fingerprint_db_project_sources(db: &dyn Database, files: &[(PathBuf, FileId)]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    files.len().hash(&mut hasher);
+    for (path, file_id) in files {
+        path.hash(&mut hasher);
+        file_id.to_raw().hash(&mut hasher);
+
+        match db.file_text(*file_id) {
+            Some(text) => {
+                text.len().hash(&mut hasher);
+
+                let ptr = text.as_ptr();
+                let ptr_again = db.file_text(*file_id).map(|t| t.as_ptr());
+                if ptr_again.is_some_and(|p| p == ptr) {
+                    ptr.hash(&mut hasher);
+                } else {
+                    text.hash(&mut hasher);
+                }
+            }
+            None => match std::fs::metadata(path) {
+                Ok(meta) => {
+                    meta.len().hash(&mut hasher);
+                    hash_mtime(&mut hasher, meta.modified().ok());
+                }
+                Err(_) => {
+                    0u64.hash(&mut hasher);
+                    0u32.hash(&mut hasher);
+                }
+            },
+        }
+    }
+
+    hasher.finish()
+}
+
+fn fingerprint_fs_project_sources(db: &dyn Database, files: &[PathBuf], current_file: FileId) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    files.len().hash(&mut hasher);
+    for path in files {
+        path.hash(&mut hasher);
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            Err(_) => {
+                0u64.hash(&mut hasher);
+                0u32.hash(&mut hasher);
+            }
+        }
+    }
+
+    // Account for unsaved edits in the current file (when available).
+    if let Some(text) = db.file_text(current_file) {
+        fingerprint_text_samples(text, &mut hasher);
+    }
+
+    hasher.finish()
+}
+
+fn fingerprint_text_samples(text: &str, hasher: &mut impl Hasher) {
+    let bytes = text.as_bytes();
+    bytes.len().hash(hasher);
+
+    const EDGE: usize = 64;
+    let prefix_len = bytes.len().min(EDGE);
+    bytes[..prefix_len].hash(hasher);
+
+    let mid_start = bytes.len() / 2;
+    let mid_end = (mid_start + EDGE).min(bytes.len());
+    bytes[mid_start..mid_end].hash(hasher);
+
+    let suffix_start = bytes.len().saturating_sub(EDGE);
+    bytes[suffix_start..].hash(hasher);
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        0u32.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
+}
+
+fn java_source_roots(project_root: &Path) -> Vec<PathBuf> {
+    let candidates = ["src/main/java", "src/test/java", "src"];
+    let mut roots = candidates
+        .into_iter()
+        .map(|rel| project_root.join(rel))
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        roots.push(project_root.to_path_buf());
+    }
+    roots
+}
+
+fn collect_java_files_inner(root: &Path, out: &mut Vec<PathBuf>) {
+    if !root.exists() {
+        return;
+    }
+    if root.is_file() {
+        if root.extension().and_then(|e| e.to_str()) == Some("java") {
+            out.push(root.to_path_buf());
+        }
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(
+                name,
+                "target" | "build" | "out" | ".git" | ".gradle" | ".idea"
+            ) {
+                continue;
+            }
+            collect_java_files_inner(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
+            out.push(path);
+        }
     }
 }
 

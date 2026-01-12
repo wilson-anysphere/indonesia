@@ -3770,7 +3770,9 @@ dependencies = [
  "nova-framework",
  "nova-hir",
  "nova-index",
+ "nova-project",
  "nova-types",
+ "tempfile",
 ]
 
 [[package]]
@@ -4135,7 +4137,6 @@ name = "nova-project"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hex",
  "nova-archive",
  "nova-build-bazel",
  "nova-build-model",
@@ -4149,7 +4150,6 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "toml",

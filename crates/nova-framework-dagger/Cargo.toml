@@ -8,8 +8,11 @@ nova-core = { path = "../nova-core" }
 nova-framework = { path = "../nova-framework" }
 nova-hir = { path = "../nova-hir" }
 nova-index = { path = "../nova-index" }
+nova-project = { path = "../nova-project" }
 nova-types = { path = "../nova-types" }
 
 [lib]
 path = "src/lib.rs"
 
+[dev-dependencies]
+tempfile.workspace = true
