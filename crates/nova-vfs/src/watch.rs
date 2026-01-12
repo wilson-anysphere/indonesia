@@ -180,6 +180,20 @@ pub trait FileWatcher: Send {
     }
 }
 
+impl<W: ?Sized + FileWatcher> FileWatcher for Box<W> {
+    fn watch_root(&mut self, root: &Path) -> io::Result<()> {
+        self.as_mut().watch_root(root)
+    }
+
+    fn unwatch_root(&mut self, root: &Path) -> io::Result<()> {
+        self.as_mut().unwatch_root(root)
+    }
+
+    fn receiver(&self) -> &channel::Receiver<WatchMessage> {
+        self.as_ref().receiver()
+    }
+}
+
 /// Deterministic watcher implementation for tests.
 ///
 /// This watcher does not interact with the OS. Callers inject events manually via

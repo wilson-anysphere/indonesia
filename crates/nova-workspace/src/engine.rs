@@ -578,9 +578,9 @@ impl WorkspaceEngine {
     }
 
     #[cfg(test)]
-    pub(crate) fn start_watching_with_watcher<W: FileWatcher + 'static>(
+    pub(crate) fn start_watching_with_watcher(
         self: &Arc<Self>,
-        watcher: W,
+        watcher: Box<dyn FileWatcher>,
         debounce: WatchDebounceConfig,
     ) -> Result<WatcherHandle> {
         self.start_watching_with_watcher_factory(move || Ok(watcher), debounce)
@@ -4070,7 +4070,7 @@ mod tests {
         let manual = ManualFileWatcher::new();
         let handle: ManualFileWatcherHandle = manual.handle();
         let _watcher = engine
-            .start_watching_with_watcher(manual, WatchDebounceConfig::ZERO)
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
             .unwrap();
 
         let updated = "class Main { int x; }";
