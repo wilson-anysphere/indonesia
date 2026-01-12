@@ -399,7 +399,7 @@ impl NovaServer {
 │    - Project explorer integration                               │
 │    - Debug launch configurations                                │
 │    - Test runner integration                                    │
-│    - Frameworks dashboard ("Nova Frameworks" view)              │
+│    - Frameworks dashboard ("Nova Frameworks" view in Explorer)  │
 │                                                                  │
 │  NEOVIM                                                         │
 │  • Built-in LSP client (0.5+)                                   │
@@ -449,8 +449,12 @@ The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, lab
 - exposes context menu actions (copy endpoint path, copy method+path, reveal in explorer). These are keyed off
   `TreeItem.contextValue` (e.g., `novaFrameworkEndpoint` for endpoints; `novaFrameworkBean` is reserved for bean nodes).
 - is refreshed on-demand via a view toolbar button / command (`nova.frameworks.refresh`)
+- supports quick navigation via **Nova: Search Framework Items…** (`nova.frameworks.search`)
 - can be extended to show framework-specific items like Micronaut endpoints/beans when the corresponding `nova/*`
   methods are available.
+
+Discovery is intentionally manual because these requests run under a small watchdog time budget; repeatedly refreshing
+could time out or trigger Nova safe mode.
 
 Payload notes (see `protocol-extensions.md` for full schemas):
 
@@ -611,9 +615,11 @@ export function activate(context: vscode.ExtensionContext) {
         }),
     );
     
-    // Frameworks dashboard ("Nova Frameworks" view)
+    // Frameworks dashboard (Explorer: "Nova Frameworks" view, id: `novaFrameworks`)
     const frameworksProvider = new FrameworkDashboardTreeDataProvider(client);
-    context.subscriptions.push(vscode.window.registerTreeDataProvider('novaFrameworks', frameworksProvider));
+    const frameworksView = vscode.window.createTreeView('novaFrameworks', { treeDataProvider: frameworksProvider });
+    context.subscriptions.push(frameworksView);
+    context.subscriptions.push(vscode.commands.registerCommand('nova.frameworks.refresh', () => frameworksProvider.refresh()));
     
     client.start();
 }
