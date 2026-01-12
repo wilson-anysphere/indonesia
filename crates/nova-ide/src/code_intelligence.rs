@@ -469,6 +469,9 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
         salsa.set_file_text(file, text.to_string());
+        // `nova-db` type checking consults the workspace definition map, which in turn
+        // requires a minimal project file list + relative path for determinism.
+        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
         salsa.set_project_files(project, Arc::new(vec![file]));
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
@@ -555,6 +558,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
         salsa.set_file_text(file, text.to_string());
+        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
         salsa.set_project_files(project, Arc::new(vec![file]));
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
@@ -3304,6 +3308,7 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     salsa.set_jdk_index(project, jdk);
     salsa.set_classpath_index(project, None);
     salsa.set_file_text(file, text.to_string());
+    salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
     salsa.set_project_files(project, Arc::new(vec![file]));
     let snap = salsa.snapshot();
     let ty = snap.type_at_offset_display(file, offset as u32)?;
