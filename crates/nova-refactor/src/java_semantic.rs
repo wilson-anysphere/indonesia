@@ -6252,16 +6252,8 @@ fn collect_switch_contexts(
                 for dim in dim_exprs {
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
-                if let Some(initializer) = initializer {
-                    walk_expr(
-                        body,
-                        *initializer,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
+                if let Some(init) = initializer {
+                    walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
                 }
             }
              hir::Expr::ArrayInitializer { items, .. } => {
@@ -6750,10 +6742,32 @@ fn record_syntax_only_references(
                     references,
                     spans,
                 );
+                continue;
+            }
+
+            // 2) Static member types (nested types), e.g. `import static p.Outer.Inner;`.
+            //
+            // We only attempt this if no value member matched to avoid ambiguities between the
+            // type and value namespaces (a single import can legally introduce both, but rename
+            // would need to split the import to update only one side).
+            let owner_def = workspace.type_def(owner);
+            let nested = owner_def
+                .and_then(|def| def.nested_types.get(&Name::from(member_name)).copied());
+            if let Some(nested) = nested {
+                record_reference(
+                    file,
+                    member_range,
+                    ResolutionKey::Type(nested),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
             }
         } else {
-            // `import p.Type;` or `import p.Type.*;` — record type references for each prefix so
-            // `Outer.Inner` counts as a reference to both `Outer` and `Inner`.
+            // Record type references for each resolvable prefix so `Outer.Inner` counts as a
+            // reference to both `Outer` and `Inner`. This also handles `import p.Outer.*;` (type
+            // import-on-demand) without needing special casing: package star imports won't resolve
+            // as a type and therefore won't record anything.
             record_type_prefix_references(
                 file,
                 scope_result.file_scope,

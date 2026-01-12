@@ -466,11 +466,9 @@ fn extract_variable_replaces_whole_expression_statement_preserving_inline_commen
 fn extract_variable_replaces_whole_expression_statement_with_trailing_comment_when_selection_excludes_comment(
 ) {
     let file = FileId::new("Test.java");
-    let fixture = r#"class Foo {}
-
-class Test {
+    let fixture = r#"class Test {
   void m() {
-    /*select*/new Foo()/*end*/ /*middle*/;
+    /*select*/1 + 2/*end*/ /*middle*/;
   }
 }
 "#;
@@ -491,11 +489,9 @@ class Test {
     .unwrap();
 
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
-    let expected = r#"class Foo {}
-
-class Test {
+    let expected = r#"class Test {
   void m() {
-    Foo result = new Foo() /*middle*/;
+    int result = 1 + 2 /*middle*/;
   }
 }
 "#;
@@ -2494,12 +2490,6 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
     // Regression test: parser-only type inference for `+` should only infer `String` when either
     // operand is already inferred `String` (not when a nested string literal exists somewhere in
     // the expression subtree).
-    //
-    // Use `TextDatabase` so we exercise the parser-only inference path (no typeck).
-    //
-    // Without type-checker information we refuse to proceed when the best we can do is a generic
-    // `Object` guess. This test asserts we *don't* incorrectly infer `String` from the nested
-    // `"x"` literal (which would allow the refactoring to proceed).
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   void m() {
