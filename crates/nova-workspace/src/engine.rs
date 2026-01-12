@@ -2274,29 +2274,67 @@ fn build_cache_dir(workspace_root: &Path, query_db: &salsa::Database) -> PathBuf
     workspace_root.join(".nova").join("build-cache")
 }
 
-fn is_build_file(path: &Path) -> bool {
+fn is_build_tool_input_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
 
-    matches!(
-        name,
-        "pom.xml"
-            | "build.gradle"
-            | "build.gradle.kts"
-            | "settings.gradle"
-            | "settings.gradle.kts"
-            | "gradle.properties"
-            | "gradle-wrapper.properties"
-            | "mvnw"
-            | "mvnw.cmd"
-            | "gradlew"
-            | "gradlew.bat"
-    )
+    // Mirror `nova-build`'s build-file fingerprinting exclusions to avoid treating build output /
+    // cache directories as project-changing inputs.
+    let in_ignored_dir = path.components().any(|c| {
+        c.as_os_str() == std::ffi::OsStr::new(".git")
+            || c.as_os_str() == std::ffi::OsStr::new(".gradle")
+            || c.as_os_str() == std::ffi::OsStr::new("build")
+            || c.as_os_str() == std::ffi::OsStr::new("target")
+            || c.as_os_str() == std::ffi::OsStr::new(".nova")
+            || c.as_os_str() == std::ffi::OsStr::new(".idea")
+    });
+
+    // Gradle script plugins can influence dependencies and tasks.
+    if !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts")) {
+        return true;
+    }
+
+    // Gradle version catalogs can define dependency versions.
+    if !in_ignored_dir && name == "libs.versions.toml" {
+        return true;
+    }
+
+    // Custom version catalogs must live directly under a `gradle/` directory.
+    if !in_ignored_dir
+        && name.ends_with(".versions.toml")
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|dir| dir == "gradle")
+    {
+        return true;
+    }
+
+    if name == "pom.xml" {
+        return true;
+    }
+
+    match name {
+        "gradle.properties" | "gradlew" | "gradlew.bat" => true,
+        "gradle-wrapper.properties" => {
+            path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
+        }
+        "gradle-wrapper.jar" => path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")),
+        "mvnw" | "mvnw.cmd" => true,
+        "maven-wrapper.properties" => {
+            path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
+        }
+        "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
+        "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
+        "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
+        "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
+        _ => false,
+    }
 }
 
 fn should_refresh_build_config(changed_files: &[PathBuf]) -> bool {
-    changed_files.is_empty() || changed_files.iter().any(|path| is_build_file(path))
+    changed_files.is_empty() || changed_files.iter().any(|path| is_build_tool_input_file(path))
 }
 
 fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
@@ -2879,6 +2917,37 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+
+    #[test]
+    fn build_config_refresh_is_triggered_by_gradle_version_catalogs_and_script_plugins() {
+        let root = PathBuf::from("/tmp/workspace");
+
+        assert!(
+            should_refresh_build_config(&[root.join("libs.versions.toml")]),
+            "expected root libs.versions.toml to trigger build-tool refresh"
+        );
+
+        assert!(
+            should_refresh_build_config(&[root.join("gradle").join("foo.versions.toml")]),
+            "expected gradle/foo.versions.toml to trigger build-tool refresh"
+        );
+
+        assert!(
+            should_refresh_build_config(&[root.join("dependencies.gradle")]),
+            "expected dependencies.gradle to trigger build-tool refresh"
+        );
+
+        assert!(
+            should_refresh_build_config(&[root.join("dependencies.gradle.kts")]),
+            "expected dependencies.gradle.kts to trigger build-tool refresh"
+        );
+
+        // Build output directories should not trigger build-tool refresh.
+        assert!(
+            !should_refresh_build_config(&[root.join("build").join("dependencies.gradle")]),
+            "expected build/dependencies.gradle to be ignored"
+        );
+    }
 
     #[test]
     fn open_document_keeps_file_rel_path_shared_with_persistent_file_path() {
