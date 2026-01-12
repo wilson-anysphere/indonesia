@@ -920,6 +920,42 @@ class C {
 }
 
 #[test]
+fn type_at_offset_display_is_demand_driven_and_does_not_execute_typeck_body() {
+    let src = r#"
+class C {
+    String m() {
+        return "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("substring(")
+        .expect("snippet should contain substring call")
+        + "substring".len();
+
+    // Reset query stats so the assertion below only reflects the `type_at_offset_display` call.
+    db.clear_query_stats();
+
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_at_offset_display should not execute typeck_body"
+    );
+}
+
+#[test]
 fn type_at_offset_shows_string_for_concat() {
     let src = r#"
 class C {
@@ -2240,6 +2276,64 @@ class C {
         typeck_body_activity,
         (0, 0),
         "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn demand_var_self_initializer_emits_cyclic_var_and_does_not_overflow() {
+    let src = r#"
+class C {
+    void m() {
+        var x = x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let owner = first_method_with_body(&db, file);
+    let body = match owner {
+        DefWithBodyId::Method(m) => db.hir_body(m),
+        DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+        DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+    };
+
+    let init_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Let {
+                initializer: Some(init),
+                ..
+            } => Some(*init),
+            _ => None,
+        })
+        .expect("expected a let statement with an initializer");
+
+    // Reset query stats so the assertion below only reflects the `type_of_expr_demand_result` call.
+    db.clear_query_stats();
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: init_expr,
+        },
+    );
+    assert!(
+        res.diagnostics.iter().any(|d| d.code.as_ref() == "cyclic-var"),
+        "expected cyclic-var diagnostic for `var x = x;`, got {:?}",
+        res.diagnostics
+    );
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_of_expr_demand_result should not execute typeck_body"
     );
 }
 
