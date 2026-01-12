@@ -2285,6 +2285,42 @@ class A {
 }
 
 #[test]
+fn completion_type_position_includes_boolean_primitive() {
+    let (db, file, pos) = fixture("class A { bo<|> x; }");
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"boolean"),
+        "expected completion list to contain boolean; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_includes_int_primitive() {
+    let (db, file, pos) = fixture("class A { in<|> x; }");
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"int"),
+        "expected completion list to contain int; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_includes_var_keyword_in_local_var_declaration() {
+    let (db, file, pos) = fixture("class A { void m(){ va<|> x = 1; } }");
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"var"),
+        "expected completion list to contain var; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");

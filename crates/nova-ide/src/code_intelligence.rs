@@ -2599,6 +2599,22 @@ fn module_info_completion_items(
     }
 }
 
+const JAVA_PRIMITIVE_TYPES: &[&str] = &[
+    "boolean", "byte", "short", "char", "int", "long", "float", "double",
+];
+
+const JAVA_LANG_COMMON_TYPES: &[&str] = &[
+    // Common `java.lang.*` types (implicitly imported).
+    "Object", "String", "Boolean", "Byte", "Short", "Character", "Integer", "Long", "Float",
+    "Double",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypePositionCompletionContext {
+    Type,
+    ReturnType,
+}
+
 const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
 const MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE: usize = 200;
 const MAX_NEW_TYPE_WORKSPACE_CANDIDATES: usize = 200;
@@ -5557,6 +5573,17 @@ pub(crate) fn core_completions(
         }
     }
 
+    if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let items = type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     if cancel.is_cancelled() {
         return Vec::new();
     }
@@ -6135,6 +6162,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
+    }
+
+    if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+        let items = type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     decorate_completions(
@@ -7004,6 +7036,270 @@ fn postfix_completion_item(range: Range, label: &str, snippet: String) -> Comple
         })),
         ..Default::default()
     }
+}
+
+fn type_position_completions(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    prefix_start: usize,
+    offset: usize,
+    prefix: &str,
+    ctx: TypePositionCompletionContext,
+) -> Vec<CompletionItem> {
+    let analysis = analyze(text);
+    let allow_var = ctx == TypePositionCompletionContext::Type
+        && analysis
+            .methods
+            .iter()
+            .any(|m| span_contains(m.body_span, prefix_start) || span_contains(m.body_span, offset));
+
+    let mut seen = HashSet::<String>::new();
+    let mut items = Vec::new();
+
+    for ty in JAVA_PRIMITIVE_TYPES {
+        if seen.insert((*ty).to_string()) {
+            items.push(CompletionItem {
+                label: (*ty).to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                ..Default::default()
+            });
+        }
+    }
+
+    if allow_var && seen.insert("var".to_string()) {
+        items.push(CompletionItem {
+            label: "var".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
+    }
+
+    if ctx == TypePositionCompletionContext::ReturnType && seen.insert("void".to_string()) {
+        items.push(CompletionItem {
+            label: "void".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
+    }
+
+    for ty in JAVA_LANG_COMMON_TYPES {
+        if seen.insert((*ty).to_string()) {
+            items.push(CompletionItem {
+                label: (*ty).to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..Default::default()
+            });
+        }
+    }
+
+    for class in &analysis.classes {
+        if seen.insert(class.name.clone()) {
+            items.push(CompletionItem {
+                label: class.name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Workspace type completions (cached, includes other workspace files / classpath).
+    //
+    // Keep the list bounded to avoid producing enormous completion payloads.
+    if prefix.len() >= 2 {
+        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+            let mut last_simple: Option<&str> = None;
+            let mut added = 0usize;
+            const MAX_TYPE_ITEMS: usize = 256;
+
+            for ty in env.workspace_index().types() {
+                if added >= MAX_TYPE_ITEMS {
+                    break;
+                }
+                if !ty.simple.starts_with(prefix) {
+                    continue;
+                }
+                if last_simple == Some(ty.simple.as_str()) {
+                    continue;
+                }
+                last_simple = Some(ty.simple.as_str());
+
+                if !seen.insert(ty.simple.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: ty.simple.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(ty.qualified.clone()),
+                    ..Default::default()
+                });
+                added += 1;
+            }
+        }
+    }
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items
+}
+
+fn type_position_completion_context(
+    text: &str,
+    prefix_start: usize,
+    offset: usize,
+) -> Option<TypePositionCompletionContext> {
+    let tokens = tokenize(text);
+    let idx = tokens.iter().position(|tok| {
+        tok.kind == TokenKind::Ident && tok.span.start == prefix_start && offset <= tok.span.end
+    })?;
+
+    let prev = prev_type_position_token(&tokens, idx)?;
+
+    // Avoid offering type completions for class/enum/interface names (`class Foo {}`).
+    if prev.kind == TokenKind::Ident
+        && matches!(
+            prev.text.as_str(),
+            "class" | "interface" | "enum" | "record" | "package" | "import"
+        )
+    {
+        return None;
+    }
+
+    let prev_allows_type = match prev.kind {
+        TokenKind::Ident => matches!(
+            prev.text.as_str(),
+            "new" | "extends" | "implements" | "throws" | "instanceof" | "catch"
+        ),
+        TokenKind::Symbol(ch) => matches!(ch, '{' | '}' | ';' | '(' | ',' | '<' | '>' | '=' | ':'),
+        _ => false,
+    };
+
+    if !prev_allows_type {
+        return None;
+    }
+
+    // Require a following identifier (variable / parameter / method name). This
+    // avoids hijacking expression completions at the start of a statement (e.g.
+    // `tr<cursor>` should suggest `true`, not only types).
+    let next = tokens.get(idx + 1)?;
+    if next.kind != TokenKind::Ident {
+        return None;
+    }
+
+    // If the current identifier is immediately followed by `(` and we're *not* in
+    // a `new Foo(` expression, we're more likely completing a constructor/method
+    // name than a type.
+    let next_is_lparen = matches!(
+        tokens.get(idx + 1),
+        Some(Token {
+            kind: TokenKind::Symbol('('),
+            ..
+        })
+    );
+    if next_is_lparen && !(prev.kind == TokenKind::Ident && prev.text == "new") {
+        return None;
+    }
+
+    let is_return_type = matches!(
+        (tokens.get(idx + 1), tokens.get(idx + 2)),
+        (
+            Some(Token {
+                kind: TokenKind::Ident,
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Symbol('('),
+                ..
+            })
+        )
+    );
+
+    Some(if is_return_type {
+        TypePositionCompletionContext::ReturnType
+    } else {
+        TypePositionCompletionContext::Type
+    })
+}
+
+fn prev_type_position_token<'a>(tokens: &'a [Token], idx: usize) -> Option<&'a Token> {
+    if idx == 0 {
+        return None;
+    }
+
+    let mut j: isize = idx as isize - 1;
+    while j >= 0 {
+        let tok = &tokens[j as usize];
+
+        if tok.kind == TokenKind::Ident && is_declaration_modifier(&tok.text) {
+            j -= 1;
+            continue;
+        }
+
+        // Skip `@Ann` (type-use or declaration annotations) in `@Ann Type`.
+        if tok.kind == TokenKind::Ident
+            && j > 0
+            && matches!(tokens[(j - 1) as usize].kind, TokenKind::Symbol('@'))
+        {
+            j -= 2;
+            continue;
+        }
+
+        // Skip `@Ann(...)` in `@Ann(...) Type`.
+        if tok.kind == TokenKind::Symbol(')') {
+            if let Some(open_idx) = matching_open_paren(tokens, j as usize) {
+                if open_idx >= 2
+                    && matches!(tokens[open_idx - 2].kind, TokenKind::Symbol('@'))
+                    && matches!(tokens[open_idx - 1].kind, TokenKind::Ident)
+                {
+                    j = open_idx as isize - 3;
+                    continue;
+                }
+            }
+        }
+
+        return Some(tok);
+    }
+
+    None
+}
+
+fn matching_open_paren(tokens: &[Token], close_idx: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut i = close_idx + 1;
+    while i > 0 {
+        i -= 1;
+        match tokens.get(i)?.kind {
+            TokenKind::Symbol(')') => depth += 1,
+            TokenKind::Symbol('(') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_declaration_modifier(ident: &str) -> bool {
+    matches!(
+        ident,
+        "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "transient"
+            | "volatile"
+            | "abstract"
+            | "synchronized"
+            | "native"
+            | "strictfp"
+            | "default"
+            | "sealed"
+            | "non-sealed"
+    )
 }
 
 fn infer_simple_expr_type(
@@ -9352,7 +9648,7 @@ fn type_name_completions(
         }
 
         let workspace = workspace_completion_bonus(&cand.item);
-        let weight = kind_weight(cand.item.kind);
+        let weight = kind_weight(cand.item.kind, &cand.item.label);
         let kind_key = format!("{:?}", cand.item.kind);
         scored.push((cand.item, score, bonus, workspace, weight, kind_key));
     }
@@ -11313,7 +11609,7 @@ fn static_import_completion_item(owner: &str, name: &str) -> CompletionItem {
         ..Default::default()
     }
 }
-fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
+fn kind_weight(kind: Option<CompletionItemKind>, label: &str) -> i32 {
     match kind {
         Some(
             CompletionItemKind::METHOD
@@ -11330,9 +11626,14 @@ fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
             | CompletionItemKind::STRUCT,
         ) => 60,
         Some(CompletionItemKind::SNIPPET) => 50,
+        Some(CompletionItemKind::KEYWORD) if is_java_type_keyword(label) => 65,
         Some(CompletionItemKind::KEYWORD) => 10,
         _ => 0,
     }
+}
+
+fn is_java_type_keyword(label: &str) -> bool {
+    JAVA_PRIMITIVE_TYPES.contains(&label) || matches!(label, "var" | "void")
 }
 
 fn compare_completion_items_for_dedup(
@@ -11552,7 +11853,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             let scope = scope_bonus(item.kind);
             let recency = ctx.last_used_offsets.get(&item.label).copied();
             let workspace = workspace_completion_bonus(&item);
-            let weight = kind_weight(item.kind) + static_import_bonus(&item);
+            let weight = kind_weight(item.kind, &item.label) + static_import_bonus(&item);
 
             // Prefer members declared on the receiver type itself over inherited members when all
             // other ranking signals tie. This is tagged by `semantic_member_completions` via
