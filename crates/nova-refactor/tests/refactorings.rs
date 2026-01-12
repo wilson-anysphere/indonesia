@@ -489,6 +489,21 @@ class Test {
         (
             r#"class Test {
   void m() {
+    String x = /*select*/null/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    String value = null;
+    String x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Test {
+  void m() {
     boolean x = /*select*/1 < 2/*end*/;
   }
 }

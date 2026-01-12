@@ -909,7 +909,7 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
 }
 
 fn infer_expr_type(expr: &ast::Expression) -> String {
-    match expr {
+    let inferred = match expr {
         ast::Expression::LiteralExpression(lit) => infer_type_from_literal(lit),
         ast::Expression::NewExpression(new_expr) => new_expr
             .ty()
@@ -967,7 +967,59 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
         | ast::Expression::NameExpression(_)
         | ast::Expression::ArrayInitializer(_) => "Object".to_string(),
         _ => "Object".to_string(),
+    };
+
+    // If we couldn't infer a meaningful type from the expression itself, try a cheap contextual
+    // fallback: use the declared type of the variable/field whose initializer contains this
+    // expression (when available).
+    //
+    // This is still parser-only and helps common cases like extracting `null`, `this`, or unknown
+    // call expressions from `String x = ...`.
+    if inferred == "Object" {
+        if let Some(ctx) = infer_type_from_enclosing_declaration(expr) {
+            return ctx;
+        }
     }
+
+    inferred
+}
+
+fn infer_type_from_enclosing_declaration(expr: &ast::Expression) -> Option<String> {
+    let expr_range = syntax_range(expr.syntax());
+
+    // Walk up to the nearest variable declarator and check if `expr` is within its initializer.
+    for node in expr.syntax().ancestors() {
+        let Some(declarator) = ast::VariableDeclarator::cast(node.clone()) else {
+            continue;
+        };
+        let Some(initializer) = declarator.initializer() else {
+            continue;
+        };
+
+        let init_range = syntax_range(initializer.syntax());
+        if !(init_range.start <= expr_range.start && expr_range.end <= init_range.end) {
+            continue;
+        }
+
+        // Prefer the closest declaration site.
+        for ancestor in declarator.syntax().ancestors() {
+            if let Some(local) = ast::LocalVariableDeclarationStatement::cast(ancestor.clone()) {
+                let ty = local.ty()?;
+                let rendered = render_java_type(ty.syntax());
+                if rendered == "var" {
+                    return None;
+                }
+                return Some(rendered);
+            }
+
+            if let Some(field) = ast::FieldDeclaration::cast(ancestor) {
+                let ty = field.ty()?;
+                return Some(render_java_type(ty.syntax()));
+            }
+        }
+    }
+
+    None
 }
 
 fn first_non_trivia_child_token_kind(node: &nova_syntax::SyntaxNode) -> Option<SyntaxKind> {
