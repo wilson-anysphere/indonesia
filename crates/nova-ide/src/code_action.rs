@@ -1048,6 +1048,25 @@ fn extract_unresolved_name(message: &str, source: &str, range: &Range) -> Option
     source_range_text(source, range).map(|s| s.to_string())
 }
 
+fn is_java_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !is_ident_start(first) {
+        return false;
+    }
+    chars.all(is_ident_continue)
+}
+
+fn is_ident_start(c: char) -> bool {
+    c == '_' || c == '$' || c.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(c: char) -> bool {
+    is_ident_start(c) || c.is_ascii_digit()
+}
+
 fn looks_like_value_identifier(name: &str) -> bool {
     name.as_bytes()
         .first()
