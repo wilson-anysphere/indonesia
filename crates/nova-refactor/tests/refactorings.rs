@@ -3086,6 +3086,47 @@ fn inline_variable_inline_all_rejected_when_unindexed_occurrence_exists() {
 }
 
 #[test]
+fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializer_has_side_effects()
+{
+    // If `find_references` does not report all textual occurrences, `inline_all=false` must keep the
+    // declaration. In that case, inlining a side-effectful initializer would duplicate evaluation,
+    // so the refactoring must be rejected.
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  int foo() { return 1; }
+  void m() {
+    int a = foo();
+    Runnable r = new Runnable() {
+      public void run() {
+        System.out.println(a);
+      }
+    };
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    let usage = refs.first().expect("at least one indexed reference").range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
 fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
