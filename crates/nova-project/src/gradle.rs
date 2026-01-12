@@ -572,25 +572,20 @@ pub(crate) fn load_gradle_workspace_model(
         .or_else(default_gradle_user_home);
     let gradle_properties = load_gradle_properties(root);
     let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
-    let root_dependencies =
+    let (root_subprojects_deps, root_allprojects_deps) =
+        parse_gradle_root_subprojects_allprojects_dependencies(
+            root,
+            version_catalog.as_ref(),
+            &gradle_properties,
+        );
+    let mut root_common_deps =
         parse_gradle_root_dependencies(root, version_catalog.as_ref(), &gradle_properties);
-
-    let module_root_by_project_path: BTreeMap<String, PathBuf> = module_refs
-        .iter()
-        .map(|module_ref| {
-            let module_root = if module_ref.dir_rel == "." {
-                root.to_path_buf()
-            } else if let Some(dir) = snapshot_project_dirs.get(&module_ref.project_path) {
-                dir.clone()
-            } else {
-                root.join(&module_ref.dir_rel)
-            };
-            let module_root = canonicalize_or_fallback(&module_root);
-            (module_ref.project_path.clone(), module_root)
-        })
-        .collect();
+    retain_dependencies_not_in(&mut root_common_deps, &root_subprojects_deps);
+    retain_dependencies_not_in(&mut root_common_deps, &root_allprojects_deps);
+    sort_dedup_dependencies(&mut root_common_deps);
 
     let mut module_configs = Vec::new();
+    let mut project_deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for module_ref in module_refs {
         let module_root = if module_ref.dir_rel == "." {
             root.to_path_buf()
@@ -764,16 +759,12 @@ pub(crate) fn load_gradle_workspace_model(
         // This intentionally does not attempt full Gradle dependency resolution.
         classpath.extend(parse_gradle_local_classpath_entries(&module_root));
 
-        // Best-effort: add dependent module outputs for project(":...") dependencies.
-        for dep_project_path in parse_gradle_project_dependencies(&module_root) {
-            let Some(dep_module_root) = module_root_by_project_path.get(&dep_project_path) else {
-                continue;
-            };
-            classpath.push(ClasspathEntry {
-                kind: ClasspathEntryKind::Directory,
-                path: dep_module_root.join("build/classes/java/main"),
-            });
-        }
+        // Best-effort: record inter-module `project(":...")` dependencies for later output-dir
+        // propagation into module classpaths (see post-processing after all module configs are built).
+        project_deps.insert(
+            module_ref.project_path.clone(),
+            parse_gradle_project_dependencies(&module_root),
+        );
         for entry in &options.classpath_overrides {
             classpath.push(ClasspathEntry {
                 kind: if entry
@@ -791,7 +782,11 @@ pub(crate) fn load_gradle_workspace_model(
         }
         let mut dependencies =
             parse_gradle_dependencies(&module_root, version_catalog.as_ref(), &gradle_properties);
-        dependencies.extend(root_dependencies.iter().cloned());
+        dependencies.extend(root_common_deps.iter().cloned());
+        if module_ref.project_path != ":" {
+            dependencies.extend(root_subprojects_deps.iter().cloned());
+        }
+        dependencies.extend(root_allprojects_deps.iter().cloned());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
         // for the same coordinates.
@@ -833,6 +828,53 @@ pub(crate) fn load_gradle_workspace_model(
     }
 
     sort_dedup_workspace_modules(&mut module_configs);
+
+    // Best-effort: propagate inter-module `project(":...")` dependencies into module classpaths.
+    //
+    // Gradle's "project dependency" graph is normally handled by Gradle itself. Since Nova does
+    // not execute Gradle for heuristic workspace loading, approximate it by wiring dependent
+    // module output directories onto the classpath.
+    let mut project_outputs: HashMap<String, (PathBuf, PathBuf)> = HashMap::new();
+    for module in &module_configs {
+        let WorkspaceModuleBuildId::Gradle { project_path } = &module.build_id else {
+            continue;
+        };
+
+        let mut main = None;
+        let mut test = None;
+        for dir in &module.output_dirs {
+            match dir.kind {
+                OutputDirKind::Main => main = Some(dir.path.clone()),
+                OutputDirKind::Test => test = Some(dir.path.clone()),
+            }
+        }
+        let (Some(main), Some(test)) = (main, test) else {
+            continue;
+        };
+        project_outputs.insert(project_path.clone(), (main, test));
+    }
+
+    for module in &mut module_configs {
+        let WorkspaceModuleBuildId::Gradle { project_path } = &module.build_id else {
+            continue;
+        };
+
+        let deps = transitive_gradle_project_dependencies(project_path, &project_deps);
+        for dep_project_path in deps {
+            if dep_project_path == *project_path {
+                continue;
+            }
+            let Some((main_output, _test_output)) = project_outputs.get(&dep_project_path) else {
+                continue;
+            };
+            module.classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: main_output.clone(),
+            });
+        }
+
+        sort_dedup_classpath(&mut module.classpath);
+    }
 
     let modules_for_jpms = module_configs
         .iter()
@@ -1734,6 +1776,181 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     None
 }
 
+fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(String, usize)> {
+    let bytes = contents.as_bytes();
+    if bytes.get(open_brace_index) != Some(&b'{') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    let mut i = open_brace_index;
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_single {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                if depth == 0 {
+                    let body = &contents[open_brace_index + 1..i - 1];
+                    return Some((body.to_string(), i));
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    None
+}
+
+fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
+    let keyword = keyword.trim();
+    if keyword.is_empty() {
+        return Vec::new();
+    }
+
+    let bytes = contents.as_bytes();
+    let kw_bytes = keyword.as_bytes();
+    let mut out = Vec::new();
+
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_single {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double = true;
+            i += 1;
+            continue;
+        }
+
+        if i + kw_bytes.len() <= bytes.len() && &bytes[i..i + kw_bytes.len()] == kw_bytes {
+            let prev_ok = i == 0
+                || !bytes[i - 1].is_ascii_alphanumeric()
+                    && bytes[i - 1] != b'_'
+                    && bytes[i - 1] != b'.';
+            let next_ok = i + kw_bytes.len() == bytes.len()
+                || !bytes[i + kw_bytes.len()].is_ascii_alphanumeric()
+                    && bytes[i + kw_bytes.len()] != b'_';
+            if prev_ok && next_ok {
+                out.push(i);
+                i += kw_bytes.len();
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let stripped = strip_gradle_comments(contents);
+    let bytes = stripped.as_bytes();
+
+    for start in find_keyword_positions_outside_strings(&stripped, keyword) {
+        let mut idx = start + keyword.len();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        // Handle `keyword(...) { ... }` form by skipping a single balanced `(...)` argument list.
+        if bytes[idx] == b'(' {
+            if let Some((_args, end)) = extract_balanced_parens(&stripped, idx) {
+                idx = end;
+                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+            }
+        }
+
+        if idx >= bytes.len() || bytes[idx] != b'{' {
+            continue;
+        }
+
+        if let Some((body, _end)) = extract_balanced_braces(&stripped, idx) {
+            out.push(body);
+        }
+    }
+
+    out
+}
+
 fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start: usize) -> String {
     // Groovy allows method calls without parentheses:
     //   include ':app', ':lib'
@@ -2294,9 +2511,28 @@ fn parse_gradle_root_dependencies(
     //
     // Parse them separately so we still discover dependencies even when subproject build scripts
     // are minimal.
-    parse_gradle_dependencies(root, version_catalog, gradle_properties)
+    let mut deps = parse_gradle_dependencies(root, version_catalog, gradle_properties);
+    let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+        root,
+        version_catalog,
+        gradle_properties,
+    );
+    deps.extend(subprojects);
+    deps.extend(allprojects);
+    sort_dedup_dependencies(&mut deps);
+    deps
 }
 
+/// Best-effort extraction of inter-module `project(":...")` dependencies from Gradle build scripts.
+///
+/// This is intended to cover common forms:
+/// - Groovy DSL: `implementation project(":lib")`
+/// - Kotlin DSL: `implementation(project(":lib"))`
+/// - Groovy DSL: `implementation project(path: ':lib')`
+///
+/// This does **not** attempt to resolve configurations, dependency constraints, or apply logic from
+/// `subprojects { ... }` blocks. It is only used to wire workspace-module output directories into
+/// the `WorkspaceProjectModel` classpath as a heuristic approximation of module dependencies.
 fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
     let candidates = ["build.gradle.kts", "build.gradle"]
         .into_iter()
@@ -2455,6 +2691,84 @@ fn interpolate_gradle_placeholders_once(
     }
 
     Some(after_simple.into_owned())
+}
+
+fn parse_gradle_root_subprojects_allprojects_dependencies(
+    workspace_root: &Path,
+    version_catalog: Option<&GradleVersionCatalog>,
+    gradle_properties: &GradleProperties,
+) -> (Vec<Dependency>, Vec<Dependency>) {
+    let candidates = ["build.gradle.kts", "build.gradle"]
+        .into_iter()
+        .map(|name| workspace_root.join(name))
+        .filter(|p| p.is_file())
+        .collect::<Vec<_>>();
+
+    let mut subprojects = Vec::new();
+    let mut allprojects = Vec::new();
+
+    for path in candidates {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+
+        for subproject_block in extract_named_brace_blocks(&contents, "subprojects") {
+            for deps_block in extract_named_brace_blocks(&subproject_block, "dependencies") {
+                subprojects.extend(parse_gradle_dependencies_from_text(
+                    &deps_block,
+                    version_catalog,
+                    gradle_properties,
+                ));
+            }
+        }
+
+        for allprojects_block in extract_named_brace_blocks(&contents, "allprojects") {
+            for deps_block in extract_named_brace_blocks(&allprojects_block, "dependencies") {
+                allprojects.extend(parse_gradle_dependencies_from_text(
+                    &deps_block,
+                    version_catalog,
+                    gradle_properties,
+                ));
+            }
+        }
+    }
+
+    sort_dedup_dependencies(&mut subprojects);
+    sort_dedup_dependencies(&mut allprojects);
+    (subprojects, allprojects)
+}
+
+fn transitive_gradle_project_dependencies(
+    project_path: &str,
+    direct_deps: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    fn visit(
+        current: &str,
+        direct_deps: &BTreeMap<String, Vec<String>>,
+        seen: &mut BTreeSet<String>,
+        out: &mut Vec<String>,
+    ) {
+        let Some(deps) = direct_deps.get(current) else {
+            return;
+        };
+
+        let mut deps = deps.clone();
+        deps.sort();
+        deps.dedup();
+        for dep in deps {
+            if !seen.insert(dep.clone()) {
+                continue;
+            }
+            out.push(dep.clone());
+            visit(&dep, direct_deps, seen, out);
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    seen.insert(project_path.to_string());
+    visit(project_path, direct_deps, &mut seen, &mut out);
+    out
 }
 
 /// Best-effort extraction of local classpath entries from Gradle build scripts.
@@ -3125,6 +3439,21 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
     *deps = out;
 }
 
+fn same_dependency_identity(a: &Dependency, b: &Dependency) -> bool {
+    a.group_id == b.group_id
+        && a.artifact_id == b.artifact_id
+        && a.version == b.version
+        && a.classifier == b.classifier
+        && a.type_ == b.type_
+}
+
+fn retain_dependencies_not_in(deps: &mut Vec<Dependency>, remove: &[Dependency]) {
+    if deps.is_empty() || remove.is_empty() {
+        return;
+    }
+    deps.retain(|dep| !remove.iter().any(|other| same_dependency_identity(dep, other)));
+}
+
 fn canonicalize_or_fallback(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -3611,9 +3940,8 @@ dependencies {
     testImplementation(libs.bundles["test"].get())
  }
 "#;
-
-        let deps =
-            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
+ 
+        let deps = parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
         let got: BTreeSet<_> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))

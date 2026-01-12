@@ -1,0 +1,4 @@
+rootProject.name = 'gradle-root-subprojects-deps'
+
+include ':app', ':lib'
+

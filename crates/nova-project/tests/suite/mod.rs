@@ -11,6 +11,7 @@ mod gradle_buildsrc;
 mod gradle_cache;
 mod gradle_canonical_paths;
 mod gradle_dependencies;
+mod gradle_dependency_propagation;
 mod gradle_jpms_workspace_model;
 mod gradle_reload_build_files;
 mod gradle_reload_snapshot;
