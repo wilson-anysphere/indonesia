@@ -1400,11 +1400,11 @@ async fn handle_request_inner(
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
             send_response(out_tx, seq, request, true, None, None);
-            // For attach sessions we don't generally know the target process name or PID. Use a
-            // stable, user-friendly label consistent with the executable we're debugging.
-            let process_name = "java";
+            // For attach sessions we don't generally know the target process name or PID.
+            // Use the attach target itself as a stable label.
+            let process_name = format!("{host_label}:{port}");
             let process_event_body =
-                make_process_event_body(process_name, None, is_local_process, "attach");
+                make_process_event_body(&process_name, None, is_local_process, "attach");
             send_event(out_tx, seq, "process", Some(process_event_body));
         }
         "restart" => {
