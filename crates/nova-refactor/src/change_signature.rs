@@ -1282,52 +1282,81 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
     let mut search_pos = before.len();
     while let Some(pos) = before[..search_pos].rfind(&needle) {
         let prefix = before[..pos].trim_end();
+        // Scan backwards for a plausible type token.
+        //
+        // This intentionally allows whitespace *inside* generic argument lists so we can recover
+        // types like `Map<String, Integer>` without accidentally stopping at the space after the
+        // comma.
         let bytes = prefix.as_bytes();
-        // Scan backwards to extract the `<Type>` in `<Type> <var_name>`. Type tokens can include
-        // generics (`Map<String, Integer>`) where whitespace may legitimately appear inside the
-        // angle brackets.
-        let mut start = prefix.len();
-        let mut angle_depth: i32 = 0;
-        while start > 0 {
-            let b = bytes[start - 1];
+        let mut i = prefix.len();
+        let mut depth_angle: i32 = 0;
+        let mut depth_brack: i32 = 0;
+        while i > 0 {
+            let b = bytes[i - 1];
             match b {
                 b'>' => {
-                    angle_depth += 1;
-                    start -= 1;
+                    depth_angle += 1;
+                    i -= 1;
                     continue;
                 }
                 b'<' => {
-                    if angle_depth > 0 {
-                        angle_depth -= 1;
+                    if depth_angle > 0 {
+                        depth_angle -= 1;
+                        i -= 1;
+                        continue;
                     }
-                    start -= 1;
+                    break;
+                }
+                b']' => {
+                    depth_brack += 1;
+                    i -= 1;
                     continue;
+                }
+                b'[' => {
+                    if depth_brack > 0 {
+                        depth_brack -= 1;
+                        i -= 1;
+                        continue;
+                    }
+                    break;
                 }
                 _ => {}
             }
 
-            if angle_depth > 0 {
-                start -= 1;
-                continue;
+            if depth_angle > 0 {
+                if is_type_token_char(b) || b.is_ascii_whitespace() {
+                    i -= 1;
+                    continue;
+                }
+                break;
             }
 
+            if depth_brack > 0 {
+                if is_type_token_char(b) || b.is_ascii_whitespace() {
+                    i -= 1;
+                    continue;
+                }
+                break;
+            }
             if b.is_ascii_whitespace() {
                 break;
             }
             if is_type_token_char(b) {
-                start -= 1;
+                i -= 1;
                 continue;
             }
-
             break;
         }
-        while start > 0 && !prefix.is_char_boundary(start) {
-            start -= 1;
+        while i > 0 && !prefix.is_char_boundary(i) {
+            i -= 1;
         }
 
-        let ty = prefix[start..].trim();
-        if is_plausible_type_token(ty) {
-            return Some(ty.to_string());
+        if depth_angle == 0 && depth_brack == 0 {
+            let ty = prefix[i..].trim();
+            let ty = ty.split_whitespace().collect::<Vec<_>>().join(" ");
+            if is_plausible_type_token(&ty) {
+                return Some(ty);
+            }
         }
         search_pos = pos;
     }
@@ -1340,7 +1369,7 @@ fn is_type_token_char(b: u8) -> bool {
         || b.is_ascii_whitespace()
         || matches!(
             b,
-            b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?'
+            b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?' | b'&'
         )
 }
 

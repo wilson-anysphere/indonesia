@@ -1176,3 +1176,84 @@ class C {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_infers_var_parameter_type() {
+    let fixture = r#"
+class C {
+    void m() {
+        var x = 1;
+        /*start*/System.out.println(x);/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        var x = 1;
+        extracted(x);
+    }
+
+    private void extracted(int x) {
+        System.out.println(x);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_infers_var_return_type() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/var x = 1;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int x = extracted();
+        System.out.println(x);
+    }
+
+    private int extracted() {
+        var x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}

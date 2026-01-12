@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use nova_format::NewlineStyle;
 use serde::{Deserialize, Serialize};
 
 use nova_core::Name;
+use nova_db::salsa::{Database as SalsaDatabase, NovaTypeck, Snapshot as SalsaSnapshot};
+use nova_db::{FileId as DbFileId, ProjectId};
 use nova_flow::build_cfg_with;
 use nova_hir::body::{Body, ExprId, ExprKind, LocalId, LocalKind, StmtId, StmtKind};
 use nova_hir::body_lowering::lower_flow_body_with;
@@ -12,6 +15,71 @@ use nova_syntax::{parse_java, SyntaxKind};
 use nova_types::Span;
 
 use crate::edit::{FileId, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit};
+
+struct SingleFileTypecheck {
+    file: DbFileId,
+    snapshot: SalsaSnapshot,
+}
+
+fn typecheck_single_file(source: &str) -> SingleFileTypecheck {
+    let db = SalsaDatabase::new();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+    db.set_classpath_index(project, None);
+
+    let file = DbFileId::from_raw(0);
+    db.set_file_text(file, source.to_string());
+    db.set_file_rel_path(file, Arc::new("Main.java".to_string()));
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    SingleFileTypecheck {
+        file,
+        snapshot: db.snapshot(),
+    }
+}
+
+fn is_valid_signature_type_string(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return false;
+    }
+    // `var` is illegal in (non-lambda) parameter and return types.
+    if ty == "var" {
+        return false;
+    }
+    // These are Nova-only placeholders and not valid Java source types.
+    if matches!(ty, "<?>" | "<error>" | "null") {
+        return false;
+    }
+    // `nova-types` renders unknown class/typevar ids as `<class#...>` / `<tv#...>`.
+    if ty.starts_with('<') {
+        return false;
+    }
+    if ty == "void" {
+        return false;
+    }
+    true
+}
+
+fn infer_type_at_offsets(
+    typeck: &mut Option<SingleFileTypecheck>,
+    source: &str,
+    offsets: impl IntoIterator<Item = usize>,
+) -> Option<String> {
+    for offset in offsets {
+        let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
+        let Some(ty) = typeck
+            .snapshot
+            .type_at_offset_display(typeck.file, offset as u32)
+        else {
+            continue;
+        };
+        if is_valid_signature_type_string(&ty) {
+            return Some(ty);
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
@@ -232,9 +300,8 @@ impl ExtractMethod {
                 &mut issues,
             );
 
-            let type_map = collect_declared_types(source, &method, &method_body);
-            let declared_types_by_name =
-                collect_declared_types_by_name(source, &method, &method_body);
+            let declared_types = collect_declared_types(source, &method, &method_body);
+            let declared_types_by_name = collect_declared_types_by_name(source, &method, &method_body);
             let thrown_exceptions = collect_thrown_exceptions_in_statements(
                 source,
                 &selection_info.statements,
@@ -244,14 +311,18 @@ impl ExtractMethod {
             let flow_params = collect_method_param_spans(&method);
             let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
 
+            let mut typeck: Option<SingleFileTypecheck> = None;
+
             let (reads_in_selection, writes_in_selection) =
                 collect_reads_writes_in_flow_selection(&flow_body, selection);
 
             let live_after_selection = live_locals_after_selection(&flow_body, selection);
 
             let return_value = compute_return_value(
+                &mut typeck,
+                source,
                 &flow_body,
-                &type_map,
+                &declared_types,
                 selection,
                 &writes_in_selection,
                 &live_after_selection,
@@ -260,12 +331,20 @@ impl ExtractMethod {
 
             // Determine parameters in order of first appearance in the selection.
             let mut parameters = Vec::new();
-            for local in reads_in_selection {
+            for (local, first_use) in reads_in_selection {
                 if local_declared_in_selection(&flow_body, local, selection) {
                     continue;
                 }
                 let name = flow_body.locals()[local.index()].name.as_str().to_string();
-                let ty = type_for_local(&flow_body, &type_map, local, &mut issues);
+                let ty = type_for_local(
+                    &mut typeck,
+                    source,
+                    &flow_body,
+                    &declared_types,
+                    local,
+                    Some(first_use.start),
+                    &mut issues,
+                );
                 parameters.push(Parameter { name, ty });
             }
 
@@ -343,7 +422,7 @@ impl ExtractMethod {
             });
         }
 
-        let type_map = collect_declared_types(source, &method, &method_body);
+        let declared_types = collect_declared_types(source, &method, &method_body);
 
         let flow_params = collect_method_param_spans(&method);
         let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
@@ -362,14 +441,24 @@ impl ExtractMethod {
             });
         };
 
+        let mut typeck: Option<SingleFileTypecheck> = None;
+
         let mut parameters = Vec::new();
-        for local in collect_reads_in_flow_expr(&flow_body, flow_expr_id, selection) {
+        for (local, first_use) in collect_reads_in_flow_expr(&flow_body, flow_expr_id, selection) {
             let local_data = &flow_body.locals()[local.index()];
             if span_within_range(local_data.span, selection) {
                 continue;
             }
             let name = local_data.name.as_str().to_string();
-            let ty = type_for_local(&flow_body, &type_map, local, &mut issues);
+            let ty = type_for_local(
+                &mut typeck,
+                source,
+                &flow_body,
+                &declared_types,
+                local,
+                Some(first_use.start),
+                &mut issues,
+            );
             parameters.push(Parameter { name, ty });
         }
 
@@ -378,9 +467,30 @@ impl ExtractMethod {
             &selected_expr,
             &flow_body,
             Some(flow_expr_id),
-            &type_map,
+            &declared_types.types,
         );
-        if return_ty.is_none() {
+        if return_ty.as_deref().is_some_and(|ty| ty.trim() == "var") {
+            let mut offsets = Vec::new();
+            if let ExprKind::Local(local_id) = &flow_body.expr(flow_expr_id).kind {
+                let local = &flow_body.locals()[local_id.index()];
+                if let Some(offset) = declared_types.initializer_offsets.get(&local.span).copied() {
+                    offsets.push(offset);
+                }
+            }
+            offsets.push(selection.start);
+            if let Some(inferred) = infer_type_at_offsets(&mut typeck, source, offsets) {
+                return_ty = Some(inferred);
+            }
+        }
+        if return_ty
+            .as_deref()
+            .is_some_and(|ty| !is_valid_signature_type_string(ty))
+        {
+            issues.push(ExtractMethodIssue::UnknownType {
+                name: self.name.clone(),
+            });
+            return_ty = Some("Object".to_string());
+        } else if return_ty.is_none() {
             issues.push(ExtractMethodIssue::UnknownType {
                 name: self.name.clone(),
             });
@@ -1064,23 +1174,26 @@ fn collect_method_param_spans(method: &EnclosingMethod) -> Vec<(Name, Span)> {
 ///
 /// This is used to recover type strings for extracted method parameters/return values. Using spans
 /// (rather than just names) lets us handle shadowing more correctly.
+struct DeclaredTypes {
+    types: HashMap<Span, String>,
+    initializer_offsets: HashMap<Span, usize>,
+}
+
 fn collect_declared_types(
     source: &str,
     method: &EnclosingMethod,
     method_body: &ast::Block,
-) -> HashMap<Span, String> {
-    let mut out = HashMap::new();
+) -> DeclaredTypes {
+    let mut types = HashMap::new();
+    let mut initializer_offsets = HashMap::new();
 
     if let Some(params) = method.parameter_list() {
         for param in params.parameters() {
             let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
                 continue;
             };
-            let ty_text = slice_syntax(source, ty.syntax())
-                .unwrap_or("Object")
-                .trim()
-                .to_string();
-            out.insert(span_of_token(&name_tok), ty_text);
+            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            types.insert(span_of_token(&name_tok), ty_text);
         }
     }
 
@@ -1103,7 +1216,12 @@ fn collect_declared_types(
             let Some(name_tok) = decl.name_token() else {
                 continue;
             };
-            out.insert(span_of_token(&name_tok), ty_text.clone());
+            let name_span = span_of_token(&name_tok);
+            types.insert(name_span, ty_text.clone());
+
+            if let Some(initializer) = decl.initializer() {
+                initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
+            }
         }
     }
 
@@ -1130,12 +1248,12 @@ fn collect_declared_types(
             let Some(name_tok) = decl.name_token() else {
                 continue;
             };
-
-            let ty_text = slice_syntax(source, ty.syntax())
-                .unwrap_or("Object")
-                .trim()
-                .to_string();
-            out.insert(span_of_token(&name_tok), ty_text);
+            let name_span = span_of_token(&name_tok);
+            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            types.insert(name_span, ty_text);
+            if let Some(initializer) = decl.initializer() {
+                initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
+            }
         }
     }
 
@@ -1181,7 +1299,7 @@ fn collect_declared_types(
             .unwrap_or("Object")
             .trim()
             .to_string();
-        out.insert(span_of_token(name_tok), ty_text);
+        types.insert(span_of_token(name_tok), ty_text);
     }
 
     // Catch parameters, enhanced-for variables, explicitly typed lambda parameters, etc. are all
@@ -1195,13 +1313,13 @@ fn collect_declared_types(
         let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
             continue;
         };
-        let ty_text = slice_syntax(source, ty.syntax())
-            .unwrap_or("Object")
-            .trim()
-            .to_string();
-        out.insert(span_of_token(&name_tok), ty_text);
+        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+        types.insert(span_of_token(&name_tok), ty_text);
     }
-    out
+    DeclaredTypes {
+        types,
+        initializer_offsets,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1399,7 +1517,7 @@ fn infer_thrown_exception_type_from_expr(
 fn collect_reads_writes_in_flow_selection(
     body: &Body,
     selection: TextRange,
-) -> (Vec<LocalId>, HashSet<LocalId>) {
+) -> (Vec<(LocalId, Span)>, HashSet<LocalId>) {
     let mut reads: Vec<(LocalId, Span)> = Vec::new();
     let mut writes: HashSet<LocalId> = HashSet::new();
 
@@ -1415,7 +1533,6 @@ fn collect_reads_writes_in_flow_selection(
     let reads = reads
         .into_iter()
         .filter(|(local, _)| seen.insert(*local))
-        .map(|(local, _)| local)
         .collect();
 
     (reads, writes)
@@ -1603,22 +1720,208 @@ fn local_declared_in_selection(body: &Body, local: LocalId, selection: TextRange
 }
 
 fn type_for_local(
+    typeck: &mut Option<SingleFileTypecheck>,
+    source: &str,
     body: &Body,
-    types: &HashMap<Span, String>,
+    types: &DeclaredTypes,
     local: LocalId,
+    fallback_offset: Option<usize>,
     issues: &mut Vec<ExtractMethodIssue>,
 ) -> String {
     let local_data = &body.locals()[local.index()];
-    types.get(&local_data.span).cloned().unwrap_or_else(|| {
-        let name = local_data.name.as_str().to_string();
+    let name = local_data.name.as_str().to_string();
+    let Some(mut ty) = types.types.get(&local_data.span).cloned() else {
         issues.push(ExtractMethodIssue::UnknownType { name });
-        "Object".to_string()
-    })
+        return "Object".to_string();
+    };
+
+    if ty.trim() != "var" {
+        return ty;
+    }
+
+    let mut offsets = Vec::new();
+    if let Some(offset) = types.initializer_offsets.get(&local_data.span).copied() {
+        offsets.push(offset);
+    }
+    if let Some(offset) = fallback_offset {
+        offsets.push(offset);
+    }
+
+    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
+        ty = inferred;
+        return ty;
+    }
+
+    issues.push(ExtractMethodIssue::UnknownType { name });
+    "Object".to_string()
+}
+
+fn update_first_use(best: &mut Option<usize>, candidate: usize) {
+    if best.is_none_or(|best| candidate < best) {
+        *best = Some(candidate);
+    }
+}
+
+fn first_local_use_after(body: &Body, local: LocalId, after: usize) -> Option<usize> {
+    let mut best = None;
+    collect_first_local_use_in_stmt(body, body.root(), local, after, &mut best);
+    best
+}
+
+fn collect_first_local_use_in_stmt(
+    body: &Body,
+    stmt_id: StmtId,
+    local: LocalId,
+    after: usize,
+    best: &mut Option<usize>,
+) {
+    let stmt = body.stmt(stmt_id);
+    if stmt.span.end <= after {
+        return;
+    }
+
+    match &stmt.kind {
+        StmtKind::Block(stmts) => {
+            for child in stmts {
+                collect_first_local_use_in_stmt(body, *child, local, after, best);
+            }
+        }
+        StmtKind::Let { initializer, .. } => {
+            if let Some(init) = initializer {
+                collect_first_local_use_in_expr(body, *init, local, after, best);
+            }
+        }
+        StmtKind::Assign { value, .. } => {
+            collect_first_local_use_in_expr(body, *value, local, after, best);
+        }
+        StmtKind::Expr(expr) => {
+            collect_first_local_use_in_expr(body, *expr, local, after, best);
+        }
+        StmtKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_first_local_use_in_expr(body, *condition, local, after, best);
+            collect_first_local_use_in_stmt(body, *then_branch, local, after, best);
+            if let Some(else_branch) = else_branch {
+                collect_first_local_use_in_stmt(body, *else_branch, local, after, best);
+            }
+        }
+        StmtKind::While { condition, body: inner } => {
+            collect_first_local_use_in_expr(body, *condition, local, after, best);
+            collect_first_local_use_in_stmt(body, *inner, local, after, best);
+        }
+        StmtKind::DoWhile { body: inner, condition } => {
+            collect_first_local_use_in_stmt(body, *inner, local, after, best);
+            collect_first_local_use_in_expr(body, *condition, local, after, best);
+        }
+        StmtKind::For {
+            init,
+            condition,
+            update,
+            body: inner,
+        } => {
+            if let Some(init) = init {
+                collect_first_local_use_in_stmt(body, *init, local, after, best);
+            }
+            if let Some(cond) = condition {
+                collect_first_local_use_in_expr(body, *cond, local, after, best);
+            }
+            if let Some(update) = update {
+                collect_first_local_use_in_stmt(body, *update, local, after, best);
+            }
+            collect_first_local_use_in_stmt(body, *inner, local, after, best);
+        }
+        StmtKind::Switch { expression, arms } => {
+            collect_first_local_use_in_expr(body, *expression, local, after, best);
+            for arm in arms {
+                for value in &arm.values {
+                    collect_first_local_use_in_expr(body, *value, local, after, best);
+                }
+                collect_first_local_use_in_stmt(body, arm.body, local, after, best);
+            }
+        }
+        StmtKind::Try {
+            body: inner,
+            catches,
+            finally,
+        } => {
+            collect_first_local_use_in_stmt(body, *inner, local, after, best);
+            for catch in catches {
+                collect_first_local_use_in_stmt(body, *catch, local, after, best);
+            }
+            if let Some(finally) = finally {
+                collect_first_local_use_in_stmt(body, *finally, local, after, best);
+            }
+        }
+        StmtKind::Return(expr) => {
+            if let Some(expr) = expr {
+                collect_first_local_use_in_expr(body, *expr, local, after, best);
+            }
+        }
+        StmtKind::Throw(expr) => {
+            collect_first_local_use_in_expr(body, *expr, local, after, best);
+        }
+        StmtKind::Break | StmtKind::Continue | StmtKind::Nop => {}
+    }
+}
+
+fn collect_first_local_use_in_expr(
+    body: &Body,
+    expr_id: ExprId,
+    local: LocalId,
+    after: usize,
+    best: &mut Option<usize>,
+) {
+    let expr = body.expr(expr_id);
+    if expr.span.end <= after {
+        return;
+    }
+
+    match &expr.kind {
+        ExprKind::Local(l) => {
+            if *l == local && expr.span.start >= after {
+                update_first_use(best, expr.span.start);
+            }
+        }
+        ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                collect_first_local_use_in_expr(body, *arg, local, after, best);
+            }
+        }
+        ExprKind::Unary { expr, .. } => {
+            collect_first_local_use_in_expr(body, *expr, local, after, best);
+        }
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_first_local_use_in_expr(body, *lhs, local, after, best);
+            collect_first_local_use_in_expr(body, *rhs, local, after, best);
+        }
+        ExprKind::FieldAccess { receiver, .. } => {
+            collect_first_local_use_in_expr(body, *receiver, local, after, best);
+        }
+        ExprKind::Call { receiver, args, .. } => {
+            if let Some(recv) = receiver {
+                collect_first_local_use_in_expr(body, *recv, local, after, best);
+            }
+            for arg in args {
+                collect_first_local_use_in_expr(body, *arg, local, after, best);
+            }
+        }
+        ExprKind::Invalid { children } => {
+            for child in children {
+                collect_first_local_use_in_expr(body, *child, local, after, best);
+            }
+        }
+    }
 }
 
 fn compute_return_value(
+    typeck: &mut Option<SingleFileTypecheck>,
+    source: &str,
     body: &Body,
-    types: &HashMap<Span, String>,
+    types: &DeclaredTypes,
     selection: TextRange,
     writes_in_selection: &HashSet<LocalId>,
     live_after_selection: &HashSet<LocalId>,
@@ -1641,7 +1944,8 @@ fn compute_return_value(
         [] => None,
         [local] => {
             let name = body.locals()[local.index()].name.as_str().to_string();
-            let ty = type_for_local(body, types, *local, issues);
+            let fallback_offset = first_local_use_after(body, *local, selection.end);
+            let ty = type_for_local(typeck, source, body, types, *local, fallback_offset, issues);
             Some(ReturnValue {
                 name,
                 ty,
@@ -2134,7 +2438,11 @@ fn find_flow_expr_in_expr(body: &Body, expr_id: ExprId, target: Span, found: &mu
     }
 }
 
-fn collect_reads_in_flow_expr(body: &Body, expr_id: ExprId, selection: TextRange) -> Vec<LocalId> {
+fn collect_reads_in_flow_expr(
+    body: &Body,
+    expr_id: ExprId,
+    selection: TextRange,
+) -> Vec<(LocalId, Span)> {
     let mut reads: Vec<(LocalId, Span)> = Vec::new();
     collect_reads_in_expr(body, expr_id, selection, &mut reads);
 
@@ -2147,7 +2455,6 @@ fn collect_reads_in_flow_expr(body: &Body, expr_id: ExprId, selection: TextRange
     reads
         .into_iter()
         .filter(|(local, _)| seen.insert(*local))
-        .map(|(local, _)| local)
         .collect()
 }
 

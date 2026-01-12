@@ -2273,9 +2273,15 @@ fn best_type_at_range_display(
             continue;
         };
         let ty = ty.trim();
-        // Filter out non-types that can show up in best-effort typeck display strings.
+        // Filter out Nova-specific placeholders and non-denotable types.
         // These are not valid Java types for variable declarations.
-        if ty.is_empty() || ty == "<?>" || ty == "<error>" || ty.eq_ignore_ascii_case("null") {
+        if ty.is_empty()
+            || ty == "<?>"
+            || ty == "<error>"
+            || ty.eq_ignore_ascii_case("null")
+            || ty == "void"
+            || ty.starts_with('<')
+        {
             continue;
         }
         return Some(ty.to_string());
