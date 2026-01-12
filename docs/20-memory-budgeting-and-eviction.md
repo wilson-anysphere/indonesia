@@ -71,8 +71,8 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 | `ItemTreeStore` (open-doc pinned `item_tree`) | `nova-db` | SyntaxTrees | yes | yes | Preserves open-doc summaries across Salsa memo eviction (`crates/nova-db/src/salsa/item_tree_store.rs`) |
 | `IndexCache` (generic bytes) | `nova-index` | Indexes | yes | yes | LRU-based (`crates/nova-index/src/memory_cache.rs`) |
 | `WorkspaceSymbolSearcher` | `nova-index` | Indexes | yes | yes | Tracks trigram/prefix index bytes (`crates/nova-index/src/symbol_search.rs`) |
-| Classpath index (Salsa input) | `nova-db` | Indexes | yes | yes | Dropped (set to `None`) under `High`/`Critical` pressure to keep the process alive. |
-| JDK index (Salsa input) | `nova-db` / `nova-jdk` | Indexes | yes | yes | Clears in-memory symbol caches (stub maps) under pressure, but keeps the index usable for lookups/decompilation. |
+| Classpath index (Salsa input) | `nova-db` | TypeInfo | yes | yes | Dropped (set to `None`) under `High`/`Critical` pressure to keep the process alive. |
+| JDK index (Salsa input) | `nova-db` / `nova-jdk` | TypeInfo | yes | yes | Clears in-memory symbol caches (stub maps) under pressure, but keeps the index usable for lookups/decompilation. |
 
 ### Currently tracked but non-evictable (today)
 
@@ -92,10 +92,10 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
     - (Resolved) Classpath + JDK indexes are tracked via `InputIndexTracker` and participate in
       eviction: the classpath index can be dropped under `High`/`Critical`, and the JDK index can
       clear its in-memory symbol caches.
-3. **`MemoryCategory::TypeInfo` is unused**
-   - Classpath/JDK indexes (arguably “type info”) are currently tracked under `Indexes`.
-   - No component registers under `TypeInfo`, so the budget split is not meaningful for real-world
-     sessions.
+3. **`MemoryCategory::TypeInfo` budgeting needs real-world calibration**
+   - Classpath/JDK indexes are now tracked under `TypeInfo`.
+   - We may need to revisit the default budget split (see `docs/10-performance-engineering.md`) once
+     we have more field data on relative cache pressure between `Indexes` vs `TypeInfo`.
 4. **Ensure hosts reuse a single `MemoryManager`**
    - `nova-workspace` provides `Workspace::open_with_memory_manager(...)` for host processes that
      want one shared pressure view across components.
@@ -170,8 +170,8 @@ Before destructive eviction (especially `High`/`Critical`), we want to persist w
 - `SalsaMemoEvictor` already implements `flush_to_disk()` and uses
   `Database::persist_project_indexes(...)` to best-effort persist indexes before destructive memo
   eviction (`crates/nova-db/src/salsa/mod.rs`).
-- Remaining: if we add evictors for classpath/JDK indexes, they should expose a best-effort
-  `flush_to_disk()` (or “ensure persisted”) before clearing in-memory caches.
+- Remaining: classpath/JDK index evictors should ideally expose a best-effort `flush_to_disk()`
+  (or “ensure persisted”) before clearing in-memory caches.
 
 ---
 

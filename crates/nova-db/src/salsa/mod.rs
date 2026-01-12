@@ -1036,7 +1036,7 @@ impl InputIndexTracker {
         }
 
         let registration =
-            manager.register_evictor(self.name.clone(), MemoryCategory::Indexes, evictor);
+            manager.register_evictor(self.name.clone(), MemoryCategory::TypeInfo, evictor);
         let _ = self.tracker.set(registration.tracker());
         let _ = self.registration.set(registration);
         self.refresh_tracker();
@@ -1156,7 +1156,7 @@ impl MemoryEvictor for JdkIndexEvictor {
     }
 
     fn category(&self) -> MemoryCategory {
-        MemoryCategory::Indexes
+        MemoryCategory::TypeInfo
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
@@ -1263,7 +1263,7 @@ impl MemoryEvictor for ClasspathIndexEvictor {
     }
 
     fn category(&self) -> MemoryCategory {
-        MemoryCategory::Indexes
+        MemoryCategory::TypeInfo
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
@@ -4341,7 +4341,7 @@ class Foo {
         let project = ProjectId::from_raw(0);
 
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             0,
             "expected no tracked index usage before setting inputs"
         );
@@ -4350,7 +4350,7 @@ class Foo {
         let bytes1 = jdk1.estimated_bytes();
         db.set_jdk_index(project, jdk1);
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             bytes1,
             "expected memory manager to track jdk_index bytes"
         );
@@ -4360,7 +4360,7 @@ class Foo {
         let bytes2 = jdk2.estimated_bytes();
         db.set_jdk_index(project, jdk2);
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             bytes2,
             "expected memory tracker to update when jdk_index is replaced"
         );
@@ -4374,7 +4374,7 @@ class Foo {
         let project = ProjectId::from_raw(0);
 
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             0,
             "expected no tracked index usage before setting inputs"
         );
@@ -4408,7 +4408,7 @@ class Foo {
         let bytes1 = classpath.estimated_bytes();
         db.set_classpath_index(project, Some(Arc::new(classpath)));
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             bytes1,
             "expected memory manager to track classpath_index bytes"
         );
@@ -4416,7 +4416,7 @@ class Foo {
         // Drop the classpath index and ensure usage returns to zero.
         db.set_classpath_index(project, None);
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             0,
             "expected memory tracker to update when classpath_index is cleared"
         );
@@ -4470,7 +4470,7 @@ class Foo {
             "expected classpath_index to be cleared under memory pressure"
         );
         assert_eq!(
-            manager.report().usage.indexes,
+            manager.report().usage.type_info,
             0,
             "expected index usage to return to 0 after classpath eviction"
         );
@@ -4508,7 +4508,7 @@ class Foo {
 
         // Refresh the tracked bytes for the same `Arc` allocation now that caches are populated.
         db.set_jdk_index(project, Arc::clone(&jdk));
-        let bytes_before = manager.report().usage.indexes;
+        let bytes_before = manager.report().usage.type_info;
         assert!(
             bytes_before > 0,
             "expected JDK index usage to be tracked after setting input"
@@ -4516,7 +4516,7 @@ class Foo {
 
         manager.enforce();
 
-        let bytes_after = manager.report().usage.indexes;
+        let bytes_after = manager.report().usage.type_info;
         assert!(
             bytes_after < bytes_before,
             "expected JDK index eviction to reduce tracked bytes (before={bytes_before}, after={bytes_after})"
