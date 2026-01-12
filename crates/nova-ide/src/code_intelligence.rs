@@ -1226,7 +1226,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         // Consume a qualified annotation name (e.g. `javax.annotation.Nullable`).
         while *idx < tokens.len() {
             match tokens[*idx].kind {
-                SyntaxKind::Identifier | SyntaxKind::Dot => {
+                kind if kind.is_identifier_like() || kind == SyntaxKind::Dot => {
                     *idx += 1;
                 }
                 kind if kind.is_trivia() => {
@@ -1338,7 +1338,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
                     idx += 1;
                     continue;
                 }
-                nova_syntax::SyntaxKind::Identifier => {
+                kind if kind.is_identifier_like() => {
                     segments.push(tok.text(java_source).to_string());
                     idx += 1;
                     continue;
@@ -1407,7 +1407,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
             continue;
         }
 
-        if tok.kind == nova_syntax::SyntaxKind::Identifier
+        if tok.kind.is_identifier_like()
             && prev_non_trivia != Some(nova_syntax::SyntaxKind::Dot)
         {
             used.insert(tok.text(java_source));

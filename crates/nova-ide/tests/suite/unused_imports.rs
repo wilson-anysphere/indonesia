@@ -163,6 +163,28 @@ fn diagnostics_do_not_consume_the_whole_file_when_an_import_is_missing_a_semicol
 }
 
 #[test]
+fn diagnostics_treat_identifier_like_tokens_as_usage() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(
+        file,
+        r#"import foo.module;
+class A {
+  module x;
+}
+"#
+        .to_string(),
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unused-import"),
+        "expected no unused-import diagnostics; got {diags:#?}"
+    );
+}
+
+#[test]
 fn quick_fix_removes_unused_import_line() {
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");

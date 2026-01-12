@@ -822,8 +822,8 @@ fn expr_scope_for_offset(
                 condition, message, ..
             } => {
                 visit_expr(body, *condition, offset, best_expr, best_stmt);
-                if let Some(expr) = message {
-                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                if let Some(message) = message {
+                    visit_expr(body, *message, offset, best_expr, best_stmt);
                 }
             }
             Stmt::Throw { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
