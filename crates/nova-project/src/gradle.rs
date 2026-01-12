@@ -2359,8 +2359,15 @@ fn load_gradle_version_catalog(
     workspace_root: &Path,
     gradle_properties: &GradleProperties,
 ) -> Option<GradleVersionCatalog> {
-    let catalog_path = workspace_root.join("gradle").join("libs.versions.toml");
-    let contents = std::fs::read_to_string(catalog_path).ok()?;
+    // Gradle's conventional default is `gradle/libs.versions.toml`, but some projects (and older
+    // Nova fixtures) keep it at the workspace root.
+    let candidates = [
+        workspace_root.join("gradle").join("libs.versions.toml"),
+        workspace_root.join("libs.versions.toml"),
+    ];
+    let contents = candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())?;
     parse_gradle_version_catalog_from_toml(&contents, gradle_properties)
 }
 
