@@ -161,6 +161,19 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
         }
     }
 
+    pub fn with_registry(
+        db: Arc<DB>,
+        config: Arc<NovaConfig>,
+        project: ProjectId,
+        registry: ExtensionRegistry<DB>,
+    ) -> Self {
+        Self {
+            db,
+            config,
+            project,
+            registry,
+        }
+    }
     pub fn db(&self) -> &Arc<DB> {
         &self.db
     }

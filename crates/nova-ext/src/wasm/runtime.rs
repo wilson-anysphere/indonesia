@@ -232,11 +232,22 @@ impl std::fmt::Display for WasmCallError {
 impl std::error::Error for WasmCallError {}
 
 fn classify_call_error(err: wasmtime::Error) -> WasmCallError {
-    // Wasmtime doesn't currently expose a stable, crate-local "timeout" error type. Detecting
-    // epoch interruption via string matching is imperfect but robust enough for our use case.
+    // Wasmtime doesn't currently expose a stable, crate-local "timeout" error type. Timeouts via
+    // epoch interruption surface as traps in Wasmtime, but the exact error *display* string can vary
+    // depending on how much context Wasmtime attaches.
+    //
+    // To keep this robust across Wasmtime versions, we scan both the Display and Debug
+    // representations for "interrupt"/"epoch"/"deadline"/"timeout" indicators.
     let msg = err.to_string();
-    let msg_lower = msg.to_ascii_lowercase();
-    if msg_lower.contains("interrupt") || msg_lower.contains("epoch") {
+    let mut haystack = msg.to_ascii_lowercase();
+    haystack.push('\n');
+    haystack.push_str(&format!("{err:?}").to_ascii_lowercase());
+
+    if haystack.contains("interrupt")
+        || haystack.contains("epoch")
+        || haystack.contains("deadline")
+        || haystack.contains("timeout")
+    {
         WasmCallError::Timeout(msg)
     } else {
         WasmCallError::Trap(msg)

@@ -266,6 +266,20 @@ impl ExtensionManager {
         (loaded, errors)
     }
 
+    /// Load extensions from the given search paths and apply allow/deny filters.
+    ///
+    /// This is a convenience wrapper around [`Self::load_all`] and [`Self::filter_by_id`].
+    pub fn load_all_filtered(
+        search_paths: &[PathBuf],
+        allow: Option<&[String]>,
+        deny: &[String],
+    ) -> (Vec<LoadedExtension>, Vec<LoadError>) {
+        let (loaded, mut errors) = Self::load_all(search_paths);
+        let (loaded, filter_errors) = Self::filter_by_id(loaded, allow, deny);
+        errors.extend(filter_errors);
+        (loaded, errors)
+    }
+
     pub fn filter_by_id(
         loaded: Vec<LoadedExtension>,
         allow: Option<&[String]>,

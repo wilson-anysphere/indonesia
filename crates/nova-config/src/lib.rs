@@ -5,6 +5,7 @@ use std::fmt;
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::Duration;
 
@@ -171,6 +172,49 @@ impl ExtensionsConfig {
                 .iter()
                 .any(|pattern| matches_simple_glob(pattern, id)),
             None => true,
+        }
+    }
+
+    fn normalize(&mut self) {
+        fn normalize_id_list(list: &mut Vec<String>) {
+            let mut out = BTreeSet::<String>::new();
+            for raw in list.drain(..) {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                out.insert(trimmed.to_string());
+            }
+            *list = out.into_iter().collect();
+        }
+
+        self.wasm_paths.retain(|p| !p.as_os_str().is_empty());
+
+        if let Some(allow) = &mut self.allow {
+            normalize_id_list(allow);
+        }
+        normalize_id_list(&mut self.deny);
+
+        // Deny overrides allow, but remove exact duplicates to keep the config deterministic.
+        if let Some(allow) = &mut self.allow {
+            if !self.deny.is_empty() && !allow.is_empty() {
+                let deny: BTreeSet<_> = self.deny.iter().cloned().collect();
+                allow.retain(|pattern| !deny.contains(pattern));
+            }
+        }
+
+        if let Some(timeout_ms) = self.wasm_timeout_ms.as_mut() {
+            if *timeout_ms == 0 {
+                *timeout_ms = 1;
+            }
+        }
+
+        if let Some(limit) = self.wasm_memory_limit_bytes.as_mut() {
+            // Any valid WASM module exporting linear memory requires at least 1 page (64KiB).
+            const MIN_MEMORY_BYTES: u64 = 64 * 1024;
+            if *limit < MIN_MEMORY_BYTES {
+                *limit = MIN_MEMORY_BYTES;
+            }
         }
     }
 }
@@ -1120,7 +1164,9 @@ impl NovaConfig {
             path: path.display().to_string(),
             source,
         })?;
-        Ok(toml::from_str(&text)?)
+        let mut config: NovaConfig = toml::from_str(&text)?;
+        config.extensions.normalize();
+        Ok(config)
     }
 
     /// Load a config file from TOML and return diagnostics (unknown keys, deprecated keys, and

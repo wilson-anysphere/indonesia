@@ -3,11 +3,12 @@ use lsp_server::{Connection, Message, Notification, Request, RequestId, Response
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
-    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentSymbolParams,
-    FileChangeType as LspFileChangeType, Location as LspLocation, Position as LspTypesPosition,
-    Range as LspTypesRange, RenameParams as LspRenameParams, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit, Uri as LspUri,
-    WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
+    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
+    DocumentSymbolParams, FileChangeType as LspFileChangeType, Location as LspLocation,
+    InlayHintParams as LspInlayHintParams, Position as LspTypesPosition, Range as LspTypesRange,
+    RenameParams as LspRenameParams, SymbolInformation, SymbolKind as LspSymbolKind,
+    TextDocumentPositionParams, TextEdit, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
+    WorkspaceSymbolParams,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
@@ -19,12 +20,15 @@ use nova_ai::{
     MultiTokenCompletionProvider,
 };
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
+use nova_ext::wasm::WasmHostDb;
+use nova_ext::{ExtensionManager, ExtensionMetadata, ExtensionRegistry};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
     CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
+use nova_ide::extensions::IdeExtensions;
 #[cfg(feature = "ai")]
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
 use nova_index::{Index, SymbolKind};
@@ -41,10 +45,62 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone)]
+struct SingleFileDb {
+    file_id: DbFileId,
+    path: Option<PathBuf>,
+    text: String,
+}
+
+impl SingleFileDb {
+    fn new(file_id: DbFileId, path: Option<PathBuf>, text: String) -> Self {
+        Self { file_id, path, text }
+    }
+}
+
+impl Database for SingleFileDb {
+    fn file_content(&self, file_id: DbFileId) -> &str {
+        if file_id == self.file_id {
+            self.text.as_str()
+        } else {
+            ""
+        }
+    }
+
+    fn file_path(&self, file_id: DbFileId) -> Option<&Path> {
+        if file_id == self.file_id {
+            self.path.as_deref()
+        } else {
+            None
+        }
+    }
+
+    fn all_file_ids(&self) -> Vec<DbFileId> {
+        vec![self.file_id]
+    }
+
+    fn file_id(&self, path: &Path) -> Option<DbFileId> {
+        self.path
+            .as_deref()
+            .filter(|p| *p == path)
+            .map(|_| self.file_id)
+    }
+}
+
+impl WasmHostDb for SingleFileDb {
+    fn file_text(&self, file: DbFileId) -> &str {
+        self.file_content(file)
+    }
+
+    fn file_path(&self, file: DbFileId) -> Option<&Path> {
+        Database::file_path(self, file)
+    }
+}
 
 #[derive(Clone)]
 struct LspClient {
@@ -152,10 +208,11 @@ fn main() -> std::io::Result<()> {
 
     let (connection, io_threads) = Connection::stdio();
 
+    let config_memory_overrides = config.memory_budget_overrides();
     let mut state = ServerState::new(
-        config.ai.clone(),
+        config,
         ai_env.as_ref().map(|(_, privacy)| privacy.clone()),
-        config.memory_budget_overrides(),
+        config_memory_overrides,
     );
 
     let request_cancellation =
@@ -182,6 +239,7 @@ fn main() -> std::io::Result<()> {
         .project_root_uri()
         .and_then(|uri| path_from_uri(uri))
         .or_else(|| init_params.root_path.map(PathBuf::from));
+    state.load_extensions();
 
     let init_result = initialize_result_json();
     connection
@@ -339,6 +397,11 @@ fn join_io_threads_with_timeout(io_threads: lsp_server::IoThreads, timeout: Dura
     }
 }
 
+const EXTENSIONS_STATUS_METHOD: &str = "nova/extensions/status";
+const EXTENSIONS_STATUS_SCHEMA_VERSION: u32 = 1;
+const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
+const EXTENSIONS_NAVIGATION_SCHEMA_VERSION: u32 = 1;
+
 fn initialize_result_json() -> serde_json::Value {
     let mut nova_requests = vec![
         // Testing
@@ -381,6 +444,9 @@ fn initialize_result_json() -> serde_json::Value {
         nova_lsp::AI_EXPLAIN_ERROR_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
+        // Extensions
+        EXTENSIONS_STATUS_METHOD,
+        EXTENSIONS_NAVIGATION_METHOD,
     ];
 
     #[cfg(feature = "ai")]
@@ -420,6 +486,7 @@ fn initialize_result_json() -> serde_json::Value {
                 "interFileDependencies": false,
                 "workspaceDiagnostics": false
             },
+            "inlayHintProvider": true,
             "renameProvider": { "prepareProvider": true },
             "workspaceSymbolProvider": true,
             "documentSymbolProvider": true,
@@ -775,11 +842,16 @@ impl nova_db::Database for AnalysisState {
 struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
+    config: Arc<nova_config::NovaConfig>,
     workspace: Option<Workspace>,
     refactor_overlay_generation: u64,
     refactor_snapshot_cache: Option<CachedRefactorWorkspaceSnapshot>,
     analysis: AnalysisState,
     jdk_index: Option<nova_jdk::JdkIndex>,
+    extensions_registry: ExtensionRegistry<SingleFileDb>,
+    loaded_extensions: Vec<ExtensionMetadata>,
+    extension_load_errors: Vec<String>,
+    extension_register_errors: Vec<String>,
     ai: Option<NovaAi>,
     semantic_search: Box<dyn nova_ai::SemanticSearch>,
     privacy: nova_ai::PrivacyMode,
@@ -803,10 +875,12 @@ struct CachedRefactorWorkspaceSnapshot {
 
 impl ServerState {
     fn new(
-        ai_config: nova_config::AiConfig,
+        config: nova_config::NovaConfig,
         privacy_override: Option<nova_ai::PrivacyMode>,
         config_memory_overrides: MemoryBudgetOverrides,
     ) -> Self {
+        let config = Arc::new(config);
+        let ai_config = config.ai.clone();
         let privacy = privacy_override.unwrap_or_else(|| {
             let mut privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy);
             privacy.include_file_paths = false;
@@ -890,11 +964,16 @@ impl ServerState {
         Self {
             shutdown_requested: false,
             project_root: None,
+            config,
             workspace: None,
             refactor_overlay_generation: 0,
             refactor_snapshot_cache: None,
             analysis: AnalysisState::default(),
             jdk_index: None,
+            extensions_registry: ExtensionRegistry::default(),
+            loaded_extensions: Vec::new(),
+            extension_load_errors: Vec::new(),
+            extension_register_errors: Vec::new(),
             ai,
             semantic_search,
             privacy,
@@ -909,6 +988,78 @@ impl ServerState {
             last_safe_mode_enabled: false,
             last_safe_mode_reason: None,
         }
+    }
+
+    fn load_extensions(&mut self) {
+        self.extensions_registry = ExtensionRegistry::default();
+        self.loaded_extensions.clear();
+        self.extension_load_errors.clear();
+        self.extension_register_errors.clear();
+
+        if !self.config.extensions.enabled {
+            tracing::debug!(target = "nova.lsp", "extensions disabled via config");
+            return;
+        }
+
+        if self.config.extensions.wasm_paths.is_empty() {
+            tracing::debug!(target = "nova.lsp", "no wasm_paths configured; skipping extension load");
+            return;
+        }
+
+        let base_dir = self
+            .project_root
+            .clone()
+            .or_else(|| env::current_dir().ok());
+        let search_paths: Vec<PathBuf> = self
+            .config
+            .extensions
+            .wasm_paths
+            .iter()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else if let Some(base) = base_dir.as_ref() {
+                    base.join(path)
+                } else {
+                    path.clone()
+                }
+            })
+            .collect();
+
+        let (loaded, load_errors) = ExtensionManager::load_all_filtered(
+            &search_paths,
+            self.config.extensions.allow.as_deref(),
+            &self.config.extensions.deny,
+        );
+        self.extension_load_errors = load_errors.iter().map(|err| err.to_string()).collect();
+        for err in &load_errors {
+            tracing::warn!(target = "nova.lsp", error = %err, "failed to load extension bundle");
+        }
+
+        let mut registry = ExtensionRegistry::<SingleFileDb>::default();
+        let register_report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
+        self.extension_register_errors = register_report
+            .errors
+            .iter()
+            .map(|failure| failure.error.to_string())
+            .collect();
+        for failure in &register_report.errors {
+            tracing::warn!(
+                target = "nova.lsp",
+                extension_id = %failure.extension.id,
+                error = %failure.error,
+                "failed to register extension provider"
+            );
+        }
+        self.loaded_extensions = register_report.registered;
+
+        self.extensions_registry = registry;
+
+        tracing::info!(
+            target = "nova.lsp",
+            loaded = self.loaded_extensions.len(),
+            "loaded wasm extensions"
+        );
     }
 
     fn semantic_search_enabled(&self) -> bool {
@@ -1097,6 +1248,7 @@ fn handle_request_json(
                 .and_then(|uri| path_from_uri(uri))
                 .or_else(|| init_params.root_path.map(PathBuf::from));
             state.workspace = None;
+            state.load_extensions();
 
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": initialize_result_json() }))
         }
@@ -1121,6 +1273,48 @@ fn handle_request_json(
                 }
             })
         }
+        EXTENSIONS_STATUS_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(EXTENSIONS_STATUS_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": extensions_status_json(state),
+            }))
+        }
+        EXTENSIONS_NAVIGATION_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(EXTENSIONS_NAVIGATION_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            let result = handle_extensions_navigation(params, state, cancel.clone());
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
         "textDocument/completion" => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -1137,7 +1331,7 @@ fn handle_request_json(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_code_action(params, state);
+            let result = handle_code_action(params, state, cancel.clone());
             Ok(match result {
                 Ok(actions) => json!({ "jsonrpc": "2.0", "id": id, "result": actions }),
                 Err(err) => {
@@ -1259,7 +1453,19 @@ fn handle_request_json(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_document_diagnostic(params, state);
+            let result = handle_document_diagnostic(params, state, cancel.clone());
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/inlayHint" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_inlay_hints(params, state, cancel.clone());
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -1517,6 +1723,148 @@ fn handle_request_json(
             }
         }
     }
+}
+
+fn extensions_status_json(state: &ServerState) -> serde_json::Value {
+    let loaded = state
+        .loaded_extensions
+        .iter()
+        .map(|ext| {
+            let capabilities: Vec<&'static str> =
+                ext.capabilities.iter().map(|cap| cap.as_str()).collect();
+            json!({
+                "id": ext.id.clone(),
+                "version": ext.version.to_string(),
+                "dir": ext.dir.display().to_string(),
+                "name": ext.name.clone(),
+                "description": ext.description.clone(),
+                "authors": ext.authors.clone(),
+                "homepage": ext.homepage.clone(),
+                "license": ext.license.clone(),
+                "abiVersion": ext.abi_version,
+                "capabilities": capabilities,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    fn provider_stats_map_json(
+        map: &BTreeMap<String, nova_ext::ProviderStats>,
+    ) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for (id, stats) in map {
+            let last_error = stats.last_error.map(|err| match err {
+                nova_ext::ProviderLastError::Timeout => "timeout",
+                nova_ext::ProviderLastError::PanicTrap => "panic_trap",
+                nova_ext::ProviderLastError::InvalidResponse => "invalid_response",
+            });
+            out.insert(
+                id.clone(),
+                json!({
+                    "callsTotal": stats.calls_total,
+                    "timeoutsTotal": stats.timeouts_total,
+                    "panicsTotal": stats.panics_total,
+                    "invalidResponsesTotal": stats.invalid_responses_total,
+                    "skippedTotal": stats.skipped_total,
+                    "circuitOpenedTotal": stats.circuit_opened_total,
+                    "consecutiveFailures": stats.consecutive_failures,
+                    "circuitOpen": stats.circuit_open_until.is_some(),
+                    "lastError": last_error,
+                    "lastDurationMs": stats.last_duration.map(|d| d.as_millis() as u64),
+                }),
+            );
+        }
+        serde_json::Value::Object(out)
+    }
+
+    let stats = state.extensions_registry.stats();
+
+    json!({
+        "schemaVersion": EXTENSIONS_STATUS_SCHEMA_VERSION,
+        "enabled": state.config.extensions.enabled,
+        "wasmPaths": state.config.extensions.wasm_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "allow": state.config.extensions.allow.clone(),
+        "deny": state.config.extensions.deny.clone(),
+        "loadedExtensions": loaded,
+        "loadErrors": state.extension_load_errors.clone(),
+        "registerErrors": state.extension_register_errors.clone(),
+        "stats": {
+            "diagnostic": provider_stats_map_json(&stats.diagnostic),
+            "completion": provider_stats_map_json(&stats.completion),
+            "codeAction": provider_stats_map_json(&stats.code_action),
+            "navigation": provider_stats_map_json(&stats.navigation),
+            "inlayHint": provider_stats_map_json(&stats.inlay_hint),
+        }
+    })
+}
+
+fn handle_extensions_navigation(
+    params: serde_json::Value,
+    state: &mut ServerState,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, String> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExtensionsNavigationParams {
+        #[serde(default)]
+        schema_version: Option<u32>,
+        text_document: lsp_types::TextDocumentIdentifier,
+    }
+
+    let params: ExtensionsNavigationParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    if let Some(version) = params.schema_version {
+        if version != EXTENSIONS_NAVIGATION_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported schemaVersion {version} (expected {EXTENSIONS_NAVIGATION_SCHEMA_VERSION})"
+            ));
+        }
+    }
+
+    let uri = params.text_document.uri;
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!({ "schemaVersion": EXTENSIONS_NAVIGATION_SCHEMA_VERSION, "targets": [] }));
+    }
+
+    let text = state.analysis.file_content(file_id).to_string();
+    let path = state
+        .analysis
+        .file_path(file_id)
+        .map(|p| p.to_path_buf())
+        .or_else(|| path_from_uri(uri.as_str()));
+    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
+    let ide_extensions = IdeExtensions::with_registry(
+        ext_db,
+        Arc::clone(&state.config),
+        nova_ext::ProjectId::new(0),
+        state.extensions_registry.clone(),
+    );
+
+    let targets = ide_extensions
+        .navigation(cancel, nova_ext::Symbol::File(file_id))
+        .into_iter()
+        .filter_map(|target| {
+            if target.file != file_id {
+                return None;
+            }
+            let range = target.span.map(|span| lsp_types::Range {
+                start: offset_to_position_utf16(&text, span.start),
+                end: offset_to_position_utf16(&text, span.end),
+            });
+            Some(json!({
+                "label": target.label,
+                "uri": uri.as_str(),
+                "fileId": target.file.to_raw(),
+                "range": range,
+                "span": target.span.map(|span| json!({ "start": span.start, "end": span.end })),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "schemaVersion": EXTENSIONS_NAVIGATION_SCHEMA_VERSION,
+        "targets": targets,
+    }))
 }
 
 fn resolve_completion_item_with_state(
@@ -1872,6 +2220,7 @@ fn to_ide_range(range: &Range) -> nova_ide::LspRange {
 fn handle_code_action(
     params: serde_json::Value,
     state: &mut ServerState,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let text = load_document_text(state, &params.text_document.uri);
@@ -2065,6 +2414,38 @@ fn handle_code_action(
                         range: Some(to_ide_range(&params.range)),
                     });
                     actions.push(code_action_to_lsp(action));
+                }
+            }
+        }
+    }
+
+    // WASM extension code actions.
+    if let Some(text) = text {
+        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+            let file_id = state.analysis.ensure_loaded(&uri);
+            if state.analysis.exists(file_id) {
+                let start_pos = LspTypesPosition::new(params.range.start.line, params.range.start.character);
+                let end_pos = LspTypesPosition::new(params.range.end.line, params.range.end.character);
+                let start = position_to_offset_utf16(text, start_pos).unwrap_or(0);
+                let end = position_to_offset_utf16(text, end_pos).unwrap_or(start);
+                let span = Some(nova_ext::Span::new(start.min(end), start.max(end)));
+
+                let path = path_from_uri(uri.as_str());
+                let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.to_string()));
+                let ide_extensions = IdeExtensions::with_registry(
+                    ext_db,
+                    Arc::clone(&state.config),
+                    nova_ext::ProjectId::new(0),
+                    state.extensions_registry.clone(),
+                );
+                for action in ide_extensions.code_actions(cancel, file_id, span) {
+                    let kind = action.kind.map(CodeActionKind::from);
+                    let action = lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+                        title: action.title,
+                        kind,
+                        ..lsp_types::CodeAction::default()
+                    });
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
                 }
             }
         }
@@ -2494,6 +2875,7 @@ fn handle_type_definition(
 fn handle_document_diagnostic(
     params: serde_json::Value,
     state: &mut ServerState,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2507,7 +2889,43 @@ fn handle_document_diagnostic(
 
     let file_id = state.analysis.ensure_loaded(&uri);
     let diagnostics: Vec<lsp_types::Diagnostic> = if state.analysis.exists(file_id) {
-        nova_lsp::diagnostics(&state.analysis, file_id)
+        let mut diagnostics = nova_lsp::diagnostics(&state.analysis, file_id);
+
+        let text = state.analysis.file_content(file_id).to_string();
+        let path = state.analysis.file_path(file_id).map(|p| p.to_path_buf());
+        let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
+        let ide_extensions = IdeExtensions::with_registry(
+            ext_db,
+            Arc::clone(&state.config),
+            nova_ext::ProjectId::new(0),
+            state.extensions_registry.clone(),
+        );
+        let ext_diags = ide_extensions.diagnostics(cancel, file_id);
+        diagnostics.extend(ext_diags.into_iter().map(|d| lsp_types::Diagnostic {
+            range: d
+                .span
+                .map(|span| lsp_types::Range {
+                    start: offset_to_position_utf16(&text, span.start),
+                    end: offset_to_position_utf16(&text, span.end),
+                })
+                .unwrap_or_else(|| {
+                    lsp_types::Range::new(
+                        lsp_types::Position::new(0, 0),
+                        lsp_types::Position::new(0, 0),
+                    )
+                }),
+            severity: Some(match d.severity {
+                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+            }),
+            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+            source: Some("nova".into()),
+            message: d.message,
+            ..lsp_types::Diagnostic::default()
+        }));
+
+        diagnostics
     } else {
         Vec::new()
     };
@@ -2517,6 +2935,37 @@ fn handle_document_diagnostic(
         "resultId": serde_json::Value::Null,
         "items": diagnostics,
     }))
+}
+
+fn handle_inlay_hints(
+    params: serde_json::Value,
+    state: &mut ServerState,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, String> {
+    let params: LspInlayHintParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+
+    let text = state.analysis.file_content(file_id).to_string();
+    let path = state
+        .analysis
+        .file_path(file_id)
+        .map(|p| p.to_path_buf())
+        .or_else(|| path_from_uri(uri.as_str()));
+    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text));
+    let ide_extensions = IdeExtensions::with_registry(
+        ext_db,
+        Arc::clone(&state.config),
+        nova_ext::ProjectId::new(0),
+        state.extensions_registry.clone(),
+    );
+
+    let hints = ide_extensions.inlay_hints_lsp(cancel, file_id, params.range);
+    serde_json::to_value(hints).map_err(|e| e.to_string())
 }
 
 fn handle_document_symbol(
@@ -2899,7 +3348,7 @@ fn handle_completion(
     let path = path_from_uri(uri.as_str()).unwrap_or_else(|| PathBuf::from(uri.as_str()));
     let mut db = InMemoryFileStore::new();
     let file: DbFileId = db.file_id_for_path(&path);
-    db.set_file_text(file, text);
+    db.set_file_text(file, text.clone());
 
     #[cfg(feature = "ai")]
     let (completion_context_id, has_more) = {
@@ -2950,6 +3399,26 @@ fn handle_completion(
 
     #[cfg(not(feature = "ai"))]
     let mut items = nova_lsp::completion(&db, file, position);
+
+    // Merge extension-provided completions (WASM providers) after Nova's built-in list.
+    let offset = position_to_offset_utf16(&text, position).unwrap_or(text.len());
+    let ext_db = Arc::new(SingleFileDb::new(file, Some(path), text));
+    let ide_extensions = IdeExtensions::with_registry(
+        ext_db,
+        Arc::clone(&state.config),
+        nova_ext::ProjectId::new(0),
+        state.extensions_registry.clone(),
+    );
+    let extension_items = ide_extensions
+        .completions(cancel.clone(), file, offset)
+        .into_iter()
+        .map(|item| CompletionItem {
+            label: item.label,
+            detail: item.detail,
+            ..CompletionItem::default()
+        });
+    items.extend(extension_items);
+
     if items.is_empty() && has_more {
         items.push(CompletionItem {
             label: "AI completions…".to_string(),
@@ -3416,7 +3885,7 @@ mod tests {
         let prior_java_home = std::env::var_os("JAVA_HOME");
         std::env::set_var("JAVA_HOME", &fake_jdk_root);
 
-        let mut state = ServerState::new(nova_config::AiConfig::default(), None);
+        let mut state = ServerState::new(nova_config::NovaConfig::default(), None);
         let dir = tempfile::tempdir().unwrap();
         let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
         let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
@@ -3481,7 +3950,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut state = ServerState::new(nova_config::AiConfig::default(), None);
+        let mut state = ServerState::new(nova_config::NovaConfig::default(), None);
         state.ai = Some(ai);
         state.runtime = Some(runtime);
 
@@ -3583,10 +4052,7 @@ mod tests {
             .parse()
             .expect("uri");
 
-        let mut state = ServerState::new(
-            nova_config::AiConfig::default(),
-            Some(nova_ai::PrivacyMode::default()),
-        );
+        let mut state = ServerState::new(nova_config::NovaConfig::default(), Some(nova_ai::PrivacyMode::default()));
         state.project_root = Some(root.to_path_buf());
         state
             .analysis
