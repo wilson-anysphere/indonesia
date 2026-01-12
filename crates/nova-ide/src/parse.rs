@@ -340,6 +340,90 @@ fn scan_comma_separated_decl_names(
     out
 }
 
+fn is_field_modifier(name: &str) -> bool {
+    // Best-effort support for common Java field modifiers.
+    matches!(
+        name,
+        "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "transient"
+            | "volatile"
+            | "sealed"
+            | "non-sealed"
+    )
+}
+
+fn skip_annotation(tokens: &[Token], at_idx: usize, end: usize) -> Option<usize> {
+    // Skip a single leading annotation:
+    // `@` QualifiedName [ `(` ... `)` ]
+    //
+    // We keep this best-effort: if we fail to parse a well-formed annotation, we stop
+    // skipping to avoid running past unrelated tokens.
+    if tokens.get(at_idx).and_then(|t| t.symbol()) != Some('@') {
+        return None;
+    }
+
+    let mut i = at_idx + 1;
+
+    // Annotation name: Ident ('.' Ident)*
+    tokens.get(i).and_then(|t| t.ident())?;
+    i += 1;
+    while i + 1 < end && tokens.get(i).and_then(|t| t.symbol()) == Some('.') {
+        if tokens.get(i + 1).and_then(|t| t.ident()).is_none() {
+            break;
+        }
+        i += 2;
+    }
+
+    // Optional args: '(' ... ')'
+    if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('(') {
+        let close = find_matching(tokens, i, '(', ')')?;
+        i = close + 1;
+    }
+
+    Some(i)
+}
+
+fn skip_modifiers_and_annotations(tokens: &[Token], mut i: usize, end: usize) -> usize {
+    // Skip a best-effort sequence of modifiers and annotations in any order.
+    //
+    // This is necessary to avoid misclassifying annotation names (e.g. `@Inject`) as
+    // field types, which causes us to skip the actual declaration.
+    loop {
+        let mut progressed = false;
+
+        // Modifiers.
+        while i < end {
+            let Some(ident) = tokens.get(i).and_then(|t| t.ident()) else {
+                break;
+            };
+            if is_field_modifier(ident) {
+                i += 1;
+                progressed = true;
+                continue;
+            }
+            break;
+        }
+
+        // Annotations (can appear before/after modifiers due to type annotations).
+        if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('@') {
+            if let Some(next) = skip_annotation(tokens, i, end) {
+                i = next;
+                continue;
+            }
+        }
+
+        if !progressed {
+            break;
+        }
+    }
+
+    i
+}
+
 fn is_receiverless_call_keyword(name: &str) -> bool {
     // Keywords/constructs that are commonly followed by `(` but are not method calls.
     //
@@ -803,8 +887,9 @@ fn parse_type_body(
         }
 
         // Field: Type name;
+        let decl_start = skip_modifiers_and_annotations(tokens, i, body_end);
         if let Some((ty, ty_span, name, name_span, after_name)) =
-            parse_var_decl(tokens, i, body_end)
+            parse_var_decl(tokens, decl_start, body_end)
         {
             if tokens.get(after_name).and_then(|t| t.symbol()) != Some('(') {
                 fields.push(FieldDef {
@@ -1261,5 +1346,37 @@ class C {
 
         let parsed = parse_file(uri, text);
         assert!(!parsed.calls.iter().any(|call| call.method == "foo"));
+    }
+
+    #[test]
+    fn fields_with_modifiers_are_indexed() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  private final Foo foo;
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        let ty = parsed.types.iter().find(|t| t.name == "C").unwrap();
+        let field = ty.fields.iter().find(|f| f.name == "foo").unwrap();
+        assert_eq!(field.ty, "Foo");
+    }
+
+    #[test]
+    fn fields_with_annotations_are_indexed() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  @Inject Foo foo;
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        let ty = parsed.types.iter().find(|t| t.name == "C").unwrap();
+        let field = ty.fields.iter().find(|f| f.name == "foo").unwrap();
+        assert_eq!(field.ty, "Foo");
     }
 }
