@@ -46,7 +46,7 @@ bash scripts/cargo_agent.sh bench -p nova-core --bench critical_paths
 ```
 
 Environment variables still apply; just prefix the wrapper instead of `cargo`:
-`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax parse_class_snapshot`.
+`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus`.
 
 ## CI-equivalent “smoke” run (what `ci.yml` enforces)
 
