@@ -1,5 +1,10 @@
+// AI-related integration tests require the `ai` feature. Keep them gated so the crate can be
+// compiled/tested with `--no-default-features` (e.g. for faster CI or minimal builds).
+#[cfg(feature = "ai")]
 mod ai_code_actions;
+#[cfg(feature = "ai")]
 mod ai_completion_more;
+#[cfg(feature = "ai")]
 mod ai_excluded_paths;
 mod cli_help;
 mod completion_resolve;
@@ -20,8 +25,11 @@ mod refactor_variable;
 mod refactor_workspace_snapshot;
 mod references;
 mod semantic_search_index_status_stdio;
+#[cfg(feature = "ai")]
 mod semantic_search_workspace_indexing;
+#[cfg(feature = "ai")]
 mod stdio_ai_completion_more;
+#[cfg(feature = "ai")]
 mod stdio_ai_env_overrides;
 mod stdio_call_hierarchy;
 mod stdio_codelens;
