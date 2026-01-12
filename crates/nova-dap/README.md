@@ -272,8 +272,8 @@ hit or step). `frameId` must refer to a currently-valid stack frame (from the mo
   - `frameId: number` (required; must be `> 0`)
   - `maxSampleSize?: number` (optional; default `25`; capped to `25`)
   - `maxTotalTimeMs?: number` (optional; evaluation budget in milliseconds; default `250`)
-    - This budgets the *evaluation* phase. Helper compilation/injection is treated as setup and is
-      excluded from this budget (it is bounded separately).
+    - This budgets the full request evaluation (JDWP inspection + Rust-side evaluation of the
+      supported stream operations). There is no separate “setup” phase.
   - `allowSideEffects?: boolean` (optional; default `false`)
   - `allowTerminalOps?: boolean` (optional; default `false`)
 
@@ -337,22 +337,38 @@ The concrete Rust structs are defined in `nova-stream-debug`:
 - Safety guard: expressions whose stream source looks like an *existing* `Stream` value (for
   example `s.filter(...).count()` when `s` is a local `Stream<?>`) are refused by default, because
   sampling consumes the stream.
-  - Call-based sources like `collection.stream()` or `java.util.Arrays.stream(array)` are allowed.
-- `maxSampleSize` controls sampling (roughly `stream.limit(maxSampleSize)`) and is clamped to `<= 25`
-  to keep evaluations fast and avoid accidentally consuming large streams.
-- `allowSideEffects` gates execution of known side-effecting operations like `peek` and `forEach`.
-- `allowTerminalOps` gates execution of the terminal operation. When disabled, the terminal result
-  is still included but marked `"executed": false`.
-- `maxTotalTimeMs` budgets the evaluation phase; helper compilation/injection is treated as setup and
-  is bounded separately.
-- Known limitations:
-  - Evaluation is implemented by compiling and injecting a helper class into the debuggee.
-  - Because the helper is a separate top-level class, expressions that reference `private` members
-    may fail to compile (use accessors or rewrite the expression).
-  - Requires a working `javac` on the host (available on `PATH`).
+  - Call-based sources like `collection.stream()` / `collection.parallelStream()` or
+    `java.util.Arrays.stream(array)` are allowed.
+- `maxSampleSize` controls how many elements are sampled from the source collection/array (similar to
+  reading the first `maxSampleSize` elements) and is clamped to `<= 25` to keep evaluations fast.
+- `allowSideEffects` and `allowTerminalOps` are part of the request schema, but the current wire
+  implementation only evaluates a small subset of operations (see “Current limitations” below).
+- `maxTotalTimeMs` budgets the full request evaluation (JDWP inspection + Rust-side evaluation).
 - On failure, the adapter responds with `success=false` and a human-readable `message` (standard DAP
   error response shape). (The legacy adapter instead returned `success=true` with
   `{ "error": "..." }` in the response body.)
+
+#### Current limitations (wire adapter; current implementation)
+
+The current wire adapter implementation of `nova/streamDebug` is a **Rust-side evaluator** that
+samples the source via JDWP inspection and then runs a small subset of stream operations over the
+sample. It does **not** compile or inject helper bytecode into the debuggee.
+
+- **Supported sources**
+  - `collection.stream()` / `collection.parallelStream()` where `collection` resolves (via JDWP
+    inspection) to a `List`, `Set`, or Java array.
+  - Best-effort support for `java.util.Arrays.stream(array)` by inspecting the underlying `array`
+    value.
+  - Likely-consumable, already-instantiated `Stream` values are refused (the “existing stream”
+    safety guard still applies).
+- **Supported operations**
+  - Intermediate ops: numeric `filter(...)` and `map(...)` only, with a limited lambda syntax:
+    - `filter(x -> x <op> N)` or `filter(x -> N <op> x)` where `<op>` is one of
+      `>`, `>=`, `<`, `<=`, `==`, `!=` and `N` is an integer literal.
+    - `map(x -> x)` (identity), or `map(x -> x <op> N)` / `map(x -> N <op> x)` where `<op>` is one
+      of `*`, `+`, `-`, `/` and `N` is an integer literal.
+  - Terminal ops: `count()` only.
+- Any unsupported source or operation returns `success=false` with a message.
 
 #### Example
 
