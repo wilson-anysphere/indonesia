@@ -31,7 +31,6 @@ mod stream_debug;
 mod wire_stream_debug;
 mod wire_stream_debug_deadlock;
 mod wire_stream_eval;
-mod wire_stream_debug_deadlock;
 mod watchpoints;
 mod wire_breakpoint_mapping;
 mod wire_format;
