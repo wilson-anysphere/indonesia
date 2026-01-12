@@ -4,6 +4,7 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 use nova_types::{Diagnostic, Span};
+use regex::Regex;
 
 /// Produce quick-fix code actions for a selection span given diagnostics.
 ///
@@ -59,6 +60,25 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     actions.extend(import_and_qualify_type_actions(
                         uri, source, diag_span, &name,
                     ));
+                }
+            }
+            "FLOW_UNASSIGNED" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                let Some(name) = extract_backticked(&diag.message) else {
+                    continue;
+                };
+
+                if let Some(action) =
+                    initialize_unassigned_local_action(uri, source, diag_span, &name)
+                {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
                 }
             }
             "unused-import" => {
@@ -388,6 +408,65 @@ fn extract_backticked(message: &str) -> Option<String> {
     let end_rel = rest.find('`')?;
     let name = &rest[..end_rel];
     (!name.is_empty()).then_some(name.to_string())
+}
+
+fn initialize_unassigned_local_action(
+    uri: &Uri,
+    source: &str,
+    diag_span: Span,
+    name: &str,
+) -> Option<CodeAction> {
+    let insert_offset = line_start_offset(source, diag_span.start)?;
+    let indent = line_indent(source, insert_offset);
+    let default_value = infer_default_value_for_local(source, name, diag_span.start);
+    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let new_text = format!("{indent}{name} = {default_value};{line_ending}");
+
+    Some(CodeAction {
+        title: format!("Initialize '{name}'"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(single_edit(uri, source, insert_offset, new_text)),
+        ..CodeAction::default()
+    })
+}
+
+fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize) -> &'static str {
+    let before_offset = before_offset.min(source.len());
+    let prefix = &source[..before_offset];
+
+    // Best-effort: detect primitive local declarations. For all non-primitives we default to
+    // `null` anyway, so we can keep the type parsing narrow and avoid false positives.
+    let pat = format!(
+        r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?(?P<ty>byte|short|int|long|float|double|boolean|char)(?P<array1>(?:\[\])*)\s+{}\b",
+        regex::escape(name)
+    );
+    let re = Regex::new(&pat).ok();
+
+    if let Some(re) = re {
+        for line in prefix.lines().rev() {
+            let Some(caps) = re.captures(line) else {
+                continue;
+            };
+            let ty = caps.name("ty").map(|m| m.as_str()).unwrap_or("");
+            let array1 = caps.name("array1").map(|m| m.as_str()).unwrap_or("");
+
+            // Handle the alternative Java array syntax: `int x[];` (brackets after the name).
+            let array2 = line.contains(&format!("{name}[]"));
+
+            if !array1.is_empty() || array2 {
+                return "null";
+            }
+
+            return match ty {
+                "boolean" => "false",
+                "char" => "'\\0'",
+                "byte" | "short" | "int" | "long" | "float" | "double" => "0",
+                _ => "null",
+            };
+        }
+    }
+
+    "null"
 }
 
 fn unresolved_type_name(message: &str) -> Option<&str> {

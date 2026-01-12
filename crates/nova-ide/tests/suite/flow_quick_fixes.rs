@@ -214,3 +214,50 @@ fn flow_unassigned_quick_fix_initializes_variable_with_primitive_default() {
         "expected initialization to be inserted before first use; updated text:\n{updated}"
     );
 }
+
+#[test]
+fn ide_extensions_offers_flow_unassigned_quick_fix() {
+    let text = r#"class A {
+  void m() {
+    int x;
+    System.out.println(x);
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+
+    let x_use_offset = text
+        .find("System.out.println(x)")
+        .expect("fixture must contain println(x)")
+        + "System.out.println(".len();
+    let x_span = Span::new(x_use_offset, x_use_offset + 1);
+
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(x_span));
+
+    let action = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(CodeActionKind::QUICKFIX)
+                && action.title == "Initialize 'x'" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let action = action.expect("expected Initialize 'x' quickfix from IdeExtensions");
+
+    let edit = action
+        .edit
+        .as_ref()
+        .expect("expected workspace edit on quickfix");
+    let changes = edit.changes.as_ref().expect("expected changes map");
+    let edits = changes
+        .values()
+        .next()
+        .expect("expected at least one file edit");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "    x = 0;\n");
+}
