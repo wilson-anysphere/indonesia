@@ -204,6 +204,26 @@ class C {
 }
 
 #[test]
+fn assignment_to_literal_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        1 = 2;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-assignment-target"),
+        "expected invalid-assignment-target diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_explicit_type_accepts_array_element() {
     let src = r#"
 class C { void m(String[] arr){ for (String s : arr) { s.length(); } } }
@@ -610,6 +630,20 @@ class C {
             d.severity == Severity::Warning && d.code.as_ref() == "static-access-via-instance"
         }),
         "expected a static-access-via-instance warning; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_method_cannot_access_instance_field_unqualified() {
+    let src = r#"
+class C { int x; static int m() { return x; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "static-context"),
+        "expected a static-context diagnostic, got {diags:?}"
     );
 }
 

@@ -2194,9 +2194,81 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, expr, *op, *lhs, *rhs),
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
-                let rhs_expected = match op {
-                    AssignOp::Assign if !lhs_info.ty.is_errorish() => Some(&lhs_info.ty),
-                    _ => None,
+                let lhs_range = self.body.exprs[*lhs].range();
+                let is_lvalue = !lhs_info.is_type_ref
+                    && match &self.body.exprs[*lhs] {
+                        HirExpr::Name { name, .. } => {
+                            let scope = self
+                                .expr_scopes
+                                .scope_for_expr(*lhs)
+                                .unwrap_or_else(|| self.expr_scopes.root_scope());
+                            if self
+                                .expr_scopes
+                                .resolve_name(scope, &Name::from(name.as_str()))
+                                .is_some()
+                            {
+                                true
+                            } else {
+                                match self.resolver.resolve_name_detailed(
+                                    self.scopes,
+                                    self.scope_id,
+                                    &Name::from(name.as_str()),
+                                ) {
+                                    NameResolution::Resolved(res) => match res {
+                                        Resolution::Local(_)
+                                        | Resolution::Parameter(_)
+                                        | Resolution::Field(_) => true,
+                                        Resolution::StaticMember(member) => match member {
+                                            StaticMemberResolution::SourceField(_) => true,
+                                            StaticMemberResolution::SourceMethod(_) => false,
+                                            StaticMemberResolution::External(id) => {
+                                                match id.as_str().split_once("::") {
+                                                    Some((owner, member)) => {
+                                                        let receiver = self
+                                                            .ensure_workspace_class(loader, owner)
+                                                            .or_else(|| loader.ensure_class(owner))
+                                                            .map(|id| Type::class(id, vec![]))
+                                                            .unwrap_or_else(|| {
+                                                                Type::Named(owner.to_string())
+                                                            });
+                                                        self.ensure_type_loaded(loader, &receiver);
+                                                        let env_ro: &dyn TypeEnv = &*loader.store;
+                                                        let mut ctx = TyContext::new(env_ro);
+                                                        ctx.resolve_field(
+                                                            &receiver,
+                                                            member,
+                                                            CallKind::Static,
+                                                        )
+                                                        .is_some()
+                                                    }
+                                                    None => false,
+                                                }
+                                            }
+                                        },
+                                        Resolution::Methods(_)
+                                        | Resolution::Constructors(_)
+                                        | Resolution::Type(_)
+                                        | Resolution::Package(_) => false,
+                                    },
+                                    // Prefer the name-resolution diagnostics produced while inferring
+                                    // the name itself.
+                                    NameResolution::Ambiguous(_) | NameResolution::Unresolved => {
+                                        true
+                                    }
+                                }
+                            }
+                        }
+                        HirExpr::FieldAccess { .. } => true,
+                        _ => false,
+                    };
+
+                let rhs_expected = if is_lvalue {
+                    match op {
+                        AssignOp::Assign if !lhs_info.ty.is_errorish() => Some(&lhs_info.ty),
+                        _ => None,
+                    }
+                } else {
+                    None
                 };
                 let rhs_info = self.infer_expr_with_expected(loader, *rhs, rhs_expected);
 
@@ -2204,7 +2276,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-assignment-target",
                         "invalid assignment target: cannot assign to a type",
-                        Some(self.body.exprs[*lhs].range()),
+                        Some(lhs_range),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
+                    }
+                } else if !is_lvalue {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-assignment-target",
+                        "invalid assignment target",
+                        Some(lhs_range),
                     ));
                     ExprInfo {
                         ty: Type::Error,
@@ -2244,30 +2326,31 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 let string_ty =
                                     Type::class(loader.store.well_known().string, vec![]);
                                 let result_ty = match op {
-                                AssignOp::AddAssign => {
-                                    if is_java_lang_string(loader.store, &lhs_ty) {
-                                        Some(string_ty)
-                                    } else if let (Type::Primitive(a), Type::Primitive(b)) =
-                                        (&lhs_ty, &rhs_ty)
-                                    {
-                                        binary_numeric_promotion(*a, *b).map(Type::Primitive)
-                                    } else {
-                                        None
+                                    AssignOp::AddAssign => {
+                                        if is_java_lang_string(loader.store, &lhs_ty) {
+                                            Some(string_ty)
+                                        } else if let (Type::Primitive(a), Type::Primitive(b)) =
+                                            (&lhs_ty, &rhs_ty)
+                                        {
+                                            binary_numeric_promotion(*a, *b).map(Type::Primitive)
+                                        } else {
+                                            None
+                                        }
                                     }
-                                }
-                                AssignOp::SubAssign
-                                | AssignOp::MulAssign
-                                | AssignOp::DivAssign
-                                | AssignOp::RemAssign => match (&lhs_ty, &rhs_ty) {
-                                    (Type::Primitive(a), Type::Primitive(b))
-                                        if a.is_numeric() && b.is_numeric() =>
-                                    {
-                                        binary_numeric_promotion(*a, *b).map(Type::Primitive)
-                                    }
-                                    _ => None,
-                                },
-                                AssignOp::AndAssign | AssignOp::OrAssign | AssignOp::XorAssign => {
-                                    match (&lhs_ty, &rhs_ty) {
+                                    AssignOp::SubAssign
+                                    | AssignOp::MulAssign
+                                    | AssignOp::DivAssign
+                                    | AssignOp::RemAssign => match (&lhs_ty, &rhs_ty) {
+                                        (Type::Primitive(a), Type::Primitive(b))
+                                            if a.is_numeric() && b.is_numeric() =>
+                                        {
+                                            binary_numeric_promotion(*a, *b).map(Type::Primitive)
+                                        }
+                                        _ => None,
+                                    },
+                                    AssignOp::AndAssign
+                                    | AssignOp::OrAssign
+                                    | AssignOp::XorAssign => match (&lhs_ty, &rhs_ty) {
                                         (
                                             Type::Primitive(PrimitiveType::Boolean),
                                             Type::Primitive(PrimitiveType::Boolean),
@@ -2279,50 +2362,49 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                             binary_numeric_promotion(*a, *b).map(Type::Primitive)
                                         }
                                         _ => None,
-                                    }
-                                }
-                                AssignOp::ShlAssign
-                                | AssignOp::ShrAssign
-                                | AssignOp::UShrAssign => match (&lhs_ty, &rhs_ty) {
-                                    (Type::Primitive(lhs_p), Type::Primitive(rhs_p))
-                                        if is_integral_primitive(*lhs_p)
-                                            && is_integral_primitive(*rhs_p) =>
-                                    {
-                                        Some(Type::Primitive(unary_numeric_promotion(*lhs_p)))
-                                    }
-                                    _ => None,
-                                },
-                                AssignOp::Assign => None,
-                            };
+                                    },
+                                    AssignOp::ShlAssign
+                                    | AssignOp::ShrAssign
+                                    | AssignOp::UShrAssign => match (&lhs_ty, &rhs_ty) {
+                                        (Type::Primitive(lhs_p), Type::Primitive(rhs_p))
+                                            if is_integral_primitive(*lhs_p)
+                                                && is_integral_primitive(*rhs_p) =>
+                                        {
+                                            Some(Type::Primitive(unary_numeric_promotion(*lhs_p)))
+                                        }
+                                        _ => None,
+                                    },
+                                    AssignOp::Assign => None,
+                                };
 
-                            let env_ro: &dyn TypeEnv = &*loader.store;
-                            match result_ty {
-                                Some(result_ty) => {
-                                    if cast_conversion(env_ro, &result_ty, &lhs_ty).is_none() {
-                                        let expected = format_type(env_ro, &lhs_ty);
-                                        let found = format_type(env_ro, &result_ty);
+                                let env_ro: &dyn TypeEnv = &*loader.store;
+                                match result_ty {
+                                    Some(result_ty) => {
+                                        if cast_conversion(env_ro, &result_ty, &lhs_ty).is_none() {
+                                            let expected = format_type(env_ro, &lhs_ty);
+                                            let found = format_type(env_ro, &result_ty);
+                                            self.diagnostics.push(Diagnostic::error(
+                                                "type-mismatch",
+                                                format!(
+                                                    "type mismatch in compound assignment: expected {expected}, found {found}"
+                                                ),
+                                                Some(self.body.exprs[expr].range()),
+                                            ));
+                                        }
+                                    }
+                                    None => {
+                                        let lhs_rendered = format_type(env_ro, &lhs_ty);
+                                        let rhs_rendered = format_type(env_ro, &rhs_ty);
                                         self.diagnostics.push(Diagnostic::error(
                                             "type-mismatch",
                                             format!(
-                                                "type mismatch in compound assignment: expected {expected}, found {found}"
+                                                "invalid operands for compound assignment: {lhs_rendered} and {rhs_rendered}"
                                             ),
                                             Some(self.body.exprs[expr].range()),
                                         ));
                                     }
                                 }
-                                None => {
-                                    let lhs_rendered = format_type(env_ro, &lhs_ty);
-                                    let rhs_rendered = format_type(env_ro, &rhs_ty);
-                                    self.diagnostics.push(Diagnostic::error(
-                                        "type-mismatch",
-                                        format!(
-                                            "invalid operands for compound assignment: {lhs_rendered} and {rhs_rendered}"
-                                        ),
-                                        Some(self.body.exprs[expr].range()),
-                                    ));
-                                }
                             }
-                        }
                         }
                     }
 
@@ -2628,14 +2710,33 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Unknown,
                 is_type_ref: false,
             },
-            Resolution::Field(field) => ExprInfo {
-                ty: self
-                    .field_types
-                    .get(&field)
-                    .cloned()
-                    .unwrap_or(Type::Unknown),
-                is_type_ref: false,
-            },
+            Resolution::Field(field) => {
+                let field_def = self.tree.field(field);
+                let is_static = field_def.modifiers.raw & Modifiers::STATIC != 0;
+                if self.is_static_context() && !is_static {
+                    self.diagnostics.push(Diagnostic::error(
+                        "static-context",
+                        format!(
+                            "cannot reference instance field `{}` from a static context",
+                            field_def.name
+                        ),
+                        Some(range),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
+                    }
+                } else {
+                    ExprInfo {
+                        ty: self
+                            .field_types
+                            .get(&field)
+                            .cloned()
+                            .unwrap_or(Type::Unknown),
+                        is_type_ref: false,
+                    }
+                }
+            }
             Resolution::Methods(_) | Resolution::Constructors(_) => ExprInfo {
                 ty: Type::Unknown,
                 is_type_ref: false,
