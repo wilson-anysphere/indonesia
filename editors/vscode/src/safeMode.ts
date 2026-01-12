@@ -11,6 +11,14 @@ export const SAFE_MODE_EXEMPT_REQUESTS: ReadonlySet<string> = new Set<string>([
   // `nova/java/organizeImports` is implemented outside the standard custom-request dispatcher and
   // may still succeed while Nova is in safe mode (see docs/protocol-extensions.md).
   'nova/java/organizeImports',
+  // AI endpoints are handled directly by the stdio server and currently bypass the safe-mode
+  // guard as well, so they should not clear the safe-mode indicator.
+  'nova/completion/more',
+  'nova/ai/explainError',
+  'nova/ai/generateMethodBody',
+  'nova/ai/generateTests',
+  // Internal/experimental endpoints that bypass safe-mode guard.
+  'nova/semanticSearch/indexStatus',
 ]);
 
 export function formatError(err: unknown): string {
@@ -122,4 +130,3 @@ export function formatSafeModeReason(reason: string): string {
   const normalized = trimmed.replace(/[_-]+/g, ' ');
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
-

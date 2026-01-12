@@ -67,3 +67,7 @@ test('isSafeModeError matches canonical safe-mode guard messages', () => {
 test('SAFE_MODE_EXEMPT_REQUESTS includes nova/java/organizeImports', () => {
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/java/organizeImports'), true);
 });
+
+test('SAFE_MODE_EXEMPT_REQUESTS includes nova/completion/more (AI polling)', () => {
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/completion/more'), true);
+});
