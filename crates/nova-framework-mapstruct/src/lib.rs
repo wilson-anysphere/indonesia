@@ -170,7 +170,6 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         {
             return true;
         }
-
         // Last resort: if the database preserves fully-qualified annotation names in HIR, accept a
         // direct `org.mapstruct.*` match.
         db.all_classes(project).into_iter().any(|id| {

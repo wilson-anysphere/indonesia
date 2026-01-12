@@ -2236,6 +2236,13 @@ fn completion_inside_line_comment_is_empty() {
 }
 
 #[test]
+fn completion_suppressed_in_block_comment() {
+    let (db, file, pos) = fixture("/* ret<|> */");
+    let items = completions(&db, file, pos);
+    assert!(items.is_empty(), "expected no completions; got {items:#?}");
+}
+
+#[test]
 fn completion_inside_block_comment_is_empty() {
     let (db, file, pos) = fixture("class A { /* ret<|> */ }");
     let items = completions(&db, file, pos);

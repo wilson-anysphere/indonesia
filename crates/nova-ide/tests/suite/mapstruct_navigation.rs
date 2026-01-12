@@ -225,7 +225,6 @@ public class CarMapperImpl implements CarMapper {
         offset_to_position(dto_source, dto_offset + "make".len())
     );
 }
-
 fn write_file(path: &Path, text: &str) {
     let Some(parent) = path.parent() else {
         panic!("path should have a parent: {}", path.display());
