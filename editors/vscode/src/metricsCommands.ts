@@ -13,6 +13,11 @@ export function registerNovaMetricsCommands(context: vscode.ExtensionContext, re
     vscode.commands.registerCommand(SHOW_METRICS_COMMAND, async () => {
       try {
         const metrics = await request<unknown>('nova/metrics');
+        if (typeof metrics === 'undefined') {
+          // Request was gated (unsupported method) and the shared request helper already displayed
+          // a user-facing message.
+          return;
+        }
 
         const metricsJson = jsonStringifyBestEffort(metrics);
         output.clear();
@@ -40,7 +45,12 @@ export function registerNovaMetricsCommands(context: vscode.ExtensionContext, re
   context.subscriptions.push(
     vscode.commands.registerCommand(RESET_METRICS_COMMAND, async () => {
       try {
-        await request('nova/resetMetrics');
+        const resp = await request<unknown>('nova/resetMetrics');
+        if (typeof resp === 'undefined') {
+          // Request was gated (unsupported method) and the shared request helper already displayed
+          // a user-facing message.
+          return;
+        }
         void vscode.window.showInformationMessage('Nova: Request metrics reset.');
       } catch (err) {
         const message = formatError(err);
@@ -52,7 +62,7 @@ export function registerNovaMetricsCommands(context: vscode.ExtensionContext, re
 
 function jsonStringifyBestEffort(value: unknown): string {
   try {
-    return JSON.stringify(
+    const serialized = JSON.stringify(
       value,
       (_key, v) => {
         if (typeof v === 'bigint') {
@@ -62,6 +72,7 @@ function jsonStringifyBestEffort(value: unknown): string {
       },
       2,
     );
+    return typeof serialized === 'string' ? serialized : String(serialized);
   } catch (err) {
     const message = formatError(err);
     return `<< Failed to JSON.stringify metrics: ${message} >>\n${String(value)}`;
@@ -84,4 +95,3 @@ function formatError(err: unknown): string {
     return String(err);
   }
 }
-
