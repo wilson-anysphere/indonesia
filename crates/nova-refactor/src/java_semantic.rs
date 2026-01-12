@@ -6131,6 +6131,7 @@ fn collect_switch_contexts(
                 selector,
                 arms,
                 range,
+                ..
             } => {
                 // Walk the selector expression first so any nested switch constructs are recorded
                 // before we enter the switch arms.

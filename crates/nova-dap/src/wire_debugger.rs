@@ -2647,6 +2647,18 @@ impl Debugger {
             (end > start).then(|| call_source[(start + 1)..end].trim())
         }
 
+        fn parse_indexed_child_name(name: &str) -> Option<usize> {
+            let name = name.trim();
+            if !name.starts_with('[') || !name.ends_with(']') {
+                return None;
+            }
+            let inner = &name[1..name.len().saturating_sub(1)];
+            if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            inner.parse::<usize>().ok()
+        }
+
         fn parse_filter_predicate(arg: &str) -> Option<Box<dyn Fn(i64) -> bool + Send + Sync>> {
             let (param, body) = arg.split_once("->")?;
             let param = param.trim();
@@ -3346,9 +3358,117 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             let collection_type = Some(preview.runtime_type.clone());
 
             let (size, mut raw_sample) = match preview.kind {
-                ObjectKindPreview::List { size, sample } => (size, sample),
-                ObjectKindPreview::Set { size, sample } => (size, sample),
-                ObjectKindPreview::Array { length, sample, .. } => (length, sample),
+                ObjectKindPreview::List { size, sample } => {
+                    let mut raw_sample = sample;
+                    if config.max_sample_size > raw_sample.len() && size > raw_sample.len() {
+                        match budgeted_jdwp(
+                            cancel,
+                            started,
+                            budget,
+                            inspector.object_children(object_id),
+                        )
+                        .await
+                        {
+                            Ok(children) => {
+                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
+                                    .into_iter()
+                                    .filter_map(|child| {
+                                        parse_indexed_child_name(&child.name)
+                                            .map(|idx| (idx, child.value))
+                                    })
+                                    .collect();
+                                indexed_children.sort_by_key(|(idx, _)| *idx);
+                                raw_sample = indexed_children
+                                    .into_iter()
+                                    .map(|(_, value)| value)
+                                    .take(config.max_sample_size)
+                                    .collect();
+                            }
+                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
+                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
+                                return Err(JdwpError::Cancelled.into())
+                            }
+                            Err(_err) => {
+                                // Best-effort: fall back to the preview sample (which is limited).
+                            }
+                        }
+                    }
+                    (size, raw_sample)
+                }
+                ObjectKindPreview::Set { size, sample } => {
+                    let mut raw_sample = sample;
+                    if config.max_sample_size > raw_sample.len() && size > raw_sample.len() {
+                        match budgeted_jdwp(
+                            cancel,
+                            started,
+                            budget,
+                            inspector.object_children(object_id),
+                        )
+                        .await
+                        {
+                            Ok(children) => {
+                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
+                                    .into_iter()
+                                    .filter_map(|child| {
+                                        parse_indexed_child_name(&child.name)
+                                            .map(|idx| (idx, child.value))
+                                    })
+                                    .collect();
+                                indexed_children.sort_by_key(|(idx, _)| *idx);
+                                raw_sample = indexed_children
+                                    .into_iter()
+                                    .map(|(_, value)| value)
+                                    .take(config.max_sample_size)
+                                    .collect();
+                            }
+                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
+                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
+                                return Err(JdwpError::Cancelled.into())
+                            }
+                            Err(_err) => {
+                                // Best-effort: fall back to the preview sample (which is limited).
+                            }
+                        }
+                    }
+                    (size, raw_sample)
+                }
+                ObjectKindPreview::Array { length, sample, .. } => {
+                    let mut raw_sample = sample;
+                    if config.max_sample_size > raw_sample.len() && length > raw_sample.len() {
+                        match budgeted_jdwp(
+                            cancel,
+                            started,
+                            budget,
+                            inspector.object_children(object_id),
+                        )
+                        .await
+                        {
+                            Ok(children) => {
+                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
+                                    .into_iter()
+                                    .filter_map(|child| {
+                                        parse_indexed_child_name(&child.name)
+                                            .map(|idx| (idx, child.value))
+                                    })
+                                    .collect();
+                                indexed_children.sort_by_key(|(idx, _)| *idx);
+                                raw_sample = indexed_children
+                                    .into_iter()
+                                    .map(|(_, value)| value)
+                                    .take(config.max_sample_size)
+                                    .collect();
+                            }
+                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
+                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
+                                return Err(JdwpError::Cancelled.into())
+                            }
+                            Err(_err) => {
+                                // Best-effort: fall back to the preview sample (which is limited).
+                            }
+                        }
+                    }
+                    (length, raw_sample)
+                }
                 _ if preview.runtime_type == "java.util.Arrays$ArrayList" => {
                     // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
                     // the default preview helpers. Read the backing array field directly.
