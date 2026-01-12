@@ -3291,6 +3291,7 @@ dependencies = [
  "nova-core",
  "nova-db",
  "nova-fuzzy",
+ "nova-metrics",
  "nova-syntax",
  "once_cell",
  "rayon",

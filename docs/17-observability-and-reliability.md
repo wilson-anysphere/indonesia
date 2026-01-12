@@ -484,6 +484,32 @@ Nova exposes two runtime metrics surfaces:
 
 `nova/resetMetrics` resets the registry and returns `{ "ok": true }`.
 
+#### AI request metrics (`nova-ai`)
+
+When Nova makes LLM calls via `nova-ai`, it also records a small set of **AI-specific** entries in the
+same registry. These metric names are intentionally low-cardinality and do **not** include prompt or
+completion text.
+
+- `ai/chat`
+  - total non-streaming chat requests (`requestCount`)
+  - end-to-end latency summary (`latencyUs`)
+  - failures on the base metric:
+    - `timeoutCount` increments for `AiError::Timeout`
+    - `errorCount` increments for other `AiError` kinds (cancel/http/json/etc)
+- `ai/chat/cache_hit` — cache hits (`requestCount`, only when caching is enabled)
+- `ai/chat/cache_miss` — cache misses (`requestCount`, only when caching is enabled)
+- `ai/chat/retry` — retry attempts started (`requestCount`)
+
+Error kind breakdown (counts are recorded under `errorCount` unless otherwise noted):
+
+- `ai/chat/error/timeout` (`timeoutCount`)
+- `ai/chat/error/cancelled`
+- `ai/chat/error/http`
+- `ai/chat/error/json`
+- `ai/chat/error/url`
+- `ai/chat/error/invalid_config`
+- `ai/chat/error/unexpected_response`
+
 ### LSP: `nova/memoryStatus` (memory + throttling snapshot)
 
 The `nova-lsp` stdio server exposes a custom request:

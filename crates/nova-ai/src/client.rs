@@ -10,6 +10,7 @@ use crate::{
 use async_trait::async_trait;
 use futures::StreamExt;
 use nova_config::{AiConfig, AiProviderKind};
+use nova_metrics::MetricsRegistry;
 use sha2::{Digest, Sha256};
 use std::{
     path::Path,
@@ -58,6 +59,52 @@ struct RetryConfig {
     max_retries: usize,
     initial_backoff: Duration,
     max_backoff: Duration,
+}
+
+const AI_CHAT_METRIC: &str = "ai/chat";
+const AI_CHAT_CACHE_HIT_METRIC: &str = "ai/chat/cache_hit";
+const AI_CHAT_CACHE_MISS_METRIC: &str = "ai/chat/cache_miss";
+const AI_CHAT_RETRY_METRIC: &str = "ai/chat/retry";
+
+const AI_CHAT_ERROR_TIMEOUT_METRIC: &str = "ai/chat/error/timeout";
+const AI_CHAT_ERROR_CANCELLED_METRIC: &str = "ai/chat/error/cancelled";
+const AI_CHAT_ERROR_HTTP_METRIC: &str = "ai/chat/error/http";
+const AI_CHAT_ERROR_JSON_METRIC: &str = "ai/chat/error/json";
+const AI_CHAT_ERROR_URL_METRIC: &str = "ai/chat/error/url";
+const AI_CHAT_ERROR_INVALID_CONFIG_METRIC: &str = "ai/chat/error/invalid_config";
+const AI_CHAT_ERROR_UNEXPECTED_RESPONSE_METRIC: &str = "ai/chat/error/unexpected_response";
+
+fn record_chat_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
+    match err {
+        AiError::Timeout => {
+            metrics.record_timeout(AI_CHAT_METRIC);
+            metrics.record_timeout(AI_CHAT_ERROR_TIMEOUT_METRIC);
+        }
+        AiError::Cancelled => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_CANCELLED_METRIC);
+        }
+        AiError::Http(_) => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_HTTP_METRIC);
+        }
+        AiError::Json(_) => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_JSON_METRIC);
+        }
+        AiError::Url(_) => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_URL_METRIC);
+        }
+        AiError::InvalidConfig(_) => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_INVALID_CONFIG_METRIC);
+        }
+        AiError::UnexpectedResponse(_) => {
+            metrics.record_error(AI_CHAT_METRIC);
+            metrics.record_error(AI_CHAT_ERROR_UNEXPECTED_RESPONSE_METRIC);
+        }
+    }
 }
 
 impl Default for RetryConfig {
@@ -393,199 +440,228 @@ impl LlmClient for AiClient {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        if cancel.is_cancelled() {
-            return Err(AiError::Cancelled);
-        }
+        let metrics = MetricsRegistry::global();
+        let metrics_start = Instant::now();
 
-        let request = self.sanitize_request(request);
-
-        let prompt_for_log = if self.audit_enabled {
-            Some(audit::format_chat_prompt(&request.messages))
-        } else {
-            None
-        };
-        let request_id = if self.audit_enabled {
-            audit::next_request_id()
-        } else {
-            0
-        };
-        let safe_endpoint = if self.audit_enabled {
-            Some(audit::sanitize_url_for_log(&self.endpoint))
-        } else {
-            None
-        };
-
-        let cache_key = self.cache.as_ref().map(|_| self.build_cache_key(&request));
-        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-            if let Some(hit) = cache.get(key).await {
-                if let Some(prompt) = prompt_for_log.as_deref() {
-                    let started_at = Instant::now();
-                    audit::log_llm_request(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        prompt,
-                        safe_endpoint.as_deref(),
-                        /*attempt=*/ 0,
-                        /*stream=*/ false,
-                    );
-                    audit::log_llm_response(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        safe_endpoint.as_deref(),
-                        &hit,
-                        started_at.elapsed(),
-                        /*retry_count=*/ 0,
-                        /*stream=*/ false,
-                        /*chunk_count=*/ None,
-                    );
-                } else {
-                    debug!(
-                        provider = self.provider_label,
-                        model = %self.model,
-                        "llm cache hit"
-                    );
-                }
-                return Ok(hit);
-            }
-        }
-
-        let timeout = self.request_timeout;
-        let operation_start = Instant::now();
-        let mut attempt = 0usize;
-
-        loop {
+        let result: Result<String, AiError> = 'chat_result: {
             if cancel.is_cancelled() {
-                return Err(AiError::Cancelled);
+                break 'chat_result Err(AiError::Cancelled);
             }
 
-            let remaining = timeout.saturating_sub(operation_start.elapsed());
-            if remaining == Duration::ZERO {
-                return Err(AiError::Timeout);
+            let request = self.sanitize_request(request);
+
+            let prompt_for_log = if self.audit_enabled {
+                Some(audit::format_chat_prompt(&request.messages))
+            } else {
+                None
+            };
+            let request_id = if self.audit_enabled {
+                audit::next_request_id()
+            } else {
+                0
+            };
+            let safe_endpoint = if self.audit_enabled {
+                Some(audit::sanitize_url_for_log(&self.endpoint))
+            } else {
+                None
+            };
+
+            let cache_key = self.cache.as_ref().map(|_| self.build_cache_key(&request));
+            if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+                match cache.get(key).await {
+                    Some(hit) => {
+                        if let Some(prompt) = prompt_for_log.as_deref() {
+                            let started_at = Instant::now();
+                            audit::log_llm_request(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                prompt,
+                                safe_endpoint.as_deref(),
+                                /*attempt=*/ 0,
+                                /*stream=*/ false,
+                            );
+                            audit::log_llm_response(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                safe_endpoint.as_deref(),
+                                &hit,
+                                started_at.elapsed(),
+                                /*retry_count=*/ 0,
+                                /*stream=*/ false,
+                                /*chunk_count=*/ None,
+                            );
+                        } else {
+                            debug!(
+                                provider = self.provider_label,
+                                model = %self.model,
+                                "llm cache hit"
+                            );
+                        }
+
+                        metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
+                        break 'chat_result Ok(hit);
+                    }
+                    None => {
+                        metrics.record_request(AI_CHAT_CACHE_MISS_METRIC, Duration::from_micros(1));
+                    }
+                }
             }
 
-            let (started_at, result) = {
-                let permit = tokio::time::timeout(remaining, self.acquire_permit(&cancel))
-                    .await
-                    .map_err(|_| AiError::Timeout)??;
+            let timeout = self.request_timeout;
+            let operation_start = Instant::now();
+            let mut attempt = 0usize;
+
+            loop {
+                if cancel.is_cancelled() {
+                    break 'chat_result Err(AiError::Cancelled);
+                }
 
                 let remaining = timeout.saturating_sub(operation_start.elapsed());
                 if remaining == Duration::ZERO {
-                    drop(permit);
-                    return Err(AiError::Timeout);
+                    break 'chat_result Err(AiError::Timeout);
                 }
 
-                let started_at = Instant::now();
-                if let Some(prompt) = prompt_for_log.as_deref() {
-                    audit::log_llm_request(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        prompt,
-                        safe_endpoint.as_deref(),
-                        attempt,
-                        /*stream=*/ false,
-                    );
-                } else {
-                    debug!(
-                        provider = self.provider_label,
-                        model = %self.model,
-                        attempt,
-                        "llm request"
-                    );
+                if attempt > 0 {
+                    metrics.record_request(AI_CHAT_RETRY_METRIC, Duration::from_micros(1));
                 }
 
-                let out = tokio::time::timeout(
-                    remaining,
-                    self.provider.chat(request.clone(), cancel.clone()),
-                )
-                .await;
-                let out = match out {
-                    Ok(res) => res,
-                    Err(_) => Err(AiError::Timeout),
-                };
-
-                drop(permit);
-                (started_at, out)
-            };
-
-            match result {
-                Ok(completion) => {
-                    if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-                        cache.insert(key, completion.clone()).await;
-                    }
-                    if self.audit_enabled {
-                        audit::log_llm_response(
-                            request_id,
-                            self.provider_label,
-                            &self.model,
-                            safe_endpoint.as_deref(),
-                            &completion,
-                            started_at.elapsed(),
-                            /*retry_count=*/ attempt,
-                            /*stream=*/ false,
-                            /*chunk_count=*/ None,
-                        );
-                    }
-                    return Ok(completion);
-                }
-                Err(err) if attempt < self.retry.max_retries && self.should_retry(&err) => {
-                    if self.audit_enabled {
-                        audit::log_llm_error(
-                            request_id,
-                            self.provider_label,
-                            &self.model,
-                            &err.to_string(),
-                            started_at.elapsed(),
-                            /*retry_count=*/ attempt,
-                            /*stream=*/ false,
-                        );
-                    }
-
-                    attempt += 1;
-                    warn!(
-                        provider = ?self.provider_kind,
-                        attempt,
-                        error = %err,
-                        "llm request failed, retrying"
-                    );
+                let (started_at, result) = {
+                    let permit = match tokio::time::timeout(remaining, self.acquire_permit(&cancel))
+                        .await
+                    {
+                        Ok(permit) => match permit {
+                            Ok(permit) => permit,
+                            Err(err) => break 'chat_result Err(err),
+                        },
+                        Err(_) => break 'chat_result Err(AiError::Timeout),
+                    };
 
                     let remaining = timeout.saturating_sub(operation_start.elapsed());
                     if remaining == Duration::ZERO {
-                        return Err(AiError::Timeout);
+                        drop(permit);
+                        break 'chat_result Err(AiError::Timeout);
                     }
-                    if let Err(err) = self.backoff_sleep(attempt, remaining, &cancel).await {
+
+                    let started_at = Instant::now();
+                    if let Some(prompt) = prompt_for_log.as_deref() {
+                        audit::log_llm_request(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            prompt,
+                            safe_endpoint.as_deref(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    } else {
+                        debug!(
+                            provider = self.provider_label,
+                            model = %self.model,
+                            attempt,
+                            "llm request"
+                        );
+                    }
+
+                    let out = match tokio::time::timeout(
+                        remaining,
+                        self.provider.chat(request.clone(), cancel.clone()),
+                    )
+                    .await
+                    {
+                        Ok(res) => res,
+                        Err(_) => Err(AiError::Timeout),
+                    };
+
+                    drop(permit);
+                    (started_at, out)
+                };
+
+                match result {
+                    Ok(completion) => {
+                        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+                            cache.insert(key, completion.clone()).await;
+                        }
+                        if self.audit_enabled {
+                            audit::log_llm_response(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                safe_endpoint.as_deref(),
+                                &completion,
+                                started_at.elapsed(),
+                                /*retry_count=*/ attempt,
+                                /*stream=*/ false,
+                                /*chunk_count=*/ None,
+                            );
+                        }
+                        break 'chat_result Ok(completion);
+                    }
+                    Err(err) if attempt < self.retry.max_retries && self.should_retry(&err) => {
                         if self.audit_enabled {
                             audit::log_llm_error(
                                 request_id,
                                 self.provider_label,
                                 &self.model,
                                 &err.to_string(),
-                                operation_start.elapsed(),
+                                started_at.elapsed(),
                                 /*retry_count=*/ attempt,
                                 /*stream=*/ false,
                             );
                         }
-                        return Err(err);
-                    }
-                }
-                Err(err) => {
-                    if self.audit_enabled {
-                        audit::log_llm_error(
-                            request_id,
-                            self.provider_label,
-                            &self.model,
-                            &err.to_string(),
-                            started_at.elapsed(),
-                            /*retry_count=*/ attempt,
-                            /*stream=*/ false,
+
+                        attempt += 1;
+                        warn!(
+                            provider = ?self.provider_kind,
+                            attempt,
+                            error = %err,
+                            "llm request failed, retrying"
                         );
+
+                        let remaining = timeout.saturating_sub(operation_start.elapsed());
+                        if remaining == Duration::ZERO {
+                            break 'chat_result Err(AiError::Timeout);
+                        }
+                        if let Err(err) = self.backoff_sleep(attempt, remaining, &cancel).await {
+                            if self.audit_enabled {
+                                audit::log_llm_error(
+                                    request_id,
+                                    self.provider_label,
+                                    &self.model,
+                                    &err.to_string(),
+                                    operation_start.elapsed(),
+                                    /*retry_count=*/ attempt,
+                                    /*stream=*/ false,
+                                );
+                            }
+                            break 'chat_result Err(err);
+                        }
                     }
-                    return Err(err);
+                    Err(err) => {
+                        if self.audit_enabled {
+                            audit::log_llm_error(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                &err.to_string(),
+                                started_at.elapsed(),
+                                /*retry_count=*/ attempt,
+                                /*stream=*/ false,
+                            );
+                        }
+                        break 'chat_result Err(err);
+                    }
                 }
             }
+        };
+
+        metrics.record_request(AI_CHAT_METRIC, metrics_start.elapsed());
+        if let Err(err) = &result {
+            record_chat_error_metrics(metrics, err);
         }
+
+        result
     }
 
     async fn chat_stream(
@@ -1366,4 +1442,155 @@ mod tests {
             "expected second request to hit shared cache despite audit logging"
         );
     }
-}
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cache_hit_increments_metrics() {
+        let metrics = nova_metrics::MetricsRegistry::global();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_CACHE_HIT_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn LlmProvider> = Arc::new(CountingProvider {
+            calls: calls.clone(),
+        });
+        let cache = Arc::new(LlmResponseCache::new(CacheSettings {
+            max_entries: 16,
+            ttl: Duration::from_secs(60),
+        }));
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider,
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: Some(cache),
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let out1 = client
+            .chat(request.clone(), CancellationToken::new())
+            .await
+            .expect("chat succeeds");
+        let out2 = client
+            .chat(request, CancellationToken::new())
+            .await
+            .expect("chat succeeds");
+
+        assert_eq!(out1, "Pong");
+        assert_eq!(out2, "Pong");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "expected second request to hit cache"
+        );
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_CACHE_HIT_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_CACHE_HIT_METRIC} to increment"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct SlowProvider;
+
+    #[async_trait]
+    impl LlmProvider for SlowProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok("Too slow".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "SlowProvider does not support streaming".to_string(),
+            ))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timeout_increments_metrics() {
+        let metrics = nova_metrics::MetricsRegistry::global();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(SlowProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            request_timeout: Duration::from_millis(10),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let err = client
+            .chat(request, CancellationToken::new())
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, AiError::Timeout));
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_METRIC} timeout_count to increment"
+        );
+    }
+} 
