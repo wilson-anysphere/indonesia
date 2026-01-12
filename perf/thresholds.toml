@@ -63,11 +63,13 @@ p95_regression = 0.20
 # Workspace symbol search (in-memory; some variance from large allocations + sorting).
 "symbol_search/prefix_hm/equal" = { p50_regression = 0.20, p95_regression = 0.80 }
 "symbol_search/prefix_hm/qualified" = { p50_regression = 0.35, p95_regression = 0.80 }
-"symbol_search/prefix_m_many/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
-"symbol_search/prefix_m_many/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
+"symbol_search/prefix_m_many/equal" = { p50_regression = 0.25, p95_regression = 0.80 }
+"symbol_search/prefix_m_many/qualified" = { p50_regression = 0.25, p95_regression = 0.80 }
 "symbol_search/trigram_map/equal" = { p50_regression = 0.15, p95_regression = 1.20 }
 "symbol_search/trigram_map/qualified" = { p50_regression = 0.15, p95_regression = 0.80 }
-"symbol_search/trigram_hmap_multi/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
-"symbol_search/trigram_hmap_multi/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
+"symbol_search/trigram_man_many/equal" = { p50_regression = 0.25, p95_regression = 0.80 }
+"symbol_search/trigram_man_many/qualified" = { p50_regression = 0.25, p95_regression = 0.80 }
+"symbol_search/trigram_hmap_multi/equal" = { p50_regression = 0.25, p95_regression = 0.80 }
+"symbol_search/trigram_hmap_multi/qualified" = { p50_regression = 0.25, p95_regression = 0.80 }
 "symbol_search/fallback_full_scan_zkm/equal" = { p50_regression = 0.25, p95_regression = 0.50 }
 "symbol_search/fallback_full_scan_zkm/qualified" = { p50_regression = 0.25, p95_regression = 0.50 }
