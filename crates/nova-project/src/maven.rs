@@ -2078,7 +2078,34 @@ fn resolve_snapshot_jar_file_name(
         }
     }
 
-    for metadata_name in ["maven-metadata-local.xml", "maven-metadata.xml"] {
+    // Maven can write a variety of metadata file names under the version directory:
+    // - `maven-metadata-local.xml` (local installs)
+    // - `maven-metadata.xml` (sometimes present)
+    // - `maven-metadata-<repoId>.xml` (for snapshots downloaded from remote repos)
+    //
+    // Collect all candidates deterministically so we can resolve timestamped SNAPSHOTs even when
+    // only a repo-scoped metadata file exists.
+    let mut metadata_names = vec!["maven-metadata-local.xml".to_string(), "maven-metadata.xml".to_string()];
+    if let Ok(entries) = std::fs::read_dir(version_dir) {
+        let mut extra = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            if file_name == "maven-metadata-local.xml" || file_name == "maven-metadata.xml" {
+                continue;
+            }
+            if file_name.starts_with("maven-metadata-") && file_name.ends_with(".xml") {
+                extra.push(file_name.to_string());
+            }
+        }
+        extra.sort();
+        extra.dedup();
+        metadata_names.extend(extra);
+    }
+
+    for metadata_name in metadata_names {
         let metadata_path = version_dir.join(metadata_name);
         let Ok(contents) = std::fs::read_to_string(&metadata_path) else {
             continue;
@@ -2514,6 +2541,42 @@ mod tests {
 
         std::fs::write(
             version_dir.join("maven-metadata-local.xml"),
+            r#"<metadata><versioning><snapshotVersions><snapshotVersion><extension>jar</extension><value>1.0-20260112.123456-1</value></snapshotVersion></snapshotVersions></versioning></metadata>"#,
+        )
+        .expect("write metadata");
+
+        let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
+        std::fs::write(&jar_path, "").expect("write jar");
+
+        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        assert_eq!(resolved, jar_path);
+    }
+
+    #[test]
+    fn snapshot_dependency_jar_resolves_from_repo_scoped_metadata_file() {
+        let repo = tempfile::tempdir().expect("tempdir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        let version_dir = repo
+            .path()
+            .join("com")
+            .join("example")
+            .join("dep")
+            .join("1.0-SNAPSHOT");
+        std::fs::create_dir_all(&version_dir).expect("create version dir");
+
+        // Maven can store metadata from remote repos under a repo-scoped filename like
+        // `maven-metadata-central.xml`.
+        std::fs::write(
+            version_dir.join("maven-metadata-central.xml"),
             r#"<metadata><versioning><snapshotVersions><snapshotVersion><extension>jar</extension><value>1.0-20260112.123456-1</value></snapshotVersion></snapshotVersions></versioning></metadata>"#,
         )
         .expect("write metadata");
