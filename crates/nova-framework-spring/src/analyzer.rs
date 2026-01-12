@@ -164,11 +164,19 @@ impl FrameworkAnalyzer for SpringAnalyzer {
         }
 
         // Maven coordinate based detection (common Spring + Spring Boot artifacts).
-        if db.has_dependency(project, "org.springframework", "spring-context")
-            || db.has_dependency(project, "org.springframework", "spring-beans")
-            || db.has_dependency(project, "org.springframework.boot", "spring-boot")
-            || db.has_dependency(project, "org.springframework.boot", "spring-boot-autoconfigure")
-            || db.has_dependency(project, "org.springframework.boot", "spring-boot-starter")
+        const COMMON_COORDS: &[(&str, &str)] = &[
+            ("org.springframework", "spring-context"),
+            ("org.springframework", "spring-beans"),
+            ("org.springframework", "spring-web"),
+            ("org.springframework", "spring-webmvc"),
+            ("org.springframework.boot", "spring-boot"),
+            ("org.springframework.boot", "spring-boot-autoconfigure"),
+            ("org.springframework.boot", "spring-boot-starter"),
+            ("org.springframework.boot", "spring-boot-starter-web"),
+        ];
+        if COMMON_COORDS
+            .iter()
+            .any(|(group, artifact)| db.has_dependency(project, group, artifact))
         {
             return true;
         }
