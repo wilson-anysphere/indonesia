@@ -170,6 +170,44 @@ class C { void test(){ new Foo().$0bar(); } }
 }
 
 #[test]
+fn goto_definition_resolves_inherited_field_without_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base { int $1field; }
+//- /Derived.java
+class Derived extends Base { void test(){ $0field = 1; } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = goto_definition(&fixture.db, file, pos).expect("expected definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn goto_definition_resolves_inherited_interface_constant_without_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { int $1X = 1; }
+//- /C.java
+class C implements I { void test(){ int y = $0X; } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = goto_definition(&fixture.db, file, pos).expect("expected definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn goto_definition_does_not_misresolve_unknown_receiver_to_inherited_method() {
     let fixture = FileIdFixture::parse(
         r#"

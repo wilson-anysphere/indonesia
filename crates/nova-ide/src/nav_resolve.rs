@@ -448,6 +448,8 @@ impl Resolver {
         let parsed = self.index.file(file)?;
         let (ident, ident_span) = identifier_at(&parsed.text, offset)?;
         let occurrence = classify_occurrence(&parsed.text, ident_span)?;
+        let looks_like_type = matches!(occurrence, OccurrenceKind::Ident)
+            && looks_like_type_usage(&parsed.text, ident_span);
 
         // 1) Locals/fields in the current file.
         if matches!(occurrence, OccurrenceKind::Ident) {
@@ -460,6 +462,26 @@ impl Resolver {
                     kind,
                     def,
                 });
+            }
+        }
+
+        // 1.5) Inherited field access without an explicit receiver (`foo = 1;` where `foo`
+        // is declared on a superclass or implemented interface).
+        //
+        // We intentionally avoid attempting this in obvious type positions (`Foo x;`) to avoid
+        // mis-resolving type names as inherited fields.
+        if matches!(occurrence, OccurrenceKind::Ident) && !looks_like_type {
+            if let Some(receiver_ty) =
+                self.index
+                    .resolve_receiver_type(parsed, ident_span.start, "this")
+            {
+                if let Some(def) = self.index.resolve_field_definition(&receiver_ty, &ident) {
+                    return Some(ResolvedSymbol {
+                        name: ident,
+                        kind: ResolvedKind::Field,
+                        def,
+                    });
+                }
             }
         }
 
@@ -535,6 +557,78 @@ impl Resolver {
         let parsed = self.index.file(file)?;
         Some(scan_identifier_occurrences(&parsed.text, span, ident))
     }
+}
+
+fn looks_like_type_usage(text: &str, ident_span: Span) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = ident_span.end.min(bytes.len());
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return false;
+    }
+
+    // `Foo x` (type + identifier).
+    if is_ident_start(bytes[i]) {
+        return true;
+    }
+
+    // `Foo[] x` (array type suffix).
+    if bytes[i] == b'[' {
+        let mut j = i;
+        loop {
+            if bytes.get(j) != Some(&b'[') {
+                break;
+            }
+            j += 1;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            if bytes.get(j) != Some(&b']') {
+                // Likely indexing (`arr[0]`) rather than a type suffix.
+                return false;
+            }
+            j += 1;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            if bytes.get(j) == Some(&b'[') {
+                continue;
+            }
+            return bytes.get(j).is_some_and(|b| is_ident_start(*b));
+        }
+    }
+
+    // `Foo<Bar> x` (generic type suffix).
+    if bytes[i] == b'<' {
+        let mut depth = 0usize;
+        let mut j = i;
+        // Best-effort scan for a matching `>` within a small window, to avoid
+        // misclassifying `<` comparisons as type positions.
+        while j < bytes.len() && j - i < 256 {
+            match bytes[j] {
+                b'<' => depth += 1,
+                b'>' => {
+                    depth = match depth.checked_sub(1) {
+                        Some(v) => v,
+                        None => return false,
+                    };
+                    if depth == 0 {
+                        j += 1;
+                        while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        return bytes.get(j).is_some_and(|b| is_ident_start(*b) || *b == b'[');
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+
+    false
 }
 
 fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
