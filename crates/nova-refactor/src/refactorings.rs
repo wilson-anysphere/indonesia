@@ -5873,6 +5873,19 @@ fn statement_block_and_index(stmt: &ast::Statement) -> Option<(ast::Block, usize
     Some((block, idx))
 }
 
+fn check_side_effectful_inline_order(
+    root: &nova_syntax::SyntaxNode,
+    decl_stmt: &ast::LocalVariableDeclarationStatement,
+    targets: &[crate::semantic::Reference],
+    decl_file: &FileId,
+) -> Result<(), RefactorError> {
+    match check_order_sensitive_inline_order(root, decl_stmt, targets, decl_file) {
+        Ok(()) => Ok(()),
+        Err(RefactorError::InlineNotSupported) => Err(RefactorError::InlineSideEffects),
+        Err(err) => Err(err),
+    }
+}
+
 fn check_order_sensitive_inline_order(
     root: &nova_syntax::SyntaxNode,
     decl_stmt: &ast::LocalVariableDeclarationStatement,
