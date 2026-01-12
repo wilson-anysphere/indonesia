@@ -4,9 +4,10 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
-    FileChangeType as LspFileChangeType, Position as LspTypesPosition, Range as LspTypesRange,
-    RenameParams as LspRenameParams, TextDocumentPositionParams, TextEdit, Uri as LspUri,
-    WorkspaceEdit as LspWorkspaceEdit,
+    FileChangeType as LspFileChangeType, Location as LspLocation, Position as LspTypesPosition,
+    Range as LspTypesRange, RenameParams as LspRenameParams, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit, Uri as LspUri,
+    WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
@@ -36,6 +37,7 @@ use nova_refactor::{
     TreeSitterJavaDatabase,
 };
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
+use nova_workspace::Workspace;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -386,10 +388,11 @@ fn initialize_result_json() -> serde_json::Value {
                 "interFileDependencies": false,
                 "workspaceDiagnostics": false
             },
-            "renameProvider": { "prepareProvider": true },
-            "codeActionProvider": {
-                "resolveProvider": true,
-                "codeActionKinds": [
+             "renameProvider": { "prepareProvider": true },
+             "workspaceSymbolProvider": true,
+             "codeActionProvider": {
+                 "resolveProvider": true,
+                 "codeActionKinds": [
                     CODE_ACTION_KIND_EXPLAIN,
                     CODE_ACTION_KIND_AI_GENERATE,
                     CODE_ACTION_KIND_AI_TESTS,
@@ -704,6 +707,7 @@ impl nova_db::Database for AnalysisState {
 struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
+    workspace: Option<Workspace>,
     documents: HashMap<String, Document>,
     refactor_overlay_generation: u64,
     refactor_snapshot_cache: Option<CachedRefactorWorkspaceSnapshot>,
@@ -803,6 +807,7 @@ impl ServerState {
         Self {
             shutdown_requested: false,
             project_root: None,
+            workspace: None,
             documents: HashMap::new(),
             refactor_overlay_generation: 0,
             refactor_snapshot_cache: None,
@@ -966,6 +971,7 @@ fn handle_request_json(
                 .project_root_uri()
                 .and_then(|uri| path_from_uri(uri))
                 .or_else(|| init_params.root_path.map(PathBuf::from));
+            state.workspace = None;
 
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": initialize_result_json() }))
         }
@@ -1145,6 +1151,18 @@ fn handle_request_json(
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "workspace/symbol" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_workspace_symbol(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err((code, message)) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
                 }
             })
         }
@@ -2754,6 +2772,73 @@ fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
             "arguments": action.command.arguments,
         }
     })
+}
+
+fn handle_workspace_symbol(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, (i32, String)> {
+    let params: WorkspaceSymbolParams =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+
+    let query = params.query.trim();
+    if query.is_empty() {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+
+    if state.workspace.is_none() {
+        let project_root = state.project_root.clone().ok_or_else(|| {
+            (
+                -32602,
+                "missing project root (initialize.rootUri)".to_string(),
+            )
+        })?;
+        let workspace = Workspace::open(project_root).map_err(|e| (-32603, e.to_string()))?;
+        state.workspace = Some(workspace);
+    }
+
+    let workspace = state.workspace.as_ref().expect("workspace initialized");
+    let symbols = workspace
+        .workspace_symbols(query)
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    let mut out = Vec::new();
+    for symbol in symbols {
+        for loc in symbol.locations {
+            let mut path = PathBuf::from(loc.file);
+            if !path.is_absolute() {
+                path = workspace.root().join(path);
+            }
+
+            let abs = nova_core::AbsPathBuf::try_from(path)
+                .map_err(|e| (-32603, e.to_string()))?;
+            let uri = nova_core::path_to_file_uri(&abs)
+                .map_err(|e| (-32603, e.to_string()))?
+                .parse::<LspUri>()
+                .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
+
+            let position = LspTypesPosition {
+                line: loc.line,
+                character: loc.column,
+            };
+            let location = LspLocation {
+                uri,
+                range: LspTypesRange::new(position, position),
+            };
+
+            out.push(SymbolInformation {
+                name: symbol.name.clone(),
+                kind: LspSymbolKind::OBJECT,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                location,
+                container_name: None,
+            });
+        }
+    }
+
+    serde_json::to_value(out).map_err(|e| (-32603, e.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
