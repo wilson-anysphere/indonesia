@@ -158,13 +158,14 @@ See `crates/nova-db/src/salsa/interned_class_key.rs` for a minimal `ra_ap_salsa`
 prototype and tests.
 
 Findings with `ra_ap_salsa` `0.0.269` and Nova’s current `evict_salsa_memos` implementation
-(rebuilds `ra_salsa::Storage::default()` but snapshots+restores intern tables):
+(rebuilds `ra_salsa::Storage::default()` but snapshots+restores the selected intern tables captured
+by `InternedTablesSnapshot`):
 
 - Same key ⇒ same interned handle within a single storage.
 - Snapshots can lookup/intern consistently for already-interned keys.
-- After memo eviction, interned ids remain valid because Nova restores interned tables (see
-  `InternedTablesSnapshot`): re-interning yields the same `InternId`, and looking up a pre-eviction
-  id continues to work.
+- After memo eviction, interned ids remain valid because Nova restores the captured interned tables
+  (see `InternedTablesSnapshot`): re-interning yields the same `InternId`, and looking up a
+  pre-eviction id continues to work.
 - Intern ids are **insertion-order dependent** across fresh storages (interning `A` then `B`
   produces different raw ids than interning `B` then `A`).
 
