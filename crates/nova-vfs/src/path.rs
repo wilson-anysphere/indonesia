@@ -394,53 +394,49 @@ fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
 }
 
 fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
-    let rest = uri.strip_prefix("nova:")?;
-    // The canonical form does not include query/fragment; treat those as non-matching.
-    if rest.contains('?') || rest.contains('#') {
+    // The canonical ADR0006 decompiled URI is:
+    // `nova:///decompiled/<content-hash>/<binary-name>.java`.
+    //
+    // Keep this parser strict so we don't accidentally treat unrelated `nova:`
+    // URIs as decompiled virtual documents.
+
+    // Canonical form does not include query/fragment.
+    if uri.contains('?') || uri.contains('#') {
         return None;
     }
 
-    // Extract the path component, rejecting URIs with a non-empty authority (e.g. `nova://host/...`).
-    let path = if let Some(after_slashes) = rest.strip_prefix("//") {
-        // `nova:///...` has an empty authority; the first character of the remainder is `/`.
-        if !after_slashes.starts_with('/') {
-            return None;
-        }
-        after_slashes
-    } else if rest.starts_with('/') {
-        rest
-    } else {
-        return None;
-    };
+    // Only match the canonical scheme + empty authority form (`nova:///...`).
+    // This rejects `nova://host/...` (non-empty authority) and `nova:/...`
+    // (non-canonical path form) to align with `nova_decompile::parse_decompiled_uri`.
+    let rest = uri.strip_prefix("nova:///decompiled/")?;
 
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.len() != 3 {
-        return None;
-    }
-    if segments[0] != "decompiled" {
-        return None;
-    }
-    if segments.contains(&"..") {
+    // Require exactly two additional path segments: `<hash>/<filename>.java`.
+    // (`split_once` is sufficient because we reject additional `/` below.)
+    let (content_hash, filename) = rest.split_once('/')?;
+
+    // Reject path traversal attempts and empty segments.
+    if content_hash.is_empty() || content_hash == ".." || filename.is_empty() || filename == ".." {
         return None;
     }
 
-    let content_hash = segments[1];
-    if content_hash.is_empty() {
-        return None;
-    }
     if !is_decompiled_hash(content_hash) {
         return None;
     }
 
-    let filename = segments[2];
-    let filename_stem = filename.strip_suffix(".java")?;
-    if filename_stem.is_empty() {
+    // Require `<binary-name>.java` as the last segment.
+    let binary_name = filename.strip_suffix(".java")?;
+    if binary_name.is_empty() || binary_name.contains('/') {
+        return None;
+    }
+
+    // Reject any remaining traversal segments (e.g. `hash/../X.java`).
+    if rest.split('/').any(|segment| segment == "..") {
         return None;
     }
 
     Some(VfsPath::decompiled(
         content_hash.to_string(),
-        filename_stem.to_string(),
+        binary_name.to_string(),
     ))
 }
 
@@ -504,6 +500,8 @@ fn parse_legacy_decompiled_uri(uri: &str) -> Option<VfsPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HASH_64: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
     fn jar_uri_roundtrips() {
@@ -829,26 +827,45 @@ mod tests {
 
     #[test]
     fn decompiled_uri_roundtrips() {
-        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let path = VfsPath::decompiled(hash, "com.example.Foo");
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
         let uri = path.to_uri().expect("decompiled uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, path);
     }
 
     #[test]
-    fn decompiled_uri_normalizes_multiple_slashes_when_printing() {
-        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let uri = format!("nova:////decompiled//{hash}//com.example.Foo.java");
-        let parsed = VfsPath::uri(uri);
-        let expected = format!("nova:///decompiled/{hash}/com.example.Foo.java");
-        assert_eq!(parsed.to_uri().as_deref(), Some(expected.as_str()));
+    fn decompiled_uri_rejects_invalid_hashes() {
+        let wrong_len = "a".repeat(63);
+        let non_hex = "g".repeat(64);
+
+        for uri in [
+            format!("nova:///decompiled/{wrong_len}/com.example.Foo.java"),
+            format!("nova:///decompiled/{non_hex}/com.example.Foo.java"),
+        ] {
+            assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+        }
+    }
+
+    #[test]
+    fn decompiled_uri_rejects_non_canonical_forms() {
+        for uri in [
+            // Non-empty authority.
+            format!("nova://host/decompiled/{HASH_64}/com.example.Foo.java"),
+            // Non-canonical path form (missing `//` authority marker).
+            format!("nova:/decompiled/{HASH_64}/com.example.Foo.java"),
+            // Non-canonical extra slashes / empty segments.
+            format!("nova:////decompiled//{HASH_64}//com.example.Foo.java"),
+            // Query/fragment are not permitted for canonical virtual documents.
+            format!("nova:///decompiled/{HASH_64}/com.example.Foo.java?query"),
+            format!("nova:///decompiled/{HASH_64}/com.example.Foo.java#fragment"),
+        ] {
+            assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+        }
     }
 
     #[test]
     fn decompiled_uri_rejects_dotdot_segments() {
-        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let uri = format!("nova:///decompiled/{hash}/../X.java");
+        let uri = format!("nova:///decompiled/{HASH_64}/../X.java");
         assert_eq!(VfsPath::uri(uri.as_str()), VfsPath::Uri(uri));
     }
 
