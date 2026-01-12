@@ -42,8 +42,14 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/gradlew.bat',
   '**/gradle/wrapper/gradle-wrapper.properties',
   '**/gradle/wrapper/gradle-wrapper.jar',
-  // Gradle version catalogs can be named `*.versions.toml` and may live anywhere.
-  '**/*.versions.toml',
+  // Gradle version catalogs can define dependency versions.
+  //
+  // Keep semantics aligned with Gradle build-file fingerprinting (`nova-build-model`), which:
+  // - always includes the conventional `libs.versions.toml`
+  // - includes additional catalogs only when they are direct children of a `gradle/` directory
+  //   (to avoid treating random `*.versions.toml` files elsewhere in the repo as build inputs).
+  '**/libs.versions.toml',
+  '**/gradle/*.versions.toml',
 
   // Bazel build configuration.
   '**/WORKSPACE',
