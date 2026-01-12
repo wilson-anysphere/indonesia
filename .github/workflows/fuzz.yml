@@ -52,6 +52,14 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_format -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
 
+      - name: fuzz_range_format
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_range_format -- -max_total_time=60 -max_len=262144
+        timeout-minutes: 20
+
+      - name: fuzz_on_type_format
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_on_type_format -- -max_total_time=60 -max_len=262144
+        timeout-minutes: 20
+
       - name: format_java (idempotence)
         run: cargo +nightly fuzz run --codegen-units 16 format_java -- -max_total_time=30 -max_len=262144
         timeout-minutes: 20
