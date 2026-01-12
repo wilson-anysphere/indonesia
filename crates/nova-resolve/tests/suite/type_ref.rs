@@ -980,3 +980,42 @@ fn type_use_annotations_on_primitive_arrays_are_ignored() {
         Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))
     );
 }
+
+#[test]
+fn required_examples_type_use_annotations_are_skipped() {
+    // Mirror the examples from the type-use annotation parsing regression:
+    // - `List<@A String>` parses/resolves like `List<String>`
+    // - `int@B[]` parses/resolves like `int[]`
+    // - `String@A...` parses/resolves like `String...` (varargs is one array dimension)
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<String>", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<@A String>",
+        None,
+    );
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
+    let annotated = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int@B[]", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String@A...", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
