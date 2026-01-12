@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use nova_ai::{ContextRequest, PrivacyMode, SemanticContextBuilder, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsConfig, AiFeaturesConfig};
+use nova_db::InMemoryFileStore;
 
 fn test_db() -> VirtualWorkspace {
     VirtualWorkspace::new([
@@ -110,4 +111,34 @@ fn semantic_context_builder_can_index_incrementally() {
     builder.remove_file(PathBuf::from("src/Hello.java").as_path());
     let ctx = builder.build(request(), 1);
     assert!(!ctx.text.contains("helloWorld"));
+}
+
+#[test]
+fn semantic_context_builder_can_index_database() {
+    let cfg = AiConfig {
+        enabled: true,
+        embeddings: AiEmbeddingsConfig {
+            enabled: false,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: AiFeaturesConfig {
+            semantic_search: true,
+            ..AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut store = InMemoryFileStore::new();
+    let file_id = store.file_id_for_path("src/Main.java");
+    store.set_file_text(
+        file_id,
+        "public class Main { public String hello() { return \"hello world\"; } }".to_string(),
+    );
+
+    let mut builder = SemanticContextBuilder::new(&cfg);
+    builder.index_database(&store);
+
+    let ctx = builder.build(request(), 1);
+    assert!(ctx.text.contains("## Related code"));
+    assert!(ctx.text.contains("hello world"));
 }
