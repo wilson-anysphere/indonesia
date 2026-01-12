@@ -13,7 +13,7 @@ use crate::item_tree::{
     Param, Record, RecordComponent, TypeParam,
 };
 use nova_syntax::java::ast as syntax;
-use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
+use nova_syntax::{JavaParseResult, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::Span;
 use nova_vfs::FileId;
 
@@ -544,9 +544,11 @@ impl ItemTreeLower<'_> {
                 continue;
             };
 
+            let (modifiers, annotations) = lower_param_modifiers_and_annotations(&param);
+
             params.push(Param {
-                modifiers: Modifiers::default(),
-                annotations: Vec::new(),
+                modifiers,
+                annotations,
                 ty,
                 ty_range,
                 name,
@@ -556,6 +558,59 @@ impl ItemTreeLower<'_> {
         }
         params
     }
+}
+
+fn lower_param_modifiers_and_annotations(param: &SyntaxNode) -> (Modifiers, Vec<AnnotationUse>) {
+    let Some(mods_node) = param
+        .children()
+        .find(|child| child.kind() == SyntaxKind::Modifiers)
+    else {
+        return (Modifiers::default(), Vec::new());
+    };
+
+    let mut modifiers = Modifiers::default();
+    let mut annotations = Vec::new();
+
+    for child in mods_node.children_with_tokens() {
+        match child {
+            SyntaxElement::Node(node) if node.kind() == SyntaxKind::Annotation => {
+                if let Some(use_) = lower_rowan_annotation_use(&node) {
+                    annotations.push(use_);
+                }
+            }
+            SyntaxElement::Token(tok) => {
+                modifiers.raw |= match tok.kind() {
+                    SyntaxKind::PublicKw => Modifiers::PUBLIC,
+                    SyntaxKind::ProtectedKw => Modifiers::PROTECTED,
+                    SyntaxKind::PrivateKw => Modifiers::PRIVATE,
+                    SyntaxKind::StaticKw => Modifiers::STATIC,
+                    SyntaxKind::FinalKw => Modifiers::FINAL,
+                    SyntaxKind::AbstractKw => Modifiers::ABSTRACT,
+                    SyntaxKind::NativeKw => Modifiers::NATIVE,
+                    SyntaxKind::SynchronizedKw => Modifiers::SYNCHRONIZED,
+                    SyntaxKind::TransientKw => Modifiers::TRANSIENT,
+                    SyntaxKind::VolatileKw => Modifiers::VOLATILE,
+                    SyntaxKind::StrictfpKw => Modifiers::STRICTFP,
+                    SyntaxKind::DefaultKw => Modifiers::DEFAULT,
+                    SyntaxKind::SealedKw => Modifiers::SEALED,
+                    SyntaxKind::NonSealedKw => Modifiers::NON_SEALED,
+                    _ => 0,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    (modifiers, annotations)
+}
+
+fn lower_rowan_annotation_use(node: &SyntaxNode) -> Option<AnnotationUse> {
+    let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name)?;
+    let name = non_trivia_text(&name_node);
+    Some(AnnotationUse {
+        name,
+        range: node_text_range_to_span(node),
+    })
 }
 
 fn lower_modifiers(modifiers: syntax::Modifiers) -> Modifiers {

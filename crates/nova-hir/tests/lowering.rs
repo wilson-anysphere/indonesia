@@ -534,6 +534,34 @@ record Point( int   x ,int y ) {
 }
 
 #[test]
+fn lower_record_compact_constructor_inherits_record_component_annotations() {
+    let source = r#"
+record Point(@A int x, int y) {
+    Point { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.constructors.len(), 1);
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.params.len(), 2);
+    assert_eq!(
+        ctor.params[0]
+            .annotations
+            .iter()
+            .map(|anno| anno.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["A"]
+    );
+    assert!(ctor.params[1].annotations.is_empty());
+}
+
+#[test]
 fn lower_type_header_clauses_and_generics() {
     let source = r#"
 sealed class C<T> extends Base implements I, J permits A, B {}
