@@ -404,6 +404,7 @@ pub(crate) fn load_gradle_project(
     if let Some(java) = snapshot_java {
         root_java = java;
     }
+    let mut workspace_java = root_java;
     let version_catalog = load_gradle_version_catalog(root);
     dependencies.extend(parse_gradle_root_dependencies(root));
 
@@ -441,11 +442,10 @@ pub(crate) fn load_gradle_project(
         });
 
         if aggregate_java_across_modules {
-            if let Some(module_java) = parse_gradle_java_config(&module_root) {
-                root_java.source = root_java.source.max(module_java.source);
-                root_java.target = root_java.target.max(module_java.target);
-                root_java.enable_preview |= module_java.enable_preview;
-            }
+            let module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
+            workspace_java.source = workspace_java.source.max(module_java.source);
+            workspace_java.target = workspace_java.target.max(module_java.target);
+            workspace_java.enable_preview |= module_java.enable_preview;
         }
 
         if let Some(cfg) = snapshot
@@ -636,7 +636,7 @@ pub(crate) fn load_gradle_project(
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
         build_system: BuildSystem::Gradle,
-        java: root_java,
+        java: workspace_java,
         modules,
         jpms_modules,
         jpms_workspace,

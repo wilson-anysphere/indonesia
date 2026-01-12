@@ -1984,7 +1984,8 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         }
 
         // If the timestamped SNAPSHOT jar isn't present in the repo, fall back to the
-        // conventional `<artifactId>-<version>(-classifier).jar` path.
+        // conventional `<artifactId>-<version>(-classifier).jar` path, as some local repos (and
+        // build tools) store snapshots without timestamped filenames.
         let fallback = version_dir.join(default_file_name(version));
         return exists_as_jar(&fallback).then_some(fallback);
     }
