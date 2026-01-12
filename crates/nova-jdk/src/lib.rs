@@ -144,6 +144,14 @@ impl JdkIndex {
         this.add_type("java.lang", "Iterable");
         this.add_type("java.lang", "String");
         this.add_type("java.lang", "Integer");
+        this.add_type("java.lang", "Number");
+        this.add_type("java.lang", "Boolean");
+        this.add_type("java.lang", "Byte");
+        this.add_type("java.lang", "Short");
+        this.add_type("java.lang", "Character");
+        this.add_type("java.lang", "Long");
+        this.add_type("java.lang", "Float");
+        this.add_type("java.lang", "Double");
         this.add_type("java.lang", "System");
         this.add_type("java.lang", "Math");
         this.add_type("java.lang", "Cloneable");
@@ -170,6 +178,8 @@ impl JdkIndex {
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max");
         this.add_static_member("java.lang.Math", "PI");
+        this.add_static_member("java.util.Collections", "emptyList");
+        this.add_static_member("java.util.Collections", "singletonList");
 
         // Ensure deterministic ordering for callers that iterate the built-in index.
         this.builtin_binary_names_sorted.sort();

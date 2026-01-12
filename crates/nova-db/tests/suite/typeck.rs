@@ -1405,7 +1405,7 @@ class Foo {
 #[test]
 fn target_typing_infers_generic_method_return_from_expected_type() {
     let src = r#"
-import java.util.*;
+ import java.util.*;
 class C {
     List<String> m() {
         return Collections.emptyList();
@@ -1470,9 +1470,40 @@ class C {
 }
 
 #[test]
+fn static_imported_jdk_method_resolves_and_infers_return_type() {
+    let src = r#"
+import java.util.List;
+import static java.util.Collections.emptyList;
+class C {
+    List<String> m() {
+        return emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-type"),
+        "expected static-imported emptyList() to resolve without unresolved diagnostics, got {diags:?}"
+    );
+
+    let offset = src
+        .find("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn unresolved_method_diagnostic_includes_candidates_and_arity() {
     let src = r#"
-import java.util.*;
+ import java.util.*;
 class C {
     void m() {
         Collections.emptyList(1);

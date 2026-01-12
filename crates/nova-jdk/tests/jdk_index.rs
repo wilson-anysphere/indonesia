@@ -32,6 +32,15 @@ fn builtin_index_resolves_minimal_fixture_types() {
         index.resolve_type(&QualifiedName::from_dotted("java.lang.Iterable")),
         Some(TypeName::new("java.lang.Iterable"))
     );
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.lang.Number")),
+        Some(TypeName::new("java.lang.Number"))
+    );
+
+    assert_eq!(
+        index.resolve_static_member(&TypeName::new("java.util.Collections"), &Name::from("emptyList")),
+        Some(StaticMemberId::new("java.util.Collections::emptyList"))
+    );
 }
 
 fn fake_jdk_root() -> PathBuf {

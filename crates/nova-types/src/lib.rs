@@ -1053,6 +1053,7 @@ impl TypeStore {
         // `return Collections.emptyList();` where the method has no arguments and
         // type argument inference depends on the expected return type.
         let collections_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let collections_u = store.add_type_param("U", vec![Type::class(object, vec![])]);
         let _collections = store.add_class(ClassDef {
             name: "java.util.Collections".to_string(),
             kind: ClassKind::Class,
@@ -1061,15 +1062,26 @@ impl TypeStore {
             interfaces: vec![],
             fields: vec![],
             constructors: vec![],
-            methods: vec![MethodDef {
-                name: "emptyList".to_string(),
-                type_params: vec![collections_t],
-                params: vec![],
-                return_type: Type::class(list, vec![Type::TypeVar(collections_t)]),
-                is_static: true,
-                is_varargs: false,
-                is_abstract: false,
-            }],
+            methods: vec![
+                MethodDef {
+                    name: "emptyList".to_string(),
+                    type_params: vec![collections_t],
+                    params: vec![],
+                    return_type: Type::class(list, vec![Type::TypeVar(collections_t)]),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "singletonList".to_string(),
+                    type_params: vec![collections_u],
+                    params: vec![Type::TypeVar(collections_u)],
+                    return_type: Type::class(list, vec![Type::TypeVar(collections_u)]),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+            ],
         });
 
         // java.util.ArrayList<E> implements List<E>
