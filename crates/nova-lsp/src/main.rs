@@ -500,6 +500,41 @@ fn initialize_result_json() -> serde_json::Value {
     json!({
         "capabilities": {
             "textDocumentSync": { "openClose": true, "change": 2 },
+            "workspace": {
+                // Advertise workspace folder support so editors can send
+                // `workspace/didChangeWorkspaceFolders` when the user switches projects.
+                "workspaceFolders": {
+                    "supported": true,
+                    "changeNotifications": true
+                },
+                // Request file-operation notifications so the stdio server can keep its
+                // on-disk cache in sync when editors perform create/delete/rename actions.
+                //
+                // Filter to Java source files: today the stdio server only refreshes
+                // cached analysis state for URIs that are later consumed by Java-centric
+                // requests (diagnostics, navigation, etc). Using `**/*.java` avoids
+                // unnecessary churn for unrelated files.
+                "fileOperations": {
+                    "didCreate": {
+                        "filters": [{
+                            "scheme": "file",
+                            "pattern": { "glob": "**/*.java" }
+                        }]
+                    },
+                    "didDelete": {
+                        "filters": [{
+                            "scheme": "file",
+                            "pattern": { "glob": "**/*.java" }
+                        }]
+                    },
+                    "didRename": {
+                        "filters": [{
+                            "scheme": "file",
+                            "pattern": { "glob": "**/*.java" }
+                        }]
+                    }
+                }
+            },
             "completionProvider": {
                 "resolveProvider": true,
                 "triggerCharacters": ["."]
@@ -705,6 +740,47 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
             nova_config::NovaConfig::default()
         }
     }
+}
+
+fn reload_config_best_effort(
+    project_root: Option<&Path>,
+) -> Result<nova_config::NovaConfig, String> {
+    // Prefer explicit `NOVA_CONFIG_PATH`, mirroring `load_config_from_args`.
+    if let Some(path) = env::var_os("NOVA_CONFIG_PATH").map(PathBuf::from) {
+        let resolved = path.canonicalize().unwrap_or(path);
+        match nova_config::NovaConfig::load_from_path(&resolved) {
+            Ok(config) => return Ok(config),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
+    // Fall back to `NOVA_CONFIG` env var (used by deployment wrappers). When set,
+    // also mirror the value to `NOVA_CONFIG_PATH` so downstream workspace config
+    // discovery uses the same file.
+    if let Some(path) = env::var_os("NOVA_CONFIG").map(PathBuf::from) {
+        let resolved = path.canonicalize().unwrap_or(path);
+        env::set_var("NOVA_CONFIG_PATH", &resolved);
+        match nova_config::NovaConfig::load_from_path(&resolved) {
+            Ok(config) => return Ok(config),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
+    // Fall back to workspace discovery (env var + workspace-root detection).
+    let seed = match project_root.map(PathBuf::from).or_else(|| env::current_dir().ok()) {
+        Some(dir) => dir,
+        None => return Err("failed to determine current directory".to_string()),
+    };
+    let root = nova_project::workspace_root(&seed).unwrap_or(seed);
+
+    nova_config::load_for_workspace(&root)
+        .map(|(config, path)| {
+            if let Some(path) = path {
+                env::set_var("NOVA_CONFIG_PATH", &path);
+            }
+            config
+        })
+        .map_err(|err| err.to_string())
 }
 
 fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
@@ -2204,6 +2280,97 @@ fn handle_notification(
                     }
                     _ => {}
                 }
+            }
+        }
+        "workspace/didChangeWorkspaceFolders" => {
+            let Ok(params) =
+                serde_json::from_value::<lsp_types::DidChangeWorkspaceFoldersParams>(params)
+            else {
+                return Ok(());
+            };
+
+            // LSP sends a delta. Today we treat the first added workspace folder as the new
+            // active project root.
+            let new_root = params
+                .event
+                .added
+                .iter()
+                .filter_map(|folder| path_from_uri(folder.uri.as_str()))
+                .next();
+
+            if let Some(root) = new_root {
+                state.project_root = Some(root);
+                state.workspace = None;
+                state.load_extensions();
+            } else if let Some(current_root) = state.project_root.clone() {
+                // Best-effort: if the current root was removed and there are no added folders,
+                // clear it so subsequent requests fail with a clear "missing project root" error
+                // instead of using a stale workspace.
+                let removed_current = params
+                    .event
+                    .removed
+                    .iter()
+                    .filter_map(|folder| path_from_uri(folder.uri.as_str()))
+                    .any(|path| path == current_root);
+                if removed_current {
+                    state.project_root = None;
+                    state.workspace = None;
+                    state.load_extensions();
+                }
+            }
+        }
+        "workspace/didChangeConfiguration" => {
+            let Ok(_params) =
+                serde_json::from_value::<lsp_types::DidChangeConfigurationParams>(params)
+            else {
+                return Ok(());
+            };
+
+            match reload_config_best_effort(state.project_root.as_deref()) {
+                Ok(config) => {
+                    state.config = Arc::new(config);
+                    // Best-effort: extensions configuration is sourced from `nova_config`, so keep
+                    // the registry in sync when users toggle settings.
+                    state.load_extensions();
+                }
+                Err(err) => {
+                    tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");
+                }
+            }
+        }
+        "workspace/didCreateFiles" => {
+            let Ok(params) = serde_json::from_value::<lsp_types::CreateFilesParams>(params) else {
+                return Ok(());
+            };
+
+            for file in params.files {
+                let Ok(uri) = file.uri.parse::<LspUri>() else {
+                    continue;
+                };
+                let path = VfsPath::from(&uri);
+                if state.analysis.vfs.overlay().is_open(&path) {
+                    continue;
+                }
+                state.analysis.refresh_from_disk(&uri);
+            }
+        }
+        "workspace/didDeleteFiles" => {
+            let Ok(params) = serde_json::from_value::<lsp_types::DeleteFilesParams>(params) else {
+                return Ok(());
+            };
+
+            for file in params.files {
+                let Ok(uri) = file.uri.parse::<LspUri>() else {
+                    continue;
+                };
+                state.semantic_search_remove_uri(&uri);
+
+                let path = VfsPath::from(&uri);
+                if state.analysis.vfs.overlay().is_open(&path) {
+                    continue;
+                }
+
+                state.analysis.mark_missing(&uri);
             }
         }
         "workspace/didRenameFiles" => {
