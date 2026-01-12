@@ -428,6 +428,11 @@ impl ClosedFileTextStore {
     }
 
     fn on_open_document(&self, file_id: FileId) {
+        // Closed-file contents are accounted by `workspace_closed_file_texts`. When the document is
+        // opened, restore accounting to the `salsa_inputs` tracker to avoid undercounting and keep
+        // the "non-evictable inputs" report accurate.
+        self.query_db.set_file_text_suppressed(file_id, false);
+
         let mut state = self
             .state
             .lock()
@@ -447,6 +452,10 @@ impl ClosedFileTextStore {
             self.on_open_document(file_id);
             return;
         }
+
+        // Avoid double-counting closed-file contents: the workspace tracks them in
+        // `workspace_closed_file_texts`, so suppress them from the `salsa_inputs` tracker.
+        self.query_db.set_file_text_suppressed(file_id, true);
 
         let new_bytes = text.len() as u64;
         let mut state = self
@@ -471,6 +480,9 @@ impl ClosedFileTextStore {
     }
 
     fn clear(&self, file_id: FileId) {
+        // No longer tracked/evictable: ensure the Salsa input tracker returns to default behavior.
+        self.query_db.set_file_text_suppressed(file_id, false);
+
         let mut state = self
             .state
             .lock()

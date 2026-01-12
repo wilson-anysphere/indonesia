@@ -65,7 +65,7 @@ pub use typeck::{BodyTypeckResult, DemandExprTypeckResult, FileExprId, NovaTypec
 pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -369,6 +369,7 @@ struct SalsaMemoFootprintInner {
 #[derive(Debug, Default)]
 struct SalsaInputFootprintInner {
     file_text_by_file: HashMap<FileId, FileTextBytes>,
+    suppressed_file_texts: HashSet<FileId>,
     file_rel_path_by_file: HashMap<FileId, u64>,
     all_file_ids_bytes: u64,
     project_config_by_project: HashMap<ProjectId, u64>,
@@ -636,6 +637,7 @@ impl SalsaInputFootprint {
         };
 
         let mut inner = self.lock_inner();
+        let suppressed = inner.suppressed_file_texts.contains(&file);
         let prev_total = inner
             .file_text_by_file
             .get(&file)
@@ -644,10 +646,37 @@ impl SalsaInputFootprint {
             .unwrap_or(0);
         let next_total = next.total();
         inner.file_text_by_file.insert(file, next);
-        inner.total_bytes = inner
-            .total_bytes
-            .saturating_sub(prev_total)
-            .saturating_add(next_total);
+        if !suppressed {
+            inner.total_bytes = inner
+                .total_bytes
+                .saturating_sub(prev_total)
+                .saturating_add(next_total);
+        }
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn set_file_text_suppressed(&self, file: FileId, suppressed: bool) {
+        let mut inner = self.lock_inner();
+        let was_suppressed = inner.suppressed_file_texts.contains(&file);
+        if was_suppressed == suppressed {
+            return;
+        }
+
+        let bytes = inner
+            .file_text_by_file
+            .get(&file)
+            .copied()
+            .map(FileTextBytes::total)
+            .unwrap_or(0);
+
+        if suppressed {
+            inner.suppressed_file_texts.insert(file);
+            inner.total_bytes = inner.total_bytes.saturating_sub(bytes);
+        } else {
+            inner.suppressed_file_texts.remove(&file);
+            inner.total_bytes = inner.total_bytes.saturating_add(bytes);
+        }
         drop(inner);
         self.refresh_tracker();
     }
@@ -3005,6 +3034,19 @@ impl Database {
 
     pub fn salsa_input_bytes(&self) -> u64 {
         self.input_footprint.bytes()
+    }
+
+    /// Enable/disable memory tracking of `file_content` for a specific file in
+    /// the `salsa_inputs` tracker.
+    ///
+    /// This only affects *accounting* and does not change Salsa inputs or query
+    /// results.
+    ///
+    /// Hosts that implement their own eviction/tracking for selected file texts
+    /// (for example, workspace-owned eviction of closed-file contents) can
+    /// suppress those texts here to avoid double-counting.
+    pub fn set_file_text_suppressed(&self, file: FileId, suppressed: bool) {
+        self.input_footprint.set_file_text_suppressed(file, suppressed);
     }
 
     pub fn register_salsa_input_tracker(&self, manager: &MemoryManager) {

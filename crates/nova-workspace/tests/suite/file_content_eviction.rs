@@ -70,14 +70,23 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     let (_report_before, components_before) = ws.memory_report_detailed();
     let tracked_before = find_component_bytes(&components_before, "workspace_closed_file_texts")
         .expect("workspace_closed_file_texts component registered");
+    let salsa_inputs_before =
+        find_component_bytes(&components_before, "salsa_inputs").expect("salsa_inputs registered");
     assert!(
         tracked_before > 0,
         "expected workspace_closed_file_texts tracker to report >0 bytes"
+    );
+    assert!(
+        salsa_inputs_before < tracked_before,
+        "expected closed-file contents to be accounted by workspace_closed_file_texts (evictable) \
+         rather than salsa_inputs (non-evictable), but got salsa_inputs={salsa_inputs_before} \
+         workspace_closed_file_texts={tracked_before}"
     );
 
     // Create enough non-evictable pressure (open document overlay text) to force eviction of
     // closed-file texts.
     let pressure_text = format!("class Pressure {{ /* {} */ }}", "p".repeat(2 * 1024 * 1024));
+    let pressure_text_len = pressure_text.len() as u64;
     let pressure_path = VfsPath::local(root.join("Pressure.java"));
     ws.open_document(pressure_path.clone(), pressure_text, 1);
 
@@ -87,9 +96,19 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     let (_report_after, components_after) = ws.memory_report_detailed();
     let tracked_after = find_component_bytes(&components_after, "workspace_closed_file_texts")
         .expect("workspace_closed_file_texts component registered");
+    let salsa_inputs_after =
+        find_component_bytes(&components_after, "salsa_inputs").expect("salsa_inputs registered");
     assert!(
         tracked_after < tracked_before,
         "expected eviction to reduce tracked closed-file text bytes"
+    );
+    let salsa_inputs_delta = salsa_inputs_after.saturating_sub(salsa_inputs_before);
+    assert!(
+        salsa_inputs_delta >= pressure_text_len.saturating_sub(32 * 1024),
+        "expected salsa_inputs to grow by roughly the size of the pressure overlay ({} bytes), \
+         but grew by only {salsa_inputs_delta} bytes (salsa_inputs_before={salsa_inputs_before}, \
+         salsa_inputs_after={salsa_inputs_after})",
+        pressure_text_len
     );
 
     // Closed files should be evicted (their Salsa input is replaced with an empty placeholder).
