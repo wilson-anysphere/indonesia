@@ -664,7 +664,11 @@ fn cursor_inside_string_literal(
     in_string
 }
 
-fn cursor_in_annotation_attribute_name_position(text: &str, open_paren: usize, cursor: usize) -> bool {
+fn cursor_in_annotation_attribute_name_position(
+    text: &str,
+    open_paren: usize,
+    cursor: usize,
+) -> bool {
     let bytes = text.as_bytes();
     if open_paren >= bytes.len() || bytes[open_paren] != b'(' {
         return false;
@@ -3046,7 +3050,11 @@ fn member_completions_for_receiver_type(
     items
 }
 
-fn infer_receiver_type_before_dot(db: &dyn Database, file: FileId, dot_offset: usize) -> Option<String> {
+fn infer_receiver_type_before_dot(
+    db: &dyn Database,
+    file: FileId,
+    dot_offset: usize,
+) -> Option<String> {
     let text = db.file_content(file);
     let analysis = analyze(text);
 
@@ -3158,7 +3166,11 @@ fn fallback_receiver_type_for_call(name: &str) -> Option<String> {
 }
 
 fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
-    let Some(idx) = analysis.tokens.iter().position(|t| t.span == call.name_span) else {
+    let Some(idx) = analysis
+        .tokens
+        .iter()
+        .position(|t| t.span == call.name_span)
+    else {
         return false;
     };
     if idx == 0 {
@@ -3177,7 +3189,11 @@ fn infer_call_receiver_lexical(
         return infer_receiver(types, analysis, receiver);
     }
 
-    let Some(name_idx) = analysis.tokens.iter().position(|t| t.span == call.name_span) else {
+    let Some(name_idx) = analysis
+        .tokens
+        .iter()
+        .position(|t| t.span == call.name_span)
+    else {
         return (Type::Unknown, CallKind::Instance);
     };
 
@@ -3191,7 +3207,8 @@ fn infer_call_receiver_lexical(
         }
 
         // Handle common complex receivers like `new Foo().bar()`.
-        if let Some(receiver_ty) = infer_receiver_type_of_expr_ending_at(types, analysis, text, dot_offset)
+        if let Some(receiver_ty) =
+            infer_receiver_type_of_expr_ending_at(types, analysis, text, dot_offset)
         {
             return (receiver_ty, CallKind::Instance);
         }
@@ -3262,14 +3279,7 @@ fn general_completions(
     let expected_arg_ty = expected_argument_type_for_completion(&mut types, &analysis, text, offset);
     let mut items = Vec::new();
 
-    maybe_add_lambda_snippet_completion(
-        &mut items,
-        text,
-        &analysis,
-        prefix_start,
-        offset,
-        prefix,
-    );
+    maybe_add_lambda_snippet_completion(&mut items, text, &analysis, prefix_start, offset, prefix);
 
     for m in &analysis.methods {
         if let Some(expected) = expected_arg_ty.as_ref() {
@@ -3484,7 +3494,11 @@ fn maybe_add_lambda_snippet_completion(
 ) {
     // Gating early avoids doing semantic work when the prefix clearly isn't asking for a lambda.
     let label = "lambda";
-    if !prefix.is_empty() && !label.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+    if !prefix.is_empty()
+        && !label
+            .to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+    {
         return;
     }
 
@@ -3553,7 +3567,11 @@ fn expected_type_for_completion(
     // 2) Return: `return <cursor>`
     let (_, kw) = identifier_prefix(text, before);
     if kw == "return" {
-        if let Some(method) = analysis.methods.iter().find(|m| span_contains(m.body_span, offset)) {
+        if let Some(method) = analysis
+            .methods
+            .iter()
+            .find(|m| span_contains(m.body_span, offset))
+        {
             return Some(parse_source_type(types, &method.ret_ty));
         }
     }
@@ -5642,10 +5660,16 @@ fn infer_call_receiver_for_argument_completion(
     Some((Type::class(class_id, vec![]), CallKind::Instance))
 }
 
-fn ensure_local_class_receiver(types: &mut TypeStore, analysis: &Analysis, receiver_ty: Type) -> Type {
+fn ensure_local_class_receiver(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    receiver_ty: Type,
+) -> Type {
     let name = match &receiver_ty {
         Type::Named(name) => Some(name.as_str()),
-        Type::Class(nova_types::ClassType { def, .. }) => types.class(*def).map(|c| c.name.as_str()),
+        Type::Class(nova_types::ClassType { def, .. }) => {
+            types.class(*def).map(|c| c.name.as_str())
+        }
         _ => None,
     };
 
