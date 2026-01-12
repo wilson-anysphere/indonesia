@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { uriFromFileLike } from './frameworkDashboard';
+import { formatError, isSafeModeError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -487,31 +488,4 @@ async function showSafeModeError(): Promise<void> {
   if (picked === 'Generate Bug Report') {
     await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
   }
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function isSafeModeError(err: unknown): boolean {
-  const message = formatError(err).toLowerCase();
-  if (message.includes('safe-mode') || message.includes('safe mode')) {
-    return true;
-  }
-
-  // Defensive: handle safe-mode guard messages that might not include the exact phrase.
-  return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
 }

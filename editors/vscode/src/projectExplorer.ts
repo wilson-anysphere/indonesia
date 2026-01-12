@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError } from './novaCapabilities';
+import { formatError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -696,21 +697,4 @@ async function openJsonDocument(name: string, payload: unknown): Promise<void> {
 function sanitizeUntitledName(value: string): string {
   // Untitled URIs treat the path segment as a file name; keep it readable.
   return value.replace(/[\\/]/g, '-');
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
 }

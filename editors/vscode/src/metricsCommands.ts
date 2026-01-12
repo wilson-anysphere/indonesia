@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { formatError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -76,22 +77,5 @@ function jsonStringifyBestEffort(value: unknown): string {
   } catch (err) {
     const message = formatError(err);
     return `<< Failed to JSON.stringify metrics: ${message} >>\n${String(value)}`;
-  }
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
   }
 }

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
+import { formatError } from './safeMode';
 
 export const NOVA_FRAMEWORK_ENDPOINT_CONTEXT = 'novaFrameworkEndpoint';
 export const NOVA_FRAMEWORK_BEAN_CONTEXT = 'novaFrameworkBean';
@@ -27,10 +28,6 @@ function asStringArray(value: unknown): string[] | undefined {
   }
   const strings = value.map((entry) => asNonEmptyString(entry)).filter((entry): entry is string => typeof entry === 'string');
   return strings.length > 0 ? strings : undefined;
-}
-
-function formatError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 function looksLikeUriString(value: string): boolean {
