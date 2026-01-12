@@ -491,8 +491,7 @@ impl<'a> Resolver<'a> {
         }
 
         for import in &imports.type_star {
-            let prefix = import.path.to_dotted();
-            let package = PackageName::from_dotted(&prefix);
+            let package = package_name_from_qualified(&import.path);
 
             // `import X.*;` is valid if `X` names either:
             // - a package (importing all types declared in that package), or
@@ -502,6 +501,7 @@ impl<'a> Resolver<'a> {
             }
 
             if self.resolve_type_in_index(&import.path).is_none() {
+                let prefix = import.path.to_dotted();
                 diags.push(unresolved_import_diagnostic(
                     import.range,
                     &format!("{prefix}.*"),
@@ -1080,8 +1080,7 @@ impl<'a> Resolver<'a> {
             // JLS 7.5.2: `import X.*;` imports from either:
             // - package `X` (all accessible types declared in the package), or
             // - type `X` (all accessible member types declared in the type).
-            let prefix = import.path.to_dotted();
-            let package = PackageName::from_dotted(&prefix);
+            let package = package_name_from_qualified(&import.path);
 
             if self.package_exists(&package) {
                 if let Some(ty) = self.resolve_type_in_package_index(&package, name) {
@@ -1098,6 +1097,7 @@ impl<'a> Resolver<'a> {
                 continue;
             }
 
+            let prefix = import.path.to_dotted();
             let candidate = QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
             if let Some(ty) = self.resolve_type_in_index(&candidate) {
                 if seen.insert(ty.clone()) {
@@ -1188,7 +1188,7 @@ impl<'a> Resolver<'a> {
 }
 
 pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
-    let mut next = PackageName::from_dotted(&base.to_dotted());
+    let mut next = base.clone();
     next.push(name.clone());
     next
 }
@@ -1435,6 +1435,14 @@ fn is_java_qualified_name(name: &QualifiedName) -> bool {
     name.segments()
         .first()
         .is_some_and(|seg| seg.as_str() == "java")
+}
+
+fn package_name_from_qualified(path: &QualifiedName) -> PackageName {
+    let mut package = PackageName::root();
+    for seg in path.segments() {
+        package.push(seg.clone());
+    }
+    package
 }
 
 pub(crate) fn resolve_type_with_nesting(
