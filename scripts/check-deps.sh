@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT_DIR}"
+
+cargo_agent() {
+  bash "${ROOT_DIR}/scripts/cargo_agent.sh" "$@"
+}
+
 # Enforce ADR 0007 crate dependency boundaries.
 #
 # Usage:
@@ -16,10 +23,10 @@ trap 'rm -f "$tmp"' EXIT
 # (which can deadlock on Cargo's global locks under `cargo run`).
 #
 # Use `--locked` so CI + local runs agree on the resolved workspace graph.
-cargo metadata --format-version=1 --no-deps --locked >"$tmp"
+cargo_agent metadata --format-version=1 --no-deps --locked >"$tmp"
 
 # Build once, then run the binary directly to avoid repeated `cargo run` overhead.
-cargo build -p nova-devtools --locked
+cargo_agent build -p nova-devtools --locked
 
 target_dir="${CARGO_TARGET_DIR:-target}"
 bin="${target_dir}/debug/nova-devtools"

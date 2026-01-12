@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT_DIR}"
+
+cargo_agent() {
+  bash "${ROOT_DIR}/scripts/cargo_agent.sh" "$@"
+}
+
 # Run Nova repository invariants enforced by `nova-devtools`.
 #
 # This is the local/dev convenience equivalent of the CI "repo invariants" step.
@@ -22,10 +29,10 @@ tmp="$(mktemp -t nova-devtools-metadata.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 
 # Generate metadata once and reuse it across all checks.
-cargo metadata --format-version=1 --no-deps --locked >"$tmp"
+cargo_agent metadata --format-version=1 --no-deps --locked >"$tmp"
 
 # Build once, then run the binary directly to avoid repeated `cargo run` overhead in CI.
-cargo build -p nova-devtools --locked
+cargo_agent build -p nova-devtools --locked
 
 target_dir="${CARGO_TARGET_DIR:-target}"
 bin="${target_dir}/debug/nova-devtools"
