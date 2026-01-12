@@ -26,6 +26,28 @@ fn fixture(
     (db, file, pos, text)
 }
 
+fn fixture_multi(
+    primary_path: PathBuf,
+    primary_text_with_caret: &str,
+    extra_files: Vec<(PathBuf, String)>,
+) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
+    let caret_offset = primary_text_with_caret
+        .find(CARET)
+        .expect("fixture must contain <|> caret marker");
+    let primary_text = primary_text_with_caret.replace(CARET, "");
+    let pos = offset_to_position(&primary_text, caret_offset);
+
+    let mut db = InMemoryFileStore::new();
+    let primary_file = db.file_id_for_path(&primary_path);
+    db.set_file_text(primary_file, primary_text);
+    for (path, text) in extra_files {
+        let id = db.file_id_for_path(&path);
+        db.set_file_text(id, text);
+    }
+
+    (db, primary_file, pos)
+}
+
 #[test]
 fn completion_includes_postfix_if_for_boolean_and_replaces_full_expr() {
     let (db, file, pos, text) = fixture(
@@ -1002,5 +1024,38 @@ class A {
     assert!(
         !items.is_empty(),
         "expected non-empty completions for Map.Entry receiver; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_workspace_fallback_resolves_uppercase_package_segments() {
+    let (db, file, pos) = fixture_multi(
+        PathBuf::from("/workspace/src/a/Test.java"),
+        r#"
+package a;
+class Test {
+  void m() {
+    C c = null;
+    c.<|>
+  }
+}
+"#,
+        vec![(
+            PathBuf::from("/workspace/src/x/Y/C.java"),
+            r#"
+package x.Y;
+public class C {
+  public void foo() {}
+}
+"#
+            .to_string(),
+        )],
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "foo"),
+        "expected completion list to contain C.foo; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
 }

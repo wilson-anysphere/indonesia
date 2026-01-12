@@ -9101,7 +9101,11 @@ impl CompletionResolveCtx {
 
         if let Some(env) = &self.env {
             if let Some(fqn) = env.workspace_index().unique_fqn_for_simple_name(raw) {
-                push_unique(&mut out, canonical_to_binary_name(fqn));
+                // `WorkspaceTypeIndex` stores fully-qualified *source* names for top-level types.
+                // Keep that spelling as-is; attempting to "guess" a nested binary `$` form via
+                // `canonical_to_binary_name` can misinterpret legal uppercase package segments like
+                // `x.Y.C` as a nested `x.Y$C`.
+                push_unique(&mut out, fqn.to_string());
             }
         }
 
