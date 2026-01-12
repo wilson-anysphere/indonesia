@@ -170,6 +170,7 @@ Nova will need to extend LSP for Java-specific needs:
 │                                                                  │
 │  PROJECT EXTENSIONS                                              │
 │  • nova/projectConfiguration - project structure info           │
+│  • nova/projectModel - normalized project model                 │
 │  • nova/java/classpath - classpath info                         │
 │  • nova/java/sourcePaths - source root changes                  │
 │  • nova/reloadProject - force project reload                    │
