@@ -4366,6 +4366,30 @@ fn class_substitution_for_owner(
     subst
 }
 
+/// Instantiate `ty` as `target_def`, returning the type arguments of `target_def`
+/// as seen through `ty`'s inheritance chain.
+///
+/// This is a common operation for Java target typing and generic analysis:
+/// given a receiver type `C<...>` and a desired supertype/interface `S`, compute
+/// `S<...>` by substituting type parameters through `C`'s declared supertypes.
+///
+/// Returns `None` if `ty` is not a class type, the inheritance chain cannot be
+/// traversed, or `target_def` is not a supertype of `ty`.
+pub fn instantiate_supertype(
+    env: &dyn TypeEnv,
+    ty: &Type,
+    target_def: ClassId,
+) -> Option<Vec<Type>> {
+    match ty {
+        Type::Class(ClassType { def, args }) => instantiate_as(env, *def, args.clone(), target_def),
+        Type::Named(name) => {
+            let def = env.lookup_class(name)?;
+            instantiate_as(env, def, vec![], target_def)
+        }
+        _ => None,
+    }
+}
+
 fn instantiate_as(
     env: &dyn TypeEnv,
     start_def: ClassId,
@@ -4666,6 +4690,19 @@ mod tests {
 
         assert!(is_subtype(&env, &al_string, &list_string));
         assert!(!is_subtype(&env, &list_string, &list_object));
+    }
+
+    #[test]
+    fn instantiate_supertype_arraylist_string_as_list() {
+        let env = store();
+        let array_list = env.class_id("java.util.ArrayList").unwrap();
+        let list = env.class_id("java.util.List").unwrap();
+        let string = Type::class(env.well_known().string, vec![]);
+
+        let al_string = Type::class(array_list, vec![string.clone()]);
+        let instantiated =
+            instantiate_supertype(&env, &al_string, list).expect("should instantiate List<T>");
+        assert_eq!(instantiated, vec![string]);
     }
 
     #[test]
