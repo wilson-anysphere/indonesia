@@ -65,6 +65,7 @@ struct CandidateKey<'a> {
 }
 
 impl PartialEq for CandidateKey<'_> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
@@ -73,6 +74,7 @@ impl PartialEq for CandidateKey<'_> {
 impl Eq for CandidateKey<'_> {}
 
 impl Ord for CandidateKey<'_> {
+    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // This ordering is the "best first" ordering used by `search_with_stats`.
         // `BinaryHeap` is a max-heap, so we store `Reverse<CandidateKey>` and pop
@@ -119,6 +121,7 @@ impl Ord for CandidateKey<'_> {
 }
 
 impl PartialOrd for CandidateKey<'_> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
