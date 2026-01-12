@@ -673,9 +673,25 @@ pub fn debug_stream<C: JdwpClient>(
     }
 
     let mut safe_expr = chain.source.stream_expr().to_string();
-    let sample_suffix = sample_suffix(chain.stream_kind, config.max_sample_size);
+    let sample_eval_expr = |stream_expr: &str| match &chain.source {
+        // `ExistingStream` sources are inherently hard to type-check: without type information we
+        // can't reliably tell whether expressions like `Arrays.stream(arr)` return a `Stream` or
+        // a primitive stream (e.g. `LongStream` for `long[]`).
+        //
+        // Use a `BaseStream.spliterator()` -> `StreamSupport.stream(...)` bridge to collect
+        // *any* stream type into a `List` without needing `.boxed()` or stream-specific `collect`
+        // overloads.
+        StreamSource::ExistingStream { .. } => format!(
+            "java.util.stream.StreamSupport.stream(({stream_expr}).limit({}).spliterator(), false).collect(java.util.stream.Collectors.toList())",
+            config.max_sample_size
+        ),
+        _ => format!(
+            "{stream_expr}{}",
+            sample_suffix(chain.stream_kind, config.max_sample_size)
+        ),
+    };
 
-    let source_eval_expr = format!("{safe_expr}{sample_suffix}");
+    let source_eval_expr = sample_eval_expr(&safe_expr);
     let (source_sample, source_duration_ms) =
         timed(|| eval_sample(jdwp, frame_id, &source_eval_expr))?;
 
@@ -698,7 +714,7 @@ pub fn debug_stream<C: JdwpClient>(
         }
 
         safe_expr = format!("{safe_expr}.{}", op.call_source);
-        let eval_expr = format!("{safe_expr}{sample_suffix}");
+        let eval_expr = sample_eval_expr(&safe_expr);
         let (output, duration_ms) = timed(|| eval_sample(jdwp, frame_id, &eval_expr))?;
 
         steps.push(StreamStepResult {
@@ -1920,7 +1936,7 @@ mod tests {
         let mut jdwp = MockJdwpClient::new();
         jdwp.set_evaluation(
             1,
-            "java.util.Arrays.stream(arr).limit(2).collect(java.util.stream.Collectors.toList())",
+            "java.util.stream.StreamSupport.stream((java.util.Arrays.stream(arr)).limit(2).spliterator(), false).collect(java.util.stream.Collectors.toList())",
             Ok(JdwpValue::Object(ObjectRef {
                 id: 10,
                 runtime_type: "java.util.ArrayList".to_string(),
@@ -1942,7 +1958,7 @@ mod tests {
 
         jdwp.set_evaluation(
             1,
-            "java.util.Arrays.stream(arr).filter(x -> x > 0).limit(2).collect(java.util.stream.Collectors.toList())",
+            "java.util.stream.StreamSupport.stream((java.util.Arrays.stream(arr).filter(x -> x > 0)).limit(2).spliterator(), false).collect(java.util.stream.Collectors.toList())",
             Ok(JdwpValue::Object(ObjectRef {
                 id: 11,
                 runtime_type: "java.util.ArrayList".to_string(),
