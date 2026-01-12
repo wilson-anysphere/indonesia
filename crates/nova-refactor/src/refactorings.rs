@@ -1389,20 +1389,18 @@ pub fn extract_variable(
         }
     }
 
-    // Extracting a side-effectful expression into a new statement can change evaluation order or
-    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    //
-    // We reject such expressions when extracting with `var`, because we cannot reliably preserve
-    // evaluation semantics in all contexts without a full control-flow analysis.
-    //
-    // When the user opts into an explicit type (`use_var=false`), we still allow extraction as a
-    // best-effort fallback provided the earlier execution-boundary + evaluation-order guards have
-    // accepted the selection.
-    //
-    // Note: the expression-statement special-case above rewrites the statement in place, so it
-    // preserves statement-level evaluation order and is therefore allowed.
-    if params.use_var && has_side_effects(expr.syntax()) {
-        return Err(RefactorError::ExtractSideEffects);
+    // Side-effectful expressions are tricky:
+    // - Evaluating them once and replacing multiple occurrences is never safe.
+    // - Even evaluating them once can be unsafe when extracting to `var` because target typing for
+    //   method calls / diamond inference can change without an explicit type.
+    let expr_has_side_effects = has_side_effects(expr.syntax());
+    if expr_has_side_effects {
+        if params.use_var {
+            return Err(RefactorError::ExtractSideEffects);
+        }
+        if replacement_ranges.iter().any(|r| *r != expr_range) {
+            return Err(RefactorError::ExtractSideEffects);
+        }
     }
 
     let file_newline = NewlineStyle::detect(text).as_str();
@@ -4629,6 +4627,9 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
         ast::Expression::InstanceofExpression(_) => "boolean".to_string(),
         ast::Expression::UnaryExpression(unary) => infer_type_from_unary_expr(unary),
         ast::Expression::BinaryExpression(binary) => infer_type_from_binary_expr(binary),
+        ast::Expression::MethodCallExpression(call) => {
+            infer_type_from_method_call(call).unwrap_or_else(|| "Object".to_string())
+        }
         ast::Expression::ThisExpression(_)
         | ast::Expression::SuperExpression(_)
         | ast::Expression::NameExpression(_)
@@ -4649,6 +4650,91 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
     }
 
     inferred
+}
+
+fn infer_type_from_method_call(call: &ast::MethodCallExpression) -> Option<String> {
+    // Best-effort: resolve simple unqualified method calls to method declarations in the nearest
+    // enclosing type body. This keeps parser-only type inference useful in unit-test mode
+    // (`TextDatabase`) without requiring full type-checker information.
+    //
+    // Be conservative: only attempt inference for calls of the form `foo(...)` (no explicit
+    // receiver). Inferring the return type for `obj.foo(...)` would require knowing the receiver
+    // type, and guessing based on the current class would be incorrect.
+    let callee = call.callee()?;
+    let ast::Expression::NameExpression(name_expr) = callee else {
+        return None;
+    };
+    if name_expr
+        .syntax()
+        .descendants_with_tokens()
+        .any(|el| el.kind() == SyntaxKind::Dot)
+    {
+        return None;
+    }
+    let name = name_expr
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| tok.kind().is_identifier_like())
+        .last()?
+        .text()
+        .to_string();
+
+    infer_method_return_type(call.syntax(), &name)
+}
+
+fn infer_method_return_type(node: &nova_syntax::SyntaxNode, name: &str) -> Option<String> {
+    // Walk outward through nested type bodies to approximate Java's implicit `Outer.this` member
+    // access rules for unqualified method calls inside inner classes.
+    for ancestor in node.ancestors() {
+        let members: Vec<ast::ClassMember> = if let Some(body) = ast::ClassBody::cast(ancestor.clone())
+        {
+            body.members().collect()
+        } else if let Some(body) = ast::InterfaceBody::cast(ancestor.clone()) {
+            body.members().collect()
+        } else if let Some(body) = ast::EnumBody::cast(ancestor.clone()) {
+            body.members().collect()
+        } else if let Some(body) = ast::RecordBody::cast(ancestor.clone()) {
+            body.members().collect()
+        } else {
+            continue;
+        };
+
+        let mut inferred: Option<String> = None;
+        let mut saw_candidate = false;
+        for member in members {
+            let ast::ClassMember::MethodDeclaration(method) = member else {
+                continue;
+            };
+            let Some(name_tok) = method.name_token() else {
+                continue;
+            };
+            if name_tok.text() != name {
+                continue;
+            }
+            saw_candidate = true;
+
+            let Some(ret_ty) = method.return_type() else {
+                continue;
+            };
+            let rendered = render_java_type(ret_ty.syntax());
+            match inferred.as_deref() {
+                None => inferred = Some(rendered),
+                Some(existing) if existing == rendered.as_str() => {}
+                Some(_) => {
+                    // Ambiguous overloads with different return types.
+                    inferred = None;
+                    break;
+                }
+            }
+        }
+
+        if saw_candidate {
+            return inferred;
+        }
+    }
+
+    None
 }
 
 fn infer_type_from_new_expression(expr: &ast::NewExpression) -> Option<String> {
