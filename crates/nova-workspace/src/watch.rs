@@ -45,6 +45,15 @@ impl WatchConfig {
 
 pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option<ChangeCategory> {
     for path in event.paths() {
+        // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
+        // like a build change so we reload the project config instead of only updating file
+        // contents.
+        if path
+            .file_name()
+            .is_some_and(|name| name == "module-info.java")
+        {
+            return Some(ChangeCategory::Build);
+        }
         if is_build_file(path) {
             return Some(ChangeCategory::Build);
         }
@@ -259,6 +268,55 @@ mod tests {
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
+        );
+    }
+
+    #[test]
+    fn module_info_java_changes_are_categorized_as_build() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WatchConfig::new(root.clone());
+        let module_info = root.join("src/module-info.java");
+
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Modified(module_info.clone())),
+            Some(ChangeCategory::Build)
+        );
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Created(module_info.clone())),
+            Some(ChangeCategory::Build)
+        );
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Deleted(module_info.clone())),
+            Some(ChangeCategory::Build)
+        );
+    }
+
+    #[test]
+    fn module_info_java_moves_are_categorized_as_build() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WatchConfig::new(root.clone());
+        let module_info = root.join("src/module-info.java");
+        let other = root.join("src/Other.java");
+
+        assert_eq!(
+            categorize_event(
+                &config,
+                &NormalizedEvent::Moved {
+                    from: module_info.clone(),
+                    to: other.clone(),
+                }
+            ),
+            Some(ChangeCategory::Build)
+        );
+        assert_eq!(
+            categorize_event(
+                &config,
+                &NormalizedEvent::Moved {
+                    from: other,
+                    to: module_info,
+                }
+            ),
+            Some(ChangeCategory::Build)
         );
     }
 }
