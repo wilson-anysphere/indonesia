@@ -563,3 +563,66 @@ fn gradle_snapshot_can_add_buildsrc_module_without_conventional_java_layout() {
     assert_eq!(owning.module.id, "gradle::__buildSrc");
     assert_eq!(owning.source_root.path, snapshot_main_src);
 }
+
+#[test]
+fn gradle_buildsrc_does_not_inherit_outer_root_dependencies() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = \"demo\"\n",
+    )
+    .expect("write settings.gradle");
+    std::fs::write(
+        workspace_root.join("build.gradle"),
+        r#"
+            plugins { id 'java' }
+            dependencies {
+              implementation "com.example:rootdep:1.0"
+            }
+        "#,
+    )
+    .expect("write build.gradle");
+
+    // `buildSrc` has sources but no build script; it should still be treated as a separate build
+    // and must not inherit the outer root project's dependencies.
+    std::fs::create_dir_all(workspace_root.join("buildSrc/src/main/java/com/example"))
+        .expect("mkdir buildSrc sources");
+    std::fs::write(
+        workspace_root.join("buildSrc/src/main/java/com/example/BuildLogic.java"),
+        "package com.example; class BuildLogic {}",
+    )
+    .expect("write buildSrc java");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let root_module = model.module_by_id("gradle::").expect("root module");
+    assert!(
+        root_module.dependencies.iter().any(|d| {
+            d.group_id == "com.example"
+                && d.artifact_id == "rootdep"
+                && d.version.as_deref() == Some("1.0")
+        }),
+        "expected outer root dependency to be on root module"
+    );
+
+    let buildsrc = model
+        .module_by_id("gradle::__buildSrc")
+        .expect("buildSrc module");
+    assert!(
+        !buildsrc
+            .dependencies
+            .iter()
+            .any(|d| d.group_id == "com.example" && d.artifact_id == "rootdep"),
+        "did not expect buildSrc module to inherit outer root dependencies"
+    );
+}

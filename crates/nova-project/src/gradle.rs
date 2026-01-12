@@ -309,8 +309,10 @@ pub(crate) fn load_gradle_project(
     let gradle_properties = load_gradle_properties(root);
     let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
     // Included builds (`includeBuild(...)`) are separate Gradle builds and can have their own
-    // `gradle.properties` / version catalogs. Collect per-included-build parsing contexts so we can
-    // resolve `libs.*` references inside included build scripts.
+    // `gradle.properties` / version catalogs. Collect per-build parsing contexts so we can resolve
+    // `libs.*` references inside build scripts for:
+    // - included builds, and
+    // - `buildSrc` (which is also a separate build).
     let mut included_build_contexts: Vec<(String, GradleProperties, Option<GradleVersionCatalog>)> =
         included_builds
             .iter()
@@ -321,6 +323,19 @@ pub(crate) fn load_gradle_project(
                 (included.project_path.clone(), props, catalog)
             })
             .collect();
+    if module_refs
+        .iter()
+        .any(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
+    {
+        let buildsrc_root = snapshot_project_dirs
+            .get(GRADLE_BUILDSRC_PROJECT_PATH)
+            .cloned()
+            .unwrap_or_else(|| root.join("buildSrc"));
+        let buildsrc_root = canonicalize_or_fallback(&buildsrc_root);
+        let props = load_gradle_properties(&buildsrc_root);
+        let catalog = load_gradle_version_catalog(&buildsrc_root, &props);
+        included_build_contexts.push((GRADLE_BUILDSRC_PROJECT_PATH.to_string(), props, catalog));
+    }
     // Deterministic longest-prefix matching.
     included_build_contexts.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
     dependencies.extend(parse_gradle_root_dependencies(
@@ -702,6 +717,35 @@ pub(crate) fn load_gradle_workspace_model(
             }
         })
         .collect();
+    if module_refs
+        .iter()
+        .any(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
+    {
+        let build_root = snapshot_project_dirs
+            .get(GRADLE_BUILDSRC_PROJECT_PATH)
+            .cloned()
+            .unwrap_or_else(|| root.join("buildSrc"));
+        let build_root = canonicalize_or_fallback(&build_root);
+        let props = load_gradle_properties(&build_root);
+        let catalog = load_gradle_version_catalog(&build_root, &props);
+        let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+            &build_root,
+            catalog.as_ref(),
+            &props,
+        );
+        let mut common = parse_gradle_root_dependencies(&build_root, catalog.as_ref(), &props);
+        retain_dependencies_not_in(&mut common, &subprojects);
+        retain_dependencies_not_in(&mut common, &allprojects);
+        sort_dedup_dependencies(&mut common);
+        included_build_contexts.push(IncludedBuildDepsContext {
+            project_path_prefix: GRADLE_BUILDSRC_PROJECT_PATH.to_string(),
+            gradle_properties: props,
+            version_catalog: catalog,
+            root_common_deps: common,
+            root_subprojects_deps: subprojects,
+            root_allprojects_deps: allprojects,
+        });
+    }
     included_build_contexts.sort_by(|a, b| {
         b.project_path_prefix
             .len()
