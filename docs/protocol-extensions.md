@@ -9,6 +9,9 @@ Source of truth for method names:
 - `crates/nova-lsp/src/lib.rs` (string constants like `TEST_DISCOVER_METHOD`)
 - `editors/vscode/src/*.ts` (client usage for a subset)
 
+This document is validated in CI by `nova-devtools check-protocol-extensions` to ensure it stays in
+sync with both server + client code.
+
 > Note: Nova also uses standard LSP requests (e.g. `textDocument/formatting`) and standard command /
 > code action wiring. Those are intentionally *not* covered here.
 
