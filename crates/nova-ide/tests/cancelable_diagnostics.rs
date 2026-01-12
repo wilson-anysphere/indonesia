@@ -1,3 +1,4 @@
+mod text_fixture;
 mod framework_harness;
 mod text_fixture;
 
