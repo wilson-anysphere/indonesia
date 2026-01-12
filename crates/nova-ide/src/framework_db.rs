@@ -132,6 +132,7 @@ impl FrameworkDbShared {
             return false;
         }
 
+        let target_release = self.config.as_ref().map(|cfg| cfg.java.target.0);
         for entry in self.classpath_entries() {
             if cancel.is_cancelled() {
                 return false;
@@ -148,7 +149,12 @@ impl FrameworkDbShared {
                     }
                 }
                 nova_project::ClasspathEntryKind::Jar => {
-                    if zip_contains_exact(entry.path.as_path(), normalized_class_file, cancel) {
+                    if zip_contains_exact(
+                        entry.path.as_path(),
+                        normalized_class_file,
+                        target_release,
+                        cancel,
+                    ) {
                         return true;
                     }
                 }
@@ -167,6 +173,7 @@ impl FrameworkDbShared {
             return false;
         }
 
+        let target_release = self.config.as_ref().map(|cfg| cfg.java.target.0);
         for entry in self.classpath_entries() {
             if cancel.is_cancelled() {
                 return false;
@@ -180,7 +187,12 @@ impl FrameworkDbShared {
                     }
                 }
                 nova_project::ClasspathEntryKind::Jar => {
-                    if zip_contains_prefix(entry.path.as_path(), normalized_prefix, cancel) {
+                    if zip_contains_prefix(
+                        entry.path.as_path(),
+                        normalized_prefix,
+                        target_release,
+                        cancel,
+                    ) {
                         return true;
                     }
                 }
@@ -687,7 +699,12 @@ fn normalize_prefix(value: &str) -> String {
     out
 }
 
-fn zip_contains_exact(path: &Path, entry: &str, cancel: &CancellationToken) -> bool {
+fn zip_contains_exact(
+    path: &Path,
+    entry: &str,
+    target_release: Option<u16>,
+    cancel: &CancellationToken,
+) -> bool {
     if cancel.is_cancelled() {
         return false;
     }
@@ -712,11 +729,37 @@ fn zip_contains_exact(path: &Path, entry: &str, cancel: &CancellationToken) -> b
 
     // JMODs store classes under `classes/`.
     let alt = format!("classes/{entry}");
-    let ok = archive.by_name(&alt).is_ok();
-    ok
+    if archive.by_name(&alt).is_ok() {
+        return true;
+    }
+
+    let Some(target_release) = target_release.filter(|release| *release >= 9) else {
+        return false;
+    };
+
+    // Multi-release JARs can store version-specific class files under
+    // `META-INF/versions/<n>/...`. Honor `--release` so MR-only classes are
+    // only considered when the project's target supports them.
+    if !jar_is_multi_release(&mut archive) {
+        return false;
+    }
+
+    for version in (9..=target_release).rev() {
+        let candidate = format!("META-INF/versions/{version}/{entry}");
+        if archive.by_name(&candidate).is_ok() {
+            return true;
+        }
+    }
+
+    false
 }
 
-fn zip_contains_prefix(path: &Path, prefix: &str, cancel: &CancellationToken) -> bool {
+fn zip_contains_prefix(
+    path: &Path,
+    prefix: &str,
+    target_release: Option<u16>,
+    cancel: &CancellationToken,
+) -> bool {
     if cancel.is_cancelled() {
         return false;
     }
@@ -731,15 +774,97 @@ fn zip_contains_prefix(path: &Path, prefix: &str, cancel: &CancellationToken) ->
     };
 
     let alt_prefix = format!("classes/{prefix}");
-    for name in archive.file_names() {
+    let mr_target_release = target_release.filter(|release| *release >= 9);
+    let mut mr_archive = archive;
+    let is_multi_release = mr_target_release.is_some_and(|_| jar_is_multi_release(&mut mr_archive));
+
+    for name in mr_archive.file_names() {
         if cancel.is_cancelled() {
             return false;
         }
         if name.starts_with(prefix) || name.starts_with(&alt_prefix) {
             return true;
         }
+
+        if is_multi_release {
+            if let Some(rest) = name.strip_prefix("META-INF/versions/") {
+                let Some((version, inner)) = rest.split_once('/') else {
+                    continue;
+                };
+                let Ok(version) = version.parse::<u16>() else {
+                    continue;
+                };
+                let Some(target) = mr_target_release else {
+                    continue;
+                };
+                if version > target {
+                    continue;
+                }
+                if inner.starts_with(prefix) {
+                    return true;
+                }
+            }
+        }
     }
     false
+}
+
+fn jar_is_multi_release<R: std::io::Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> bool {
+    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
+        Ok(file) => file,
+        Err(zip::result::ZipError::FileNotFound) => return false,
+        Err(_) => return false,
+    };
+
+    let mut manifest = String::new();
+    if file.read_to_string(&mut manifest).is_err() {
+        return false;
+    }
+
+    manifest
+        .to_ascii_lowercase()
+        .contains("multi-release: true")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_contains_exact_respects_multi_release_and_target_release() {
+        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/multirelease.jar");
+        assert!(jar.is_file(), "fixture missing: {}", jar.display());
+
+        let cancel = CancellationToken::new();
+        let entry = "com/example/mr/MultiReleaseOnly.class";
+
+        assert!(
+            !zip_contains_exact(&jar, entry, Some(8), &cancel),
+            "expected MR-only class to be absent for Java 8"
+        );
+        assert!(
+            zip_contains_exact(&jar, entry, Some(17), &cancel),
+            "expected MR-only class to be present for Java 17"
+        );
+    }
+
+    #[test]
+    fn zip_contains_prefix_respects_multi_release_and_target_release() {
+        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/multirelease.jar");
+        assert!(jar.is_file(), "fixture missing: {}", jar.display());
+
+        let cancel = CancellationToken::new();
+        let prefix = "com/example/mr/";
+
+        assert!(
+            !zip_contains_prefix(&jar, prefix, Some(8), &cancel),
+            "expected MR-only package prefix to be absent for Java 8"
+        );
+        assert!(
+            zip_contains_prefix(&jar, prefix, Some(17), &cancel),
+            "expected MR-only package prefix to be present for Java 17"
+        );
+    }
 }
 
 fn collect_spring_metadata_synthetic_files(
