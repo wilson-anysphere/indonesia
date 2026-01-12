@@ -647,6 +647,17 @@ pub(crate) fn format_java_pretty(
     source: &str,
     config: &FormatConfig,
 ) -> String {
+    // The doc-based pretty-printer is still experimental and intentionally
+    // best-effort. On malformed input, prefer a no-op fallback rather than
+    // risk dropping tokens/comments.
+    //
+    // Note: we use the parser's diagnostics here (rather than looking for
+    // specific error tokens) so we preserve existing behavior from snapshot
+    // tests like `pretty_formats_broken_syntax_without_panicking`.
+    if !parse.errors.is_empty() {
+        return source.to_string();
+    }
+
     let newline = NewlineStyle::detect(source);
     let input_has_final_newline = ends_with_line_break(source);
 
