@@ -1915,15 +1915,12 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
 
         // If the timestamped SNAPSHOT jar isn't present in the repo, fall back to the
         // conventional `<artifactId>-<version>(-classifier).jar` path.
-        //
-        // Note: We intentionally return the fallback path even if the jar doesn't exist yet so
-        // downstream systems can still attach a stable classpath entry (and potentially download
-        // or materialize the dependency later).
-        return Some(version_dir.join(default_file_name(version)));
+        let fallback = version_dir.join(default_file_name(version));
+        return exists_as_jar(&fallback).then_some(fallback);
     }
 
-    // Return the expected local-repo jar path even if the artifact hasn't been downloaded yet.
-    Some(version_dir.join(default_file_name(version)))
+    let path = version_dir.join(default_file_name(version));
+    exists_as_jar(&path).then_some(path)
 }
 
 fn resolve_snapshot_jar_file_name(
