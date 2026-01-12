@@ -2452,7 +2452,16 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
         }
         ast::Expression::CastExpression(cast) => cast
             .ty()
-            .map(|ty| render_java_type(ty.syntax()))
+            .map(|ty| {
+                let rendered = render_java_type(ty.syntax());
+                // Java intersection types (`A & B`) are not denotable in variable declarations,
+                // so avoid emitting them as explicit local variable types.
+                if rendered.contains('&') {
+                    "Object".to_string()
+                } else {
+                    rendered
+                }
+            })
             .unwrap_or_else(|| "Object".to_string()),
         ast::Expression::ConditionalExpression(cond) => {
             let Some(then_branch) = cond.then_branch() else {
@@ -2829,6 +2838,10 @@ fn best_type_at_range_display(
             || ty.eq_ignore_ascii_case("null")
             || ty == "void"
             || ty.starts_with('<')
+            // Wildcard types (`? extends Foo`) and intersection types (`A & B`) are not denotable
+            // as standalone variable declaration types.
+            || ty.starts_with('?')
+            || ty.contains(" & ")
         {
             continue;
         }

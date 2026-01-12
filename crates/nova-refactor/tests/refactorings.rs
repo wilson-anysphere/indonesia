@@ -975,6 +975,27 @@ class Test {
 "#,
         ),
         (
+            r#"interface A {}
+interface B {}
+
+class Test {
+  void m(boolean cond, A a, B b) {
+    Object x = /*select*/cond ? a : b/*end*/;
+  }
+}
+"#,
+            r#"interface A {}
+interface B {}
+
+class Test {
+  void m(boolean cond, A a, B b) {
+    Object value = cond ? a : b;
+    Object x = value;
+  }
+}
+"#,
+        ),
+        (
             r#"class Test {
   void m() {
     String x = /*select*/null/*end*/;
