@@ -90,6 +90,10 @@ fn is_within_any(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 pub fn is_build_file(path: &Path) -> bool {
+    if path.ends_with(Path::new(".nova/queries/gradle.json")) {
+        return true;
+    }
+
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
@@ -194,6 +198,7 @@ mod tests {
             root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
             root.join(".nova").join("apt-cache").join("generated-roots.json"),
+            root.join(".nova").join("queries").join("gradle.json"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
             root.join(".bazelversion"),
@@ -319,6 +324,21 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn gradle_snapshot_file_is_a_build_file() {
+        assert!(is_build_file(Path::new("/x/.nova/queries/gradle.json")));
+    }
+
+    #[test]
+    fn gradle_snapshot_file_change_is_categorized_as_build() {
+        let config = WatchConfig::new(PathBuf::from("/x"));
+        let event = NormalizedEvent::Modified(PathBuf::from("/x/.nova/queries/gradle.json"));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Build)
+        );
     }
 
     #[test]
