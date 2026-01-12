@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use nova_project::{load_project_with_options, load_workspace_model_with_options, BuildSystem, LoadOptions};
+use nova_project::{
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, LoadOptions,
+};
 
 #[test]
 fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
@@ -29,7 +31,12 @@ fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
     let project_roots: BTreeSet<_> = project
         .source_roots
         .iter()
-        .map(|sr| sr.path.strip_prefix(tmp.path()).unwrap().to_path_buf())
+        .map(|sr| {
+            sr.path
+                .strip_prefix(&project.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
         .collect();
     assert!(
         project_roots.contains(&PathBuf::from("src")),
@@ -51,7 +58,12 @@ fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
     let module_roots: BTreeSet<_> = model.modules[0]
         .source_roots
         .iter()
-        .map(|sr| sr.path.strip_prefix(tmp.path()).unwrap().to_path_buf())
+        .map(|sr| {
+            sr.path
+                .strip_prefix(&model.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
         .collect();
     assert!(
         module_roots.contains(&PathBuf::from("src")),
@@ -66,4 +78,3 @@ fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
         "node_modules/ should never be treated as a source package; got: {module_roots:?}"
     );
 }
-
