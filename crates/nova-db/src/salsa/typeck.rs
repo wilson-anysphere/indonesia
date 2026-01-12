@@ -6433,6 +6433,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // Resolve them against the enclosing class first (using the right
                 // call kind for the current static/instance context), then fall back to
                 // static-imported methods.
+                let mut implicit_not_found: Option<MethodNotFound> = None;
                 if let Some(receiver_ty) = self.enclosing_class_type(loader) {
                     self.ensure_type_loaded(loader, &receiver_ty);
 
@@ -6486,7 +6487,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 is_type_ref: false,
                             };
                         }
-                        MethodResolution::NotFound(_) => {}
+                        MethodResolution::NotFound(not_found) => {
+                            implicit_not_found = Some(not_found);
+                        }
                     }
 
                     if is_static_context {
@@ -6777,11 +6780,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     _ => {
-                        self.diagnostics.push(Diagnostic::error(
-                            "unresolved-method",
-                            format!("unresolved call `{}`", name),
-                            Some(*range),
-                        ));
+                        if let Some(not_found) = implicit_not_found {
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            self.diagnostics.push(self.unresolved_method_diag(
+                                env_ro,
+                                &not_found,
+                                self.body.exprs[expr].range(),
+                            ));
+                        } else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "unresolved-method",
+                                format!("unresolved call `{}`", name),
+                                Some(*range),
+                            ));
+                        }
                         ExprInfo {
                             ty: Type::Unknown,
                             is_type_ref: false,

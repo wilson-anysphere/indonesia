@@ -196,3 +196,27 @@ class C { void m(){ int x = ~true; } }
         "expected invalid-unary-op diagnostic for ~true, got: {diags:?}"
     );
 }
+
+#[test]
+fn ambiguous_call_diagnostic_lists_candidates() {
+    let src = r#"
+class C {
+    void foo(String s) {}
+    void foo(Integer i) {}
+    void m() { foo(null); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    let amb = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "ambiguous-call")
+        .expect("expected ambiguous-call diagnostic");
+
+    assert!(
+        amb.message.contains("foo(String)") && amb.message.contains("foo(Integer)"),
+        "expected ambiguous-call message to include candidate signatures, got: {:?}",
+        amb.message
+    );
+}
