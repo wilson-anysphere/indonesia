@@ -266,7 +266,7 @@ run_cargo() {
   # `-s none` when an address-space cap is active *unless* the caller explicitly
   # selected a sanitizer.
   if [[ "${subcommand}" == "fuzz" ]] \
-    && [[ -n "${limit_as}" && "${limit_as}" != "0" && "${limit_as}" != "off" && "${limit_as}" != "unlimited" ]] \
+    && [[ -n "${limit_as_effective}" && "${limit_as_effective}" != "0" && "${limit_as_effective}" != "off" && "${limit_as_effective}" != "unlimited" ]] \
     && [[ $# -ge 1 ]]
   then
     local fuzz_subcommand="$1"
