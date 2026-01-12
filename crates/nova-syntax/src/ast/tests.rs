@@ -2326,3 +2326,84 @@ fn string_template_expression_accessors_class_member_fragment() {
     let template = template_expr.template().expect("expected string template");
     assert_eq!(template.parts().count(), 1);
 }
+
+#[test]
+fn string_template_expression_accessors_block_fragment() {
+    let fragment_parse = parse_java_block_fragment("{ String s = STR.\"Hello \\{name}!\"; }", 0);
+    assert!(fragment_parse.parse.errors.is_empty());
+
+    let fragment = BlockFragment::cast(fragment_parse.parse.syntax()).expect("BlockFragment");
+    let block = fragment.block().expect("expected block");
+
+    let template_expr = block
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    assert_eq!(
+        template_expr
+            .processor()
+            .expect("expected processor")
+            .syntax()
+            .text()
+            .to_string(),
+        "STR"
+    );
+
+    let template = template_expr.template().expect("expected string template");
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello ", "!"]);
+    assert_eq!(template.parts().count(), 1);
+}
+
+#[test]
+fn string_template_expression_accessors_escaped_interpolation_sequence_is_text() {
+    let src = r#"
+        class Foo {
+          void m() {
+            String s = STR."\\{not_interp}";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.parts().count(), 0);
+
+    let children: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .map(|el| el.kind())
+        .collect();
+    assert_eq!(
+        children,
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateEnd,
+        ]
+    );
+
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec![r"\\{not_interp}"]);
+}
