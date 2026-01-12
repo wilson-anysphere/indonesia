@@ -19,7 +19,7 @@ set -euo pipefail
 #   NOVA_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
 #   NOVA_CARGO_LIMIT_AS     Address-space cap (default: 4G)
 #   NOVA_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
-#   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 32))
+#   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
 
 usage() {
   cat <<'EOF'
@@ -36,7 +36,7 @@ Environment:
   NOVA_CARGO_JOBS         cargo build jobs (default: cargo's default)
   NOVA_CARGO_LIMIT_AS     Address-space cap (default: 4G)
   NOVA_CARGO_LOCK_DIR     Lock directory
-  NOVA_RUST_TEST_THREADS  RUST_TEST_THREADS for cargo test (default: min(nproc, 32))
+  NOVA_RUST_TEST_THREADS  RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow running unscoped `cargo test` (not recommended)
 
 Notes:
@@ -231,11 +231,13 @@ run_cargo() {
   # Cap RUST_TEST_THREADS for test runs
   if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
     local rust_test_threads="${NOVA_RUST_TEST_THREADS:-}"
-    if [[ -z "${rust_test_threads}" ]]; then
-      rust_test_threads=$(( nproc < 32 ? nproc : 32 ))
-    fi
-    export RUST_TEST_THREADS="${rust_test_threads}"
-  fi
+     if [[ -z "${rust_test_threads}" ]]; then
+       # Keep test parallelism conservative by default. In multi-agent sandboxes we can be constrained
+       # by per-user thread limits, and `cargo test` already spawns additional threads internally.
+       rust_test_threads=$(( nproc < 8 ? nproc : 8 ))
+     fi
+     export RUST_TEST_THREADS="${rust_test_threads}"
+   fi
 
   # On multi-agent hosts we apply strict RLIMIT_AS ceilings. Some environments
   # also configure a global rustc wrapper (commonly `sccache`) via cargo config.
