@@ -4567,6 +4567,44 @@ fn rename_local_variable_does_not_touch_shadowed_field() {
 }
 
 #[test]
+fn rename_field_conflicts_on_local_name_capture() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+
+  void m() {
+    int bar = 1;
+    System.out.println(foo);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at field foo");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap_err();
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts.iter().any(|c| matches!(
+            c,
+            Conflict::ReferenceWillChangeResolution { name, .. } if name == "bar"
+        )),
+        "expected ReferenceWillChangeResolution conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn rename_parameter_updates_body_references() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
@@ -7701,10 +7739,10 @@ fn extract_variable_rejects_assert_condition_extraction() {
     )
     .unwrap_err();
 
-    assert!(matches!(
-        err,
-        SemanticRefactorError::ExtractNotSupportedInAssert
-    ));
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
+        "expected ExtractNotSupportedInAssert for assert condition, got: {err:?}"
+    );
 }
 
 #[test]
@@ -7726,10 +7764,10 @@ fn extract_variable_rejects_assert_message_extraction() {
     )
     .unwrap_err();
 
-    assert!(matches!(
-        err,
-        SemanticRefactorError::ExtractNotSupportedInAssert
-    ));
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
+        "expected ExtractNotSupportedInAssert for assert message, got: {err:?}"
+    );
 }
 
 #[test]

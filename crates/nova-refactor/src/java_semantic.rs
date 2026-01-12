@@ -21,7 +21,7 @@ use nova_syntax::{ast, AstNode};
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{
     MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, SymbolDefinition,
-    TypeSymbolInfo,
+    TypeSymbolInfo, ReferenceKind,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -624,6 +624,8 @@ impl RefactorJavaDatabase {
                 references[symbol.as_usize()].push(Reference {
                     file: group.file.clone(),
                     range,
+                    scope: None,
+                    kind: ReferenceKind::Name,
                 });
                 spans.push((group.file.clone(), range, symbol));
             }
@@ -646,6 +648,8 @@ impl RefactorJavaDatabase {
                 references[symbol.as_usize()].push(Reference {
                     file: file.clone(),
                     range: *range,
+                    scope: None,
+                    kind: ReferenceKind::Name,
                 });
                 spans.push((file.clone(), *range, symbol));
             }
@@ -701,6 +705,7 @@ impl RefactorJavaDatabase {
                 record_body_references(
                     file,
                     file_text,
+                    *file_id,
                     BodyOwner::Method(method),
                     &body,
                     scope_result,
@@ -713,6 +718,7 @@ impl RefactorJavaDatabase {
                     &type_name_by_item,
                     &methods_by_item,
                     &inheritance,
+                    &mut scope_interner,
                     &mut references,
                     &mut spans,
                     &mut name_expr_scopes,
@@ -726,6 +732,7 @@ impl RefactorJavaDatabase {
                 record_body_references(
                     file,
                     file_text,
+                    *file_id,
                     BodyOwner::Constructor(ctor),
                     &body,
                     scope_result,
@@ -738,6 +745,7 @@ impl RefactorJavaDatabase {
                     &type_name_by_item,
                     &methods_by_item,
                     &inheritance,
+                    &mut scope_interner,
                     &mut references,
                     &mut spans,
                     &mut name_expr_scopes,
@@ -751,6 +759,7 @@ impl RefactorJavaDatabase {
                 record_body_references(
                     file,
                     file_text,
+                    *file_id,
                     BodyOwner::Initializer(init),
                     &body,
                     scope_result,
@@ -763,6 +772,7 @@ impl RefactorJavaDatabase {
                     &type_name_by_item,
                     &methods_by_item,
                     &inheritance,
+                    &mut scope_interner,
                     &mut references,
                     &mut spans,
                     &mut name_expr_scopes,
@@ -1579,7 +1589,6 @@ impl RefactorDatabase for RefactorJavaDatabase {
         let (file, local_scope) = self.decode_scope(scope)?;
         let scope_result = self.scopes.get(&file)?;
         let data = scope_result.scopes.scope(local_scope);
-
         let name = Name::from(name);
 
         if let Some(resolution) = data.values().get(&name) {
@@ -1790,6 +1799,8 @@ fn record_non_body_type_references(
             file_text,
             TextRange::new(import.range.start, import.range.end),
             scope_result.file_scope,
+            None,
+            ReferenceKind::Name,
             &scope_result.scopes,
             resolver,
             resolution_to_symbol,
@@ -1815,6 +1826,8 @@ fn record_non_body_type_references(
                 file_text,
                 TextRange::new(range.start, range.end),
                 scope_result.file_scope,
+                None,
+                ReferenceKind::Name,
                 &scope_result.scopes,
                 resolver,
                 resolution_to_symbol,
@@ -1872,6 +1885,8 @@ fn record_non_body_type_references_in_item(
             file_text,
             TextRange::new(span.start, span.end),
             scope,
+            None,
+            ReferenceKind::Name,
             scopes,
             resolver,
             resolution_to_symbol,
@@ -2314,6 +2329,8 @@ fn record_non_body_type_references_in_item(
                                 references[symbol.as_usize()].push(Reference {
                                     file: file.clone(),
                                     range,
+                                    scope: None,
+                                    kind: ReferenceKind::Name,
                                 });
                                 spans.push((file.clone(), range, symbol));
                             }
@@ -2407,6 +2424,7 @@ fn record_non_body_type_references_in_item(
 fn record_body_references(
     file: &FileId,
     file_text: &str,
+    db_file: DbFileId,
     owner: BodyOwner,
     body: &hir::Body,
     scope_result: &ScopeBuildResult,
@@ -2419,6 +2437,7 @@ fn record_body_references(
     type_name_by_item: &HashMap<ItemId, String>,
     methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
     inheritance: &nova_index::InheritanceIndex,
+    scope_interner: &mut ScopeInterner,
     references: &mut [Vec<Reference>],
     spans: &mut Vec<(FileId, TextRange, SymbolId)>,
     name_expr_scopes: &mut HashMap<FileId, HashMap<TextRange, ScopeId>>,
@@ -2427,12 +2446,16 @@ fn record_body_references(
         file: &FileId,
         symbol: SymbolId,
         range: TextRange,
+        scope: Option<u32>,
+        kind: ReferenceKind,
         references: &mut [Vec<Reference>],
         spans: &mut Vec<(FileId, TextRange, SymbolId)>,
     ) {
         references[symbol.as_usize()].push(Reference {
             file: file.clone(),
             range,
+            scope,
+            kind,
         });
         spans.push((file.clone(), range, symbol));
     }
@@ -2682,6 +2705,7 @@ fn record_body_references(
         let Some(&scope) = scope_result.expr_scopes.get(&(owner, expr_id)) else {
             return;
         };
+        let interned_scope = scope_interner.intern(db_file, scope);
 
         match &body.exprs[expr_id] {
             hir::Expr::Name { name, range } => {
@@ -2692,8 +2716,8 @@ fn record_body_references(
                 let name = Name::from(name_text);
 
                 // NOTE: `nova_resolve::ScopeGraph` does not contain inherited fields. If this name
-                // is an inherited field reference, `resolve_name` will likely return `Unresolved`.
-                // We fall back to an explicit inheritance walk below.
+                // is an inherited field reference, `resolve_name_detailed` will likely return
+                // `Unresolved`. We fall back to an explicit inheritance walk below.
                 let resolved_name =
                     resolver.resolve_name_detailed(&scope_result.scopes, scope, &name);
                 let resolved = match &resolved_name {
@@ -2791,7 +2815,15 @@ fn record_body_references(
                         .entry(file.clone())
                         .or_default()
                         .insert(range, scope);
-                    record(file, symbol, range, references, spans);
+                    record(
+                        file,
+                        symbol,
+                        range,
+                        Some(interned_scope),
+                        ReferenceKind::Name,
+                        references,
+                        spans,
+                    );
                     return;
                 }
 
@@ -2822,7 +2854,15 @@ fn record_body_references(
                     .entry(file.clone())
                     .or_default()
                     .insert(range, scope);
-                record(file, symbol, range, references, spans);
+                record(
+                    file,
+                    symbol,
+                    range,
+                    Some(interned_scope),
+                    ReferenceKind::Name,
+                    references,
+                    spans,
+                );
             }
             hir::Expr::FieldAccess {
                 receiver,
@@ -2855,7 +2895,15 @@ fn record_body_references(
                                     resolution_to_symbol.get(&ResolutionKey::Type(item))
                                 {
                                     let range = TextRange::new(name_range.start, name_range.end);
-                                    record(file, symbol, range, references, spans);
+                                    record(
+                                        file,
+                                        symbol,
+                                        range,
+                                        Some(interned_scope),
+                                        ReferenceKind::FieldAccess,
+                                        references,
+                                        spans,
+                                    );
                                 }
                                 return;
                             }
@@ -2893,7 +2941,15 @@ fn record_body_references(
                             resolution_to_symbol.get(&ResolutionKey::Field(field))
                         {
                             let range = TextRange::new(name_range.start, name_range.end);
-                            record(file, symbol, range, references, spans);
+                            record(
+                                file,
+                                symbol,
+                                range,
+                                Some(interned_scope),
+                                ReferenceKind::FieldAccess,
+                                references,
+                                spans,
+                            );
                         }
                     }
                     // Do not fall back to normal receiver-type lookup: `super.x` must not bind to a
@@ -2929,7 +2985,15 @@ fn record_body_references(
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);
-                record(file, symbol, range, references, spans);
+                record(
+                    file,
+                    symbol,
+                    range,
+                    Some(interned_scope),
+                    ReferenceKind::FieldAccess,
+                    references,
+                    spans,
+                );
             }
             hir::Expr::Call { callee, args, .. } => match &body.exprs[*callee] {
                 hir::Expr::Name { name, range } => {
@@ -2987,7 +3051,17 @@ fn record_body_references(
                                     return;
                                 };
                                 let range = TextRange::new(range.start, range.end);
-                                record(file, symbol, range, references, spans);
+                                let callee_interned_scope =
+                                    scope_interner.intern(db_file, callee_scope);
+                                record(
+                                    file,
+                                    symbol,
+                                    range,
+                                    Some(callee_interned_scope),
+                                    ReferenceKind::FieldAccess,
+                                    references,
+                                    spans,
+                                );
                                 return;
                             };
                             methods.first().map(|m| m.id)
@@ -3001,7 +3075,16 @@ fn record_body_references(
                         return;
                     };
                     let range = TextRange::new(range.start, range.end);
-                    record(file, symbol, range, references, spans);
+                    let callee_interned_scope = scope_interner.intern(db_file, callee_scope);
+                    record(
+                        file,
+                        symbol,
+                        range,
+                        Some(callee_interned_scope),
+                        ReferenceKind::Name,
+                        references,
+                        spans,
+                    );
                 }
                 hir::Expr::FieldAccess {
                     receiver,
@@ -3012,6 +3095,10 @@ fn record_body_references(
                     if is_qualified_this_or_super(file_text, body, *receiver) {
                         return;
                     }
+                    let Some(&callee_scope) = scope_result.expr_scopes.get(&(owner, *callee)) else {
+                        return;
+                    };
+                    let callee_interned_scope = scope_interner.intern(db_file, callee_scope);
 
                     // `WorkspaceDefMap::type_def` only contains methods declared directly on the
                     // type, so member resolution for `this.m()` / `super.m()` needs an explicit
@@ -3036,7 +3123,15 @@ fn record_body_references(
                                     resolution_to_symbol.get(&ResolutionKey::Method(method))
                                 {
                                     let range = TextRange::new(name_range.start, name_range.end);
-                                    record(file, symbol, range, references, spans);
+                                    record(
+                                        file,
+                                        symbol,
+                                        range,
+                                        Some(callee_interned_scope),
+                                        ReferenceKind::FieldAccess,
+                                        references,
+                                        spans,
+                                    );
                                     return;
                                 }
                             }
@@ -3068,7 +3163,15 @@ fn record_body_references(
                                 resolution_to_symbol.get(&ResolutionKey::Method(method))
                             {
                                 let range = TextRange::new(name_range.start, name_range.end);
-                                record(file, symbol, range, references, spans);
+                                record(
+                                    file,
+                                    symbol,
+                                    range,
+                                    Some(callee_interned_scope),
+                                    ReferenceKind::FieldAccess,
+                                    references,
+                                    spans,
+                                );
                             }
                         }
                         return;
@@ -3100,7 +3203,15 @@ fn record_body_references(
                         return;
                     };
                     let range = TextRange::new(name_range.start, name_range.end);
-                    record(file, symbol, range, references, spans);
+                    record(
+                        file,
+                        symbol,
+                        range,
+                        Some(callee_interned_scope),
+                        ReferenceKind::FieldAccess,
+                        references,
+                        spans,
+                    );
                 }
                 _ => {}
             },
@@ -3136,7 +3247,15 @@ fn record_body_references(
                                 resolution_to_symbol.get(&ResolutionKey::Method(method))
                             {
                                 let range = TextRange::new(name_range.start, name_range.end);
-                                record(file, symbol, range, references, spans);
+                                record(
+                                    file,
+                                    symbol,
+                                    range,
+                                    Some(interned_scope),
+                                    ReferenceKind::FieldAccess,
+                                    references,
+                                    spans,
+                                );
                                 return;
                             }
                         }
@@ -3167,7 +3286,15 @@ fn record_body_references(
                             resolution_to_symbol.get(&ResolutionKey::Method(method))
                         {
                             let range = TextRange::new(name_range.start, name_range.end);
-                            record(file, symbol, range, references, spans);
+                            record(
+                                file,
+                                symbol,
+                                range,
+                                Some(interned_scope),
+                                ReferenceKind::FieldAccess,
+                                references,
+                                spans,
+                            );
                         }
                     }
                     return;
@@ -3195,15 +3322,26 @@ fn record_body_references(
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);
-                record(file, symbol, range, references, spans);
+                record(
+                    file,
+                    symbol,
+                    range,
+                    Some(interned_scope),
+                    ReferenceKind::FieldAccess,
+                    references,
+                    spans,
+                );
             }
             hir::Expr::New { class_range, .. } => {
                 let type_scope = type_resolution_scope(&scope_result.scopes, scope);
+                let type_interned_scope = scope_interner.intern(db_file, type_scope);
                 record_type_references_in_range(
                     file,
                     file_text,
                     TextRange::new(class_range.start, class_range.end),
                     type_scope,
+                    Some(type_interned_scope),
+                    ReferenceKind::Name,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -3293,11 +3431,14 @@ fn record_body_references(
         let type_scope = type_resolution_scope(&scope_result.scopes, type_scope);
 
         let local = &body.locals[local_id];
+        let type_interned_scope = scope_interner.intern(db_file, type_scope);
         record_type_references_in_range(
             file,
             file_text,
             TextRange::new(local.ty_range.start, local.ty_range.end),
             type_scope,
+            Some(type_interned_scope),
+            ReferenceKind::Name,
             &scope_result.scopes,
             resolver,
             resolution_to_symbol,
@@ -3338,6 +3479,8 @@ fn record_syntax_type_references(
                 file_text,
                 range,
                 scope,
+                None,
+                ReferenceKind::Name,
                 &scope_result.scopes,
                 resolver,
                 resolution_to_symbol,
@@ -3354,6 +3497,8 @@ fn record_syntax_type_references(
                 file_text,
                 range,
                 scope,
+                None,
+                ReferenceKind::Name,
                 &scope_result.scopes,
                 resolver,
                 resolution_to_symbol,
@@ -3429,6 +3574,8 @@ fn record_type_references_in_range(
     file_text: &str,
     range: TextRange,
     scope: nova_resolve::ScopeId,
+    reference_scope: Option<u32>,
+    kind: ReferenceKind,
     scopes: &nova_resolve::ScopeGraph,
     resolver: &Resolver<'_>,
     resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
@@ -3602,6 +3749,8 @@ fn record_type_references_in_range(
             references[symbol.as_usize()].push(Reference {
                 file: file.clone(),
                 range: abs_range,
+                scope: reference_scope,
+                kind,
             });
             spans.push((file.clone(), abs_range, symbol));
         }
@@ -3626,6 +3775,8 @@ fn record_type_param_references(
         references[symbol.as_usize()].push(Reference {
             file: file.clone(),
             range,
+            scope: None,
+            kind: ReferenceKind::Name,
         });
         spans.push((file.clone(), range, symbol));
     }
@@ -4726,6 +4877,11 @@ fn record_reference(
     references[symbol.as_usize()].push(Reference {
         file: file.clone(),
         range,
+        // Syntax-only reference collection is used to cover constructs that Nova's lowering does
+        // not currently represent in HIR (types, imports, annotation args, enum constant args,
+        // ...). These sites are not subject to local-variable name capture, so we omit scope data.
+        scope: None,
+        kind: ReferenceKind::Name,
     });
     spans.push((file.clone(), range, symbol));
 }
@@ -5207,6 +5363,8 @@ fn record_expression_references(
             file_text,
             TextRange::new(start, end),
             scope,
+            None,
+            ReferenceKind::Name,
             &scope_result.scopes,
             resolver,
             resolution_to_symbol,

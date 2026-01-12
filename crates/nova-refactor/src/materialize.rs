@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use crate::edit::FileId;
     use crate::java::SymbolId;
-    use crate::semantic::{Reference, SymbolDefinition};
+    use crate::semantic::{Reference, ReferenceKind, SymbolDefinition};
 
     #[derive(Default)]
     struct TestDb {
@@ -354,6 +354,8 @@ mod tests {
             vec![Reference {
                 file: file.clone(),
                 range: TextRange::new(10, 11),
+                scope: None,
+                kind: ReferenceKind::Name,
             }],
         );
 

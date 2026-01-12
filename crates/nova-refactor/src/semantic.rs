@@ -89,6 +89,16 @@ pub enum Conflict {
         name: String,
         usage_range: TextRange,
     },
+    /// A rename would cause a specific usage site to resolve to a different symbol.
+    ///
+    /// This is most commonly triggered when renaming a non-local symbol (e.g. a field) to a name
+    /// that is already bound in the local scope at a particular reference site.
+    ReferenceWillChangeResolution {
+        file: FileId,
+        usage_range: TextRange,
+        name: String,
+        existing_symbol: SymbolId,
+    },
     VisibilityLoss {
         file: FileId,
         usage_range: TextRange,
@@ -107,10 +117,27 @@ pub struct SymbolDefinition {
     pub scope: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceKind {
+    /// A simple identifier reference originating from `hir::Expr::Name`.
+    ///
+    /// These are subject to name capture when a rename introduces a local/parameter binding with
+    /// the same name.
+    Name,
+    /// A qualified member reference originating from `hir::Expr::FieldAccess.name_range` (e.g.
+    /// `this.foo`).
+    ///
+    /// Qualified references are not subject to local-variable name capture.
+    FieldAccess,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
     pub file: FileId,
     pub range: TextRange,
+    /// The interned scope ID in which this reference occurs (when available).
+    pub scope: Option<u32>,
+    pub kind: ReferenceKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

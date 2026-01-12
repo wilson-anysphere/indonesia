@@ -11,7 +11,7 @@ use thiserror::Error;
 use crate::edit::{apply_text_edits, FileId, TextEdit, TextRange, WorkspaceEdit};
 use crate::java::{JavaSymbolKind, SymbolId};
 use crate::materialize::{materialize, MaterializeError};
-use crate::semantic::{Conflict, RefactorDatabase, SemanticChange};
+use crate::semantic::{Conflict, RefactorDatabase, ReferenceKind, SemanticChange};
 
 #[derive(Debug, Error)]
 pub enum RefactorError {
@@ -445,7 +445,10 @@ fn check_rename_conflicts(
         return conflicts;
     };
 
-    match db.symbol_kind(symbol) {
+    let kind = db.symbol_kind(symbol);
+    let refs = db.find_references(symbol);
+
+    match kind {
         Some(JavaSymbolKind::Method) => {
             // Overload-aware collision detection:
             // Renaming a method to an existing name is OK as long as it doesn't create any
@@ -523,6 +526,57 @@ fn check_rename_conflicts(
                 }
             }
         }
+        Some(JavaSymbolKind::Field) => {
+            // Best-effort: avoid obvious declaration-scope collisions (another field with the same
+            // name in the same type).
+            if let Some(scope) = db.symbol_scope(symbol) {
+                if let Some(existing) = db.resolve_name_in_scope(scope, new_name) {
+                    if existing != symbol && db.symbol_kind(existing) == Some(JavaSymbolKind::Field)
+                    {
+                        conflicts.push(Conflict::NameCollision {
+                            file: def.file.clone(),
+                            name: new_name.to_string(),
+                            existing_symbol: existing,
+                        });
+                    }
+                }
+            }
+
+            // It's possible for a field rename to introduce name capture at *some* usage sites
+            // without colliding in the declaration scope.
+            //
+            // Example:
+            //   class C { int foo; void m() { int bar; foo; } }
+            // Renaming `foo -> bar` would cause the (renamed) `bar` reference to resolve to the
+            // local `bar`, changing semantics.
+            for usage in &refs {
+                let Some(usage_scope) = usage.scope else {
+                    continue;
+                };
+                if usage.kind != ReferenceKind::Name {
+                    // Qualified references like `this.foo` are not affected by local name capture.
+                    continue;
+                }
+
+                // `resolve_name_in_scope` only checks the current scope; `would_shadow` checks
+                // parents. Together, they approximate name resolution for locals/parameters at
+                // this site.
+                let existing = db
+                    .resolve_name_in_scope(usage_scope, new_name)
+                    .or_else(|| db.would_shadow(usage_scope, new_name));
+
+                if let Some(existing_symbol) = existing {
+                    if existing_symbol != symbol {
+                        conflicts.push(Conflict::ReferenceWillChangeResolution {
+                            file: usage.file.clone(),
+                            usage_range: usage.range,
+                            name: new_name.to_string(),
+                            existing_symbol,
+                        });
+                    }
+                }
+            }
+        }
         Some(JavaSymbolKind::Type) => {
             if let Some(info) = db.type_symbol_info(symbol) {
                 if info.is_top_level {
@@ -539,14 +593,11 @@ fn check_rename_conflicts(
                     }
 
                     if info.is_public {
-                        if let Some((from, to)) =
+                        if let Some((_, to)) =
                             type_file_rename_candidate(&def.file, &def.name, new_name)
                         {
                             if db.file_exists(&to) {
                                 conflicts.push(Conflict::FileAlreadyExists { file: to });
-                            } else {
-                                // `from` is always an existing file (it contains the type definition).
-                                let _ = from;
                             }
                         }
                     }
@@ -556,7 +607,7 @@ fn check_rename_conflicts(
         _ => {}
     }
 
-    for usage in db.find_references(symbol) {
+    for usage in refs {
         if !db.is_visible_from(symbol, &usage.file, new_name) {
             conflicts.push(Conflict::VisibilityLoss {
                 file: usage.file.clone(),
@@ -773,7 +824,7 @@ fn rename_field_with_accessors(
         )?);
     };
 
-    let mut conflicts = Vec::new();
+    let mut conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
 
     if let Some(existing) = db.resolve_field_in_scope(scope, &params.new_name) {
         if existing != params.symbol {
@@ -1684,6 +1735,8 @@ pub fn inline_variable(
             all_refs.push(crate::semantic::Reference {
                 file: def.file.clone(),
                 range,
+                scope: None,
+                kind: ReferenceKind::Name,
             });
         }
     }
@@ -1750,14 +1803,13 @@ pub fn inline_variable(
                 root
             };
 
+            // Some syntax/HIR layers may give us a range that is slightly larger than the raw
+            // identifier token. Be tolerant and accept any token that overlaps the provided range.
             let Some(tok) = root
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token())
                 .filter(|tok| !tok.kind().is_trivia())
-                .find(|tok| {
-                    let range = syntax_token_range(tok);
-                    range.start <= token_range.start && token_range.start < range.end
-                })
+                .find(|tok| ranges_overlap(syntax_token_range(tok), token_range))
             else {
                 return Err(RefactorError::InlineNotSupported);
             };
@@ -4634,6 +4686,9 @@ fn find_local_variable_declaration(
         let list = stmt.declarator_list()?;
         let declarators: Vec<_> = list.declarators().collect();
 
+        // Be tolerant of small range mismatches: some symbol sources (HIR, ad-hoc scanners) may
+        // include surrounding trivia in the "name range". Match by overlap against the actual
+        // identifier token span.
         let mut target_idx = declarators.iter().position(|decl| {
             decl.name_token()
                 .map(|tok| {
@@ -4642,19 +4697,6 @@ fn find_local_variable_declaration(
                 })
                 .unwrap_or(false)
         });
-
-        if target_idx.is_none() {
-            // Be tolerant of slightly different name ranges (e.g. when the DB reports a range
-            // within the identifier token).
-            target_idx = declarators.iter().position(|decl| {
-                decl.name_token()
-                    .map(|tok| {
-                        let range = syntax_token_range(&tok);
-                        range.start <= name_range.start && name_range.end <= range.end
-                    })
-                    .unwrap_or(false)
-            });
-        }
 
         if target_idx.is_none() {
             // Fallback: match by semantic symbol id when range matching fails.

@@ -1282,6 +1282,14 @@ enum CliJsonConflict {
         start_byte: usize,
         end_byte: usize,
     },
+    ReferenceWillChangeResolution {
+        file: String,
+        name: String,
+        existing_symbol: String,
+        usage_range: CliJsonRange,
+        start_byte: usize,
+        end_byte: usize,
+    },
     VisibilityLoss {
         file: String,
         name: String,
@@ -1726,6 +1734,36 @@ fn conflicts_to_json(
                     end_byte: usage_range.end,
                 })
             }
+            Conflict::ReferenceWillChangeResolution {
+                file,
+                usage_range,
+                name,
+                existing_symbol,
+            } => {
+                let text = files.get(&file).map(String::as_str).unwrap_or("");
+                let index = LineIndex::new(text);
+                let start = TextSize::from(usage_range.start as u32);
+                let end = TextSize::from(usage_range.end as u32);
+                let start_pos = index.position(text, start);
+                let end_pos = index.position(text, end);
+                out.push(CliJsonConflict::ReferenceWillChangeResolution {
+                    file: file.0,
+                    name,
+                    existing_symbol: format!("{existing_symbol:?}"),
+                    usage_range: CliJsonRange {
+                        start: CliJsonPosition {
+                            line: start_pos.line + 1,
+                            col: start_pos.character + 1,
+                        },
+                        end: CliJsonPosition {
+                            line: end_pos.line + 1,
+                            col: end_pos.character + 1,
+                        },
+                    },
+                    start_byte: usage_range.start,
+                    end_byte: usage_range.end,
+                })
+            }
             Conflict::VisibilityLoss {
                 file,
                 usage_range,
@@ -1781,14 +1819,22 @@ fn conflicts_to_json(
                 end_byte,
                 ..
             } => (file, 2, name, *start_byte, *end_byte, ""),
+            CliJsonConflict::ReferenceWillChangeResolution {
+                file,
+                name,
+                start_byte,
+                end_byte,
+                existing_symbol,
+                ..
+            } => (file, 3, name, *start_byte, *end_byte, existing_symbol),
             CliJsonConflict::VisibilityLoss {
                 file,
                 name,
                 start_byte,
                 end_byte,
                 ..
-            } => (file, 3, name, *start_byte, *end_byte, ""),
-            CliJsonConflict::FileAlreadyExists { file } => (file, 4, "", 0, 0, ""),
+            } => (file, 4, name, *start_byte, *end_byte, ""),
+            CliJsonConflict::FileAlreadyExists { file } => (file, 5, "", 0, 0, ""),
         }
     }
 
