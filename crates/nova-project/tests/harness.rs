@@ -19,11 +19,17 @@ mod bazel_ignore;
 #[path = "cases/bazel_reload.rs"]
 mod bazel_reload;
 
+#[path = "cases/build_file_detection.rs"]
+mod build_file_detection;
+
 #[path = "cases/discovery.rs"]
 mod discovery;
 
 #[path = "cases/gradle_cache.rs"]
 mod gradle_cache;
+
+#[path = "cases/gradle_jpms_workspace_model.rs"]
+mod gradle_jpms_workspace_model;
 
 #[path = "cases/gradle_reload_build_files.rs"]
 mod gradle_reload_build_files;

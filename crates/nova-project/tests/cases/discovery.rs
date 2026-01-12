@@ -434,7 +434,12 @@ fn gradle_source_compatibility_overrides_toolchain_language_version() {
 #[test]
 fn loads_gradle_local_jar_dependencies() {
     let root = testdata_path("gradle-local-jars");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
@@ -807,7 +812,13 @@ fn loads_gradle_custom_source_sets_workspace_model() {
 #[test]
 fn loads_gradle_local_jar_dependencies_into_workspace_model() {
     let root = testdata_path("gradle-local-jars");
-    let model = load_workspace_model(&root).expect("load gradle workspace model");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 

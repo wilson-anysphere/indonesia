@@ -116,7 +116,11 @@ fn reload_project_reloads_on_gradle_wrapper_file_change() {
     write(&root.join("build.gradle"), "// root");
     write(&root.join("app/build.gradle"), "// app");
 
-    let mut options = LoadOptions::default();
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let config = load_project_with_options(&root, &options).expect("load gradle project");
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert_eq!(config.modules.len(), 1);
@@ -172,7 +176,11 @@ fn reload_project_reloads_on_maven_wrapper_file_change() {
         "#,
     );
 
-    let mut options = LoadOptions::default();
+    let repo_dir = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let config = load_project_with_options(&root, &options).expect("load maven project");
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.modules.len(), 1);
