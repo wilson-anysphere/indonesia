@@ -1600,6 +1600,48 @@ class C {
 }
 
 #[test]
+fn return_without_value_in_nonvoid_is_error() {
+    let src = r#"
+class C { int m(){ return; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn comparison_expression_has_boolean_type() {
+    let src = r#"
+class C { boolean m(){ return 1 < 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('<').expect("snippet should contain <");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn this_type_allows_member_calls() {
+    let src = r#"
+class C { void foo(){} void m(){ this.foo(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected `this` receiver call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn generic_constructor_type_params_do_not_trigger_unresolved_type() {
     let src = r#"
 class Foo {
