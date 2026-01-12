@@ -123,11 +123,21 @@ fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<P
     let contents = fs::read_to_string(&settings_path)?;
     let include_builds = parse_gradle_settings_included_builds(&contents);
 
-    let mut roots: Vec<PathBuf> = include_builds
-        .into_iter()
-        .map(|dir_rel| workspace_root.join(dir_rel))
-        .filter(|p| p.is_dir() && is_gradle_marker_root(p))
-        .collect();
+    // Best-effort: canonicalize roots for dedup so equivalent paths like `../included` and
+    // `../included/.` don't cause the included build to be scanned multiple times.
+    let mut seen_roots: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for dir_rel in include_builds {
+        let root = workspace_root.join(dir_rel);
+        if !root.is_dir() || !is_gradle_marker_root(&root) {
+            continue;
+        }
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if !seen_roots.insert(canonical) {
+            continue;
+        }
+        roots.push(root);
+    }
     roots.sort();
     roots.dedup();
     Ok(roots)
@@ -807,6 +817,36 @@ mod tests {
         assert!(
             files.contains(&expected_included_build_gradle),
             "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_dedups_equivalent_include_build_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included = dir.path().join("included");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&included).unwrap();
+
+        // `../included` and `../included/.` resolve to the same directory. Ensure we only scan the
+        // included build once so its build files do not appear multiple times in the fingerprint.
+        write_file(
+            &root.join("settings.gradle"),
+            b"includeBuild(\"../included\")\nincludeBuild(\"../included/.\")\n",
+        );
+        write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let canonical_included_build_gradle =
+            std::fs::canonicalize(included.join("build.gradle")).unwrap();
+        let included_matches = files
+            .iter()
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .filter(|path| path == &canonical_included_build_gradle)
+            .count();
+        assert_eq!(
+            included_matches, 1,
+            "expected included build.gradle to appear once; got: {files:?}"
         );
     }
 

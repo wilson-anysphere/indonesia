@@ -1297,6 +1297,15 @@ fn append_included_build_module_refs(
         module_refs.iter().map(|m| m.project_path.clone()).collect();
     let mut existing_dirs: BTreeSet<String> =
         module_refs.iter().map(|m| m.dir_rel.clone()).collect();
+    // Best-effort canonicalization to deduplicate includeBuild roots that refer to the same
+    // directory via different relative paths (e.g. `../included` vs `../included/.`).
+    //
+    // This also avoids generating unstable synthetic project paths when the includeBuild path ends
+    // in `/.` (which would otherwise produce a base name of `"."`).
+    let mut existing_build_roots: BTreeSet<PathBuf> = module_refs
+        .iter()
+        .filter_map(|m| std::fs::canonicalize(workspace_root.join(&m.dir_rel)).ok())
+        .collect();
 
     let mut added = Vec::new();
     for dir_rel in dirs {
@@ -1309,7 +1318,13 @@ fn append_included_build_module_refs(
             continue;
         }
 
-        let base_name = Path::new(&dir_rel)
+        let canonical_build_root = std::fs::canonicalize(&build_root).unwrap_or(build_root);
+        if existing_build_roots.contains(&canonical_build_root) {
+            continue;
+        }
+        existing_build_roots.insert(canonical_build_root.clone());
+
+        let base_name = canonical_build_root
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(&dir_rel);
@@ -4142,6 +4157,29 @@ includeBuild(rootDir = file("../nested"))
         assert!(module_refs.iter().any(|m| m.dir_rel == "build-logic"));
         assert!(!module_refs.iter().any(|m| m.dir_rel == "not-a-build"));
         assert!(!module_refs.iter().any(|m| m.dir_rel == "missing"));
+    }
+
+    #[test]
+    fn append_included_build_module_refs_dedups_equivalent_roots_and_uses_canonical_basename() {
+        let dir = tempdir().expect("tempdir");
+        let workspace_root = dir.path();
+        fs::create_dir_all(workspace_root.join("build-logic")).expect("create build-logic dir");
+        fs::write(
+            workspace_root.join("build-logic/settings.gradle"),
+            "rootProject.name = 'build-logic'",
+        )
+        .expect("write build-logic settings");
+
+        let mut module_refs = vec![GradleModuleRef::root()];
+        let added = append_included_build_module_refs(
+            &mut module_refs,
+            workspace_root,
+            vec!["build-logic".to_string(), "build-logic/.".to_string()],
+        );
+
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].project_path, ":__includedBuild_build-logic");
+        assert_eq!(added[0].dir_rel, "build-logic");
     }
 
     #[test]
