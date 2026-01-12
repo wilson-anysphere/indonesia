@@ -15,6 +15,8 @@ use thiserror::Error;
 pub enum StreamValueKind {
     Stream,
     IntStream,
+    LongStream,
+    DoubleStream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,27 +202,47 @@ fn analyze_dotted_expr(
             }
             "of" if idx > 0 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                if class_expr.ends_with("Stream") {
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else if class_expr.ends_with("DoubleStream") {
+                    Some(StreamValueKind::DoubleStream)
+                } else if class_expr.ends_with("Stream") {
+                    Some(StreamValueKind::Stream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
                     source_end = Some(idx);
                     source = Some(StreamSource::StaticFactory {
                         class_expr,
                         stream_expr: dotted.prefix_source(idx),
                         method: name.to_string(),
                     });
-                    stream_kind = StreamValueKind::Stream;
+                    stream_kind = kind;
                     break;
                 }
             }
             "range" | "rangeClosed" if idx > 0 && arg_count == 2 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                if class_expr.ends_with("IntStream") {
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
                     source_end = Some(idx);
                     source = Some(StreamSource::StaticFactory {
                         class_expr,
                         stream_expr: dotted.prefix_source(idx),
                         method: name.to_string(),
                     });
-                    stream_kind = StreamValueKind::IntStream;
+                    stream_kind = kind;
                     break;
                 }
             }
@@ -309,6 +331,10 @@ fn resolve_stream_method(receiver: &Type, name: &str, arg_count: usize) -> Optio
     let (return_type, ok) = match receiver_name {
         "java.util.stream.Stream" => (resolve_stream_method_stream(name, arg_count)?, true),
         "java.util.stream.IntStream" => (resolve_stream_method_int_stream(name, arg_count)?, true),
+        "java.util.stream.LongStream" => (resolve_stream_method_long_stream(name, arg_count)?, true),
+        "java.util.stream.DoubleStream" => {
+            (resolve_stream_method_double_stream(name, arg_count)?, true)
+        }
         _ => (Type::Unknown, false),
     };
 
@@ -350,10 +376,32 @@ fn resolve_stream_method_int_stream(name: &str, arg_count: usize) -> Option<Type
     }
 }
 
+fn resolve_stream_method_long_stream(name: &str, arg_count: usize) -> Option<Type> {
+    match (name, arg_count) {
+        ("map", 1) | ("filter", 1) | ("distinct", 0) | ("limit", 1) | ("peek", 1) => {
+            Some(Type::Named("java.util.stream.LongStream".to_string()))
+        }
+        ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        _ => None,
+    }
+}
+
+fn resolve_stream_method_double_stream(name: &str, arg_count: usize) -> Option<Type> {
+    match (name, arg_count) {
+        ("map", 1) | ("filter", 1) | ("distinct", 0) | ("limit", 1) | ("peek", 1) => {
+            Some(Type::Named("java.util.stream.DoubleStream".to_string()))
+        }
+        ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        _ => None,
+    }
+}
+
 fn stream_receiver_type(kind: StreamValueKind) -> Type {
     match kind {
         StreamValueKind::Stream => Type::Named("java.util.stream.Stream".to_string()),
         StreamValueKind::IntStream => Type::Named("java.util.stream.IntStream".to_string()),
+        StreamValueKind::LongStream => Type::Named("java.util.stream.LongStream".to_string()),
+        StreamValueKind::DoubleStream => Type::Named("java.util.stream.DoubleStream".to_string()),
     }
 }
 
@@ -558,10 +606,12 @@ fn sample_suffix(stream_kind: StreamValueKind, max: usize) -> String {
             ".limit({}).collect(java.util.stream.Collectors.toList())",
             max
         ),
-        StreamValueKind::IntStream => format!(
+        StreamValueKind::IntStream | StreamValueKind::LongStream | StreamValueKind::DoubleStream => {
+            format!(
             ".limit({}).boxed().collect(java.util.stream.Collectors.toList())",
             max
-        ),
+        )
+        }
     }
 }
 
@@ -1005,6 +1055,53 @@ mod tests {
         assert_eq!(
             chain.terminal.as_ref().unwrap().kind,
             StreamOperationKind::Collect
+        );
+    }
+
+    #[test]
+    fn recognizes_long_stream_chain() {
+        let expr = "LongStream.range(0, 10).map(x -> x + 1).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "LongStream");
+                assert_eq!(stream_expr, "LongStream.range(0, 10)");
+                assert_eq!(method, "range");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::LongStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
+    fn sample_suffix_boxes_primitive_streams() {
+        assert_eq!(
+            sample_suffix(StreamValueKind::Stream, 5),
+            ".limit(5).collect(java.util.stream.Collectors.toList())"
+        );
+        assert_eq!(
+            sample_suffix(StreamValueKind::IntStream, 5),
+            ".limit(5).boxed().collect(java.util.stream.Collectors.toList())"
+        );
+        assert_eq!(
+            sample_suffix(StreamValueKind::LongStream, 5),
+            ".limit(5).boxed().collect(java.util.stream.Collectors.toList())"
+        );
+        assert_eq!(
+            sample_suffix(StreamValueKind::DoubleStream, 5),
+            ".limit(5).boxed().collect(java.util.stream.Collectors.toList())"
         );
     }
 
