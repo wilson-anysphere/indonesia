@@ -97,6 +97,62 @@ fn format_compilation_unit(
             return out;
         }
 
+        if token.kind() == SyntaxKind::StringTemplateStart {
+            // String templates are preview syntax and can contain `{`/`}` characters that are not
+            // Java block delimiters (notably the closing `}` of `\{...}` interpolations). The
+            // token-walk formatter is intentionally conservative: treat templates as opaque and
+            // preserve their full source text verbatim.
+            let start_offset = u32::from(token.text_range().start()) as usize;
+            let mut end_offset = u32::from(token.text_range().end()) as usize;
+
+            let mut depth = 0u32;
+            let mut scan = token_idx;
+            while scan < tokens.len() {
+                let tok = &tokens[scan];
+                match tok.kind() {
+                    SyntaxKind::StringTemplateStart => {
+                        depth = depth.saturating_add(1);
+                    }
+                    SyntaxKind::StringTemplateEnd => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                end_offset = u32::from(tok.text_range().end()) as usize;
+                scan += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+
+            state.write_indent(&mut out);
+            if needs_space_between(state.last_sig.as_ref(), token.kind(), token.text()) {
+                state.ensure_space(&mut out);
+            }
+
+            if depth != 0 {
+                // Unterminated template: preserve the remainder of the file verbatim for
+                // determinism (mirrors `is_unterminated_lex_error` behavior for broken literals).
+                let rest = source.get(start_offset..).unwrap_or("");
+                out.push_str(rest);
+                return out;
+            }
+
+            let slice = source.get(start_offset..end_offset).unwrap_or("");
+            out.push_str(slice);
+
+            let sig = SigToken::Token {
+                kind: SyntaxKind::StringLiteral,
+                text: slice.to_string(),
+            };
+            state.last_sig = Some(sig.clone());
+            state.last_code_sig = Some(sig);
+            state.pending_for = false;
+
+            idx = scan;
+            continue;
+        }
+
         let at_top_level = state.indent_level == 0 && state.paren_depth == 0;
 
         if at_top_level && sections.pending_blank_after_imports {

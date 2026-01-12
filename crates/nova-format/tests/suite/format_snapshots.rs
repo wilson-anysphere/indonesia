@@ -168,6 +168,49 @@ fn lsp_cli_parity_for_canonical_document_formatting() {
 }
 
 #[test]
+fn ast_formatting_treats_string_templates_as_opaque() {
+    let input =
+        "class Foo{void m(String name){String s=STR.\"Hello \\{name}\";System.out.println(s);}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n    void m(String name) {\n        String s = STR.\"Hello \\{name}\";\n        System.out.println(s);\n    }\n}\n"
+    );
+
+    // The canonical entrypoint (default strategy) should agree with the AST formatter.
+    let edits = edits_for_document_formatting(input, &FormatConfig::default());
+    let formatted_via_edits = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(formatted_via_edits, formatted);
+}
+
+#[test]
+fn ast_formatting_preserves_multiline_string_template_text() {
+    let input = concat!(
+        "class Foo{void m(String name){String s=STR.\"\"\"\n",
+        "        Hello \\{name}\n",
+        "        \"\"\";System.out.println(s);}}\n",
+    );
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_eq!(
+        formatted,
+        concat!(
+            "class Foo {\n",
+            "    void m(String name) {\n",
+            "        String s = STR.\"\"\"\n",
+            "        Hello \\{name}\n",
+            "        \"\"\";\n",
+            "        System.out.println(s);\n",
+            "    }\n",
+            "}\n",
+        )
+    );
+}
+
+#[test]
 fn formats_broken_syntax_best_effort() {
     let input = "class A{void m(){if(true){System.out.println(\"x\"); // oops\n";
     let parse = parse_java(input);
