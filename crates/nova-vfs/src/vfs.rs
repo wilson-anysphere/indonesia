@@ -479,6 +479,127 @@ mod tests {
     }
 
     #[test]
+    fn decompiled_virtual_document_exists_falls_back_to_base_fs_without_caching() {
+        #[derive(Clone, Debug)]
+        struct ExistsFs {
+            path: VfsPath,
+            exists_calls: Arc<AtomicUsize>,
+        }
+
+        impl FileSystem for ExistsFs {
+            fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+                panic!("unexpected base.read_to_string({path})");
+            }
+
+            fn exists(&self, path: &VfsPath) -> bool {
+                if path == &self.path {
+                    self.exists_calls.fetch_add(1, Ordering::SeqCst);
+                    return true;
+                }
+                false
+            }
+
+            fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("metadata not supported ({path})"),
+                ))
+            }
+
+            fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("read_dir not supported ({path})"),
+                ))
+            }
+        }
+
+        let path = VfsPath::decompiled(HASH_64, "com.example.ExistsFromBase");
+        let exists_calls = Arc::new(AtomicUsize::new(0));
+        let base = ExistsFs {
+            path: path.clone(),
+            exists_calls: exists_calls.clone(),
+        };
+        let vfs = Vfs::new(base);
+
+        assert!(vfs.exists(&path));
+        assert_eq!(exists_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !vfs.virtual_documents.contains(&path),
+            "exists() should not populate the virtual document cache"
+        );
+    }
+
+    #[test]
+    fn decompiled_virtual_documents_read_bytes_fall_back_to_base_fs_when_not_cached() {
+        #[derive(Clone, Debug)]
+        struct ByteFs {
+            path: VfsPath,
+            bytes: Vec<u8>,
+            reads: Arc<AtomicUsize>,
+        }
+
+        impl FileSystem for ByteFs {
+            fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+                if path == &self.path {
+                    self.reads.fetch_add(1, Ordering::SeqCst);
+                    return Ok(self.bytes.clone());
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("missing ({path})"),
+                ))
+            }
+
+            fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+                panic!("unexpected base.read_to_string({path})");
+            }
+
+            fn exists(&self, path: &VfsPath) -> bool {
+                path == &self.path
+            }
+
+            fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("metadata not supported ({path})"),
+                ))
+            }
+
+            fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("read_dir not supported ({path})"),
+                ))
+            }
+        }
+
+        let path = VfsPath::decompiled(HASH_64, "com.example.BytesFromBase");
+        let reads = Arc::new(AtomicUsize::new(0));
+        let base = ByteFs {
+            path: path.clone(),
+            bytes: b"class BytesFromBase {}".to_vec(),
+            reads: reads.clone(),
+        };
+        let vfs = Vfs::new(base);
+
+        assert_eq!(
+            vfs.read_bytes(&path).unwrap(),
+            b"class BytesFromBase {}".to_vec()
+        );
+        assert!(vfs.virtual_documents.contains(&path));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        // Follow-up reads should hit the cache instead of consulting the base FS again.
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "class BytesFromBase {}");
+        assert_eq!(
+            vfs.read_bytes(&path).unwrap(),
+            b"class BytesFromBase {}".to_vec()
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn missing_decompiled_virtual_documents_return_not_found() {
         let vfs = Vfs::new(LocalFs::new());
         let path = VfsPath::decompiled(HASH_64, "com.example.Missing");
