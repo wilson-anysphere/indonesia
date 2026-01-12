@@ -49,6 +49,16 @@ Framework discovery is **on-demand**: click the refresh button in the view title
 
 This is intentionally manual because these discovery requests run under a small watchdog time budget; repeatedly refreshing (or refreshing automatically while you type) could otherwise time out or trigger Nova safe mode.
 
+## Build + Project Explorer
+
+Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project model up to date and surface build errors.
+
+- **Build status indicator (status bar):** Nova shows the current build status for the active workspace folder in the status bar (Idle / Building / Failed).
+- **Build diagnostics (Problems panel):** build-tool diagnostics are surfaced in VS Code’s **Problems** panel so you can click through to the failing files/lines.
+- **Explorer view: “Nova Project”:** Explorer → **Nova Project** shows Nova’s inferred project structure (workspace folders, modules/targets, source roots, and other build-derived metadata).
+- **Auto-reload on build file changes:** when supported by your `nova-lsp` version, Nova watches build files (for example `pom.xml`, `build.gradle(.kts)`, `WORKSPACE`/`MODULE.bazel`, `BUILD`) and automatically reloads the project + refreshes related UI.
+  - Disable via `nova.build.autoReloadOnBuildFileChange`.
+
 ## Language server + debug adapter binaries
 
 Nova resolves binaries in the following order:
@@ -130,6 +140,21 @@ npm run compile
 
 - **Nova: Refresh Frameworks** (`nova.frameworks.refresh`)
   - Refreshes the **Nova Frameworks** Explorer view.
+
+- **Nova: Build Project** (`nova.buildProject`)
+  - Triggers a background build for the selected workspace folder and refreshes build diagnostics.
+
+- **Nova: Reload Project** (`nova.reloadProject`)
+  - Forces Nova to reload the project model from build configuration (useful after editing build files).
+
+- **Nova: Show Project Model** (`nova.showProjectModel`)
+  - Fetches the normalized project model (`nova/projectModel`) and prints it (best-effort) for debugging.
+
+- **Nova: Show Project Configuration** (`nova.showProjectConfiguration`)
+  - Fetches the inferred project configuration (`nova/projectConfiguration`) and prints it (best-effort) for debugging.
+
+- **Nova: Refresh Project Explorer** (`nova.refreshProjectExplorer`)
+  - Refreshes the **Nova Project** Explorer view.
 
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
@@ -260,6 +285,10 @@ Changing these settings requires restarting the language server; the extension p
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
 - `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
 - `nova.tests.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for test runs/debugging.
+
+### Build / Project
+
+- `nova.build.autoReloadOnBuildFileChange` (boolean): automatically reload Nova’s project model when build configuration files change (for example `pom.xml`, `build.gradle`, `WORKSPACE`). Set to `false` to disable.
 
 ## Packaging
 
