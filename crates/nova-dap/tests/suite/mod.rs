@@ -16,6 +16,7 @@ mod dap_disconnect_terminate_attach;
 mod dap_exited_event;
 mod dap_java_launch;
 mod dap_launch;
+mod dap_restart;
 mod dap_session;
 mod debugger_ux;
 mod enable_method_return_values;
