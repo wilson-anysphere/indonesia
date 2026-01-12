@@ -98,14 +98,14 @@ fn infer_type_at_offsets(
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(mut ty) =
+        let Some(ty) =
             type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
         // Strip leading `java.lang.` for readability. Java implicitly imports `java.lang`, and our
         // tests expect unqualified names for simple `java.lang` types.
-        let ty = if ty.starts_with("java.lang.") {
+        let mut ty = if ty.starts_with("java.lang.") {
             ty["java.lang.".len()..].to_string()
         } else {
             ty
