@@ -89,7 +89,10 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
 > `NOVA_DISABLE_AI=1` overrides AI enablement (including `NOVA_AI_PROVIDER` and `nova.toml`) and
 > forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` similarly disables background/multi-token
-> completions. When `NOVA_AI_AUDIT_LOGGING` is enabled in the env-var AI mode, `nova-lsp` will
+> completions. `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s multi-token completion
+> max-items; `0` is treated as a hard disable (values are clamped to a reasonable max, currently 32,
+> and invalid/empty values are ignored). These overrides are read at process start (restart
+> required). When `NOVA_AI_AUDIT_LOGGING` is enabled in the env-var AI mode, `nova-lsp` will
 > best-effort enable the dedicated AI audit log file channel so prompts/results are not captured in
 > the normal log buffer.
 

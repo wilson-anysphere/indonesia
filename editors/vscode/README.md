@@ -340,6 +340,11 @@ restarting the language server to take full effect.
   extension stops polling `nova/completion/more` and disables multi-token completions server-side
   (equivalent to setting `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
+  - The extension passes this to the server as `NOVA_AI_COMPLETIONS_MAX_ITEMS` (read at server
+    startup; restart required).
+  - `0` disables multi-token completions server-side.
+  - Values are clamped by the server to a reasonable maximum (currently 32); empty/invalid values
+    are ignored.
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
 - `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.
 
