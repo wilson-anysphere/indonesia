@@ -84,6 +84,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics + background build orchestration.
 - **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`, `BuildOrchestrator`, `BuildRequest`, `BuildStatusSnapshot`, `BuildDiagnosticsSnapshot`).
 - **LSP endpoints:** `crates/nova-lsp/src/extensions/build.rs` (`nova/buildProject`, `nova/build/targetClasspath`, `nova/build/status`, `nova/build/diagnostics`).
+- **Docs:** [`gradle-build-integration.md`](gradle-build-integration.md) (Gradle snapshot handoff to `nova-project`)
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Background build state/diagnostics are surfaced via custom `nova/*` endpoints and are not yet wired into Nova’s main workspace/Salsa diagnostics pipeline or standard LSP progress notifications.
@@ -426,6 +427,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 ### `nova-project`
 - **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels), used by `nova-lsp` project metadata endpoints including `nova/projectConfiguration` and the normalized `nova/projectModel`.
 - **Key entry points:** `crates/nova-project/src/discover.rs` (`load_project`, `load_workspace_model`, `LoadOptions`), `crates/nova-project/src/build_systems.rs` (`default_build_systems`, build backend implementations), plus the shared model types in `crates/nova-build-model/` (re-exported by `nova-project`).
+- **Docs:** [`gradle-build-integration.md`](gradle-build-integration.md) (Gradle discovery + `nova-build` snapshot reader)
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Module graph construction is still limited; JPMS support is partial and evolving.

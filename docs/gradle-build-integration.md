@@ -1,0 +1,198 @@
+# Gradle build integration (`nova-build` ↔ `nova-project`)
+
+Nova supports Gradle workspaces through **two complementary paths**:
+
+- **Heuristic discovery (`nova-project`)**: fast, zero-build-tool startup that infers a reasonable
+  project model by parsing Gradle files + (best-effort) locating jars in the local Gradle cache.
+- **Build-tool execution (`nova-build`)**: explicit Gradle invocation to extract *resolved* Java
+  compilation inputs (source roots, output dirs, classpaths, language level) directly from Gradle.
+
+The bridge between the two is a **workspace-local snapshot file** written by `nova-build` and
+consumed by `nova-project`:
+
+> `.nova/queries/gradle.json`
+
+This file is intentionally *not* a global cache: it lives in the workspace so it can be updated by
+running Gradle in that workspace, then read later without invoking Gradle again.
+
+---
+
+## Why both heuristic parsing and build-tool execution?
+
+Running Gradle is the only reliable way to obtain:
+
+- the **resolved compile/test classpath** (including transitive dependencies),
+- Gradle’s **variant/attribute selection** results,
+- accurate **`sourceSets` roots** and **output directories**,
+- Java language levels implied by toolchains / compiler args.
+
+But Gradle execution is also:
+
+- relatively expensive (process startup + configuration phase),
+- sensitive to the developer environment (JDK, Gradle distribution, network/caches),
+- something Nova generally avoids doing implicitly during “open folder”.
+
+So Nova starts with a best-effort model (`nova-project`) and can be **upgraded** by running the
+build tool (`nova-build`) and persisting the results for later reloads.
+
+---
+
+## Snapshot contract: `.nova/queries/gradle.json`
+
+### Writer
+
+`nova-build` writes the snapshot as a **best-effort side effect** of Gradle queries, primarily:
+
+- `GradleBuild::projects(...)` populates `projects` (Gradle project path → `projectDir`)
+- `GradleBuild::java_compile_config(..., project_path=Some(":app"), ...)` populates
+  `javaCompileConfigs[":app"]` with resolved compilation inputs
+
+Under the hood, `nova-build`:
+
+- writes a temporary Gradle **init script** that registers Nova helper tasks (see
+  `crates/nova-build/src/gradle.rs:write_init_script`):
+  - `printNovaJavaCompileConfig`
+  - `printNovaAllJavaCompileConfigs`
+  - `printNovaProjects`
+  - `printNovaAnnotationProcessing`
+- runs Gradle with `--init-script <temp>` (plus `--no-daemon --console=plain -q`) and parses JSON
+  blocks printed between sentinel markers like `NOVA_JSON_BEGIN` / `NOVA_JSON_END`.
+
+Implementation: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*` helpers).
+
+### Reader
+
+`nova-project` attempts to load the snapshot during Gradle project discovery. If it can’t load or
+validate it, it falls back to heuristic parsing.
+
+Implementation: `crates/nova-project/src/gradle.rs` (`load_gradle_snapshot`).
+
+### Schema versioning
+
+The snapshot is versioned by a top-level `schemaVersion` field.
+
+- **Writer constant:** `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot`, `SCHEMA_VERSION`)
+- **Reader constant:** `crates/nova-project/src/gradle.rs` (`GRADLE_SNAPSHOT_SCHEMA_VERSION`)
+
+When the schema changes, bump **both** constants in the same change and update the (de)serializer
+structs on both sides.
+
+### Validation: `buildFingerprint`
+
+The snapshot includes a `buildFingerprint` (hex SHA-256) so `nova-project` can reject stale output.
+
+`nova-project` loads the snapshot only when:
+
+- `schemaVersion` matches, **and**
+- `buildFingerprint` matches the current fingerprint computed from Gradle build inputs.
+
+If validation fails, the snapshot is ignored and Nova falls back to heuristics.
+
+### Build fingerprint inputs (must stay in sync)
+
+`buildFingerprint` is computed by hashing the **relative path** and **file contents** of a set of
+Gradle build inputs (with `NUL` separators). The file set is discovered by walking the workspace
+and **skipping** these directories:
+
+- `.git/`
+- `.gradle/`
+- `build/`
+- `target/`
+- `.nova/`
+- `.idea/`
+
+Included inputs (current `nova-build` implementation):
+
+- `build.gradle*` (e.g. `build.gradle`, `build.gradle.kts`)
+- `settings.gradle*` (e.g. `settings.gradle`, `settings.gradle.kts`)
+- any `*.gradle` / `*.gradle.kts` file (script plugins like `apply from: "deps.gradle"`)
+- `gradle.properties`
+- `libs.versions.toml` (Gradle version catalogs)
+- `gradlew` / `gradlew.bat` (only when located at the workspace root)
+- `gradle/wrapper/gradle-wrapper.properties`
+- `gradle/wrapper/gradle-wrapper.jar`
+
+Implementation references:
+
+- writer: `crates/nova-build/src/gradle.rs` (`collect_gradle_build_files`)
+- reader: `crates/nova-project/src/gradle.rs` (`collect_gradle_build_files` / `gradle_build_fingerprint`)
+
+These must remain aligned: if the file set diverges, `nova-project` will treat snapshots as stale.
+
+### Data model (schema v1)
+
+Top-level fields:
+
+- `schemaVersion`: integer
+- `buildFingerprint`: string (hex digest)
+- `projects`: `[{ path, projectDir }]`
+- `javaCompileConfigs`: object mapping `":projectPath"` → compile config
+
+Each `javaCompileConfigs[":path"]` contains:
+
+- `projectDir`
+- `compileClasspath`, `testClasspath`, `modulePath`
+- `mainSourceRoots`, `testSourceRoots`
+- `mainOutputDir`, `testOutputDir`
+- `source`, `target`, `release`, `enablePreview`
+
+`projectDir` and other paths may be absolute or workspace-relative; `nova-project` resolves relative
+paths against the workspace root.
+
+---
+
+## Heuristic mode vs snapshot mode (`nova-project`)
+
+### Heuristic mode: what you get (and don’t)
+
+Without a snapshot, `nova-project`:
+
+- parses `settings.gradle(.kts)` to infer modules,
+- uses conventional source/output layouts (plus generated roots from `nova.toml` / APT snapshots),
+- extracts some dependency coordinates via regex and tries to locate jars in the local Gradle cache,
+  but **does not** run Gradle.
+
+Known limitations (by design):
+
+- no transitive dependency resolution,
+- no Gradle variant/attribute selection,
+- no plugin-applied dependency injection (BOMs, dependency substitution, platform constraints, etc),
+- jar lookup usually requires an explicit version *and* that jar already exists in the local cache.
+
+### Snapshot mode: what becomes available
+
+With a valid `.nova/queries/gradle.json`, `nova-project` can use:
+
+- resolved compile/test **classpath entries** from Gradle (including transitive deps),
+- `sourceSets`-derived **source roots** and **output dirs**,
+- project directory mappings for included builds/subprojects,
+- Java level and preview flags derived from Gradle config/toolchains.
+
+If the snapshot is **partial** (e.g. missing `javaCompileConfigs` for some subprojects), those
+subprojects fall back to heuristic defaults, but any available `projects` mapping can still improve
+module root resolution.
+
+---
+
+## Gradle cache lookup configuration (heuristic mode)
+
+Heuristic jar resolution uses the local Gradle cache under `gradle_user_home`:
+
+- programmatic: `nova_project::LoadOptions.gradle_user_home`
+- environment: `GRADLE_USER_HOME`
+- fallback: `$HOME/.gradle` (or `%USERPROFILE%\\.gradle` on Windows when `HOME` is unset)
+
+See:
+
+- `crates/nova-project/src/discover.rs` (`LoadOptions`)
+- `crates/nova-project/src/gradle.rs` (`default_gradle_user_home`)
+
+---
+
+## Reload behavior
+
+`nova-project` reads `.nova/queries/gradle.json` **only on project load/reload**.
+
+After `nova-build` updates the snapshot, callers must trigger a project reload to pick up the new
+classpath/source roots (e.g. by restarting, or by having file watching treat
+`.nova/queries/gradle.json` as a “build change” that invalidates the current project model).

@@ -62,6 +62,9 @@ after a project reload. For example:
 
 - Maven/Gradle discovery may refine `source_roots`.
 - Generated source roots may appear/disappear depending on build configuration and APT output.
+- Some build integrations write workspace-local **snapshot files** under `.nova/` (e.g.
+  `.nova/queries/gradle.json` for Gradle classpath/source roots). When these snapshots change,
+  treat them as **build changes** so the workspace reloads and picks up the new configuration.
 - If the resolved Nova config file lives outside the workspace root, the workspace will watch it
   **non-recursively** to avoid accidentally watching huge trees (e.g. `$HOME`).
 
