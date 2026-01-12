@@ -158,6 +158,77 @@ class C {
 }
 
 #[test]
+fn demand_lambda_param_does_not_produce_invalid_type_ref_diag_without_target() {
+    let src = r#"
+class C {
+    void m() {
+        var f = (s) -> s;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let root = &body.stmts[body.root];
+    let init_expr = match root {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Let {
+                    initializer: Some(expr),
+                    ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected a local initializer"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let lambda_body_expr = match &body.exprs[init_expr] {
+        nova_hir::hir::Expr::Lambda { body, .. } => match body {
+            nova_hir::hir::LambdaBody::Expr(expr_id) => *expr_id,
+            other => panic!("expected expression-bodied lambda, got {other:?}"),
+        },
+        other => panic!("expected initializer to be a Lambda expression, got {other:?}"),
+    };
+
+    // Reset query stats so the assertion below only reflects the `type_of_expr_demand_result` call.
+    db.clear_query_stats();
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: lambda_body_expr,
+        },
+    );
+    assert!(
+        res.diagnostics
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-type-ref"),
+        "expected no invalid-type-ref diagnostics for untyped lambda param; got {:?}",
+        res.diagnostics
+    );
+
+    let stats = db.query_stats();
+    assert!(
+        stats.by_query.get("typeck_body").is_none(),
+        "type_of_expr_demand_result should not execute typeck_body; stats: {:?}",
+        stats.by_query.get("typeck_body")
+    );
+}
+
+#[test]
 fn demand_type_of_expr_does_not_report_unrelated_type_mismatch_diagnostics() {
     let src = r#"
 class C {

@@ -820,7 +820,8 @@ fn type_of_expr_demand_result(
                             let cond_range = body.exprs[*condition].range();
                             let may_contain = cond_range.start <= target_range.start
                                 && target_range.end <= cond_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr)
+                            {
                                 update_inference_root(
                                     *condition,
                                     Some(Type::Primitive(PrimitiveType::Boolean)),
@@ -833,15 +834,14 @@ fn type_of_expr_demand_result(
                         }
                     }
                     HirStmt::While {
-                        condition,
-                        body: b,
-                        ..
+                        condition, body: b, ..
                     } => {
                         {
                             let cond_range = body.exprs[*condition].range();
                             let may_contain = cond_range.start <= target_range.start
                                 && target_range.end <= cond_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr)
+                            {
                                 update_inference_root(
                                     *condition,
                                     Some(Type::Primitive(PrimitiveType::Boolean)),
@@ -863,7 +863,8 @@ fn type_of_expr_demand_result(
                             let cond_range = body.exprs[*condition].range();
                             let may_contain = cond_range.start <= target_range.start
                                 && target_range.end <= cond_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr)
+                            {
                                 update_inference_root(
                                     *condition,
                                     Some(Type::Primitive(PrimitiveType::Boolean)),
@@ -921,9 +922,7 @@ fn type_of_expr_demand_result(
                         stack.push(*b);
                     }
                     HirStmt::ForEach {
-                        iterable,
-                        body: b,
-                        ..
+                        iterable, body: b, ..
                     } => {
                         {
                             let it_range = body.exprs[*iterable].range();
@@ -935,11 +934,7 @@ fn type_of_expr_demand_result(
                         }
                         stack.push(*b)
                     }
-                    HirStmt::Synchronized {
-                        expr,
-                        body: b,
-                        ..
-                    } => {
+                    HirStmt::Synchronized { expr, body: b, .. } => {
                         {
                             let lock_range = body.exprs[*expr].range();
                             let may_contain = lock_range.start <= target_range.start
@@ -951,17 +946,13 @@ fn type_of_expr_demand_result(
                         stack.push(*b)
                     }
                     HirStmt::Switch {
-                        selector,
-                        body: b,
-                        ..
+                        selector, body: b, ..
                     } => {
                         {
                             let sel_range = body.exprs[*selector].range();
                             let may_contain = sel_range.start <= target_range.start
                                 && target_range.end <= sel_range.end;
-                            if may_contain
-                                && contains_expr_in_expr(&body, *selector, target_expr)
-                            {
+                            if may_contain && contains_expr_in_expr(&body, *selector, target_expr) {
                                 update_inference_root(*selector, None);
                             }
                         }
@@ -1038,7 +1029,8 @@ fn type_of_expr_demand_result(
                             let cond_range = body.exprs[*condition].range();
                             let may_contain = cond_range.start <= target_range.start
                                 && target_range.end <= cond_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr)
+                            {
                                 update_inference_root(
                                     *condition,
                                     Some(Type::Primitive(PrimitiveType::Boolean)),
@@ -1062,9 +1054,7 @@ fn type_of_expr_demand_result(
                             update_inference_root(*expr, None);
                         }
                     }
-                    HirStmt::Break { .. }
-                    | HirStmt::Continue { .. }
-                    | HirStmt::Empty { .. } => {}
+                    HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
                 }
             }
         }
@@ -2570,7 +2560,12 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                             bound,
                             base_span,
                         );
-                        extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
+                        extend_type_ref_diagnostics(
+                            out,
+                            file_tokens,
+                            file_text,
+                            resolved.diagnostics,
+                        );
                     }
                 }
 
@@ -2682,7 +2677,9 @@ fn extend_type_ref_diagnostics(
         let Some(span) = d.span else {
             return true;
         };
-        if span.start == 0 || span.start > file_text.len() || !file_text.is_char_boundary(span.start)
+        if span.start == 0
+            || span.start > file_text.len()
+            || !file_text.is_char_boundary(span.start)
         {
             return true;
         }
@@ -4621,8 +4618,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // from the declaration itself (e.g. `int[] a = {1,2};`).
                 if matches!(self.body.exprs[*init], HirExpr::ArrayInitializer { .. }) {
                     if matches!(&decl_ty, Type::Array(_)) && !decl_ty.is_errorish() {
-                        let _ =
-                            self.infer_array_initializer_with_expected(loader, *init, &decl_ty);
+                        let _ = self.infer_array_initializer_with_expected(loader, *init, &decl_ty);
                     } else {
                         let _ = self.infer_expr(loader, *init);
                     }
@@ -4649,13 +4645,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     const_value_for_expr(self.body, *init),
                 ) {
                     None => {
-                    let expected = format_type(env_ro, &decl_ty);
-                    let found = format_type(env_ro, &init_ty);
-                    self.diagnostics.push(Diagnostic::error(
-                        "type-mismatch",
-                        format!("type mismatch: expected {expected}, found {found}"),
-                        Some(self.body.exprs[*init].range()),
-                    ));
+                        let expected = format_type(env_ro, &decl_ty);
+                        let found = format_type(env_ro, &init_ty);
+                        self.diagnostics.push(Diagnostic::error(
+                            "type-mismatch",
+                            format!("type mismatch: expected {expected}, found {found}"),
+                            Some(self.body.exprs[*init].range()),
+                        ));
                     }
                     Some(conv) => {
                         for warning in conv.warnings {
@@ -4742,13 +4738,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     const_value_for_expr(self.body, *expr),
                 ) {
                     None => {
-                    let expected = format_type(env_ro, expected_return);
-                    let found = format_type(env_ro, &expr_ty);
-                    self.diagnostics.push(Diagnostic::error(
-                        "return-mismatch",
-                        format!("return type mismatch: expected {expected}, found {found}"),
-                        Some(self.body.exprs[*expr].range()),
-                    ));
+                        let expected = format_type(env_ro, expected_return);
+                        let found = format_type(env_ro, &expr_ty);
+                        self.diagnostics.push(Diagnostic::error(
+                            "return-mismatch",
+                            format!("return type mismatch: expected {expected}, found {found}"),
+                            Some(self.body.exprs[*expr].range()),
+                        ));
                     }
                     Some(conv) => {
                         for warning in conv.warnings {
@@ -4887,13 +4883,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     match assignment_conversion_with_const(env_ro, &element_ty, &decl_ty, None) {
                         None => {
-                        let expected = format_type(env_ro, &decl_ty);
-                        let found = format_type(env_ro, &element_ty);
-                        self.diagnostics.push(Diagnostic::error(
-                            "type-mismatch",
-                            format!("type mismatch: expected {expected}, found {found}"),
-                            Some(data.ty_range),
-                        ));
+                            let expected = format_type(env_ro, &decl_ty);
+                            let found = format_type(env_ro, &element_ty);
+                            self.diagnostics.push(Diagnostic::error(
+                                "type-mismatch",
+                                format!("type mismatch: expected {expected}, found {found}"),
+                                Some(data.ty_range),
+                            ));
                         }
                         Some(conv) => {
                             for warning in conv.warnings {
@@ -5050,6 +5046,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         self.local_ty_states[local.idx()] = LocalTyState::Computing;
 
         let data = &self.body.locals[local];
+        // Lambda parameters are lowered as locals with an empty `ty_text` (their types are inferred
+        // from the target functional interface). In demand-driven mode we infer locals lazily on
+        // first use; avoid emitting `invalid-type-ref` noise by treating an empty type as unknown.
+        //
+        // This also helps with parse recovery where the type text might be missing.
+        if data.ty_text.trim().is_empty() {
+            self.local_types[local.idx()] = Type::Unknown;
+            self.local_ty_states[local.idx()] = LocalTyState::Computed;
+            return Type::Unknown;
+        }
         let is_catch_param = self
             .local_is_catch_param
             .get(local.idx())
@@ -5404,7 +5410,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         if sig.return_type == Type::Void {
                             return true;
                         }
-                        assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
+                        assignment_conversion(env_ro, &method.return_type, &sig.return_type)
+                            .is_some()
                     };
 
                     match resolution {
@@ -5558,8 +5565,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 };
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                let res =
-                    nova_types::resolve_constructor_call(env_ro, class_id, &sig.params, Some(&recv_info.ty));
+                let res = nova_types::resolve_constructor_call(
+                    env_ro,
+                    class_id,
+                    &sig.params,
+                    Some(&recv_info.ty),
+                );
 
                 let return_ok = |method: &ResolvedMethod| {
                     if sig.return_type == Type::Void {
@@ -5650,17 +5661,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     match cast_conversion(env_ro, &from, &to) {
                         None => {
-                        let from = format_type(env_ro, &from);
-                        let to_display = format_type(env_ro, &to);
-                        self.diagnostics.push(Diagnostic::error(
-                            "invalid-cast",
-                            format!("cannot cast from {from} to {to_display}"),
-                            Some(*range),
-                        ));
-                        ExprInfo {
-                            ty: Type::Error,
-                            is_type_ref: false,
-                        }
+                            let from = format_type(env_ro, &from);
+                            let to_display = format_type(env_ro, &to);
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-cast",
+                                format!("cannot cast from {from} to {to_display}"),
+                                Some(*range),
+                            ));
+                            ExprInfo {
+                                ty: Type::Error,
+                                is_type_ref: false,
+                            }
                         }
                         Some(conv) => {
                             // Surface unchecked/raw-cast warnings even though the cast typechecks.
@@ -5752,11 +5763,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     if let Some(init) = initializer {
                         match &self.body.exprs[*init] {
                             HirExpr::ArrayInitializer { .. } => {
-                                let _ = self.infer_array_initializer_with_expected(
-                                    loader,
-                                    *init,
-                                    &ty,
-                                );
+                                let _ =
+                                    self.infer_array_initializer_with_expected(loader, *init, &ty);
                             }
                             _ => {
                                 let _ = self.infer_expr(loader, *init);
@@ -5821,10 +5829,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                         Resolution::Local(_)
                                         | Resolution::Parameter(_)
                                         | Resolution::Field(_) => true,
-                                        Resolution::StaticMember(member) => matches!(
-                                            member,
-                                            StaticMemberResolution::SourceField(_)
-                                        ),
+                                        Resolution::StaticMember(member) => {
+                                            matches!(member, StaticMemberResolution::SourceField(_))
+                                        }
                                         Resolution::Methods(_)
                                         | Resolution::Constructors(_)
                                         | Resolution::Type(_)
@@ -6682,8 +6689,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             // Nested initializer: only valid when the element type is itself an array type.
             if matches!(self.body.exprs[item], HirExpr::ArrayInitializer { .. }) {
                 if matches!(expected_elem, Type::Array(_)) {
-                    let _ =
-                        self.infer_array_initializer_with_expected(loader, item, expected_elem);
+                    let _ = self.infer_array_initializer_with_expected(loader, item, expected_elem);
                     continue;
                 }
 
@@ -7453,10 +7459,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             explicit_type_args_errorish |= ty.is_errorish();
             resolved_explicit_type_args.push(ty);
             explicit_type_args_span = Some(match explicit_type_args_span {
-                Some(existing) => Span::new(
-                    existing.start.min(span.start),
-                    existing.end.max(span.end),
-                ),
+                Some(existing) => {
+                    Span::new(existing.start.min(span.start), existing.end.max(span.end))
+                }
                 None => *span,
             });
         }
