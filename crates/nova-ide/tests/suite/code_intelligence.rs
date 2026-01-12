@@ -1401,8 +1401,9 @@ fn completion_includes_jdk_type_names_in_expression_context() {
     let (db, file, pos) = fixture(
         r#"
 class A {
+  void take(Object x) {}
   void m() {
-    Ma<|>
+    take(Ma<|>);
   }
 }
 "#,
@@ -1414,6 +1415,20 @@ class A {
         labels.contains(&"Math"),
         "expected completion list to contain Math; got {labels:?}"
     );
+
+    let math = items
+        .iter()
+        .find(|item| item.label == "Math")
+        .expect("expected Math completion item");
+    assert_eq!(math.kind, Some(CompletionItemKind::CLASS));
+    assert_eq!(math.detail.as_deref(), Some("java.lang.Math"));
+    assert!(
+        math.additional_text_edits
+            .as_ref()
+            .is_none_or(|edits| edits.is_empty()),
+        "expected Math completion to not require an import; got additional_text_edits={:?}",
+        math.additional_text_edits
+    );
 }
 
 #[test]
@@ -1422,8 +1437,9 @@ fn completion_includes_explicitly_imported_type_names_in_expression_context() {
         r#"
 import java.util.List;
 class A {
+  void take(Object x) {}
   void m() {
-    Li<|>
+    take(Li<|>);
   }
 }
 "#,
@@ -1434,6 +1450,20 @@ class A {
     assert!(
         labels.contains(&"List"),
         "expected completion list to contain List; got {labels:?}"
+    );
+
+    let list = items
+        .iter()
+        .find(|item| item.label == "List")
+        .expect("expected List completion item");
+    assert_eq!(list.kind, Some(CompletionItemKind::INTERFACE));
+    assert_eq!(list.detail.as_deref(), Some("java.util.List"));
+    assert!(
+        list.additional_text_edits
+            .as_ref()
+            .is_none_or(|edits| edits.is_empty()),
+        "expected explicitly imported List completion to not add a duplicate import; got additional_text_edits={:?}",
+        list.additional_text_edits
     );
 }
 

@@ -11067,10 +11067,17 @@ fn expression_type_name_completions(
         }
     }
 
-    // 5) Dependency classpath types from wildcard import packages.
+    // 5) Dependency classpath types from wildcard import packages + same-package types.
     if let Some(classpath) = classpath.as_ref() {
         let cp_names = classpath.binary_class_names();
-        for pkg in &imports.star_packages {
+        let mut packages = imports.star_packages.clone();
+        if !imports.current_package.is_empty() {
+            packages.push(imports.current_package.clone());
+        }
+        packages.sort();
+        packages.dedup();
+
+        for pkg in &packages {
             if added >= MAX_TYPE_ITEMS {
                 break;
             }
@@ -11395,8 +11402,9 @@ fn general_completions(
     // Best-effort type-name completions in expression/statement contexts, including JDK/workspace
     // symbols with auto-import edits where appropriate.
     //
-    // Guard on a prefix to avoid producing huge completion lists (type indexes can be very large).
-    if prefix.len() >= 2 {
+    // We only trigger when the prefix looks like a type name (starts with an uppercase ASCII
+    // character) to avoid overwhelming normal expression completion with type candidates.
+    if !prefix.is_empty() && looks_like_reference_type_prefix(prefix) {
         items.extend(expression_type_name_completions(
             db, file, &analysis, text, text_index, prefix,
         ));
