@@ -149,6 +149,12 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    if name == "generated-roots.json"
+        && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
+    {
+        return true;
+    }
+
     if path.extension().and_then(|s| s.to_str()) == Some("bzl") {
         return true;
     }
@@ -185,6 +191,7 @@ mod tests {
             root.join(".nova.toml"),
             root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
+            root.join(".nova").join("apt-cache").join("generated-roots.json"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
             root.join(".bazelversion"),
