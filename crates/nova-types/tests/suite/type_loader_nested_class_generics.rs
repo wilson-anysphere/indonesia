@@ -23,7 +23,7 @@ impl TypeProvider for StubProvider {
 }
 
 #[test]
-fn type_store_loader_flattens_inner_class_args_across_segments() {
+fn external_type_loader_flattens_inner_class_args_across_segments() {
     let mut provider = StubProvider::default();
 
     provider.insert(TypeDefStub {
@@ -92,7 +92,7 @@ fn type_store_loader_flattens_inner_class_args_across_segments() {
 }
 
 #[test]
-fn type_store_loader_reconciles_inner_class_arg_mismatches_by_dropping_leading_args() {
+fn external_type_loader_reconciles_inner_class_arg_mismatches_by_dropping_leading_args() {
     let mut provider = StubProvider::default();
 
     provider.insert(TypeDefStub {

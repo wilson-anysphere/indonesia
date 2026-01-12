@@ -10,7 +10,7 @@ use nova_types_bridge::ExternalTypeLoader;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn type_store_loader_bridge_from_classpath_index() {
+fn external_type_loader_bridge_from_classpath_index() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let jdk_jmod = manifest_dir.join("../nova-jdk/testdata/fake-jdk/jmods/java.base.jmod");
     let dep_jar = manifest_dir.join("../nova-classpath/testdata/dep.jar");
