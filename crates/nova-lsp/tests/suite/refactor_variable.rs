@@ -505,6 +505,44 @@ class C {
 }
 
 #[test]
+fn inline_variable_code_actions_when_cursor_on_declaration_only_offers_inline_all_usages() {
+    let source = r#"
+class C {
+    void m() {
+        int a = 1 + 2;
+        System.out.println(a);
+        System.out.println(a);
+    }
+}
+"#;
+
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let offset = source
+        .find("int a = 1 + 2;")
+        .expect("declaration exists")
+        + "int ".len();
+    let position = offset_to_position(source, offset);
+
+    let actions = inline_variable_code_actions(&uri, source, position);
+
+    let mut titles = Vec::new();
+    for action in &actions {
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("expected code action");
+        };
+        titles.push(action.title.clone());
+    }
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(titles, vec!["Inline variable (all usages)".to_string()]);
+
+    let lsp_types::CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+        panic!("expected code action");
+    };
+    assert!(action.disabled.is_none(), "expected action enabled");
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits_in_switch_case_label() {
     let source = r#"
 class C {

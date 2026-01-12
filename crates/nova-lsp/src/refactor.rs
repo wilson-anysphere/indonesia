@@ -419,6 +419,14 @@ pub fn inline_variable_code_actions(
         (false, "Inline variable"),
         (true, "Inline variable (all usages)"),
     ] {
+        // The single-usage variant only makes sense when the cursor is on a usage site.
+        // When we're on the declaration (or otherwise not on a reference), avoid emitting a
+        // disabled "Inline variable" action (InlineNoUsageAtCursor) and only offer the "all
+        // usages" variant.
+        if !inline_all && usage_range.is_none() {
+            continue;
+        }
+
         let edit = match inline_variable(
             &db,
             InlineVariableParams {
