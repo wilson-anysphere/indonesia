@@ -32,6 +32,8 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 
+    let cache_dir = TempDir::new().expect("cache dir");
+
     let main_path = root.join("Main.java");
     let main_uri = uri_for_path(&main_path);
     let text = "class Main { void m() { String s = \"\"; } }";
@@ -40,6 +42,7 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("JAVA_HOME", &fake_jdk_root)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -99,13 +102,14 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let Some(uri) = location.get("uri").and_then(|v| v.as_str()) else {
         panic!("expected definition uri, got: {resp:?}");
     };
+    let uri = uri.to_string();
 
     assert!(
         uri.starts_with("nova:///decompiled/"),
         "expected decompiled uri, got: {uri}"
     );
     assert!(
-        nova_decompile::parse_decompiled_uri(uri).is_some(),
+        nova_decompile::parse_decompiled_uri(&uri).is_some(),
         "expected decompiled uri to be canonical/parseable, got: {uri}"
     );
 
@@ -117,7 +121,7 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": uri } }
+            "params": { "textDocument": { "uri": uri.as_str() } }
         }),
     );
     let resp = read_response_with_id(&mut stdout, 3);
@@ -135,6 +139,66 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+
+    // Spawn a second server pointing at the same cache directory to prove the decompiled document
+    // persisted, and can be loaded without re-running definition.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("JAVA_HOME", &fake_jdk_root)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp (second instance)");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": uri.as_str() } }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let symbols = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("documentSymbol result array");
+    assert!(
+        !symbols.is_empty(),
+        "expected persisted decompiled document to return symbols, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

@@ -51,6 +51,7 @@ use nova_refactor::{
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
     RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
 };
+use nova_decompile::DecompiledDocumentStore;
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
 use rpc_out::RpcOut;
@@ -58,6 +59,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -1007,12 +1009,91 @@ fn distributed_listen_addr(_run_dir: &Path) -> nova_router::ListenAddr {
         .as_millis();
     nova_router::ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
 }
+/// LSP-facing filesystem adapter that makes canonical ADR0006 decompiled virtual documents
+/// (`nova:///decompiled/<hash>/<binary-name>.java`) readable via [`nova_vfs::Vfs`].
+///
+/// All non-decompiled paths delegate to [`LocalFs`].
+#[derive(Debug, Clone)]
+struct LspFs {
+    base: LocalFs,
+    decompiled_store: Arc<DecompiledDocumentStore>,
+}
+
+impl LspFs {
+    fn new(base: LocalFs, decompiled_store: Arc<DecompiledDocumentStore>) -> Self {
+        Self {
+            base,
+            decompiled_store,
+        }
+    }
+}
+
+impl FileSystem for LspFs {
+    fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+        match path {
+            VfsPath::Decompiled { .. } => Ok(self.read_to_string(path)?.into_bytes()),
+            _ => self.base.read_bytes(path),
+        }
+    }
+
+    fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+        match path {
+            VfsPath::Decompiled {
+                content_hash,
+                binary_name,
+            } => match self.decompiled_store.load_text(content_hash, binary_name) {
+                Ok(Some(text)) => Ok(text),
+                Ok(None) => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("decompiled document not found: {path}"),
+                )),
+                Err(err) => Err(io::Error::new(io::ErrorKind::Other, err)),
+            },
+            _ => self.base.read_to_string(path),
+        }
+    }
+
+    fn exists(&self, path: &VfsPath) -> bool {
+        match path {
+            VfsPath::Decompiled {
+                content_hash,
+                binary_name,
+            } => self.decompiled_store.exists(content_hash, binary_name),
+            _ => self.base.exists(path),
+        }
+    }
+
+    fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+        match path {
+            VfsPath::Decompiled { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("decompiled document metadata not supported ({path})"),
+            )),
+            _ => self.base.metadata(path),
+        }
+    }
+
+    fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+        // Directory listing isn't needed by the LSP today; keep this deliberately small.
+        self.base.read_dir(path)
+    }
+}
+
 struct AnalysisState {
-    vfs: Vfs<LocalFs>,
+    vfs: Vfs<LspFs>,
+    decompiled_store: Arc<DecompiledDocumentStore>,
     file_paths: HashMap<nova_db::FileId, PathBuf>,
     file_exists: HashMap<nova_db::FileId, bool>,
     file_contents: HashMap<nova_db::FileId, String>,
     salsa: nova_db::SalsaDatabase,
+}
+
+impl std::fmt::Debug for AnalysisState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalysisState")
+            .field("file_count", &self.file_contents.len())
+            .finish()
+    }
 }
 
 impl AnalysisState {
@@ -1162,8 +1243,28 @@ impl Default for AnalysisState {
         let project = nova_db::ProjectId::from_raw(0);
         salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
         salsa.set_classpath_index(project, None);
+        let decompiled_store = match DecompiledDocumentStore::from_env() {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                // Best-effort fallback: if we can't resolve the normal cache directory
+                // (e.g. missing HOME in a sandbox), fall back to a per-process temp dir.
+                let fallback_root =
+                    std::env::temp_dir().join(format!("nova-decompiled-docs-{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&fallback_root);
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = %err,
+                    fallback = %fallback_root.display(),
+                    "failed to initialize decompiled document store; using temp directory"
+                );
+                Arc::new(DecompiledDocumentStore::new(fallback_root))
+            }
+        };
+
+        let fs = LspFs::new(LocalFs::new(), decompiled_store.clone());
         Self {
-            vfs: Vfs::new(LocalFs::new()),
+            vfs: Vfs::new(fs),
+            decompiled_store,
             file_paths: HashMap::new(),
             file_exists: HashMap::new(),
             file_contents: HashMap::new(),
@@ -4384,8 +4485,9 @@ fn handle_rename(
         return Err((-32602, "no symbol at cursor".to_string()));
     };
 
+    let kind = db.symbol_kind(symbol);
     if !matches!(
-        db.symbol_kind(symbol),
+        kind,
         Some(
             JavaSymbolKind::Local
                 | JavaSymbolKind::Parameter
@@ -4775,9 +4877,30 @@ fn goto_definition_jdk(
         .and_then(|symbol| decompiled.range_for(symbol))
         .or_else(|| decompiled.range_for(&class_symbol))?;
 
-    // Store the virtual document so follow-up requests can read it via `Vfs::read_to_string`.
+    // Persist the virtual document so follow-up requests (and future server sessions) can read it.
     let uri: lsp_types::Uri = uri_string.parse().ok()?;
     let vfs_path = VfsPath::from(&uri);
+
+    if let VfsPath::Decompiled {
+        content_hash,
+        binary_name,
+    } = &vfs_path
+    {
+        if let Err(err) = state
+            .analysis
+            .decompiled_store
+            .store_text(content_hash, binary_name, &decompiled.text)
+        {
+            tracing::warn!(
+                target = "nova.lsp",
+                uri = %uri_string,
+                error = %err,
+                "failed to persist decompiled document"
+            );
+        }
+    }
+
+    // Also cache in the VFS virtual document store for fast follow-up reads.
     state
         .analysis
         .vfs
@@ -6771,6 +6894,37 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use tempfile::TempDir;
+    use std::ffi::{OsStr, OsString};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -7004,11 +7158,15 @@ mod tests {
 
     #[test]
     fn go_to_definition_into_jdk_returns_canonical_virtual_uri_and_is_readable() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
         // Point JDK discovery at the tiny fake JDK shipped in this repository.
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
-        let prior_java_home = std::env::var_os("JAVA_HOME");
-        std::env::set_var("JAVA_HOME", &fake_jdk_root);
+        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk_root);
+
+        let cache_dir = TempDir::new().expect("cache dir");
+        let _cache_dir = EnvVarGuard::set("NOVA_CACHE_DIR", cache_dir.path());
 
         let mut state = ServerState::new(
             nova_config::NovaConfig::default(),
@@ -7045,11 +7203,6 @@ mod tests {
             loaded.contains("class String"),
             "unexpected decompiled text: {loaded}"
         );
-
-        match prior_java_home {
-            Some(value) => std::env::set_var("JAVA_HOME", value),
-            None => std::env::remove_var("JAVA_HOME"),
-        }
     }
 
     #[test]
