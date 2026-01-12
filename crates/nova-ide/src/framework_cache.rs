@@ -374,7 +374,7 @@ pub fn framework_completions(
             );
             if !items.is_empty() {
                 if let Some(span) =
-                    nova_framework_spring::completion_span_for_value_placeholder(text, offset)
+                    nova_framework_micronaut::completion_span_for_value_placeholder(text, offset)
                 {
                     for item in &mut items {
                         item.replace_span = Some(span);
