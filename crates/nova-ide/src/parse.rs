@@ -501,10 +501,15 @@ fn parse_method_body(
         ) {
             let prev_symbol = tokens.get(i.wrapping_sub(1)).and_then(|t| t.symbol());
             let prev_ident = tokens.get(i.wrapping_sub(1)).and_then(|t| t.ident());
+            let prev_ident_is_type = prev_ident.is_some_and(qualifies_as_type);
+            let prev_is_array_suffix = prev_symbol == Some(']');
+            let prev_is_generic_type_suffix =
+                prev_symbol == Some('>') && is_generic_type_suffix(tokens, i.wrapping_sub(1));
 
             // Avoid obvious false positives:
             // - `recv.method(` is handled above, so skip `.method(`.
             // - `recv.<T>method(` is handled above, so skip it here.
+            // - `Type method(` is likely a method declaration inside a local/anonymous class.
             // - `new Foo(` is a constructor call.
             // - Filter out common control-flow keywords/constructs.
             if prev_symbol != Some('.')
@@ -512,6 +517,9 @@ fn parse_method_body(
                 && !is_generic_member_call(tokens, i)
                 && prev_ident != Some("new")
                 && prev_ident != Some("record")
+                && !prev_ident_is_type
+                && !prev_is_array_suffix
+                && !prev_is_generic_type_suffix
                 && !is_receiverless_call_keyword(method)
             {
                 calls.push(CallSite {
@@ -948,5 +956,23 @@ class C {
 
         let parsed = parse_file(uri, text);
         assert!(!parsed.calls.iter().any(|call| call.method == "R"));
+    }
+
+    #[test]
+    fn local_class_method_declarations_are_not_indexed_as_receiverless_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  void test() {
+    class L {
+      void foo() {}
+    }
+  }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(!parsed.calls.iter().any(|call| call.method == "foo"));
     }
 }
