@@ -1894,6 +1894,40 @@ class C {
 }
 
 #[test]
+fn source_varargs_method_call_resolves_with_single_arg() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    void m() { foo(1); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected varargs method call with one arg to resolve, got {diags:?}"
+    );
+}
+
+#[test]
+fn source_varargs_method_call_resolves_with_no_args() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    void m() { foo(); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected varargs method call with no args to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn source_varargs_constructor_is_tagged() {
     let src = r#"
 class Foo {
