@@ -611,14 +611,14 @@ fn parse_class_at<'a>(
         if bytes[idx] == b'{' {
             break;
         }
-        if source[idx..].starts_with("extends") && is_boundary(bytes, idx.saturating_sub(1)) {
+        if bytes[idx..].starts_with(b"extends") && is_boundary(bytes, idx.saturating_sub(1)) {
             idx += "extends".len();
             let (ty, next) = parse_type_name(source, idx)?;
             extends = Some(ty);
             idx = next;
             continue;
         }
-        if source[idx..].starts_with("implements") && is_boundary(bytes, idx.saturating_sub(1)) {
+        if bytes[idx..].starts_with(b"implements") && is_boundary(bytes, idx.saturating_sub(1)) {
             idx += "implements".len();
             let start = idx;
             let mut depth_angle = 0usize;
@@ -681,12 +681,12 @@ fn parse_class_at<'a>(
                 }
                 idx += 1;
             }
-            implements = Some(source[start..idx].trim().to_string());
+            implements = Some(source.get(start..idx)?.trim().to_string());
             continue;
         }
         idx += 1;
     }
-    let _header_text = &source[header_start..idx];
+    let _header_text = source.get(header_start..idx)?;
 
     if idx >= bytes.len() || bytes[idx] != b'{' {
         return None;
@@ -828,7 +828,7 @@ fn parse_type_name(source: &str, mut idx: usize) -> Option<(String, usize)> {
         if b == b'{' || b == b',' {
             break;
         }
-        if source[idx..].starts_with("implements") || source[idx..].starts_with("extends") {
+        if bytes[idx..].starts_with(b"implements") || bytes[idx..].starts_with(b"extends") {
             break;
         }
         if b.is_ascii_whitespace() {
@@ -836,7 +836,7 @@ fn parse_type_name(source: &str, mut idx: usize) -> Option<(String, usize)> {
         }
         idx += 1;
     }
-    Some((source[start..idx].to_string(), idx))
+    Some((source.get(start..idx)?.to_string(), idx))
 }
 
 fn extract_balanced<'a>(
@@ -1404,5 +1404,26 @@ public final class User {
         assert!(result.contains("record User"));
         assert!(result.contains("String name"));
         assert!(result.contains("public String greeting()"));
+    }
+
+    #[test]
+    fn converts_class_with_unicode_in_header_comment() {
+        let file = "file:///Test.java";
+        let source = r#"
+public final class Point /* ✓ */ {
+    private final int x;
+
+    public Point(int x) {
+        this.x = x;
+    }
+}
+"#;
+        let cursor = source.find("class Point").unwrap();
+        let edit =
+            convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
+        let result = apply_edit(source, file, &edit);
+        assert!(result.contains("public record Point"));
+        assert!(result.contains("int x"));
+        assert!(!result.contains("class Point"));
     }
 }
