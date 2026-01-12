@@ -1047,11 +1047,61 @@ impl WorkspaceEngine {
                                         // to a full rescan keeps the workspace consistent.
                                         let is_directory_change = match &change {
                                             FileChange::Created { path }
-                                            | FileChange::Modified { path }
-                                            | FileChange::Deleted { path } => path
+                                            | FileChange::Modified { path } => path
                                                 .as_local_path()
                                                 .and_then(|p| fs::metadata(p).ok())
                                                 .is_some_and(|meta| meta.is_dir()),
+                                            FileChange::Deleted { path } => {
+                                                match path.as_local_path() {
+                                                    Some(local) => match fs::metadata(local) {
+                                                        Ok(meta) => meta.is_dir(),
+                                                        Err(err)
+                                                            if err.kind()
+                                                                == std::io::ErrorKind::NotFound =>
+                                                        {
+                                                            // Directory deletes are often observed
+                                                            // *after* the directory is removed, so
+                                                            // metadata fails. As a safety net,
+                                                            // treat extension-less paths outside
+                                                            // ignored directories as potential
+                                                            // directory-level operations and fall
+                                                            // back to a rescan.
+                                                            let in_ignored_dir =
+                                                                local.components().any(|c| {
+                                                                    c.as_os_str()
+                                                                        == std::ffi::OsStr::new(
+                                                                            ".git",
+                                                                        )
+                                                                        || c.as_os_str()
+                                                                            == std::ffi::OsStr::new(
+                                                                                ".gradle",
+                                                                            )
+                                                                        || c.as_os_str()
+                                                                            == std::ffi::OsStr::new(
+                                                                                "build",
+                                                                            )
+                                                                        || c.as_os_str()
+                                                                            == std::ffi::OsStr::new(
+                                                                                "target",
+                                                                            )
+                                                                        || c.as_os_str()
+                                                                            == std::ffi::OsStr::new(
+                                                                                ".nova",
+                                                                            )
+                                                                        || c.as_os_str()
+                                                                            == std::ffi::OsStr::new(
+                                                                                ".idea",
+                                                                            )
+                                                                });
+
+                                                            local.extension().is_none()
+                                                                && !in_ignored_dir
+                                                        }
+                                                        Err(_) => false,
+                                                    },
+                                                    None => false,
+                                                }
+                                            }
                                             FileChange::Moved { from, to } => {
                                                 let from_is_dir = from
                                                     .as_local_path()
@@ -6477,6 +6527,64 @@ enabled = false
         })
         .await
         .expect("timed out waiting for directory-create-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_delete_triggers_rescan_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        let main_text = "class Main {}";
+        fs::write(project_root.join("src/Main.java"), main_text.as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let vfs_path = VfsPath::local(project_root.join("src/Main.java"));
+        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Delete the directory on disk, then inject a directory-level watcher delete event. The
+        // workspace should fall back to a full rescan and remove the file from `project_files`.
+        let src_dir = project_root.join("src");
+        fs::remove_dir_all(&src_dir).unwrap();
+
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Deleted {
+                    path: VfsPath::local(src_dir),
+                }],
+            })
+            .unwrap();
+
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        !snap.file_exists(file_id)
+                            && !snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for directory-delete-triggered project reload");
     }
 
     #[tokio::test(flavor = "current_thread")]
