@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use nova_core::{FileId, ProjectId};
 use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, VirtualMember};
 use nova_types::ClassId;
+use nova_yaml as yaml;
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
@@ -107,12 +108,18 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
         };
 
         let property_file_refs = collect_application_properties(db, ctx.project);
+        let yaml_file_refs = collect_application_yaml(db, ctx.project);
 
         // Avoid rescanning all Java sources on every completion request by reusing the cached
         // `config_properties` extracted during the project's last analysis.
         let mut names = BTreeSet::<String>::new();
         names.extend(entry.analysis.config_properties.iter().cloned());
         names.extend(collect_config_property_names(&[], &property_file_refs));
+        for text in yaml_file_refs {
+            for entry in yaml::parse(text).entries {
+                names.insert(entry.key);
+            }
+        }
 
         let mut items: Vec<_> = names
             .into_iter()
@@ -479,6 +486,37 @@ fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) 
             out.push(text);
         }
     }
+    out
+}
+
+fn collect_application_yaml<'a>(db: &'a dyn Database, project: ProjectId) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut seen_paths = HashSet::<&'a Path>::new();
+
+    for file in db.all_files(project) {
+        let Some(path) = db.file_path(file) else {
+            continue;
+        };
+
+        if !seen_paths.insert(path) {
+            continue;
+        }
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !file_name.starts_with("application")
+            || !path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+        {
+            continue;
+        }
+
+        if let Some(text) = db.file_text(file) {
+            out.push(text);
+        }
+    }
+
     out
 }
 

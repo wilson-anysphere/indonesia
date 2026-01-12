@@ -3848,6 +3848,7 @@ dependencies = [
  "nova-framework-web",
  "nova-hir",
  "nova-types",
+ "nova-yaml",
  "pretty_assertions",
  "regex",
  "tree-sitter",

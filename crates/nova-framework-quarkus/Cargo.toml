@@ -9,6 +9,7 @@ nova-framework = { path = "../nova-framework" }
 nova-framework-web = { path = "../nova-framework-web" }
 nova-hir = { path = "../nova-hir" }
 nova-types = { path = "../nova-types" }
+nova-yaml = { path = "../nova-yaml" }
 regex = "1"
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"
