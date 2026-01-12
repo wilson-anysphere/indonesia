@@ -3734,6 +3734,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-framework-builtins"
+version = "0.1.0"
+dependencies = [
+ "nova-framework",
+ "nova-framework-dagger",
+ "nova-framework-jpa",
+ "nova-framework-lombok",
+ "nova-framework-mapstruct",
+ "nova-framework-micronaut",
+ "nova-framework-quarkus",
+ "nova-framework-spring",
+ "nova-hir",
+ "nova-types",
+]
+
+[[package]]
 name = "nova-framework-dagger"
 version = "0.1.0"
 dependencies = [

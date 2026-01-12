@@ -29,6 +29,7 @@ members = [
     "crates/nova-flow",
     "crates/nova-format",
     "crates/nova-framework",
+    "crates/nova-framework-builtins",
     "crates/nova-framework-dagger",
     "crates/nova-framework-parse",
     "crates/nova-framework-jpa",

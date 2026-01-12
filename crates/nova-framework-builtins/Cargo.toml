@@ -1,0 +1,26 @@
+[package]
+name = "nova-framework-builtins"
+version.workspace = true
+edition = "2021"
+
+[features]
+default = []
+# Optional framework analyzers that may be expensive or not always desired.
+spring = ["dep:nova-framework-spring"]
+jpa = ["dep:nova-framework-jpa"]
+
+[dependencies]
+nova-framework = { path = "../nova-framework" }
+nova-framework-dagger = { path = "../nova-framework-dagger" }
+nova-framework-lombok = { path = "../nova-framework-lombok" }
+nova-framework-mapstruct = { path = "../nova-framework-mapstruct" }
+nova-framework-micronaut = { path = "../nova-framework-micronaut" }
+nova-framework-quarkus = { path = "../nova-framework-quarkus" }
+
+nova-framework-jpa = { path = "../nova-framework-jpa", optional = true }
+nova-framework-spring = { path = "../nova-framework-spring", optional = true }
+
+[dev-dependencies]
+nova-hir = { path = "../nova-hir" }
+nova-types = { path = "../nova-types" }
+
