@@ -2796,56 +2796,75 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
 
     // 4) Define all source types in the store so cross-file references can observe them via
     // `Type::Class` and member resolution can consult their (best-effort) members.
-    let provider = if let Some(env) = jpms_env.as_deref() {
-        nova_types::ChainTypeProvider::new(vec![
-            &env.classpath as &dyn TypeProvider,
+    // Mirror `typeck_body`'s external stub loading policies:
+    // - never load `java.*` from the classpath (JDK wins)
+    // - enforce JPMS readability + exports in JPMS mode
+    // - prevent external stubs from shadowing workspace source types (even via recursive loads)
+    let chain_provider = match classpath.as_deref() {
+        Some(cp) => nova_types::ChainTypeProvider::new(vec![
+            cp as &dyn TypeProvider,
             &*jdk as &dyn TypeProvider,
-        ])
-    } else {
-        match classpath.as_deref() {
-            Some(cp) => nova_types::ChainTypeProvider::new(vec![
-                cp as &dyn TypeProvider,
-                &*jdk as &dyn TypeProvider,
-            ]),
-            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
-        }
+        ]),
+        None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
     };
 
-    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
-    for (idx, file) in files.iter().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 16);
+    let jdk_provider: &dyn TypeProvider = &*jdk;
+    let java_only_provider = JavaOnlyJdkTypeProvider::new(&chain_provider, jdk_provider);
 
-        let scopes = db.scope_graph(*file);
-        let tree = db.hir_item_tree(*file);
+    if let Some(env) = jpms_env.as_deref() {
+        for (idx, file) in files.iter().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 16);
 
-        let jpms_index = jpms_env.as_deref().map(|env| {
+            let scopes = db.scope_graph(*file);
+            let tree = db.hir_item_tree(*file);
+
             let file_rel = db.file_rel_path(*file);
             let from = module_for_file(&cfg, file_rel.as_str());
-            JpmsProjectIndex {
+
+            let jpms_index = JpmsProjectIndex {
                 workspace: &workspace,
                 graph: &env.env.graph,
                 classpath: &env.classpath,
                 jdk: &*jdk,
+                from: from.clone(),
+            };
+            let resolver = nova_resolve::Resolver::new(&jpms_index).with_workspace(&workspace);
+
+            let jpms_provider = JpmsTypeProvider {
+                graph: &env.env.graph,
+                classpath: &env.classpath,
+                jdk: &*jdk,
                 from,
-            }
-        });
-        let workspace_index = WorkspaceFirstIndex {
-            workspace: &workspace,
-            classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
-        };
+            };
+            let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, &jpms_provider);
+            let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
-        let resolver = if let Some(index) = jpms_index.as_ref() {
-            nova_resolve::Resolver::new(index).with_workspace(&workspace)
-        } else {
-            nova_resolve::Resolver::new(&*jdk)
+            let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
+        }
+    } else {
+        let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, &java_only_provider);
+        let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
+
+        for (idx, file) in files.iter().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 16);
+
+            let scopes = db.scope_graph(*file);
+            let tree = db.hir_item_tree(*file);
+
+            let workspace_index = WorkspaceFirstIndex {
+                workspace: &workspace,
+                classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+            };
+
+            let resolver = nova_resolve::Resolver::new(&*jdk)
                 .with_classpath(&workspace_index)
-                .with_workspace(&workspace)
-        };
+                .with_workspace(&workspace);
 
-        let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
+            let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
+        }
+
+        drop(loader);
     }
-
-    drop(loader);
 
     // Pre-intern workspace (source) types in deterministic order so `ClassId`s are stable
     // across body-local clones even when different bodies load workspace types in different
