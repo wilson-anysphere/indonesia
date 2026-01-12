@@ -1,6 +1,6 @@
 use crate::doc::{self, Doc, PrintConfig};
 use crate::{ends_with_line_break, FormatConfig, JavaComments, NewlineStyle, TokenKey};
-use nova_syntax::{ast, AstNode, JavaParseResult, SyntaxKind, SyntaxNode};
+use nova_syntax::{ast, AstNode, JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 
 mod decl;
 mod expr;
@@ -63,12 +63,11 @@ impl<'a> JavaPrettyFormatter<'a> {
         for el in node.children_with_tokens() {
             if let Some(child) = el.as_node() {
                 if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
-                    parts.push(self.print_type_declaration(ty));
+                    push_with_separator(&mut parts, self.print_type_declaration(ty));
                 } else {
                     // Fallback nodes print verbatim source, including any nested comment tokens.
                     // Consume those comments so they don't trip the drain assertion.
-                    self.comments.consume_in_range(child.text_range());
-                    parts.push(fallback::node(self.source, child));
+                    push_with_separator(&mut parts, self.print_verbatim_node_with_boundary_comments(child));
                 }
                 continue;
             }
@@ -88,11 +87,10 @@ impl<'a> JavaPrettyFormatter<'a> {
             let leading = self.comments.take_leading_doc(key, 0);
             let trailing = self.comments.take_trailing_doc(key, 0);
 
-            parts.push(Doc::concat([
-                leading,
-                fallback::token(self.source, tok),
-                trailing,
-            ]));
+            push_with_separator(
+                &mut parts,
+                Doc::concat([leading, fallback::token(self.source, tok), trailing]),
+            );
         }
 
         // Comments at EOF are anchored to the EOF token.
@@ -103,10 +101,29 @@ impl<'a> JavaPrettyFormatter<'a> {
             .filter_map(|el| el.into_token())
             .find(|tok| tok.kind() == SyntaxKind::Eof);
         if let Some(eof) = eof {
-            parts.push(self.comments.take_leading_doc(TokenKey::from(&eof), 0));
+            push_with_separator(
+                &mut parts,
+                self.comments.take_leading_doc(TokenKey::from(&eof), 0),
+            );
         }
 
         Doc::concat(parts)
+    }
+
+    fn print_verbatim_node_with_boundary_comments(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let Some((first, last)) = boundary_significant_tokens(node) else {
+            self.comments.consume_in_range(node.text_range());
+            return fallback::node(self.source, node);
+        };
+
+        // The verbatim fallback will include any comment tokens *inside* `node`, so consume them to
+        // satisfy the drain assertion. Any comments anchored to boundary tokens but living outside
+        // the node range (e.g. `import ...; // trailing`) must still be emitted explicitly.
+        self.comments.consume_in_range(node.text_range());
+
+        let leading = self.comments.take_leading_doc(TokenKey::from(&first), 0);
+        let trailing = self.comments.take_trailing_doc(TokenKey::from(&last), 0);
+        Doc::concat([leading, fallback::node(self.source, node), trailing])
     }
 }
 
@@ -119,6 +136,30 @@ fn is_synthetic_missing(kind: SyntaxKind) -> bool {
             | SyntaxKind::MissingRBracket
             | SyntaxKind::MissingGreater
     )
+}
+
+fn boundary_significant_tokens(node: &SyntaxNode) -> Option<(SyntaxToken, SyntaxToken)> {
+    let mut iter = node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| tok.kind() != SyntaxKind::Eof && !tok.kind().is_trivia() && !is_synthetic_missing(tok.kind()));
+
+    let first = iter.next()?;
+    let mut last = first.clone();
+    for tok in iter {
+        last = tok;
+    }
+    Some((first, last))
+}
+
+fn push_with_separator<'a>(out: &mut Vec<Doc<'a>>, doc: Doc<'a>) {
+    if doc.is_nil() {
+        return;
+    }
+    if !out.is_empty() {
+        out.push(Doc::hardline());
+    }
+    out.push(doc);
 }
 
 pub(crate) fn format_java_pretty(

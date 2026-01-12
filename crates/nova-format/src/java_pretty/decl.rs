@@ -29,13 +29,9 @@ impl<'a> JavaPrettyFormatter<'a> {
                     decl.body().map(|b| b.syntax().clone()),
                 ),
             ast::TypeDeclaration::EmptyDeclaration(decl) => {
-                self.comments.consume_in_range(decl.syntax().text_range());
-                fallback::node(self.source, decl.syntax())
+                self.print_verbatim_node_with_boundary_comments(decl.syntax())
             }
-            other => {
-                self.comments.consume_in_range(other.syntax().text_range());
-                fallback::node(self.source, other.syntax())
-            }
+            other => self.print_verbatim_node_with_boundary_comments(other.syntax()),
         }
     }
 
@@ -62,6 +58,16 @@ impl<'a> JavaPrettyFormatter<'a> {
                     && !tok.kind().is_trivia()
                     && !is_synthetic_missing(tok.kind())
             });
+
+        let last_sig = decl
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| {
+                tok.kind() != SyntaxKind::Eof
+                    && !tok.kind().is_trivia()
+                    && !is_synthetic_missing(tok.kind())
+            })
+            .last();
 
         let header_start = first_sig
             .as_ref()
@@ -90,7 +96,12 @@ impl<'a> JavaPrettyFormatter<'a> {
         // tokens, so mark them as consumed so we can debug-assert that nothing is silently dropped.
         self.comments.consume_in_range(decl.text_range());
 
-        Doc::concat([leading, header, print::space(), body_doc, trailer])
+        let trailing = last_sig
+            .as_ref()
+            .map(|tok| self.comments.take_trailing_doc(TokenKey::from(tok), 0))
+            .unwrap_or_else(Doc::nil);
+
+        Doc::concat([leading, header, print::space(), body_doc, trailer, trailing])
     }
 
     fn print_brace_body(

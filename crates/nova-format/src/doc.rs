@@ -103,6 +103,12 @@ impl<'a> Doc<'a> {
         self.0.as_ref()
     }
 
+    /// Returns `true` if this doc is [`Doc::nil()`].
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        matches!(self.kind(), DocKind::Nil)
+    }
+
     /// An empty document.
     pub fn nil() -> Self {
         Self::new(DocKind::Nil)
