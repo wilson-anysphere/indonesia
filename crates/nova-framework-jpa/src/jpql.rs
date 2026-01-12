@@ -79,19 +79,19 @@ pub fn tokenize_jpql(input: &str) -> Vec<Token> {
                 let start = i;
                 i += 1;
                 while i < bytes.len() {
+                    // JPQL escapes quotes by doubling them ('')
                     if bytes[i] == quote {
+                        if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                            i += 2;
+                            continue;
+                        }
                         i += 1;
                         break;
-                    }
-                    // JPQL escapes quotes by doubling them ('')
-                    if bytes[i] == quote && i + 1 < bytes.len() && bytes[i + 1] == quote {
-                        i += 2;
-                        continue;
                     }
                     i += 1;
                 }
                 let raw = &input[start..i];
-                let unquoted = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
+                let unquoted = unquote_jpql_string_literal(raw, quote as char);
                 tokens.push(Token {
                     kind: TokenKind::StringLiteral(unquoted),
                     span: Span::new(start, i),
@@ -142,6 +142,19 @@ pub fn tokenize_jpql(input: &str) -> Vec<Token> {
     tokens
 }
 
+fn unquote_jpql_string_literal(raw: &str, quote: char) -> String {
+    // JPQL uses the SQL-style escaping mechanism where the quote character is
+    // escaped by doubling it (`''` inside `'...'`).
+    //
+    // We intentionally accept unterminated string literals (common while typing)
+    // and unquote best-effort.
+    let mut inner = raw.strip_prefix(quote).unwrap_or(raw);
+    if inner.ends_with(quote) && inner.len() >= quote.len_utf8() {
+        inner = &inner[..inner.len() - quote.len_utf8()];
+    }
+    inner.replace(&format!("{quote}{quote}"), &quote.to_string())
+}
+
 fn is_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
 }
@@ -172,6 +185,51 @@ fn is_keyword(upper: &str) -> bool {
             | "DELETE"
             | "INSERT"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_string_literal_allows_escaped_quotes() {
+        let query = "SELECT u FROM User u WHERE u.name = 'O''Reilly'";
+        let start = query.find("'O''Reilly'").unwrap();
+        let end = start + "'O''Reilly'".len();
+        let tokens = tokenize_jpql(query);
+
+        assert!(
+            tokens.iter().any(|t| {
+                t.kind == TokenKind::StringLiteral("O'Reilly".to_string())
+                    && t.span == Span::new(start, end)
+            }),
+            "expected a single StringLiteral token spanning the full escaped literal"
+        );
+    }
+
+    #[test]
+    fn tokenize_string_literal_with_only_escaped_quote() {
+        let tokens = tokenize_jpql("''''");
+        assert_eq!(
+            tokens,
+            vec![Token {
+                kind: TokenKind::StringLiteral("'".to_string()),
+                span: Span::new(0, 4),
+            }]
+        );
+    }
+
+    #[test]
+    fn tokenize_unterminated_string_literal_is_best_effort() {
+        let tokens = tokenize_jpql("'abc");
+        assert_eq!(
+            tokens,
+            vec![Token {
+                kind: TokenKind::StringLiteral("abc".to_string()),
+                span: Span::new(0, 4),
+            }]
+        );
+    }
 }
 
 /// Extract JPQL strings from Java source annotations (`@Query`, `@NamedQuery`).
