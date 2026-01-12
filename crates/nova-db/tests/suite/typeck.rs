@@ -6523,6 +6523,71 @@ class C {
 }
 
 #[test]
+fn class_ids_are_stable_across_files_for_jdk_nested_types_referenced_in_expr_position() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+
+    // `Map$Entry` is not part of `TypeStore::with_minimal_jdk()`. This test ensures that
+    // `project_base_type_store` still pre-interns nested types that are referenced only in
+    // *expression* position (here: as the target of a class literal).
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "src/A.java",
+        r#"
+import java.util.Map;
+class A {
+    void m() {
+        Object x = Map.Entry.class;
+    }
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "src/B.java",
+        r#"
+import java.util.Map;
+class B {
+    void m() {
+        Object x = Map.Entry.class;
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let body_a = db.typeck_body(first_method_with_body(&db, file_a));
+    let body_b = db.typeck_body(first_method_with_body(&db, file_b));
+
+    let entry_a = body_a
+        .env
+        .lookup_class("java.util.Map$Entry")
+        .expect("expected java.util.Map$Entry to be interned in env");
+    let entry_b = body_b
+        .env
+        .lookup_class("java.util.Map$Entry")
+        .expect("expected java.util.Map$Entry to be interned in env");
+    assert_eq!(
+        entry_a, entry_b,
+        "expected stable ClassId for nested type java.util.Map$Entry"
+    );
+}
+
+#[test]
 fn class_ids_are_stable_across_files_for_classpath_types() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
