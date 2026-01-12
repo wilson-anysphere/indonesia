@@ -888,9 +888,9 @@ pub fn extract_variable(
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_range);
 
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when
-        // they are already meaningful and local (`Foo` instead of `Test.Foo`). Only fall back to
-        // typeck when it provides genuinely richer information (e.g. inferred generics) or when
-        // the parser couldn't infer anything useful (`Object`).
+        // they are already meaningful and avoid redundant *package* qualification (`Foo` instead
+        // of `pkg.Foo`). Keep enclosing-type qualifiers like `Outer.Foo` since dropping them can
+        // change meaning.
         match typeck_ty {
             Some(typeck_ty) if typeck_ty != "null" => {
                 if parser_ty == "Object" {
@@ -909,13 +909,13 @@ pub fn extract_variable(
 
                     // Prefer typeck when it adds generics or array dimensions that parser didn't
                     // capture (e.g. diamond inference).
-                    if (typeck_has_type_args && !parser_has_type_args)
-                        || (typeck_has_arrays && !parser_has_arrays)
-                    {
-                        typeck_ty
-                    } else if strip_leading_qualifiers(&typeck_ty) == parser_ty {
-                        // Avoid over-qualification like `Test.Foo` when `Foo` is already valid in
-                        // this scope.
+                     if (typeck_has_type_args && !parser_has_type_args)
+                         || (typeck_has_arrays && !parser_has_arrays)
+                     {
+                         typeck_ty
+                    } else if typeck_ty_is_qualified_version_of(&parser_ty, &typeck_ty) {
+                        // Avoid redundant package qualification like `java.util.List` when `List`
+                        // is already a useful type name in this context.
                         parser_ty
                     } else {
                         typeck_ty
@@ -3346,13 +3346,9 @@ fn infer_type_from_binary_expr(binary: &ast::BinaryExpression) -> String {
 
     match op {
         SyntaxKind::Plus => {
-            // The parser doesn't know if a name refers to a `String`, so we fall back to checking
-            // for a string literal somewhere in the expression. We also respect cases like
-            // `new String()`/casts.
-            if syntax_contains_string_literal(binary.syntax())
-                || lhs_ty.as_deref() == Some("String")
-                || rhs_ty.as_deref() == Some("String")
-            {
+            // Best-effort: infer string concatenation when either side is known to be `String`
+            // (literal, cast, `new String()`, or a previously-inferred sub-expression).
+            if lhs_ty.as_deref() == Some("String") || rhs_ty.as_deref() == Some("String") {
                 return "String".to_string();
             }
 
@@ -3451,17 +3447,6 @@ fn infer_type_from_literal(lit: &ast::LiteralExpression) -> String {
     }
 }
 
-fn syntax_contains_string_literal(node: &nova_syntax::SyntaxNode) -> bool {
-    node.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .any(|tok| {
-            matches!(
-                tok.kind(),
-                SyntaxKind::StringLiteral | SyntaxKind::TextBlock
-            )
-        })
-}
-
 fn render_java_type(node: &nova_syntax::SyntaxNode) -> String {
     // We want Java-source-like but stable output. We therefore drop trivia and insert spaces only
     // when necessary for the token stream to remain readable/valid.
@@ -3513,6 +3498,37 @@ fn current_indent(text: &str, line_start: usize) -> String {
     indent
 }
 
+fn typeck_ty_is_qualified_version_of(parser_ty: &str, typeck_ty: &str) -> bool {
+    if typeck_ty == parser_ty {
+        return true;
+    }
+
+    if typeck_ty.len() <= parser_ty.len() {
+        return false;
+    }
+    if !typeck_ty.ends_with(parser_ty) {
+        return false;
+    }
+
+    // Only treat as a "qualified version" when the match is on a segment boundary.
+    let boundary = typeck_ty.len() - parser_ty.len() - 1;
+    if typeck_ty.as_bytes().get(boundary) != Some(&b'.') {
+        return false;
+    }
+
+    // Heuristic: treat `pkg.Foo` as a redundant qualification of `Foo`, but keep nested-type
+    // qualifications like `Outer.Foo`.
+    //
+    // This is intentionally conservative: we only consider it "package-qualified" when the first
+    // segment starts with a lowercase ASCII letter.
+    let qualifier = &typeck_ty[..boundary];
+    qualifier
+        .as_bytes()
+        .first()
+        .copied()
+        .is_some_and(|b| b.is_ascii_lowercase())
+}
+
 fn best_type_at_range_display(
     db: &dyn RefactorDatabase,
     file: &FileId,
@@ -3543,21 +3559,6 @@ fn best_type_at_range_display(
         return Some(ty.to_string());
     }
     None
-}
-
-fn strip_leading_qualifiers(ty: &str) -> String {
-    // Our typeck display strings drop package names for readability, but they may still include
-    // qualification via enclosing types (e.g. `Test.Foo`). For explicit local variable types we
-    // prefer minimally qualified names when possible, so provide a cheap "strip outer qualifiers"
-    // helper for comparison purposes.
-    //
-    // Examples:
-    // - `Test.Foo` -> `Foo`
-    // - `java.util.List<String>` -> `List<String>` (keep generics; drop package/outer prefixes)
-    let cut = ty.find(|c| c == '<' || c == '[').unwrap_or(ty.len());
-    let (head, tail) = ty.split_at(cut);
-    let stripped = head.rsplit_once('.').map(|(_, tail)| tail).unwrap_or(head);
-    format!("{stripped}{tail}")
 }
 
 fn type_at_range_offset_candidates(text: &str, range: TextRange) -> Vec<usize> {
