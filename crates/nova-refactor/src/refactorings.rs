@@ -240,6 +240,9 @@ pub fn extract_variable(
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }
+
+    reject_multi_declarator_local_declaration_dependency(text, &expr)?;
+
     let expr_range = syntax_range(expr.syntax());
     let expr_text = text
         .get(selection.start..selection.end)
@@ -770,6 +773,65 @@ fn find_expression(
         }
     }
     None
+}
+
+fn reject_multi_declarator_local_declaration_dependency(
+    source: &str,
+    expr: &ast::Expression,
+) -> Result<(), RefactorError> {
+    let Some(stmt) = expr
+        .syntax()
+        .ancestors()
+        .find_map(ast::LocalVariableDeclarationStatement::cast)
+    else {
+        return Ok(());
+    };
+
+    let Some(list) = stmt.declarator_list() else {
+        return Ok(());
+    };
+
+    let declarators: Vec<_> = list.declarators().collect();
+    if declarators.len() <= 1 {
+        return Ok(());
+    }
+
+    let Some(containing_decl) = expr
+        .syntax()
+        .ancestors()
+        .find_map(ast::VariableDeclarator::cast)
+    else {
+        return Ok(());
+    };
+    let containing_start = syntax_range(containing_decl.syntax()).start;
+
+    let mut earlier_names: HashSet<String> = HashSet::new();
+    for decl in declarators {
+        let start = syntax_range(decl.syntax()).start;
+        if start < containing_start {
+            if let Some(token) = decl.name_token() {
+                earlier_names.insert(token.text().to_string());
+            }
+        }
+    }
+    if earlier_names.is_empty() {
+        return Ok(());
+    }
+
+    for name_expr in expr.syntax().descendants().filter_map(ast::NameExpression::cast) {
+        let range = syntax_range(name_expr.syntax());
+        let ident = source
+            .get(range.start..range.end)
+            .unwrap_or_default()
+            .trim();
+        if earlier_names.contains(ident) {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract from multi-declarator local variable declaration when expression depends on an earlier declarator",
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'static str> {
