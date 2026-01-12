@@ -91,13 +91,39 @@ impl GradleBuild {
 
         if let Some(cached) = cache.load(project_root, BuildSystemKind::Gradle, &fingerprint)? {
             if let Some(projects) = cached.projects {
-                return Ok(projects
+                let projects = projects
                     .into_iter()
                     .map(|p| GradleProjectInfo {
                         path: p.path,
                         dir: p.dir,
                     })
-                    .collect());
+                    .collect::<Vec<_>>();
+
+                // Best-effort: if the snapshot is missing/stale, repopulate it from cached data so
+                // `nova-project` can still consume `.nova/queries/gradle.json` even when Gradle
+                // queries are served entirely from Nova's build cache.
+                let should_update_snapshot =
+                    match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                        Some(snapshot)
+                            if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                && snapshot.build_fingerprint == fingerprint.digest =>
+                        {
+                            let project_map: HashMap<String, PathBuf> = snapshot
+                                .projects
+                                .iter()
+                                .map(|p| (p.path.clone(), p.project_dir.clone()))
+                                .collect();
+                            projects
+                                .iter()
+                                .any(|p| project_map.get(&p.path) != Some(&p.dir))
+                        }
+                        _ => true,
+                    };
+                if should_update_snapshot {
+                    let _ = update_gradle_snapshot_projects(project_root, &fingerprint, &projects);
+                }
+
+                return Ok(projects);
             }
         }
 
@@ -350,6 +376,36 @@ impl GradleBuild {
             module_key,
         )? {
             if let Some(cfg) = cached.java_compile_config {
+                let project_path_for_snapshot = project_path.unwrap_or(":");
+                let should_update_snapshot =
+                    match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                        Some(snapshot)
+                            if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                && snapshot.build_fingerprint == fingerprint.digest =>
+                        {
+                            !snapshot
+                                .java_compile_configs
+                                .contains_key(project_path_for_snapshot)
+                        }
+                        _ => true,
+                    };
+                if should_update_snapshot {
+                    if let Ok(project_dir) = gradle_project_dir_cached(
+                        project_root,
+                        Some(project_path_for_snapshot),
+                        cache,
+                        &fingerprint,
+                    ) {
+                        let _ = update_gradle_snapshot_java_compile_config(
+                            project_root,
+                            &fingerprint,
+                            project_path_for_snapshot,
+                            &project_dir,
+                            &cfg,
+                        );
+                    }
+                }
+
                 return Ok(cfg);
             }
             // Backwards-compat: older cache entries may contain only classpath.
@@ -375,6 +431,36 @@ impl GradleBuild {
                 module_key,
             )? {
                 if let Some(cfg) = cached.java_compile_config {
+                    let project_path_for_snapshot = project_path.unwrap_or(":");
+                    let should_update_snapshot =
+                        match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                            Some(snapshot)
+                                if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                    && snapshot.build_fingerprint == fingerprint.digest =>
+                            {
+                                !snapshot
+                                    .java_compile_configs
+                                    .contains_key(project_path_for_snapshot)
+                            }
+                            _ => true,
+                        };
+                    if should_update_snapshot {
+                        if let Ok(project_dir) = gradle_project_dir_cached(
+                            project_root,
+                            Some(project_path_for_snapshot),
+                            cache,
+                            &fingerprint,
+                        ) {
+                            let _ = update_gradle_snapshot_java_compile_config(
+                                project_root,
+                                &fingerprint,
+                                project_path_for_snapshot,
+                                &project_dir,
+                                &cfg,
+                            );
+                        }
+                    }
+
                     return Ok(cfg);
                 }
                 if let Some(entries) = cached.classpath {
