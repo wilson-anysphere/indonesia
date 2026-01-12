@@ -278,3 +278,41 @@ fn symlink_entries_are_treated_as_cache_miss_and_deleted() {
     assert!(!path.exists(), "symlink should be deleted");
     assert!(target.exists(), "target outside the store must not be deleted");
 }
+
+#[cfg(unix)]
+#[test]
+fn symlink_parent_directories_are_treated_as_cache_miss_and_removed() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let outside = TempDir::new().unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let outside_file = outside.path().join(format!("{safe_stem}.java"));
+    std::fs::write(&outside_file, "evil").unwrap();
+
+    let content_dir = temp.path().join(content_hash);
+    symlink(outside.path(), &content_dir).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&content_dir).is_ok(),
+        "precondition: content hash directory symlink should exist"
+    );
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+
+    assert!(
+        std::fs::symlink_metadata(&content_dir).is_err(),
+        "symlinked parent directory should be removed"
+    );
+    assert!(
+        outside_file.exists(),
+        "file outside the store must not be deleted"
+    );
+}
