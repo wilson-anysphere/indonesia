@@ -818,7 +818,11 @@ Notes:
 }
 ```
 
-`span.start` / `span.end` are **byte offsets** into the UTF-8 source file.
+Notes:
+
+- `handler.file` is a best-effort path relative to `projectRoot` (when provided). It may contain
+  platform path separators (e.g. `\` on Windows).
+- `handler.span.start` / `handler.span.end` are **byte offsets** into the UTF-8 source file.
 
 ---
 
@@ -852,6 +856,16 @@ Same as `nova/micronaut/endpoints`.
   ]
 }
 ```
+
+Notes:
+
+- `beans[].kind` is one of: `"class" | "factoryMethod"`.
+- `beans[].qualifiers` is a list of string-encoded qualifiers:
+  - `Named(<name>)` for `@Named` qualifiers (e.g. `"Named(primary)"`).
+  - A raw qualifier annotation name (e.g. `"MyQualifier"`).
+- `beans[].file` is a best-effort path relative to `projectRoot` (when provided). It may contain
+  platform path separators (e.g. `\` on Windows).
+- `beans[].span.start` / `beans[].span.end` are **byte offsets** into the UTF-8 source file.
 
 ---
 
