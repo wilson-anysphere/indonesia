@@ -1320,14 +1320,10 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
-            let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
-                .map(|dir| dir.queries_dir().join("bazel.json"))
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-            let runner = nova_build_bazel::DefaultCommandRunner::default();
-            let mut workspace =
-                nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-                    .and_then(|ws| ws.with_cache_path(cache_path))
-                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
+            let mut workspace = workspace
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
 
             let targets = workspace
                 .java_targets()
@@ -2107,6 +2103,7 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_test_utils::EnvVarGuard;
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::{fs, os::unix::fs::PermissionsExt};
@@ -2140,6 +2137,26 @@ mod tests {
             normalize_maven_module_relative(Some(" module-b ")),
             Some(Path::new("module-b"))
         );
+    }
+
+    #[test]
+    fn cached_bazel_workspace_is_reused_and_reset() {
+        let _lock = nova_test_utils::env_lock();
+        let cache_dir = TempDir::new().unwrap();
+        let _cache_guard = EnvVarGuard::set("NOVA_CACHE_DIR", cache_dir.path());
+
+        let workspace_root = TempDir::new().unwrap();
+        std::fs::write(workspace_root.path().join("WORKSPACE"), "").unwrap();
+
+        let first = cached_bazel_workspace_for_root(workspace_root.path()).unwrap();
+        let second = cached_bazel_workspace_for_root(workspace_root.path()).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        reset_cached_bazel_workspace(workspace_root.path());
+        let third = cached_bazel_workspace_for_root(workspace_root.path()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &third));
+
+        reset_cached_bazel_workspace(workspace_root.path());
     }
 
     #[test]

@@ -450,8 +450,8 @@ fn find_best_expr_in_expr(
             for dim_expr in dim_exprs {
                 find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
             }
-            if let Some(init_expr) = initializer {
-                find_best_expr_in_expr(body, *init_expr, offset, owner, best);
+            if let Some(init) = initializer {
+                find_best_expr_in_expr(body, *init, offset, owner, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {

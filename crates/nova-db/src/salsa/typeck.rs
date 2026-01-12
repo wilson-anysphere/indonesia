@@ -11553,13 +11553,12 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
             if let Some(init_expr) = initializer {
-                find_enclosing_target_typed_expr_in_expr(
-                    body,
-                    *init_expr,
-                    target,
-                    target_range,
-                    best,
-                );
+                find_enclosing_target_typed_expr_in_expr(body, *init_expr, target, target_range, best);
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {
