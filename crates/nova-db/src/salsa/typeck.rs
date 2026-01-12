@@ -2693,7 +2693,6 @@ fn is_placeholder_class_def(def: &ClassDef) -> bool {
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
     owner: DefWithBodyId,
-    var_inference_enabled: bool,
     resolver: &'a nova_resolve::Resolver<'idx>,
     scopes: &'a nova_resolve::ScopeGraph,
     scope_id: nova_resolve::ScopeId,
@@ -2741,10 +2740,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         java_level: JavaLanguageLevel,
         lazy_locals: bool,
     ) -> Self {
-        let file = def_file(owner);
-        let level = db.java_language_level(file);
-        let var_inference_enabled = level.major >= 10;
-
         let local_types = vec![Type::Unknown; body.locals.len()];
         let local_ty_states = vec![LocalTyState::Uncomputed; body.locals.len()];
         let (local_initializers, local_is_let_decl, local_foreach_iterables) = if lazy_locals {
@@ -2781,7 +2776,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         Self {
             db,
             owner,
-            var_inference_enabled,
             resolver,
             scopes,
             scope_id,
