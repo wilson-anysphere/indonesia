@@ -54,6 +54,7 @@ mod lsp;
 mod materialize;
 mod preview;
 mod refactorings;
+mod rename_type;
 mod semantic;
 
 pub use change_signature::{
@@ -101,4 +102,5 @@ pub use refactorings::{
     InlineVariableParams, OrganizeImportsParams, RefactorError as SemanticRefactorError,
     RenameParams,
 };
+pub use rename_type::{rename_type, RenameTypeError, RenameTypeParams};
 pub use semantic::{Conflict, RefactorDatabase, SemanticChange};
