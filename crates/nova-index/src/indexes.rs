@@ -40,6 +40,38 @@ pub struct SymbolIndex {
 }
 
 impl SymbolIndex {
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// [`nova_memory`] budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        // Approximate per-entry storage inside the `BTreeMap` nodes.
+        bytes = bytes.saturating_add(
+            (self.symbols.len() as u64).saturating_mul(
+                (size_of::<String>() + size_of::<Vec<SymbolLocation>>()) as u64,
+            ),
+        );
+
+        for (symbol, locations) in &self.symbols {
+            bytes = bytes.saturating_add(symbol.capacity() as u64);
+
+            bytes = bytes.saturating_add(
+                (locations.capacity() as u64).saturating_mul(size_of::<SymbolLocation>() as u64),
+            );
+            for loc in locations {
+                bytes = bytes.saturating_add(loc.file.capacity() as u64);
+            }
+        }
+
+        bytes
+    }
+
     pub fn insert(&mut self, symbol: impl Into<String>, location: SymbolLocation) {
         self.symbols
             .entry(symbol.into())
@@ -104,6 +136,32 @@ pub struct ReferenceIndex {
 }
 
 impl ReferenceIndex {
+    /// Approximate heap memory usage of this index in bytes.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.references.len() as u64).saturating_mul(
+                (size_of::<String>() + size_of::<Vec<ReferenceLocation>>()) as u64,
+            ),
+        );
+
+        for (symbol, locations) in &self.references {
+            bytes = bytes.saturating_add(symbol.capacity() as u64);
+            bytes = bytes.saturating_add(
+                (locations.capacity() as u64).saturating_mul(size_of::<ReferenceLocation>() as u64),
+            );
+            for loc in locations {
+                bytes = bytes.saturating_add(loc.file.capacity() as u64);
+            }
+        }
+
+        bytes
+    }
+
     pub fn insert(&mut self, symbol: impl Into<String>, location: ReferenceLocation) {
         self.references
             .entry(symbol.into())
@@ -169,6 +227,28 @@ pub struct InheritanceIndex {
 }
 
 impl InheritanceIndex {
+    /// Approximate heap memory usage of this index in bytes.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.edges.capacity() as u64).saturating_mul(size_of::<InheritanceEdge>() as u64),
+        );
+        for edge in &self.edges {
+            bytes = bytes.saturating_add(edge.file.capacity() as u64);
+            bytes = bytes.saturating_add(edge.subtype.capacity() as u64);
+            bytes = bytes.saturating_add(edge.supertype.capacity() as u64);
+        }
+
+        bytes = bytes.saturating_add(estimate_btree_map_string_to_vec_string(&self.subtypes));
+        bytes = bytes.saturating_add(estimate_btree_map_string_to_vec_string(&self.supertypes));
+
+        bytes
+    }
+
     pub fn insert(&mut self, edge: InheritanceEdge) {
         self.edges.push(edge);
         self.rebuild_maps();
@@ -284,6 +364,32 @@ pub struct AnnotationIndex {
 }
 
 impl AnnotationIndex {
+    /// Approximate heap memory usage of this index in bytes.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.annotations.len() as u64).saturating_mul(
+                (size_of::<String>() + size_of::<Vec<AnnotationLocation>>()) as u64,
+            ),
+        );
+
+        for (annotation, locations) in &self.annotations {
+            bytes = bytes.saturating_add(annotation.capacity() as u64);
+            bytes = bytes.saturating_add(
+                (locations.capacity() as u64).saturating_mul(size_of::<AnnotationLocation>() as u64),
+            );
+            for loc in locations {
+                bytes = bytes.saturating_add(loc.file.capacity() as u64);
+            }
+        }
+
+        bytes
+    }
+
     pub fn insert(&mut self, annotation: impl Into<String>, location: AnnotationLocation) {
         self.annotations
             .entry(annotation.into())
@@ -330,6 +436,17 @@ pub struct ProjectIndexes {
 }
 
 impl ProjectIndexes {
+    /// Approximate heap memory usage of all project-level indexes in bytes.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        let mut bytes = 0u64;
+        bytes = bytes.saturating_add(self.symbols.estimated_bytes());
+        bytes = bytes.saturating_add(self.references.estimated_bytes());
+        bytes = bytes.saturating_add(self.inheritance.estimated_bytes());
+        bytes = bytes.saturating_add(self.annotations.estimated_bytes());
+        bytes
+    }
+
     pub fn set_generation(&mut self, generation: u64) {
         self.symbols.generation = generation;
         self.references.generation = generation;
@@ -349,5 +466,90 @@ impl ProjectIndexes {
         self.references.merge_from(other.references);
         self.inheritance.merge_from(other.inheritance);
         self.annotations.merge_from(other.annotations);
+    }
+}
+
+fn estimate_btree_map_string_to_vec_string(map: &BTreeMap<String, Vec<String>>) -> u64 {
+    use std::mem::size_of;
+
+    let mut bytes = 0u64;
+
+    bytes = bytes.saturating_add(
+        (map.len() as u64)
+            .saturating_mul((size_of::<String>() + size_of::<Vec<String>>()) as u64),
+    );
+
+    for (key, values) in map {
+        bytes = bytes.saturating_add(key.capacity() as u64);
+        bytes = bytes.saturating_add(
+            (values.capacity() as u64).saturating_mul(size_of::<String>() as u64),
+        );
+        for value in values {
+            bytes = bytes.saturating_add(value.capacity() as u64);
+        }
+    }
+
+    bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimated_bytes_defaults_to_zero() {
+        let indexes = ProjectIndexes::default();
+        assert_eq!(indexes.estimated_bytes(), 0);
+    }
+
+    #[test]
+    fn estimated_bytes_increases_monotonically() {
+        let mut indexes = ProjectIndexes::default();
+
+        let mut prev = indexes.estimated_bytes();
+
+        indexes.symbols.insert(
+            "Foo".to_string(),
+            SymbolLocation {
+                file: "A.java".to_string(),
+                line: 0,
+                column: 0,
+            },
+        );
+        let next = indexes.estimated_bytes();
+        assert!(next > prev);
+        prev = next;
+
+        indexes.references.insert(
+            "Bar".to_string(),
+            ReferenceLocation {
+                file: "A.java".to_string(),
+                line: 0,
+                column: 0,
+            },
+        );
+        let next = indexes.estimated_bytes();
+        assert!(next > prev);
+        prev = next;
+
+        indexes.inheritance.insert(InheritanceEdge {
+            file: "A.java".to_string(),
+            subtype: "Foo".to_string(),
+            supertype: "Bar".to_string(),
+        });
+        let next = indexes.estimated_bytes();
+        assert!(next > prev);
+        prev = next;
+
+        indexes.annotations.insert(
+            "@Anno".to_string(),
+            AnnotationLocation {
+                file: "A.java".to_string(),
+                line: 0,
+                column: 0,
+            },
+        );
+        let next = indexes.estimated_bytes();
+        assert!(next > prev);
     }
 }
