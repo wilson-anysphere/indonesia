@@ -331,8 +331,7 @@ RUST_BACKTRACE=1 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse
 Seed corpora (main harness) live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
 `fuzz/artifacts/<target>/`.
 
-There are additional targets (e.g. `parse_java`, `format_java` idempotence, and `refactor_smoke` which
-requires `--features refactor`)—list them with:
+There are additional targets (e.g. `refactor_smoke` which requires `--features refactor`)—list them with:
 
 ```bash
 # Local dev
