@@ -18,6 +18,9 @@ pub mod package;
 mod simple;
 mod workspace_config;
 
+#[cfg(test)]
+mod test_support;
+
 pub use build_systems::{
     default_build_systems, BazelBuildSystem, GradleBuildSystem, MavenBuildSystem, SimpleBuildSystem,
 };

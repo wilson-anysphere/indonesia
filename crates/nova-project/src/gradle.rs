@@ -3580,15 +3580,92 @@ fn version_catalog_key_candidates(accessor: &str) -> Vec<String> {
 }
 
 fn default_gradle_user_home() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("GRADLE_USER_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(home));
+    fn home_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
     }
 
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)?;
-    Some(home.join(".gradle"))
+    fn expand_tilde_home(value: &str) -> Option<PathBuf> {
+        let rest = value.strip_prefix('~')?;
+        let home = home_dir()?;
+
+        if rest.is_empty() {
+            return Some(home);
+        }
+
+        // Only expand `~/...` (or `~\\...` on Windows). Don't guess for `~user/...`.
+        let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\'))?;
+        if rest.contains("${") {
+            return None;
+        }
+
+        Some(home.join(rest))
+    }
+
+    fn expand_user_home_placeholder(value: &str) -> Option<PathBuf> {
+        const USER_HOME: &str = "${user.home}";
+        let rest = value.strip_prefix(USER_HOME)?;
+
+        let home = home_dir()?;
+        if rest.is_empty() {
+            return Some(home);
+        }
+
+        // Accept both separators so configs remain portable.
+        let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+        if rest.contains("${") {
+            // If there are any remaining placeholders, bail out rather than guessing.
+            return None;
+        }
+
+        Some(home.join(rest))
+    }
+
+    fn expand_env_placeholder(value: &str) -> Option<PathBuf> {
+        const PREFIX: &str = "${env.";
+        let rest = value.strip_prefix(PREFIX)?;
+        let (raw_key, rest) = rest.split_once('}')?;
+        let key = raw_key.trim();
+        if key.is_empty() {
+            return None;
+        }
+
+        let base = PathBuf::from(std::env::var_os(key)?);
+        if rest.is_empty() {
+            return Some(base);
+        }
+
+        // Accept both separators so configs remain portable.
+        let rest = rest
+            .strip_prefix('/')
+            .or_else(|| rest.strip_prefix('\\'))
+            .unwrap_or(rest);
+        if rest.contains("${") {
+            return None;
+        }
+
+        Some(base.join(rest))
+    }
+
+    if let Some(home) = std::env::var_os("GRADLE_USER_HOME").filter(|v| !v.is_empty()) {
+        let value = home.to_string_lossy();
+        let value = value.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
+        if !value.is_empty() {
+            if let Some(expanded) = expand_tilde_home(value)
+                .or_else(|| expand_env_placeholder(value))
+                .or_else(|| expand_user_home_placeholder(value))
+            {
+                return Some(expanded);
+            }
+            if !value.contains("${") {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+
+    Some(home_dir()?.join(".gradle"))
 }
 
 /// Best-effort jar discovery for Gradle dependencies.
@@ -3901,11 +3978,13 @@ mod tests {
 
     use super::{
         append_included_build_module_refs, extract_named_brace_blocks, gradle_dependency_jar_paths,
-        parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
-        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
-        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
-        Dependency, GradleModuleRef, GradleProperties,
+        default_gradle_user_home, parse_gradle_dependencies_from_text,
+        parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
+        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
+        sort_dedup_dependencies, strip_gradle_comments, Dependency, GradleModuleRef,
+        GradleProperties,
     };
+    use crate::test_support::{env_lock, EnvVarGuard};
     use tempfile::tempdir;
 
     #[test]
@@ -4666,5 +4745,74 @@ dependencies {
         assert_eq!(deps[0].artifact_id, "dep");
         assert_eq!(deps[0].version.as_deref(), Some("3"));
         assert_eq!(deps[0].scope.as_deref(), Some("compile"));
+    }
+
+    #[test]
+    fn default_gradle_user_home_expands_tilde_from_env_var() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("create home");
+
+        let _lock = env_lock();
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
+        let _gradle_home = EnvVarGuard::set_str("GRADLE_USER_HOME", Some("~/.gradle-custom"));
+
+        let resolved = default_gradle_user_home().expect("gradle user home");
+        assert_eq!(resolved, home.join(".gradle-custom"));
+    }
+
+    #[test]
+    fn default_gradle_user_home_expands_user_home_placeholder_from_env_var() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("create home");
+
+        let _lock = env_lock();
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
+        let _gradle_home = EnvVarGuard::set_str(
+            "GRADLE_USER_HOME",
+            Some("${user.home}/.gradle-custom"),
+        );
+
+        let resolved = default_gradle_user_home().expect("gradle user home");
+        assert_eq!(resolved, home.join(".gradle-custom"));
+    }
+
+    #[test]
+    fn default_gradle_user_home_expands_env_placeholder_from_env_var() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let repo_root = dir.path().join("gradle-cache-root");
+        fs::create_dir_all(&home).expect("create home");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+
+        let _lock = env_lock();
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
+        let _base = EnvVarGuard::set_path("NOVA_TEST_GRADLE_HOME", Some(&repo_root));
+        let _gradle_home = EnvVarGuard::set_str(
+            "GRADLE_USER_HOME",
+            Some("${env.NOVA_TEST_GRADLE_HOME}/custom"),
+        );
+
+        let resolved = default_gradle_user_home().expect("gradle user home");
+        assert_eq!(resolved, repo_root.join("custom"));
+    }
+
+    #[test]
+    fn default_gradle_user_home_ignores_unknown_placeholders() {
+        let dir = tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("create home");
+
+        let _lock = env_lock();
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
+        let _gradle_home = EnvVarGuard::set_str("GRADLE_USER_HOME", Some("${unknown}/custom"));
+
+        let resolved = default_gradle_user_home().expect("gradle user home");
+        assert_eq!(resolved, home.join(".gradle"));
     }
 }

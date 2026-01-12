@@ -2588,32 +2588,7 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    struct EnvVarGuard {
-        key: &'static str,
-        prior: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &Path) -> Self {
-            let prior = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, prior }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.prior.take() {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
+    use crate::test_support::{env_lock, EnvVarGuard};
 
     fn write_maven_config(workspace_root: &Path, contents: &str) {
         let mvn_dir = workspace_root.join(".mvn");
@@ -2692,14 +2667,11 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).expect("create home");
 
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned");
+        let _guard = env_lock();
 
         // Set both to behave deterministically on Windows/Linux.
-        let _home = EnvVarGuard::set("HOME", &home);
-        let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, home.join(".m2/repository"));
@@ -2713,14 +2685,11 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).expect("create home");
 
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned");
+        let _guard = env_lock();
 
         // Set both to behave deterministically on Windows/Linux.
-        let _home = EnvVarGuard::set("HOME", &home);
-        let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
+        let _home = EnvVarGuard::set_path("HOME", Some(&home));
+        let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, home.join(".m2/repository"));
@@ -2737,12 +2706,9 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).expect("create home");
 
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned");
+        let _guard = env_lock();
 
-        let _env = EnvVarGuard::set("NOVA_TEST_MAVEN_REPO_HOME", &home);
+        let _env = EnvVarGuard::set_path("NOVA_TEST_MAVEN_REPO_HOME", Some(&home));
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, home.join(".m2/repository"));
