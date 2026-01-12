@@ -35,6 +35,8 @@ To handle this, the workspace reconciles its desired roots against the active wa
 them dynamically. Roots that do not exist yet are retried later (instead of failing permanently),
 which keeps “generated sources not created yet” from breaking file watching.
 
+Implementation reference: `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`).
+
 ## Feature flags
 
 `nova-vfs` keeps OS watcher dependencies behind feature flags:
