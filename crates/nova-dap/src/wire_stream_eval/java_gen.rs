@@ -350,28 +350,11 @@ fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
         return false;
     }
 
-    // Walk backwards to find the `(` matching the final `)` so we can extract the method name
-    // without being confused by nested parens inside lambda bodies / method calls in arguments.
-    let mut depth = 0u32;
-    let mut open_paren = None::<usize>;
-    for (idx, ch) in expr.char_indices().rev() {
-        match ch {
-            ')' => depth += 1,
-            '(' => {
-                if depth == 0 {
-                    return false;
-                }
-                depth -= 1;
-                if depth == 0 {
-                    open_paren = Some(idx);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let Some(open_paren) = open_paren else {
+    // Find the `(` matching the final `)` while ignoring parentheses inside string/char literals.
+    // This avoids false negatives for expressions like:
+    //   s.forEach(x -> System.out.println(\")\"))
+    // where the string literal contains a `)` character.
+    let Some(open_paren) = open_paren_for_final_call(expr) else {
         return false;
     };
 
@@ -417,6 +400,58 @@ fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
         .rev()
         .find(|ch| !ch.is_whitespace())
         .is_some_and(|ch| ch == '.')
+}
+
+fn open_paren_for_final_call(expr: &str) -> Option<usize> {
+    let mut stack: Vec<usize> = Vec::new();
+    let mut last_match = None::<usize>;
+
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (idx, ch) in expr.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+
+        if in_str {
+            match ch {
+                '\\' => escape = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        if in_char {
+            match ch {
+                '\\' => escape = true,
+                '\'' => in_char = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => stack.push(idx),
+            ')' => {
+                let open = stack.pop()?;
+                last_match = Some(open);
+            }
+            _ => {}
+        }
+    }
+
+    // Unbalanced parens; treat as "not a call" (and do not claim void).
+    if !stack.is_empty() {
+        return None;
+    }
+
+    last_match
 }
 
 fn is_java_identifier_start_ascii(ch: char) -> bool {
@@ -709,7 +744,7 @@ mod tests {
                 ),
             ],
             &[],
-            &["s.map(x -> x).mapToInt(x -> x).forEach(System.out::println)".to_string()],
+            &[r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"))"#.to_string()],
         );
 
         assert!(
@@ -720,6 +755,6 @@ mod tests {
             !src.contains("return s.map"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains("s.map(x -> x).mapToInt(x -> x).forEach(System.out::println);"));
+        assert!(src.contains(r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#));
     }
 }
