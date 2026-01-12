@@ -1098,7 +1098,7 @@ async fn handle_packet(
                     _ => unreachable!("unexpected invoke-method command"),
                 };
                 let arg_count = invoke_r.read_u32()? as usize;
-                let mut args = Vec::with_capacity(arg_count);
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(invoke_r.read_tagged_value(sizes)?);
                 }
