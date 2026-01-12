@@ -465,9 +465,7 @@ fn transitive_implemented_interfaces(index: &Index, class_name: &str) -> Vec<Str
     let mut stack: Vec<String> = Vec::new();
     let mut cur = Some(class_name);
     while let Some(class) = cur {
-        if let Some(ifaces) = index.class_implements(class) {
-            stack.extend(ifaces.iter().cloned());
-        }
+        stack.extend(index.class_implements(class).iter().cloned());
         cur = index.class_extends(class);
     }
 
@@ -488,11 +486,9 @@ fn transitive_implemented_interfaces(index: &Index, class_name: &str) -> Vec<Str
 fn class_implements_interface(index: &Index, class_name: &str, iface: &str) -> bool {
     let mut cur = Some(class_name);
     while let Some(class) = cur {
-        if let Some(ifaces) = index.class_implements(class) {
-            for implemented in ifaces {
-                if is_subinterface_of(index, implemented, iface) {
-                    return true;
-                }
+        for implemented in index.class_implements(class) {
+            if is_subinterface_of(index, implemented, iface) {
+                return true;
             }
         }
         cur = index.class_extends(class);

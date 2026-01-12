@@ -380,7 +380,6 @@ impl Index {
                     self.interface_extends
                         .insert(class.name.clone(), class.extends_interfaces.clone());
                 }
-
                 let class_sym = Symbol {
                     id: SymbolId(next_id),
                     kind: SymbolKind::Class,
@@ -477,8 +476,18 @@ impl Index {
         self.class_extends.get(class_name).map(String::as_str)
     }
 
-    pub fn class_implements(&self, class_name: &str) -> Option<&[String]> {
-        self.class_implements.get(class_name).map(|v| v.as_slice())
+    /// Best-effort list of interfaces implemented by a class/enum/record.
+    ///
+    /// Names are normalized to simple identifiers by stripping:
+    /// - package qualifiers (`foo.bar.Baz` -> `Baz`)
+    /// - generic argument lists (`Baz<String>` -> `Baz`)
+    /// - array suffixes (`Baz[]` -> `Baz`)
+    #[must_use]
+    pub fn class_implements(&self, class_name: &str) -> &[String] {
+        self.class_implements
+            .get(class_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn interface_extends(&self, interface_name: &str) -> Option<&[String]> {
@@ -942,6 +951,14 @@ struct JavaSketchParser<'a> {
     cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JavaTypeDeclKind {
+    Class,
+    Interface,
+    Enum,
+    Record,
+}
+
 impl<'a> JavaSketchParser<'a> {
     fn new(text: &'a str) -> Self {
         Self {
@@ -954,31 +971,73 @@ impl<'a> JavaSketchParser<'a> {
     fn parse_types(&mut self) -> Vec<ParsedClass> {
         let mut classes = Vec::new();
         while let Some((token, token_range)) = self.scan_identifier() {
-            // Best-effort: treat both `class` and `interface` (including annotation types
-            // declared via `@interface`) as top-level type containers for symbol discovery.
-            let kind = match token.as_str() {
-                "class" => TypeKind::Class,
-                "interface" => TypeKind::Interface,
+            // Best-effort: treat common Java type declarations as containers for symbol discovery.
+            let decl_kind = match token.as_str() {
+                "class" => JavaTypeDeclKind::Class,
+                "interface" => JavaTypeDeclKind::Interface,
+                "enum" => JavaTypeDeclKind::Enum,
+                "record" => JavaTypeDeclKind::Record,
                 _ => continue,
             };
 
-            let class_kw_range = token_range;
+            let kind = match decl_kind {
+                JavaTypeDeclKind::Interface => TypeKind::Interface,
+                JavaTypeDeclKind::Class | JavaTypeDeclKind::Enum | JavaTypeDeclKind::Record => {
+                    TypeKind::Class
+                }
+            };
+
+            // Best-effort support for annotation type declarations: `@interface Foo {}`.
+            let mut decl_start = token_range.start;
+            if decl_kind == JavaTypeDeclKind::Interface
+                && decl_start > 0
+                && self.bytes[decl_start - 1] == b'@'
+            {
+                decl_start -= 1;
+            }
+
+            let decl_kw_range = TextRange::new(decl_start, token_range.end);
             if let Some((name, name_range)) = self.next_identifier() {
+                // Skip type parameters after the identifier (`<T, U>`).
                 self.skip_ws_and_comments();
+                if self.bytes.get(self.cursor) == Some(&b'<') {
+                    self.skip_angle_brackets();
+                }
+
+                // Records have a mandatory header: `record R(int x) ... {}`.
+                if decl_kind == JavaTypeDeclKind::Record {
+                    self.skip_ws_and_comments();
+                    if self.bytes.get(self.cursor) == Some(&b'(') {
+                        if let Some(close_paren) = find_matching_paren(self.text, self.cursor) {
+                            self.cursor = close_paren;
+                        }
+                    }
+                }
 
                 let mut extends = None;
                 let mut implements: Vec<String> = Vec::new();
                 let mut extends_interfaces: Vec<String> = Vec::new();
 
-                match kind {
-                    TypeKind::Class => {
+                match decl_kind {
+                    JavaTypeDeclKind::Interface => {
+                        // Parse optional `extends I, J`
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "extends" {
+                                extends_interfaces = self.parse_simple_type_name_list();
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
+                        }
+                    }
+                    JavaTypeDeclKind::Class | JavaTypeDeclKind::Enum | JavaTypeDeclKind::Record => {
                         // Parse optional `extends Foo`
                         let saved = self.cursor;
                         if let Some((kw, _)) = self.next_identifier() {
                             if kw == "extends" {
-                                if let Some(base) = self.next_simple_type_name() {
-                                    extends = Some(base);
-                                }
+                                extends = self.next_simple_type_name();
                             } else {
                                 self.cursor = saved;
                             }
@@ -999,24 +1058,11 @@ impl<'a> JavaSketchParser<'a> {
                             self.cursor = saved;
                         }
                     }
-                    TypeKind::Interface => {
-                        // Parse optional `extends I, J`
-                        let saved = self.cursor;
-                        if let Some((kw, _)) = self.next_identifier() {
-                            if kw == "extends" {
-                                extends_interfaces = self.parse_simple_type_name_list();
-                            } else {
-                                self.cursor = saved;
-                            }
-                        } else {
-                            self.cursor = saved;
-                        }
-                    }
                 }
 
                 // Find opening brace.
                 self.skip_ws_and_comments();
-                let body_start = match self.find_next_byte(b'{') {
+                let body_start = match self.find_next_code_byte(b'{') {
                     Some(pos) => pos,
                     None => continue,
                 };
@@ -1024,13 +1070,15 @@ impl<'a> JavaSketchParser<'a> {
                     Some(end) => end,
                     None => continue,
                 };
-                let decl_range = TextRange::new(class_kw_range.start, body_end);
-                // Parse methods within class body.
+
+                let decl_range = TextRange::new(decl_kw_range.start, body_end);
+
+                // Parse methods within the type body.
                 let body_text = &self.text[body_start + 1..body_end - 1];
                 let body_offset = body_start + 1;
                 let (methods, fields) = parse_members_in_class(body_text, body_offset);
 
-                // Recursively parse nested classes. We intentionally run this on the raw body text
+                // Recursively parse nested types. We intentionally run this on the raw body text
                 // slice and then shift ranges, so nested symbols remain positioned in the
                 // original file.
                 let mut nested_parser = JavaSketchParser::new(body_text);
@@ -1139,11 +1187,46 @@ impl<'a> JavaSketchParser<'a> {
         }
     }
 
-    fn find_next_byte(&self, needle: u8) -> Option<usize> {
-        self.bytes[self.cursor..]
-            .iter()
-            .position(|&b| b == needle)
-            .map(|rel| self.cursor + rel)
+    fn find_next_code_byte(&self, needle: u8) -> Option<usize> {
+        let bytes = self.bytes;
+        let mut i = self.cursor;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i = skip_java_string(bytes, i);
+                    continue;
+                }
+                b'\'' => {
+                    i = skip_java_char(bytes, i);
+                    continue;
+                }
+                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                    i += 2;
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                    i += 2;
+                    while i + 1 < bytes.len() {
+                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
+            if bytes[i] == needle {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
     }
 
     fn next_simple_type_name(&mut self) -> Option<String> {

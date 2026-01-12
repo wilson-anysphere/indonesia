@@ -663,3 +663,131 @@ fn field_initializer_with_uppercase_comparison_does_not_break_declarator_splitti
         vec!["lt", "ge"]
     );
 }
+
+#[test]
+fn interface_declarations_are_indexed_as_classes() {
+    let files = BTreeMap::from([("Test.java".to_string(), "interface I {}".to_string())]);
+    let index = Index::new(files);
+
+    assert!(
+        index
+            .symbols()
+            .iter()
+            .any(|sym| sym.kind == SymbolKind::Class && sym.name == "I"),
+        "expected interface I to be indexed as a Class symbol"
+    );
+}
+
+#[test]
+fn implements_and_interface_extends_clauses_are_indexed() {
+    let source = r#"
+interface I {}
+class A implements I {}
+interface J extends I {}
+"#;
+    let files = BTreeMap::from([("Test.java".to_string(), source.to_string())]);
+    let index = Index::new(files);
+
+    assert_eq!(
+        index
+            .class_implements("A")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["I"]
+    );
+    assert_eq!(
+        index
+            .interface_extends("J")
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["I"]
+    );
+}
+
+#[test]
+fn record_and_enum_declarations_are_indexed_and_implementations_recorded() {
+    let source = r#"
+interface I {}
+record R(int x) implements I {}
+enum E implements I { A; }
+"#;
+    let files = BTreeMap::from([("Test.java".to_string(), source.to_string())]);
+    let index = Index::new(files);
+
+    assert!(
+        index
+            .symbols()
+            .iter()
+            .any(|sym| sym.kind == SymbolKind::Class && sym.name == "R"),
+        "expected record R to be indexed"
+    );
+    assert!(
+        index
+            .symbols()
+            .iter()
+            .any(|sym| sym.kind == SymbolKind::Class && sym.name == "E"),
+        "expected enum E to be indexed"
+    );
+
+    assert_eq!(
+        index
+            .class_implements("R")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["I"]
+    );
+    assert_eq!(
+        index
+            .class_implements("E")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["I"]
+    );
+}
+
+#[test]
+fn nested_type_ranges_are_file_relative() {
+    let source = r#"
+class Outer {
+    interface Inner {}
+    class Nested {}
+}
+"#;
+    let files = BTreeMap::from([("Test.java".to_string(), source.to_string())]);
+    let index = Index::new(files);
+    let text = index.file_text("Test.java").expect("file text");
+
+    let inner = index
+        .symbols()
+        .iter()
+        .find(|sym| sym.kind == SymbolKind::Class && sym.name == "Inner")
+        .expect("expected Inner to be indexed");
+    let nested = index
+        .symbols()
+        .iter()
+        .find(|sym| sym.kind == SymbolKind::Class && sym.name == "Nested")
+        .expect("expected Nested to be indexed");
+
+    assert_eq!(
+        &text[inner.name_range.start..inner.name_range.end],
+        "Inner"
+    );
+    assert_eq!(
+        &text[nested.name_range.start..nested.name_range.end],
+        "Nested"
+    );
+
+    let expected_inner_decl_start = source
+        .find("interface Inner")
+        .expect("expected interface Inner substring");
+    let expected_nested_decl_start = source
+        .find("class Nested")
+        .expect("expected class Nested substring");
+    assert_eq!(inner.decl_range.start, expected_inner_decl_start);
+    assert_eq!(nested.decl_range.start, expected_nested_decl_start);
+}
