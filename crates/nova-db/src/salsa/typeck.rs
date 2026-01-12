@@ -3700,6 +3700,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         };
 
         let mut stack = vec![self.body.root];
+        // Lambda bodies are represented as statement blocks stored in `body.stmts` but are not
+        // reachable from the root statement tree. Explicit ctor invocations inside lambda bodies
+        // are still invalid, so include them in the traversal.
+        for (_, expr) in self.body.exprs.iter() {
+            if let HirExpr::Lambda {
+                body: LambdaBody::Block(block),
+                ..
+            } = expr
+            {
+                stack.push(*block);
+            }
+        }
         let mut seen = HashSet::new();
         let mut steps = 0u32;
         while let Some(stmt) = stack.pop() {
