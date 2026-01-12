@@ -4746,6 +4746,54 @@ class Foo {
     }
 
     #[test]
+    fn open_document_item_tree_cache_respects_file_text_identity() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        let text1 = Arc::new("class Foo {}".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text1.clone());
+
+        let it1 = db.snapshot().item_tree(file);
+        assert_eq!(it1.items.len(), 1);
+        assert_eq!(it1.items[0].name, "Foo");
+
+        // Pinned item_tree should survive memo eviction while the text identity matches.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let it1_after_evict = db.snapshot().item_tree(file);
+        assert!(
+            Arc::ptr_eq(&it1, &it1_after_evict),
+            "expected open document item_tree to be reused across eviction when text is unchanged"
+        );
+
+        // Changing the file text should invalidate the pinned item_tree (even if the file is still
+        // open) to avoid returning stale trees.
+        let text2 = Arc::new("class Bar {}".to_string());
+        db.set_file_content(file, text2.clone());
+        let it2 = db.snapshot().item_tree(file);
+        assert!(
+            !Arc::ptr_eq(&it1, &it2),
+            "expected item_tree to recompute after file_content changes"
+        );
+        assert_eq!(it2.items.len(), 1);
+        assert_eq!(it2.items[0].name, "Bar");
+
+        // The new item_tree should now be pinned and survive a subsequent eviction.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let it2_after_evict = db.snapshot().item_tree(file);
+        assert!(
+            Arc::ptr_eq(&it2, &it2_after_evict),
+            "expected new open document item_tree to be reused across eviction"
+        );
+    }
+
+    #[test]
     fn open_document_reuses_parse_after_salsa_memo_eviction() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
         let open_docs = Arc::new(OpenDocuments::default());
@@ -4967,6 +5015,77 @@ class Foo {
         assert!(
             Arc::ptr_eq(&before, &after),
             "expected open document parse to be reused after enforcement-driven memo eviction"
+        );
+    }
+
+    #[test]
+    fn open_document_reuses_item_tree_after_memory_manager_enforce() {
+        // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
+        // `ItemTreeStore` intact so open documents can reuse pinned item_tree results.
+        let total = 1_000_000_000_000_u64;
+        let manager = MemoryManager::new(MemoryBudget {
+            total,
+            categories: nova_memory::MemoryBreakdown {
+                query_cache: 1,
+                syntax_trees: total / 2,
+                indexes: 0,
+                type_info: 0,
+                other: total - (total / 2) - 1,
+            },
+        });
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        let db = Database::new_with_memory_manager(&manager);
+        db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+        db.set_file_text(file, "class Foo { int x; }");
+
+        let before = db.snapshot().item_tree(file);
+        assert!(
+            !before.items.is_empty(),
+            "expected item_tree to contain items for open document"
+        );
+        assert!(
+            db.salsa_memo_bytes() > 0,
+            "expected memo tracker to be non-zero prior to enforcement"
+        );
+
+        manager.enforce();
+        assert_eq!(
+            db.salsa_memo_bytes(),
+            0,
+            "expected memo tracker to clear after enforcement-driven eviction"
+        );
+
+        let after = db.snapshot().item_tree(file);
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "expected open document item_tree to be reused after enforcement-driven memo eviction"
+        );
+    }
+
+    #[test]
+    fn closed_document_does_not_reuse_item_tree_after_salsa_memo_eviction() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.attach_item_tree_store(&manager, open_docs);
+
+        let file = FileId::from_raw(1);
+        let text = Arc::new("class Foo {}".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text);
+
+        let before = db.snapshot().item_tree(file);
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let after = db.snapshot().item_tree(file);
+
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "expected closed document item_tree to be recomputed after memo eviction"
         );
     }
 
