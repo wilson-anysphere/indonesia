@@ -167,7 +167,14 @@ function fileUriFromItem(item: unknown): vscode.Uri | undefined {
     return undefined;
   }
 
-  const baseUri = obj.baseUri instanceof vscode.Uri ? obj.baseUri : undefined;
+  const workspaceFolderUri =
+    typeof obj.workspaceFolder === 'object' &&
+    obj.workspaceFolder &&
+    (obj.workspaceFolder as { uri?: unknown }).uri instanceof vscode.Uri
+      ? ((obj.workspaceFolder as { uri: vscode.Uri }).uri as vscode.Uri)
+      : undefined;
+
+  const baseUri = workspaceFolderUri ?? (obj.baseUri instanceof vscode.Uri ? obj.baseUri : undefined);
   const projectRoot = projectRootFromItem(item);
 
   const candidates: unknown[] = [
@@ -268,4 +275,3 @@ export function registerFrameworkDashboardCommands(context: vscode.ExtensionCont
     }),
   );
 }
-
