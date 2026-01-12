@@ -1935,7 +1935,6 @@ pub fn inline_variable(
         //
         // The conservative ordering check is enforced later once we've located the usage
         // statement and can reason about evaluation order within that statement.
-
         let usage = targets
             .first()
             .expect("targets.len() == 1 checked above")
