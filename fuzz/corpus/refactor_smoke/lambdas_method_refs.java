@@ -1,0 +1,13 @@
+import java.util.*;
+import java.util.stream.*;
+
+class Lambdas{
+Runnable r=()->{System.out.println("x");};
+java.util.function.Function<String,Integer>f=s->s.length();
+
+void m(){
+var xs=Stream.of(1,2,3).map(i->i+1).filter(i->i%2==0).toList();
+var y = Optional.of(" x ").map(String::trim).orElseGet(()->"");
+}
+}
+

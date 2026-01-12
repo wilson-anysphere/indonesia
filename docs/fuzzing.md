@@ -137,6 +137,17 @@ To re-sync after adding/removing/updating a Java seed, mirror the canonical corp
 bash scripts/sync-fuzz-java-corpus.sh
 ```
 
+Some fuzz targets operate on the same kind of input (Java source text). To keep optional targets useful
+out of the box, their checked-in seed corpora intentionally **reuse a small, curated subset** of the
+primary Java corpora:
+
+- `parse_java` ↔ `fuzz_syntax_parse`
+- `format_java` ↔ `fuzz_format`
+- `refactor_smoke` ↔ `fuzz_syntax_parse` (plus seeds that are representative for refactoring)
+
+When adding new Java seeds, prefer updating the primary corpora first, then copy any especially useful
+cases into the optional target corpus directories.
+
 ## Hangs, timeouts, and input size caps
 
 Each fuzz target:

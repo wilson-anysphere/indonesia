@@ -1,0 +1,12 @@
+# Keep the checked-in seed corpus small.
+#
+# libFuzzer will write new corpus entries directly into the corpus directory.
+# These are typically extensionless (e.g. sha1-like names or `id:...`), while
+# our checked-in seeds are `*.java`.
+#
+# Note: this corpus intentionally reuses a curated subset of
+# `fuzz/corpus/fuzz_format/` so the optional `format_java` target starts with
+# high-signal seeds.
+*
+!*.java
+!.gitignore
