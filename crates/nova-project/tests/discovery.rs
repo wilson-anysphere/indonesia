@@ -282,6 +282,38 @@ fn loads_gradle_projectdir_mapping_workspace() {
 }
 
 #[test]
+fn loads_gradle_custom_source_sets_workspace() {
+    let root = testdata_path("gradle-custom-sourcesets");
+    let config = load_project(&root).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    let roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.origin,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+
+    assert!(roots.contains(&(
+        SourceRootKind::Test,
+        SourceRootOrigin::Source,
+        PathBuf::from("app/src/integrationTest/java")
+    )));
+
+    let config2 = load_project(&root).expect("load gradle project again");
+    assert_eq!(config, config2);
+}
+
+#[test]
 fn loads_maven_multi_module_workspace_model() {
     let root = testdata_path("maven-multi");
     let model = load_workspace_model(&root).expect("load maven workspace model");
@@ -466,4 +498,43 @@ fn loads_gradle_projectdir_mapping_workspace_model() {
         .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "gradle::lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_custom_source_sets_workspace_model() {
+    let root = testdata_path("gradle-custom-sourcesets");
+    let model = load_workspace_model(&root).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let app = model.module_by_id("gradle::app").expect("app module");
+    let app_source_roots: BTreeSet<_> = app
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.origin,
+                sr.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(app_source_roots.contains(&(
+        SourceRootKind::Test,
+        SourceRootOrigin::Source,
+        PathBuf::from("app/src/integrationTest/java")
+    )));
+
+    let it_file = model
+        .workspace_root
+        .join("app/src/integrationTest/java/com/example/app/AppIT.java");
+    let match_it = model
+        .module_for_path(&it_file)
+        .expect("module for AppIT.java");
+    assert_eq!(match_it.module.id, "gradle::app");
+    assert_eq!(match_it.source_root.kind, SourceRootKind::Test);
+    assert_eq!(match_it.source_root.origin, SourceRootOrigin::Source);
 }

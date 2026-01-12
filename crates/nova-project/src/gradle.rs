@@ -73,18 +73,7 @@ pub(crate) fn load_gradle_project(
 
         let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
 
-        push_source_root(
-            &mut source_roots,
-            &module_root,
-            SourceRootKind::Main,
-            "src/main/java",
-        );
-        push_source_root(
-            &mut source_roots,
-            &module_root,
-            SourceRootKind::Test,
-            "src/test/java",
-        );
+        append_source_set_java_roots(&mut source_roots, &module_root);
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             root,
@@ -243,18 +232,7 @@ pub(crate) fn load_gradle_workspace_model(
         };
 
         let mut source_roots = Vec::new();
-        push_source_root(
-            &mut source_roots,
-            &module_root,
-            SourceRootKind::Main,
-            "src/main/java",
-        );
-        push_source_root(
-            &mut source_roots,
-            &module_root,
-            SourceRootKind::Test,
-            "src/test/java",
-        );
+        append_source_set_java_roots(&mut source_roots, &module_root);
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             root,
@@ -952,6 +930,40 @@ fn push_source_root(
             origin: SourceRootOrigin::Source,
             path,
         });
+    }
+}
+
+fn append_source_set_java_roots(out: &mut Vec<SourceRoot>, module_root: &Path) {
+    let src_dir = module_root.join("src");
+    let Ok(entries) = std::fs::read_dir(src_dir) else {
+        return;
+    };
+
+    let mut source_sets = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    source_sets.sort();
+
+    for source_set in source_sets {
+        let kind = gradle_source_set_kind(&source_set);
+        let rel = format!("src/{source_set}/java");
+        push_source_root(out, module_root, kind, &rel);
+    }
+}
+
+fn gradle_source_set_kind(source_set: &str) -> SourceRootKind {
+    if source_set.eq_ignore_ascii_case("main") {
+        return SourceRootKind::Main;
+    }
+    if source_set.eq_ignore_ascii_case("test") {
+        return SourceRootKind::Test;
+    }
+
+    if source_set.to_ascii_lowercase().contains("test") {
+        SourceRootKind::Test
+    } else {
+        SourceRootKind::Main
     }
 }
 
