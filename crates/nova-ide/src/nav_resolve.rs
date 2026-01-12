@@ -297,24 +297,69 @@ impl WorkspaceIndex {
             .iter()
             .find(|ty| span_contains(ty.body_span, offset))?;
 
-        if receiver == "this" {
-            return Some(containing_type.name.clone());
-        }
-        if receiver == "super" {
-            return containing_type.super_class.clone();
+        let segments: Vec<&str> = receiver
+            .split('.')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let first = *segments.first()?;
+
+        let mut cur_ty = match first {
+            "this" => Some(containing_type.name.clone()),
+            "super" => containing_type.super_class.clone(),
+            name => {
+                // locals/fields
+                if let Some(ty) = self.resolve_name_type(parsed, offset, name) {
+                    Some(ty)
+                } else if self.type_info(name).is_some() {
+                    // Type name (static access)
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            }
+        }?;
+
+        for field in segments.into_iter().skip(1) {
+            cur_ty = self.resolve_field_type_name(&cur_ty, field)?;
         }
 
-        // locals/fields
-        if let Some(ty) = self.resolve_name_type(parsed, offset, receiver) {
-            return Some(ty);
+        Some(cur_ty)
+    }
+
+    fn resolve_field_type_name(&self, ty_name: &str, field_name: &str) -> Option<String> {
+        fn go(
+            index: &WorkspaceIndex,
+            ty_name: &str,
+            field_name: &str,
+            visited: &mut Vec<String>,
+        ) -> Option<String> {
+            if visited.iter().any(|t| t == ty_name) {
+                return None;
+            }
+            visited.push(ty_name.to_string());
+
+            let info = index.type_info(ty_name)?;
+            if let Some(field) = info.def.fields.iter().find(|f| f.name == field_name) {
+                return Some(field.ty.clone());
+            }
+
+            if let Some(super_name) = info.def.super_class.as_deref() {
+                if let Some(found) = go(index, super_name, field_name, visited) {
+                    return Some(found);
+                }
+            }
+
+            for iface in &info.def.interfaces {
+                if let Some(found) = go(index, iface, field_name, visited) {
+                    return Some(found);
+                }
+            }
+
+            None
         }
 
-        // Type name (static access)
-        if self.type_info(receiver).is_some() {
-            return Some(receiver.to_string());
-        }
-
-        None
+        go(self, ty_name, field_name, &mut Vec::new())
     }
 }
 
@@ -466,18 +511,57 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
 }
 
 fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {
+    // Best-effort support for chained receivers like `a.b.c` (receiver for `c` is `a.b`).
+    //
+    // We only accept identifier chains separated by dots with optional whitespace around dots:
+    //
+    //     a.b.c
+    //     a . b . c
+    //     this.a.b
+    //
+    // We intentionally do *not* try to parse arbitrary expressions like `a.b().c`,
+    // indexing, or parenthesized expressions.
     let mut recv_end = dot_idx;
     while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
         recv_end -= 1;
     }
-    let mut recv_start = recv_end;
-    while recv_start > 0 && is_ident_continue(bytes[recv_start - 1]) {
-        recv_start -= 1;
-    }
-    if recv_start == recv_end {
-        None
-    } else {
-        Some(text[recv_start..recv_end].to_string())
+
+    let mut segments_rev: Vec<&str> = Vec::new();
+    let mut end = recv_end;
+    loop {
+        let mut start = end;
+        while start > 0 && is_ident_continue(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == end {
+            return None;
+        }
+        if !is_ident_start(bytes[start]) {
+            return None;
+        }
+        segments_rev.push(&text[start..end]);
+
+        // Skip whitespace before this identifier.
+        let mut i = start;
+        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+            i -= 1;
+        }
+
+        // Continue only if there's a dot before the identifier (with optional whitespace).
+        if i > 0 && bytes[i - 1] == b'.' {
+            i -= 1;
+            while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+                i -= 1;
+            }
+            end = i;
+            if end == 0 {
+                return None;
+            }
+            continue;
+        }
+
+        segments_rev.reverse();
+        return Some(segments_rev.join("."));
     }
 }
 
