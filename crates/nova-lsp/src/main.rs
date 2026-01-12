@@ -8442,7 +8442,7 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "Generate method body with AI", state, rpc_out)
+    let result = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out)
         .map_err(|err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
@@ -8537,7 +8537,7 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "Generate tests with AI", state, rpc_out)
+    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out)
         .map_err(|err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
