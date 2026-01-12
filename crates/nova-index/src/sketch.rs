@@ -1177,8 +1177,11 @@ fn parse_members_in_class(
     while i < bytes.len() {
         match bytes[i] {
             b'{' => {
-                if depth == 0 && !member_contains_assignment(body_text, member_start, i) {
-                    in_block_member = true;
+                if depth == 0 {
+                    let scan = scan_member_for_assignment_and_parens(body_text, member_start, i);
+                    if scan.paren_depth == 0 && !scan.has_assignment {
+                        in_block_member = true;
+                    }
                 }
                 depth += 1;
                 i += 1;
@@ -1347,11 +1350,26 @@ fn parse_members_in_class(
     (methods, fields)
 }
 
-fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct MemberScanResult {
+    has_assignment: bool,
+    /// Parentheses nesting depth at `until` relative to `member_start`.
+    ///
+    /// Used as a heuristic to ignore `=` in annotation argument lists and to avoid treating
+    /// `{...}` inside `(...)` (e.g. annotation arrays) as top-level block members.
+    paren_depth: usize,
+}
+
+fn scan_member_for_assignment_and_parens(
+    text: &str,
+    member_start: usize,
+    until: usize,
+) -> MemberScanResult {
     let bytes = text.as_bytes();
     let mut i = member_start.min(bytes.len());
     let until = until.min(bytes.len());
     let mut paren_depth = 0usize;
+    let mut has_assignment = false;
 
     while i < until {
         match bytes[i] {
@@ -1394,7 +1412,9 @@ fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> 
                 continue;
             }
             b'=' if paren_depth == 0 => {
-                return true;
+                has_assignment = true;
+                i += 1;
+                continue;
             }
             _ => {
                 i += 1;
@@ -1402,7 +1422,14 @@ fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> 
         }
     }
 
-    false
+    MemberScanResult {
+        has_assignment,
+        paren_depth,
+    }
+}
+
+fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> bool {
+    scan_member_for_assignment_and_parens(text, member_start, until).has_assignment
 }
 
 fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
