@@ -2305,6 +2305,9 @@ async function sendNovaRequest<R>(
     return undefined;
   }
   const c = await requireClient({ token });
+  if (token?.isCancellationRequested) {
+    return undefined;
+  }
   if (method.startsWith('nova/')) {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     const routedWorkspaceKey = routeWorkspaceFolderUri({
@@ -2354,6 +2357,9 @@ async function sendNovaRequest<R>(
     }
   }
   try {
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     const result = await sendRequestWithOptionalToken<R>(c, method, params, token);
     if (token?.isCancellationRequested) {
       return undefined;
