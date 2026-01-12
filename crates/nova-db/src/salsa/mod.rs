@@ -871,6 +871,9 @@ impl MemoryEvictor for SalsaMemoEvictor {
             inputs: self.inputs.clone(),
             memo_evictor: Arc::new(OnceLock::new()),
             memo_footprint: self.footprint.clone(),
+            input_footprint: Arc::new(SalsaInputFootprint::default()),
+            jdk_index_tracker: Arc::new(InputIndexTracker::new("jdk_index")),
+            classpath_index_tracker: Arc::new(InputIndexTracker::new("classpath_index")),
         };
 
         for project in projects {

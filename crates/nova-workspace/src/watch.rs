@@ -101,6 +101,17 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    // Gradle script plugins conventionally live directly under the `gradle/` directory.
+    if (name.ends_with(".gradle") || name.ends_with(".gradle.kts"))
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            == Some("gradle")
+    {
+        return true;
+    }
+
     if name == "pom.xml"
         || name == "module-info.java"
         || name == "nova.toml"
@@ -134,12 +145,14 @@ pub fn is_build_file(path: &Path) -> bool {
         "gradle-wrapper.properties" => {
             path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
         }
+        "libs.versions.toml" => path.ends_with(Path::new("gradle/libs.versions.toml")),
         "mvnw" | "mvnw.cmd" => true,
         "maven-wrapper.properties" => {
             path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
         }
         "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
         "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
+        "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
         _ => false,
     }
 }
@@ -182,6 +195,7 @@ mod tests {
                 .join("maven-wrapper.properties"),
             root.join(".mvn").join("extensions.xml"),
             root.join(".mvn").join("maven.config"),
+            root.join(".mvn").join("jvm.config"),
             root.join("WORKSPACE"),
             root.join("WORKSPACE.bazel"),
             root.join("MODULE.bazel"),
@@ -193,6 +207,9 @@ mod tests {
             root.join(".nova")
                 .join("apt-cache")
                 .join("generated-roots.json"),
+            root.join("gradle").join("libs.versions.toml"),
+            root.join("gradle").join("dependencies.gradle"),
+            root.join("gradle").join("dependencies.gradle.kts"),
         ];
 
         for path in build_files {
@@ -206,6 +223,28 @@ mod tests {
                 categorize_event(&config, &event),
                 Some(ChangeCategory::Build),
                 "expected {} to be categorized as Build",
+                path.display()
+            );
+        }
+
+        let non_build_files = [
+            root.join("libs.versions.toml"),
+            root.join("jvm.config"),
+            root.join("dependencies.gradle"),
+            root.join("dependencies.gradle.kts"),
+        ];
+
+        for path in non_build_files {
+            assert!(
+                !is_build_file(&path),
+                "expected {} not to be treated as a build file",
+                path.display()
+            );
+            let event = NormalizedEvent::Modified(path.clone());
+            assert_ne!(
+                categorize_event(&config, &event),
+                Some(ChangeCategory::Build),
+                "expected {} not to be categorized as Build",
                 path.display()
             );
         }
