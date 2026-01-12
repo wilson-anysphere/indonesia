@@ -59,7 +59,7 @@ pub use resolve::{NovaResolve, WorkspaceClassIdMap};
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
-pub use typeck::{BodyTypeckResult, FileExprId, NovaTypeck};
+pub use typeck::{BodyTypeckResult, DemandExprTypeckResult, FileExprId, NovaTypeck};
 pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
 pub use class_ids::{ClassIdInterner, ClassKey, HasClassInterner};
 

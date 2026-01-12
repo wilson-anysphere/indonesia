@@ -133,6 +133,13 @@ pub struct BodyTypeckResult {
     pub expected_return: Type,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemandExprTypeckResult {
+    pub env: ArcEq<TypeStore>,
+    pub ty: Type,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
     match &body.exprs[expr] {
         HirExpr::Literal {
@@ -169,6 +176,8 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
 
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
+    fn type_of_expr_demand_result(&self, file: FileId, expr: FileExprId) -> Arc<DemandExprTypeckResult>;
+    fn type_of_expr_demand(&self, file: FileId, expr: FileExprId) -> Type;
     fn type_of_def(&self, def: DefWithBodyId) -> Type;
 
     fn resolve_method_call(&self, file: FileId, call_site: FileExprId) -> Option<ResolvedMethod>;
@@ -190,6 +199,294 @@ fn type_of_expr(db: &dyn NovaTypeck, _file: FileId, expr: FileExprId) -> Type {
         .get(expr.expr.idx())
         .cloned()
         .unwrap_or(Type::Unknown)
+}
+
+fn type_of_expr_demand_result(
+    db: &dyn NovaTypeck,
+    _file: FileId,
+    expr: FileExprId,
+) -> Arc<DemandExprTypeckResult> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!(
+        "query",
+        name = "type_of_expr_demand_result",
+        owner = ?expr.owner,
+        expr = ?expr.expr
+    )
+    .entered();
+
+    cancel::check_cancelled(db);
+
+    let owner = expr.owner;
+    let file = def_file(owner);
+    let java_level = db.java_language_level(file);
+    let project = db.file_project(file);
+    let jdk = db.jdk_index(project);
+    let classpath = db.classpath_index(project);
+    let workspace = db.workspace_def_map(project);
+    let jpms_env = db.jpms_compilation_env(project);
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let cfg = db.project_config(project);
+        let file_rel = db.file_rel_path(file);
+        let from = module_for_file(&cfg, file_rel.as_str());
+        JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+    });
+
+    let workspace_index = WorkspaceFirstIndex {
+        workspace: &workspace,
+        classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+    };
+
+    let resolver = if let Some(index) = jpms_index.as_ref() {
+        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+    } else {
+        nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&workspace_index)
+            .with_workspace(&workspace)
+    };
+
+    let scopes = db.scope_graph(file);
+    let body_scope = match owner {
+        DefWithBodyId::Method(m) => scopes.method_scopes.get(&m).copied(),
+        DefWithBodyId::Constructor(c) => scopes.constructor_scopes.get(&c).copied(),
+        DefWithBodyId::Initializer(i) => scopes.initializer_scopes.get(&i).copied(),
+    }
+    .unwrap_or(scopes.file_scope);
+
+    let tree = db.hir_item_tree(file);
+    let body = match owner {
+        DefWithBodyId::Method(m) => db.hir_body(m),
+        DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+        DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+    };
+
+    let expr_scopes = db.expr_scopes(owner);
+
+    // Build an env for this body (same as `typeck_body`, but without whole-body checking).
+    let base_store = db.project_base_type_store(project);
+    let mut store = (&*base_store).clone();
+    let base_provider = if let Some(env) = jpms_env.as_deref() {
+        nova_types::ChainTypeProvider::new(vec![
+            &env.classpath as &dyn TypeProvider,
+            &*jdk as &dyn TypeProvider,
+        ])
+    } else {
+        match classpath.as_deref() {
+            Some(cp) => nova_types::ChainTypeProvider::new(vec![
+                cp as &dyn TypeProvider,
+                &*jdk as &dyn TypeProvider,
+            ]),
+            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        }
+    };
+    let jdk_provider: &dyn TypeProvider = &*jdk;
+    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    // Define source types for the full workspace so workspace `Type::Class` ids are stable within
+    // this body and cross-file member resolution works.
+    let source_types = define_workspace_source_types(db, project, &resolver, &mut loader);
+    let type_vars = type_vars_for_owner(
+        &resolver,
+        owner,
+        body_scope,
+        &scopes.scopes,
+        &tree,
+        &mut loader,
+        &source_types.source_type_vars,
+    );
+    let SourceTypes {
+        field_types,
+        method_types,
+        field_owners,
+        method_owners,
+        ..
+    } = source_types;
+
+    let (expected_return, signature_diags) = resolve_expected_return_type(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
+    let (param_types, param_diags) = resolve_param_types(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
+
+    let mut checker = BodyChecker::new(
+        db,
+        owner,
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        &body,
+        expr_scopes,
+        type_vars,
+        expected_return,
+        param_types,
+        field_types,
+        method_types,
+        field_owners,
+        method_owners,
+        java_level,
+        true,
+    );
+    checker.diagnostics.extend(signature_diags);
+    checker.diagnostics.extend(param_diags);
+
+    // Best-effort expected-type seeding.
+    //
+    // Full `typeck_body` can infer more precise types by propagating expected types from
+    // surrounding statements (`return`, typed local initializers, etc) into the target
+    // expression. The demand-driven query doesn't walk every statement, but we still scan the
+    // body once to recover expected types for the requested expression and to target-type
+    // enclosing lambdas (so lambda parameters have usable types inside the body).
+    let mut expected_ty: Option<Type> = None;
+    if expr.expr.idx() < body.exprs.len() {
+        let target_expr = expr.expr;
+        let target_range = body.exprs[target_expr].range();
+
+        let mut stack = vec![body.root];
+        while let Some(stmt) = stack.pop() {
+            match &body.stmts[stmt] {
+                HirStmt::Block { statements, .. } => {
+                    stack.extend(statements.iter().rev().copied());
+                }
+                HirStmt::Let {
+                    local, initializer, ..
+                } => {
+                    if let Some(init) = initializer {
+                        // If the target expression is the initializer of an explicitly-typed local,
+                        // use the declared type as the expected type.
+                        if *init == target_expr && body.locals[*local].ty_text.trim() != "var" {
+                            let data = &body.locals[*local];
+                            let decl_ty = checker.resolve_source_type(
+                                &mut loader,
+                                data.ty_text.as_str(),
+                                Some(data.ty_range),
+                            );
+                            if !decl_ty.is_errorish() {
+                                expected_ty = Some(decl_ty);
+                            }
+                        }
+
+                        // If the target expression is inside a lambda initializer that has an
+                        // explicit target type, seed the lambda parameter locals from the SAM
+                        // signature without type-checking the entire lambda body.
+                        if matches!(body.exprs[*init], HirExpr::Lambda { .. })
+                            && body.locals[*local].ty_text.trim() != "var"
+                        {
+                            let init_range = body.exprs[*init].range();
+                            let may_contain = init_range.start <= target_range.start
+                                && target_range.end <= init_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
+                                let data = &body.locals[*local];
+                                let decl_ty = checker.resolve_source_type(
+                                    &mut loader,
+                                    data.ty_text.as_str(),
+                                    Some(data.ty_range),
+                                );
+                                if !decl_ty.is_errorish() {
+                                    seed_lambda_params_from_target(
+                                        &mut checker,
+                                        &mut loader,
+                                        *init,
+                                        &decl_ty,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                HirStmt::Return { expr, .. } => {
+                    if let Some(ret) = expr {
+                        if *ret == target_expr && !checker.expected_return.is_errorish() {
+                            expected_ty = Some(checker.expected_return.clone());
+                        }
+                    }
+                }
+                HirStmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    stack.push(*then_branch);
+                    if let Some(else_branch) = else_branch {
+                        stack.push(*else_branch);
+                    }
+                }
+                HirStmt::While { body: b, .. } => stack.push(*b),
+                HirStmt::For { init, body: b, .. } => {
+                    stack.extend(init.iter().rev().copied());
+                    stack.push(*b);
+                }
+                HirStmt::ForEach { body: b, .. } => stack.push(*b),
+                HirStmt::Switch { body: b, .. } => stack.push(*b),
+                HirStmt::Try {
+                    body: b,
+                    catches,
+                    finally,
+                    ..
+                } => {
+                    stack.push(*b);
+                    for catch in catches.iter().rev() {
+                        stack.push(catch.body);
+                    }
+                    if let Some(finally) = finally {
+                        stack.push(*finally);
+                    }
+                }
+                HirStmt::Expr { .. }
+                | HirStmt::Throw { .. }
+                | HirStmt::Break { .. }
+                | HirStmt::Continue { .. }
+                | HirStmt::Empty { .. } => {}
+            }
+        }
+    }
+
+    let ty = if expr.expr.idx() < body.exprs.len() {
+        let target_expr = expr.expr;
+        match expected_ty.as_ref() {
+            Some(expected) => checker
+                .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                .ty,
+            None => checker.infer_expr(&mut loader, target_expr).ty,
+        }
+    } else {
+        Type::Unknown
+    };
+
+    let diagnostics = checker.diagnostics;
+
+    drop(loader);
+    let env = ArcEq::new(Arc::new(store));
+
+    let result = Arc::new(DemandExprTypeckResult {
+        env,
+        ty,
+        diagnostics,
+    });
+
+    db.record_query_stat("type_of_expr_demand_result", start.elapsed());
+    result
+}
+
+fn type_of_expr_demand(db: &dyn NovaTypeck, file: FileId, expr: FileExprId) -> Type {
+    db.type_of_expr_demand_result(file, expr).ty.clone()
 }
 
 fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
@@ -461,6 +758,7 @@ fn resolve_method_call_demand(
         field_owners,
         method_owners,
         java_level,
+        false,
     );
 
     // Best-effort local type table for locals with explicit types. This improves overload
@@ -995,13 +1293,14 @@ fn type_at_offset_display(db: &dyn NovaTypeck, file: FileId, offset: u32) -> Opt
     }
 
     let (owner, expr, _) = best?;
-    let body_res = db.typeck_body(owner);
-    let ty = body_res
-        .expr_types
-        .get(expr.idx())
-        .cloned()
-        .unwrap_or(Type::Unknown);
-    let rendered = format_type(&*body_res.env, &ty);
+    let expr_res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr,
+        },
+    );
+    let rendered = format_type(&*expr_res.env, &expr_res.ty);
 
     db.record_query_stat("type_at_offset_display", start.elapsed());
     Some(rendered)
@@ -1474,6 +1773,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         field_owners,
         method_owners,
         java_level,
+        false,
     );
     checker.diagnostics.extend(signature_diags);
     checker.diagnostics.extend(param_diags);
@@ -1674,6 +1974,13 @@ struct ExprInfo {
     is_type_ref: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTyState {
+    Uncomputed,
+    Computing,
+    Computed,
+}
+
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
     owner: DefWithBodyId,
@@ -1686,6 +1993,10 @@ struct BodyChecker<'a, 'idx> {
     type_vars: HashMap<String, TypeVarId>,
     expected_return: Type,
     local_types: Vec<Type>,
+    local_ty_states: Vec<LocalTyState>,
+    local_initializers: Vec<Option<HirExprId>>,
+    local_foreach_iterables: Vec<Option<HirExprId>>,
+    lazy_locals: bool,
     param_types: Vec<Type>,
     field_types: HashMap<FieldId, Type>,
     method_types: HashMap<MethodId, (Vec<Type>, Type)>,
@@ -1719,8 +2030,28 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         field_owners: HashMap<FieldId, String>,
         method_owners: HashMap<MethodId, String>,
         java_level: JavaLanguageLevel,
+        lazy_locals: bool,
     ) -> Self {
         let local_types = vec![Type::Unknown; body.locals.len()];
+        let local_ty_states = vec![LocalTyState::Uncomputed; body.locals.len()];
+        let (local_initializers, local_foreach_iterables) = if lazy_locals {
+            let mut initializers = vec![None; body.locals.len()];
+            let mut foreach_iterables = vec![None; body.locals.len()];
+            for (_, stmt) in body.stmts.iter() {
+                match stmt {
+                    HirStmt::Let { local, initializer, .. } => {
+                        initializers[local.idx()] = *initializer;
+                    }
+                    HirStmt::ForEach { local, iterable, .. } => {
+                        foreach_iterables[local.idx()] = Some(*iterable);
+                    }
+                    _ => {}
+                }
+            }
+            (initializers, foreach_iterables)
+        } else {
+            (vec![None; body.locals.len()], vec![None; body.locals.len()])
+        };
         let expr_info = vec![None; body.exprs.len()];
         let call_resolutions = vec![None; body.exprs.len()];
 
@@ -1736,6 +2067,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             type_vars,
             expected_return,
             local_types,
+            local_ty_states,
+            local_initializers,
+            local_foreach_iterables,
+            lazy_locals,
             param_types,
             field_types,
             method_types,
@@ -2064,6 +2399,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(diag_span),
                         ));
                         self.local_types[local.idx()] = Type::Error;
+                        self.local_ty_states[local.idx()] = LocalTyState::Computed;
                         return;
                     };
 
@@ -2086,9 +2422,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(init_range),
                         ));
                         self.local_types[local.idx()] = Type::Error;
+                        self.local_ty_states[local.idx()] = LocalTyState::Computed;
                         return;
                     }
-
                     let init_ty = self.infer_expr(loader, *init).ty;
 
                     let init_is_null = matches!(&self.body.exprs[*init], HirExpr::Null { .. })
@@ -2120,16 +2456,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(diag_span),
                         ));
                         self.local_types[local.idx()] = Type::Error;
+                        self.local_ty_states[local.idx()] = LocalTyState::Computed;
                         return;
                     }
 
                     self.local_types[local.idx()] = init_ty;
+                    self.local_ty_states[local.idx()] = LocalTyState::Computed;
                     return;
                 }
 
                 let decl_ty =
                     self.resolve_source_type(loader, data.ty_text.as_str(), Some(data.ty_range));
                 self.local_types[local.idx()] = decl_ty.clone();
+                self.local_ty_states[local.idx()] = LocalTyState::Computed;
 
                 let Some(init) = initializer else {
                     return;
@@ -2319,6 +2658,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         Some(data.ty_range),
                     );
                     self.local_types[local.idx()] = decl_ty.clone();
+                    self.local_ty_states[local.idx()] = LocalTyState::Computed;
 
                     if decl_ty.is_errorish() || element_ty.is_errorish() {
                         self.check_stmt(loader, *body, expected_return);
@@ -2347,6 +2687,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     } else {
                         self.local_types[local.idx()] = element_ty;
                     }
+                    self.local_ty_states[local.idx()] = LocalTyState::Computed;
                 }
                 self.check_stmt(loader, *body, expected_return);
             }
@@ -2375,6 +2716,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(diag_span),
                         ));
                         self.local_types[catch.param.idx()] = Type::Error;
+                        self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
                         Type::Error
                     } else {
                         let catch_ty = self.resolve_source_type(
@@ -2383,6 +2725,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(data.ty_range),
                         );
                         self.local_types[catch.param.idx()] = catch_ty.clone();
+                        self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
                         catch_ty
                     };
 
@@ -2440,6 +2783,53 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Break { .. } | HirStmt::Continue { .. } => {}
             HirStmt::Empty { .. } => {}
         }
+    }
+
+    fn infer_local_type(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        local: nova_hir::hir::LocalId,
+    ) -> Type {
+        if !self.lazy_locals {
+            return self.local_types[local.idx()].clone();
+        }
+
+        match self.local_ty_states[local.idx()] {
+            LocalTyState::Computed => {
+                return self.local_types[local.idx()].clone();
+            }
+            LocalTyState::Computing => {
+                // Prevent cycles like `var x = x;` or mutual recursion between `var` locals.
+                let data = &self.body.locals[local];
+                self.diagnostics.push(Diagnostic::error(
+                    "cyclic-var",
+                    format!("cyclic `var` initializer for `{}`", data.name),
+                    Some(data.range),
+                ));
+                return Type::Unknown;
+            }
+            LocalTyState::Uncomputed => {}
+        }
+
+        self.local_ty_states[local.idx()] = LocalTyState::Computing;
+
+        let data = &self.body.locals[local];
+        let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() {
+            if let Some(init) = self.local_initializers[local.idx()] {
+                self.infer_expr(loader, init).ty
+            } else if let Some(iterable) = self.local_foreach_iterables[local.idx()] {
+                let iterable_ty = self.infer_expr(loader, iterable).ty;
+                self.infer_foreach_element_type(loader, &iterable_ty)
+            } else {
+                Type::Unknown
+            }
+        } else {
+            self.resolve_source_type(loader, data.ty_text.as_str(), Some(data.ty_range))
+        };
+
+        self.local_types[local.idx()] = ty.clone();
+        self.local_ty_states[local.idx()] = LocalTyState::Computed;
+        ty
     }
 
     fn infer_expr(&mut self, loader: &mut ExternalTypeLoader<'_>, expr: HirExprId) -> ExprInfo {
@@ -3055,6 +3445,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                         for (param, ty) in params.iter().zip(sig.params.into_iter()) {
                             self.local_types[param.local.idx()] = ty;
+                            // In demand-driven mode, locals are lazily inferred via
+                            // `infer_local_type` unless marked computed.
+                            self.local_ty_states[param.local.idx()] = LocalTyState::Computed;
                         }
                     }
                     target.clone()
@@ -3215,7 +3608,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             match resolved {
                 ResolvedLocal::Local(local) => {
                     return ExprInfo {
-                        ty: self.local_types[local.idx()].clone(),
+                        ty: self.infer_local_type(loader, local),
                         is_type_ref: false,
                     };
                 }
@@ -5062,6 +5455,38 @@ fn def_file(def: DefWithBodyId) -> FileId {
     }
 }
 
+fn seed_lambda_params_from_target<'a, 'idx>(
+    checker: &mut BodyChecker<'a, 'idx>,
+    loader: &mut ExternalTypeLoader<'_>,
+    lambda_expr: HirExprId,
+    target: &Type,
+) {
+    let HirExpr::Lambda { params, .. } = &checker.body.exprs[lambda_expr] else {
+        return;
+    };
+
+    checker.ensure_type_loaded(loader, target);
+    let env_ro: &dyn TypeEnv = &*loader.store;
+    if let Some(sig) = nova_types::infer_lambda_sam_signature(env_ro, target) {
+        if sig.params.len() != params.len() {
+            checker.diagnostics.push(Diagnostic::error(
+                "lambda-arity-mismatch",
+                format!(
+                    "lambda arity mismatch: expected {}, found {}",
+                    sig.params.len(),
+                    params.len()
+                ),
+                Some(checker.body.exprs[lambda_expr].range()),
+            ));
+        }
+
+        for (param, ty) in params.iter().zip(sig.params.into_iter()) {
+            checker.local_types[param.local.idx()] = ty;
+            checker.local_ty_states[param.local.idx()] = LocalTyState::Computed;
+        }
+    }
+}
+
 fn find_best_expr_in_stmt(
     body: &HirBody,
     stmt: nova_hir::hir::StmtId,
@@ -5157,6 +5582,120 @@ fn find_best_expr_in_stmt(
         HirStmt::Throw { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
         HirStmt::Break { .. } | HirStmt::Continue { .. } => {}
         HirStmt::Empty { .. } => {}
+    }
+}
+
+fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: HirExprId) -> bool {
+    match &body.stmts[stmt] {
+        HirStmt::Block { statements, .. } => statements
+            .iter()
+            .any(|stmt| contains_expr_in_stmt(body, *stmt, target)),
+        HirStmt::Let { initializer, .. } => initializer
+            .as_ref()
+            .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirStmt::Expr { expr, .. } => contains_expr_in_expr(body, *expr, target),
+        HirStmt::Return { expr, .. } => expr
+            .as_ref()
+            .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirStmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            contains_expr_in_expr(body, *condition, target)
+                || contains_expr_in_stmt(body, *then_branch, target)
+                || else_branch
+                    .as_ref()
+                    .is_some_and(|branch| contains_expr_in_stmt(body, *branch, target))
+        }
+        HirStmt::While {
+            condition, body: b, ..
+        } => contains_expr_in_expr(body, *condition, target) || contains_expr_in_stmt(body, *b, target),
+        HirStmt::For {
+            init,
+            condition,
+            update,
+            body: b,
+            ..
+        } => {
+            init.iter().any(|stmt| contains_expr_in_stmt(body, *stmt, target))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
+                || update.iter().any(|expr| contains_expr_in_expr(body, *expr, target))
+                || contains_expr_in_stmt(body, *b, target)
+        }
+        HirStmt::ForEach {
+            iterable, body: b, ..
+        } => contains_expr_in_expr(body, *iterable, target) || contains_expr_in_stmt(body, *b, target),
+        HirStmt::Switch {
+            selector, body: b, ..
+        } => contains_expr_in_expr(body, *selector, target) || contains_expr_in_stmt(body, *b, target),
+        HirStmt::Try {
+            body: b,
+            catches,
+            finally,
+            ..
+        } => {
+            contains_expr_in_stmt(body, *b, target)
+                || catches
+                    .iter()
+                    .any(|catch| contains_expr_in_stmt(body, catch.body, target))
+                || finally
+                    .as_ref()
+                    .is_some_and(|finally| contains_expr_in_stmt(body, *finally, target))
+        }
+        HirStmt::Throw { expr, .. } => contains_expr_in_expr(body, *expr, target),
+        HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => false,
+    }
+}
+
+fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> bool {
+    if expr == target {
+        return true;
+    }
+
+    match &body.exprs[expr] {
+        HirExpr::FieldAccess { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
+        HirExpr::MethodReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
+        HirExpr::ConstructorReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
+        HirExpr::ClassLiteral { ty, .. } => contains_expr_in_expr(body, *ty, target),
+        HirExpr::Call { callee, args, .. } => {
+            contains_expr_in_expr(body, *callee, target)
+                || args.iter().any(|expr| contains_expr_in_expr(body, *expr, target))
+        }
+        HirExpr::New { args, .. } => args.iter().any(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
+        HirExpr::Binary { lhs, rhs, .. } => {
+            contains_expr_in_expr(body, *lhs, target) || contains_expr_in_expr(body, *rhs, target)
+        }
+        HirExpr::Assign { lhs, rhs, .. } => {
+            contains_expr_in_expr(body, *lhs, target) || contains_expr_in_expr(body, *rhs, target)
+        }
+        HirExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            contains_expr_in_expr(body, *condition, target)
+                || contains_expr_in_expr(body, *then_expr, target)
+                || contains_expr_in_expr(body, *else_expr, target)
+        }
+        HirExpr::Lambda { body: b, .. } => match b {
+            LambdaBody::Expr(expr) => contains_expr_in_expr(body, *expr, target),
+            LambdaBody::Block(stmt) => contains_expr_in_stmt(body, *stmt, target),
+        },
+        HirExpr::Invalid { children, .. } => children
+            .iter()
+            .any(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirExpr::Name { .. }
+        | HirExpr::Literal { .. }
+        | HirExpr::Null { .. }
+        | HirExpr::This { .. }
+        | HirExpr::Super { .. }
+        | HirExpr::Missing { .. } => false,
     }
 }
 
