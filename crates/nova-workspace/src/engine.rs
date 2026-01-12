@@ -1643,7 +1643,32 @@ fn reload_project_and_sync(
             // If config loading fails, fall back to defaults; the workspace should still open.
             (nova_config::NovaConfig::default(), None)
     });
-    let jdk_config = workspace_config.jdk_config();
+    let jdk_config = {
+        // Nova config paths are expected to be relative to the workspace root when possible.
+        // `NovaConfig::jdk_config` returns raw `PathBuf`s from the config file, so resolve them
+        // here before handing them to `nova_jdk` discovery.
+        let mut cfg = workspace_config.jdk_config();
+        cfg.home = cfg.home.map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                workspace_root.join(p)
+            }
+        });
+        cfg.toolchains = cfg
+            .toolchains
+            .into_iter()
+            .map(|(release, path)| {
+                let resolved = if path.is_absolute() {
+                    path
+                } else {
+                    workspace_root.join(path)
+                };
+                (release, resolved)
+            })
+            .collect();
+        cfg
+    };
 
     let jdk_index = nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
         .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
@@ -2711,6 +2736,44 @@ mod tests {
             format!("[jdk]\nhome = \"{fake_jdk_root}\"\n"),
         )
         .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        engine.query_db.with_snapshot(|snap| {
+            let index = snap.jdk_index(project);
+            assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
+            assert!(index
+                .lookup_type("java.lang.String")
+                .ok()
+                .flatten()
+                .is_some());
+        });
+    }
+
+    #[test]
+    fn project_reload_resolves_relative_jdk_home_to_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+
+        let testdata_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-jdk/testdata/fake-jdk")
+            .canonicalize()
+            .unwrap();
+        let dest_jdk_root = root.join("fake-jdk");
+        fs::create_dir_all(dest_jdk_root.join("jmods")).unwrap();
+        fs::copy(
+            testdata_root.join("jmods").join("java.base.jmod"),
+            dest_jdk_root.join("jmods").join("java.base.jmod"),
+        )
+        .unwrap();
+
+        fs::write(root.join("nova.toml"), "[jdk]\nhome = \"fake-jdk\"\n").unwrap();
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
