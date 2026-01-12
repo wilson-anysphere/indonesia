@@ -29,6 +29,7 @@ mod logpoints_hitcounts;
 mod process_event;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
+mod process_event;
 mod real_jvm;
 mod source_mapping;
 mod stack_trace_paging;
