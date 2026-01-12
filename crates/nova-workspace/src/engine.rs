@@ -3182,6 +3182,13 @@ fn reload_project_and_sync(
         BuildSystem::Maven | BuildSystem::Gradle
     ) {
         let refresh_build = should_refresh_build_config(workspace_root, changed_files);
+        // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
+        // resolved classpaths/source roots without modifying build scripts. When it changes we
+        // want to re-load the project config (so `nova-project` can consume the snapshot), but we
+        // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
+        let gradle_snapshot_changed = changed_files
+            .iter()
+            .any(|path| path.ends_with(Path::new(".nova/queries/gradle.json")));
 
         if refresh_build {
             let cache_dir = build_cache_dir(workspace_root, query_db);
@@ -3210,7 +3217,8 @@ fn reload_project_and_sync(
                     );
                 }
             }
-        } else if previous_config.build_system == loaded.build_system
+        } else if !gradle_snapshot_changed
+            && previous_config.build_system == loaded.build_system
             && previous_config.workspace_root == loaded.workspace_root
             && !previous_config.workspace_root.as_os_str().is_empty()
         {
@@ -5789,6 +5797,184 @@ mod tests {
                 index.lookup_binary("com.example.dep.Foo").is_some(),
                 "expected classpath index to contain classes from {}",
                 dep_jar.display()
+            );
+        });
+    }
+
+    #[test]
+    fn gradle_snapshot_reload_updates_classpath_without_reusing_stale_build_config_fields() {
+        use std::process::ExitStatus;
+
+        #[derive(Debug)]
+        struct GradleConfigRunner {
+            stdout: String,
+        }
+
+        impl nova_build::CommandRunner for GradleConfigRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                _args: &[String],
+            ) -> std::io::Result<nova_build::CommandOutput> {
+                Ok(nova_build::CommandOutput {
+                    status: success_status(),
+                    stdout: self.stdout.clone(),
+                    stderr: String::new(),
+                    truncated: false,
+                })
+            }
+        }
+
+        fn success_status() -> ExitStatus {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
+        fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let dep_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/dep.jar")
+            .canonicalize()
+            .unwrap();
+        let named_module_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/named-module.jar")
+            .canonicalize()
+            .unwrap();
+
+        // Initial nova-build-derived config includes dep.jar.
+        let build_json = serde_json::json!({
+            "projectDir": root.to_string_lossy(),
+            "compileClasspath": [dep_jar.to_string_lossy()],
+            "testCompileClasspath": [],
+            "mainSourceRoots": [root.join("src/main/java").to_string_lossy()],
+            "testSourceRoots": [],
+            "mainOutputDirs": [root.join("build/classes/java/main").to_string_lossy()],
+            "testOutputDirs": [root.join("build/classes/java/test").to_string_lossy()],
+            "sourceCompatibility": "17",
+            "targetCompatibility": "17",
+            "toolchainLanguageVersion": "17",
+            "compileCompilerArgs": [],
+            "testCompilerArgs": [],
+            "inferModulePath": false,
+        });
+
+        let stdout = format!(
+            "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+            serde_json::to_string(&build_json).unwrap()
+        );
+
+        let runner: Arc<dyn nova_build::CommandRunner> = Arc::new(GradleConfigRunner { stdout });
+
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+            build_runner: Some(runner),
+        });
+
+        engine.set_workspace_root(&root).unwrap();
+        engine.query_db.with_snapshot(|snap| {
+            let project = ProjectId::from_raw(0);
+            let config = snap.project_config(project);
+            assert_eq!(config.build_system, BuildSystem::Gradle);
+            assert!(
+                config
+                    .classpath
+                    .iter()
+                    .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == dep_jar),
+                "expected initial build-derived classpath to include {}",
+                dep_jar.display()
+            );
+        });
+
+        // Now simulate an updated `.nova/queries/gradle.json` snapshot being written (e.g. by a
+        // separate nova-build invocation), changing the resolved classpath.
+        let build_files = nova_build::collect_gradle_build_files(&root).unwrap();
+        let fingerprint = nova_build::BuildFileFingerprint::from_files(&root, build_files).unwrap();
+
+        let snapshot_path = root.join(".nova").join("queries").join("gradle.json");
+        fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+
+        let snapshot_json = serde_json::json!({
+            "schemaVersion": 1,
+            "buildFingerprint": fingerprint.digest,
+            "projects": [{
+                "path": ":",
+                "projectDir": root.to_string_lossy(),
+            }],
+            "javaCompileConfigs": {
+                ":": {
+                    "projectDir": root.to_string_lossy(),
+                    "compileClasspath": [named_module_jar.to_string_lossy()],
+                    "testClasspath": [],
+                    "modulePath": [],
+                    "mainSourceRoots": [root.join("src/main/java").to_string_lossy()],
+                    "testSourceRoots": [],
+                    "mainOutputDir": root.join("build/classes/java/main").to_string_lossy(),
+                    "testOutputDir": root.join("build/classes/java/test").to_string_lossy(),
+                    "source": "17",
+                    "target": "17",
+                    "release": "17",
+                    "enablePreview": false,
+                }
+            }
+        });
+        fs::write(&snapshot_path, serde_json::to_vec_pretty(&snapshot_json).unwrap()).unwrap();
+
+        engine.reload_project_now(&[snapshot_path.clone()]).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            let project = ProjectId::from_raw(0);
+            let config = snap.project_config(project);
+            assert_eq!(config.build_system, BuildSystem::Gradle);
+            assert!(
+                config.classpath.iter().any(|entry| {
+                    entry.kind == ClasspathEntryKind::Jar && entry.path == named_module_jar
+                }),
+                "expected snapshot-derived classpath to include {}",
+                named_module_jar.display()
+            );
+            assert!(
+                !config
+                    .classpath
+                    .iter()
+                    .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == dep_jar),
+                "expected snapshot-derived classpath to NOT include stale {}",
+                dep_jar.display()
+            );
+
+            let index = snap
+                .classpath_index(project)
+                .expect("classpath index should exist when snapshot provides jars");
+            assert!(
+                index.lookup_binary("com.example.api.Api").is_some(),
+                "expected classpath index to contain classes from {}",
+                named_module_jar.display()
             );
         });
     }
