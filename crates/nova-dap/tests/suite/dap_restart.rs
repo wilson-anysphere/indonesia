@@ -1,8 +1,7 @@
-use std::{
-    path::Path,
-    process::{Command as StdCommand, Stdio},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
+
+#[cfg(target_os = "windows")]
+use std::process::{Command as StdCommand, Stdio};
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
@@ -137,20 +136,15 @@ impl Drop for KillOnDrop {
             return;
         }
 
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::kill(pid as i32, libc::SIGKILL);
+        }
+
         #[cfg(target_os = "windows")]
         {
             let _ = StdCommand::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = StdCommand::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
