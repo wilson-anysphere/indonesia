@@ -615,7 +615,16 @@ impl Workspace {
 
         let mut files_indexed = 0usize;
         let mut bytes_indexed = 0u64;
-        let mut file_fingerprints = std::collections::BTreeMap::new();
+        // Keep rel paths as `Arc<String>` while the Salsa DB is alive so the same allocation can be
+        // used for:
+        // - tracked input `file_rel_path`
+        // - non-tracked persistence `file_path`
+        // - snapshot metadata (`ProjectSnapshot::file_fingerprints`)
+        //
+        // We convert back to `String` after the DB is dropped; at that point each Arc is uniquely
+        // owned and can be unwrapped without cloning.
+        let mut file_fingerprints: std::collections::BTreeMap<Arc<String>, Fingerprint> =
+            std::collections::BTreeMap::new();
 
         for (idx, file) in files_to_index.iter().enumerate() {
             Cancelled::check(cancel)?;
@@ -626,11 +635,16 @@ impl Workspace {
                 .with_context(|| format!("failed to read {}", full_path.display()))?;
             files_indexed += 1;
             bytes_indexed += content.len() as u64;
-            file_fingerprints.insert(file.clone(), Fingerprint::from_bytes(content.as_bytes()));
+            let fingerprint = Fingerprint::from_bytes(content.as_bytes());
+            let rel_path = Arc::new(file.clone());
+            file_fingerprints.insert(rel_path.clone(), fingerprint);
 
             let file_id = FileId::from_raw(idx as u32);
+            // Set `file_rel_path` first so `set_file_text` doesn't synthesize (and then discard) a
+            // default rel-path like `file-123.java`.
+            db.set_file_rel_path(file_id, rel_path);
+            // `set_file_text` consumes the text; keep `content` for (line, col) patching below.
             db.set_file_text(file_id, content.clone());
-            db.set_file_rel_path(file_id, Arc::new(file.clone()));
 
             let (delta, hir) = db.with_snapshot(|snap| {
                 let delta = snap.file_index_delta(file_id);
@@ -683,6 +697,19 @@ impl Workspace {
 
             indexes.merge_from(delta);
         }
+
+        drop(db);
+
+        let file_fingerprints = file_fingerprints
+            .into_iter()
+            .map(|(path, fp)| {
+                let path = match Arc::try_unwrap(path) {
+                    Ok(path) => path,
+                    Err(path) => (*path).clone(),
+                };
+                (path, fp)
+            })
+            .collect();
 
         Ok((files_indexed, bytes_indexed, file_fingerprints))
     }
