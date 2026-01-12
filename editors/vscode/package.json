@@ -33,6 +33,7 @@
     "onCommand:nova.runTest",
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.frameworks.search",
+    "onCommand:nova.frameworks.refresh",
     "onCommand:nova.hotSwapChangedFiles",
     "onCommand:nova.frameworks.copyEndpointPath",
     "onCommand:nova.frameworks.copyEndpointMethodAndPath",
@@ -109,6 +110,14 @@
         "title": "Nova: Search Framework Items\u2026"
       },
       {
+        "command": "nova.frameworks.refresh",
+        "title": "Nova: Refresh Frameworks",
+        "icon": {
+          "light": "resources/light/refresh.svg",
+          "dark": "resources/dark/refresh.svg"
+        }
+      },
+      {
         "command": "nova.frameworks.copyEndpointPath",
         "title": "Nova: Copy Endpoint Path"
       },
@@ -133,7 +142,7 @@
       "explorer": [
         {
           "id": "novaFrameworks",
-          "name": "Frameworks"
+          "name": "Nova Frameworks"
         }
       ]
     },
@@ -155,6 +164,13 @@
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "nova.frameworks.refresh",
+          "when": "view == novaFrameworks",
+          "group": "navigation@1"
+        }
+      ],
       "view/item/context": [
         {
           "command": "nova.frameworks.copyEndpointPath",

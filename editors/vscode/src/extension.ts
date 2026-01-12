@@ -253,6 +253,11 @@ export async function activate(context: vscode.ExtensionContext) {
     getClient: () => client,
     getClientStart: () => clientStart,
   });
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.frameworks.refresh', () => {
+      frameworksView.refresh();
+    }),
+  );
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');

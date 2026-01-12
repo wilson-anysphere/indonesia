@@ -23,6 +23,28 @@ Nova supports VS Code multi-root workspaces by running one `nova-lsp` instance p
 - Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Generate Bug Report**).
 - `untitled:` Java documents don’t belong to any workspace folder; in multi-root workspaces you may be prompted to pick which workspace folder to use.
 
+## Frameworks Dashboard
+
+Nova contributes a **Nova Frameworks** view in the Explorer sidebar (Explorer → **Nova Frameworks**).
+
+The dashboard surfaces framework-derived navigation targets, including:
+
+- **Web endpoints** (from `nova/web/endpoints`)
+- **Micronaut endpoints** (from `nova/micronaut/endpoints`)
+- **Micronaut beans** (from `nova/micronaut/beans`)
+
+### Navigation
+
+Click an item to open the underlying source location.
+
+For quick navigation (including Micronaut endpoints and beans), you can also run **Nova: Search Framework Items…** (`nova.frameworks.search`).
+
+### Refresh
+
+Framework discovery is **on-demand**: click the refresh button in the view title bar, or run **Nova: Refresh Frameworks** (`nova.frameworks.refresh`).
+
+This is intentionally manual because these discovery requests run under a small watchdog time budget; repeatedly refreshing (or refreshing automatically while you type) could otherwise time out or trigger Nova safe mode.
+
 ## Language server + debug adapter binaries
 
 Nova resolves binaries in the following order:
