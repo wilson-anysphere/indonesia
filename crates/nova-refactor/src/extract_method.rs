@@ -401,6 +401,8 @@ impl ExtractMethod {
                 collect_reads_writes_in_flow_selection(&flow_body, flow_selection);
 
             let live_after_selection = live_locals_after_selection(&flow_body, flow_selection);
+            let capture_reads_after_selection =
+                collect_capture_reads_after_offset(&method_body, flow_selection.end, &flow_body);
 
             let return_candidate = compute_return_value(
                 &mut typeck,
@@ -410,6 +412,7 @@ impl ExtractMethod {
                 flow_selection,
                 &writes_in_selection,
                 &live_after_selection,
+                &capture_reads_after_selection,
                 &mut issues,
             );
 
@@ -2421,6 +2424,130 @@ fn collect_first_local_use_in_expr(
     }
 }
 
+fn collect_capture_reads_after_offset(
+    method_body: &ast::Block,
+    offset: usize,
+    flow_body: &Body,
+) -> HashSet<String> {
+    // Flow IR lowering intentionally skips lambda bodies and does not model anonymous class bodies.
+    // However, captured locals are read at the lambda/anonymous-class *creation* site, so we must
+    // treat those names as "read after selection" for return-value detection.
+    let known: HashSet<String> = flow_body
+        .locals()
+        .iter()
+        .map(|local| local.name.as_str().to_string())
+        .collect();
+
+    let mut reads: Vec<(String, TextRange)> = Vec::new();
+
+    // 1) Lambdas after the selection.
+    for lambda in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::LambdaExpression::cast)
+    {
+        if syntax_range(lambda.syntax()).start < offset {
+            continue;
+        }
+        let Some(body) = lambda.body() else {
+            continue;
+        };
+
+        if let Some(block) = body.block() {
+            reads.extend(collect_known_name_reads_skipping_nested_closures(
+                block.syntax(),
+                &known,
+            ));
+        } else if let Some(expr) = body.expression() {
+            reads.extend(collect_known_name_reads_skipping_nested_closures(
+                expr.syntax(),
+                &known,
+            ));
+        }
+    }
+
+    // 2) Anonymous classes after the selection (`new X() { ... }`).
+    for new_expr in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::NewExpression::cast)
+    {
+        if syntax_range(new_expr.syntax()).start < offset {
+            continue;
+        }
+        let Some(class_body) = new_expr.class_body() else {
+            continue;
+        };
+        reads.extend(collect_known_name_reads_skipping_nested_closures(
+            class_body.syntax(),
+            &known,
+        ));
+    }
+
+    // Stable order + dedup by first occurrence across all captures.
+    reads.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
+    let mut seen = HashSet::new();
+    reads.retain(|(name, _)| seen.insert(name.clone()));
+
+    reads.into_iter().map(|(name, _)| name).collect()
+}
+
+fn collect_known_name_reads_skipping_nested_closures(
+    root: &nova_syntax::SyntaxNode,
+    known: &HashSet<String>,
+) -> Vec<(String, TextRange)> {
+    let mut reads: Vec<(String, TextRange)> = Vec::new();
+    let root_range = root.text_range();
+
+    let mut stack = vec![root.clone()];
+    while let Some(node) = stack.pop() {
+        // Skip nested lambdas entirely.
+        if ast::LambdaExpression::can_cast(node.kind()) {
+            continue;
+        }
+
+        // Skip nested class bodies (anonymous classes, local classes, etc.). The root class body (when
+        // scanning an anonymous class) is allowed.
+        if node.kind() == SyntaxKind::ClassBody && node.text_range() != root_range {
+            continue;
+        }
+
+        if let Some(name_expr) = ast::NameExpression::cast(node.clone()) {
+            if let Some(name) = simple_name(name_expr.syntax()) {
+                if known.contains(&name) {
+                    reads.push((name, syntax_range(name_expr.syntax())));
+                }
+            }
+        }
+
+        for child in node.children() {
+            stack.push(child);
+        }
+    }
+
+    // Stable order + dedup by first occurrence within this body.
+    reads.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
+    let mut seen = HashSet::new();
+    reads.retain(|(name, _)| seen.insert(name.clone()));
+
+    reads
+}
+
+fn simple_name(node: &nova_syntax::SyntaxNode) -> Option<String> {
+    node.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|t| t.kind().is_identifier_like())
+        .map(|tok| tok.text().to_string())
+}
+
 fn compute_return_value(
     typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
@@ -2429,12 +2556,16 @@ fn compute_return_value(
     selection: TextRange,
     writes_in_selection: &HashSet<LocalId>,
     live_after_selection: &HashSet<LocalId>,
+    capture_reads_after_selection: &HashSet<String>,
     issues: &mut Vec<ExtractMethodIssue>,
 ) -> Option<(LocalId, ReturnValue)> {
     let mut candidates: Vec<LocalId> = writes_in_selection
         .iter()
         .copied()
-        .filter(|local| live_after_selection.contains(local))
+        .filter(|local| {
+            live_after_selection.contains(local)
+                || capture_reads_after_selection.contains(body.locals()[local.index()].name.as_str())
+        })
         .collect();
 
     // Keep behavior deterministic.

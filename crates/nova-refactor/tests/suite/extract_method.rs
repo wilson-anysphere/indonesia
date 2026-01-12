@@ -663,6 +663,104 @@ class C {
 }
 
 #[test]
+fn extract_method_return_value_used_via_lambda_capture_after_selection() {
+    let fixture = r#"
+class C {
+    void m() {
+        int x = 0;
+        /*start*/x = 1;/*end*/
+        Runnable r = () -> System.out.println(x);
+        r.run();
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int x = 0;
+        x = extracted(x);
+        Runnable r = () -> System.out.println(x);
+        r.run();
+    }
+
+    private int extracted(int x) {
+        x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_return_value_used_via_anonymous_class_capture_after_selection() {
+    let fixture = r#"
+class C {
+    void m() {
+        int x = 0;
+        /*start*/x = 1;/*end*/
+        Runnable r = new Runnable() {
+            public void run() {
+                System.out.println(x);
+            }
+        };
+        r.run();
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int x = 0;
+        x = extracted(x);
+        Runnable r = new Runnable() {
+            public void run() {
+                System.out.println(x);
+            }
+        };
+        r.run();
+    }
+
+    private int extracted(int x) {
+        x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_multiple_statements_with_parameters() {
     let fixture = r#"
 class C {
