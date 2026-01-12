@@ -14,6 +14,10 @@ const BUILD_FILE_GLOBS: readonly string[] = [
   '**/pom.xml',
   '**/mvnw',
   '**/mvnw.cmd',
+  '**/.mvn/wrapper/maven-wrapper.properties',
+  '**/.mvn/extensions.xml',
+  '**/.mvn/maven.config',
+  '**/.mvn/jvm.config',
   // Gradle
   '**/build.gradle',
   '**/build.gradle.kts',
@@ -22,6 +26,10 @@ const BUILD_FILE_GLOBS: readonly string[] = [
   '**/gradle.properties',
   '**/gradlew',
   '**/gradlew.bat',
+  '**/gradle/wrapper/gradle-wrapper.properties',
+  '**/gradle/libs.versions.toml',
+  '**/gradle/*.gradle',
+  '**/gradle/*.gradle.kts',
   // Bazel
   '**/WORKSPACE',
   '**/WORKSPACE.bazel',
@@ -35,7 +43,12 @@ const BUILD_FILE_GLOBS: readonly string[] = [
   '**/.bazelversion',
   '**/bazelisk.rc',
   '**/.bazelignore',
+  // JPMS
+  '**/module-info.java',
   // Nova workspace config (optional)
+  '**/nova.toml',
+  '**/.nova.toml',
+  '**/nova.config.toml',
   '**/.nova/**/*.toml',
 ];
 
