@@ -543,6 +543,32 @@ fn falls_back_to_type_variables_when_name_resolution_fails() {
 }
 
 #[test]
+fn does_not_resolve_qualified_types_from_placeholder_env_entries() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let mut env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    // `TypeStore::intern_class_id` creates a placeholder `ClassDef` with no supertypes or members.
+    // These placeholders exist so external loaders can reserve stable ids. `TypeRef` parsing must
+    // not treat them as "successful" name resolution.
+    let _ = env.intern_class_id("com.example.dep.Foo");
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "com.example.dep.Foo",
+        None,
+    );
+
+    assert_eq!(ty.ty, Type::Named("com.example.dep.Foo".to_string()));
+    assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
+}
+
+#[test]
 fn type_vars_shadow_classes() {
     let (jdk, index, scopes, scope) = setup(&[]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);

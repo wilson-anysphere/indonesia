@@ -485,7 +485,7 @@ mod tests {
 
         let ws = ProjectConfig {
             workspace_root: root.clone(),
-            build_system: BuildSystem::Simple,
+            build_system: BuildSystem::Gradle,
             java: JavaConfig::default(),
             modules: vec![Module {
                 name: "dummy".to_string(),
