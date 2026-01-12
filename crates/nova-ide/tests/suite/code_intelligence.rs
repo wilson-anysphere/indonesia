@@ -110,6 +110,52 @@ class A {}
 }
 
 #[test]
+fn java_import_completion_includes_workspace_types() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+
+    let foo_text = "package p; public class Foo {}".to_string();
+    let main_text = r#"
+import p.<|>
+class Main {}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Foo"),
+        "expected import completion list to contain Foo; got {labels:?}"
+    );
+}
+
+#[test]
+fn java_new_completion_includes_workspace_types() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main2.java");
+
+    let foo_text = "package p; public class Foo {}".to_string();
+    let main_text = r#"
+package p;
+class Main2 {
+  void m() {
+    new Fo<|>
+  }
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Foo"),
+        "expected `new` completion list to contain Foo; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"

@@ -32,6 +32,7 @@ use serde_json::json;
 
 use crate::completion_cache;
 use crate::framework_cache;
+use crate::java_completion::workspace_index::{parse_package_name, WorkspaceJavaIndex};
 use crate::java_semantics::source_types::SourceTypeProvider;
 use crate::lombok_intel;
 use crate::micronaut_intel;
@@ -1440,10 +1441,13 @@ struct JavaImportInfo {
     explicit_types: Vec<String>,
     /// Star-imported packages (e.g. `java.util` for `import java.util.*;`).
     star_packages: Vec<String>,
+    /// Current file package (empty string for the default package).
+    current_package: String,
 }
 
 fn parse_java_imports(text: &str) -> JavaImportInfo {
     let mut out = JavaImportInfo::default();
+    out.current_package = parse_package_name(text).unwrap_or_default();
     for line in text.lines() {
         let line = line.trim_start();
         if !line.starts_with("import ") {
@@ -1482,6 +1486,9 @@ fn java_type_needs_import(imports: &JavaImportInfo, ty: &str) -> bool {
         return false;
     };
     if pkg == "java.lang" {
+        return false;
+    }
+    if pkg == imports.current_package {
         return false;
     }
     if imports.explicit_types.iter().any(|existing| existing == ty) {
@@ -1533,6 +1540,161 @@ fn java_import_text_edit(text: &str, text_index: &TextIndex<'_>, ty: &str) -> Te
     }
 }
 
+const MAX_IMPORT_COMPLETIONS: usize = 200;
+const MAX_IMPORT_JDK_TYPES: usize = 500;
+
+fn import_path_completions(
+    db: &dyn Database,
+    text: &str,
+    offset: usize,
+    prefix: &str,
+) -> Option<Vec<CompletionItem>> {
+    let parent = import_completion_parent_package(text, offset)?;
+
+    let workspace = WorkspaceJavaIndex::build(db);
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let mut items = Vec::new();
+
+    // Package segments from workspace + JDK.
+    let mut workspace_segments = HashSet::<String>::new();
+    for pkg in workspace.packages() {
+        if let Some(seg) = child_package_segment(pkg, &parent) {
+            workspace_segments.insert(seg);
+        }
+    }
+    for seg in workspace_segments {
+        let mut item = CompletionItem {
+            label: seg,
+            kind: Some(CompletionItemKind::MODULE),
+            ..Default::default()
+        };
+        mark_workspace_completion_item(&mut item);
+        items.push(item);
+    }
+
+    let pkg_prefix = if parent.is_empty() {
+        prefix.to_string()
+    } else if prefix.is_empty() {
+        format!("{parent}.")
+    } else {
+        format!("{parent}.{prefix}")
+    };
+
+    if let Ok(pkgs) = jdk.packages_with_prefix(&pkg_prefix) {
+        let mut jdk_segments = HashSet::<String>::new();
+        for pkg in pkgs {
+            if let Some(seg) = child_package_segment(&pkg, &parent) {
+                jdk_segments.insert(seg);
+            }
+        }
+        for seg in jdk_segments {
+            items.push(CompletionItem {
+                label: seg,
+                kind: Some(CompletionItemKind::MODULE),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Types in `parent` package.
+    if !parent.is_empty() {
+        for ty in workspace.types_in_package(&parent) {
+            if ty.contains('$') {
+                continue;
+            }
+            let qualified = format!("{parent}.{ty}");
+            let mut item = CompletionItem {
+                label: ty.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(qualified),
+                ..Default::default()
+            };
+            mark_workspace_completion_item(&mut item);
+            items.push(item);
+        }
+
+        let parent_prefix = format!("{parent}.");
+        if let Ok(names) = jdk.class_names_with_prefix(&parent_prefix) {
+            let mut added = 0usize;
+            for name in names {
+                if added >= MAX_IMPORT_JDK_TYPES {
+                    break;
+                }
+                if !name.starts_with(&parent_prefix) {
+                    continue;
+                }
+                let rest = &name[parent_prefix.len()..];
+                // Only expose direct members, not subpackages.
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: rest.to_string(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(name),
+                    ..Default::default()
+                });
+                added += 1;
+            }
+        }
+    }
+
+    deduplicate_completion_items(&mut items);
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items.truncate(MAX_IMPORT_COMPLETIONS);
+    Some(items)
+}
+
+fn import_completion_parent_package(text: &str, offset: usize) -> Option<String> {
+    let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let line_prefix = text.get(line_start..offset)?;
+
+    let trimmed = line_prefix.trim_start();
+    let rest = trimmed.strip_prefix("import")?;
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_ascii_whitespace())
+    {
+        return None;
+    }
+
+    let rest = rest.trim_start();
+    if rest.starts_with("static ") {
+        return None;
+    }
+
+    let path_prefix = rest.trim();
+    let parent = match path_prefix.rfind('.') {
+        Some(dot_idx) => path_prefix[..dot_idx].trim_end().to_string(),
+        None => String::new(),
+    };
+    Some(parent)
+}
+
+fn child_package_segment(package: &str, parent: &str) -> Option<String> {
+    if package.is_empty() {
+        return None;
+    }
+
+    let rest = if parent.is_empty() {
+        package
+    } else {
+        let prefix = format!("{parent}.");
+        package.strip_prefix(&prefix)?
+    };
+
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.split('.').next().unwrap_or(rest).to_string())
+}
+
 fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) -> bool {
     let new_end = skip_whitespace_backwards(text, prefix_start);
     if new_end < 3 {
@@ -1568,13 +1730,21 @@ fn constructor_completion_item(label: String, detail: Option<String>) -> Complet
     }
 }
 
+fn mark_workspace_completion_item(item: &mut CompletionItem) {
+    // Include a `nova` tag up-front so `decorate_completions` doesn't overwrite `data`.
+    item.data = Some(json!({ "nova": { "origin": "code_intelligence", "workspace_local": true } }));
+}
+
 fn new_expression_type_completions(
+    db: &dyn Database,
+    _file: FileId,
     text: &str,
     text_index: &TextIndex<'_>,
     prefix: &str,
 ) -> Vec<CompletionItem> {
     let analysis = analyze(text);
     let imports = parse_java_imports(text);
+    let workspace = WorkspaceJavaIndex::build(db);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -1587,7 +1757,9 @@ fn new_expression_type_completions(
     // 1) Classes declared in this file.
     for class in &analysis.classes {
         if seen_labels.insert(class.name.clone()) {
-            items.push(constructor_completion_item(class.name.clone(), None));
+            let mut item = constructor_completion_item(class.name.clone(), None);
+            mark_workspace_completion_item(&mut item);
+            items.push(item);
         }
     }
 
@@ -1595,11 +1767,58 @@ fn new_expression_type_completions(
     for ty in &imports.explicit_types {
         let simple = ty.rsplit('.').next().unwrap_or(ty).to_string();
         if seen_labels.insert(simple.clone()) {
-            items.push(constructor_completion_item(simple, Some(ty.clone())));
+            let mut item = constructor_completion_item(simple, Some(ty.clone()));
+            if workspace.contains_fqn(ty) {
+                mark_workspace_completion_item(&mut item);
+            }
+            items.push(item);
         }
     }
 
-    // 3) JDK types from `java.lang.*` + `java.util.*` + any star-imported packages.
+    // 3) Workspace types from the current package + any star-imported packages.
+    //
+    // This surfaces user-defined types for `new` completions even when they live in other files
+    // within the current `Database`.
+    let mut workspace_packages = imports.star_packages.clone();
+    workspace_packages.push(imports.current_package.clone());
+    workspace_packages.sort();
+    workspace_packages.dedup();
+
+    const MAX_WORKSPACE_TYPES_PER_PACKAGE: usize = 200;
+    for pkg in workspace_packages {
+        let mut added_for_pkg = 0usize;
+        for ty in workspace.types_in_package(&pkg) {
+            if added_for_pkg >= MAX_WORKSPACE_TYPES_PER_PACKAGE {
+                break;
+            }
+            // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
+            if ty.contains('$') {
+                continue;
+            }
+
+            let simple = ty.clone();
+            if !seen_labels.insert(simple.clone()) {
+                continue;
+            }
+
+            let qualified = if pkg.is_empty() {
+                simple.clone()
+            } else {
+                format!("{pkg}.{simple}")
+            };
+
+            let mut item = constructor_completion_item(simple, Some(qualified.clone()));
+            mark_workspace_completion_item(&mut item);
+            if java_type_needs_import(&imports, &qualified) {
+                item.additional_text_edits =
+                    Some(vec![java_import_text_edit(text, text_index, &qualified)]);
+            }
+            items.push(item);
+            added_for_pkg += 1;
+        }
+    }
+
+    // 4) JDK types from `java.lang.*` + `java.util.*` + any star-imported packages.
     let mut packages = imports.star_packages.clone();
     packages.push("java.lang".to_string());
     packages.push("java.util".to_string());
@@ -1777,6 +1996,7 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
 }
 
 fn import_completions(
+    db: &dyn Database,
     text_index: &TextIndex<'_>,
     offset: usize,
     ctx: &ImportContext,
@@ -1787,6 +2007,8 @@ fn import_completions(
         text_index.offset_to_position(ctx.replace_start),
         text_index.offset_to_position(offset),
     );
+
+    let workspace = WorkspaceJavaIndex::build(db);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -1806,10 +2028,58 @@ fn import_completions(
         .or_else(|_| fallback_jdk.all_binary_class_names())
         .unwrap_or(&[]);
 
+    let mut workspace_packages: Vec<String> = workspace
+        .packages()
+        .filter(|pkg| pkg.starts_with(&ctx.prefix))
+        .cloned()
+        .collect();
+    workspace_packages.sort();
+
+    let mut workspace_classes: Vec<String> = workspace
+        .all_types()
+        .filter_map(|(pkg, ty)| {
+            let name = if pkg.is_empty() {
+                ty.to_string()
+            } else {
+                format!("{pkg}.{ty}")
+            };
+            name.starts_with(&ctx.prefix).then_some(name)
+        })
+        .collect();
+    workspace_classes.sort();
+    workspace_classes.dedup();
+
     let mut items = Vec::new();
 
     // Package segment completions.
     let mut seen_pkgs: HashSet<String> = HashSet::new();
+    for pkg in workspace_packages {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+        if !pkg.starts_with(&ctx.base_prefix) {
+            continue;
+        }
+        let rest = &pkg[ctx.base_prefix.len()..];
+        let segment = rest.split('.').next().unwrap_or("");
+        if segment.is_empty() {
+            continue;
+        }
+        if !seen_pkgs.insert(segment.to_string()) {
+            continue;
+        }
+        let mut item = CompletionItem {
+            label: segment.to_string(),
+            kind: Some(CompletionItemKind::MODULE),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: format!("{segment}."),
+            })),
+            ..Default::default()
+        };
+        mark_workspace_completion_item(&mut item);
+        items.push(item);
+    }
     for pkg in packages {
         if !pkg.starts_with(&ctx.base_prefix) {
             continue;
@@ -1838,6 +2108,36 @@ fn import_completions(
 
     // Type/class completions (as remainder completions).
     let mut seen_types: HashSet<String> = HashSet::new();
+    for name in workspace_classes {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+        if !name.starts_with(&ctx.base_prefix) {
+            continue;
+        }
+        let mut remainder = name[ctx.base_prefix.len()..].to_string();
+        if remainder.is_empty() {
+            continue;
+        }
+        remainder = remainder.replace('$', ".");
+
+        if !seen_types.insert(remainder.clone()) {
+            continue;
+        }
+
+        let mut item = CompletionItem {
+            label: remainder.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(name.clone()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: remainder,
+            })),
+            ..Default::default()
+        };
+        mark_workspace_completion_item(&mut item);
+        items.push(item);
+    }
     let start = class_names.partition_point(|name| name.as_str() < ctx.prefix.as_str());
     for name in &class_names[start..] {
         if items.len() >= MAX_ITEMS {
@@ -1893,6 +2193,9 @@ fn import_completions(
         });
     }
 
+    let ctx_rank = CompletionRankingContext::default();
+    rank_completions(&ctx.segment_prefix, &mut items, &ctx_rank);
+    items.truncate(MAX_ITEMS);
     items
 }
 
@@ -2335,7 +2638,7 @@ pub(crate) fn core_completions(
     // because the syntax overlaps (`import java.util.<cursor>` would otherwise be treated as a dot
     // completion on the identifier `java`).
     if let Some(ctx) = import_context(text, offset) {
-        let items = import_completions(&text_index, offset, &ctx);
+        let items = import_completions(db, &text_index, offset, &ctx);
         if !items.is_empty() {
             return decorate_completions(&text_index, ctx.replace_start, offset, items);
         }
@@ -2357,8 +2660,12 @@ pub(crate) fn core_completions(
             &text_index,
             prefix_start,
             offset,
-            new_expression_type_completions(text, &text_index, &prefix),
+            new_expression_type_completions(db, file, text, &text_index, &prefix),
         );
+    }
+
+    if let Some(items) = import_path_completions(db, text, offset, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     let before = skip_whitespace_backwards(text, prefix_start);
@@ -2503,7 +2810,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
 
         if let Some(ctx) = import_context(text, offset) {
-            let items = import_completions(&text_index, offset, &ctx);
+            let items = import_completions(db, &text_index, offset, &ctx);
             if !items.is_empty() {
                 return decorate_completions(&text_index, ctx.replace_start, offset, items);
             }
@@ -2728,8 +3035,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             &text_index,
             prefix_start,
             offset,
-            new_expression_type_completions(text, &text_index, &prefix),
+            new_expression_type_completions(db, file, text, &text_index, &prefix),
         );
+    }
+
+    if let Some(items) = import_path_completions(db, text, offset, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     let before = skip_whitespace_backwards(text, prefix_start);
@@ -5595,6 +5906,19 @@ fn scope_bonus(kind: Option<CompletionItemKind>) -> i32 {
     }
 }
 
+fn workspace_completion_bonus(item: &CompletionItem) -> i32 {
+    // We encode workspace-local completions in the `data.nova.workspace_local` flag so ranking can
+    // prefer them over JDK symbols when they match equally.
+    item.data
+        .as_ref()
+        .and_then(|data| data.get("nova"))
+        .and_then(|nova| nova.get("workspace_local"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        .then_some(1)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Default)]
 struct CompletionRankingContext {
     expected_type: Option<String>,
@@ -5620,6 +5944,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         i32,
         Option<usize>,
         i32,
+        i32,
         String,
     )> = items
         .drain(..)
@@ -5641,6 +5966,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
 
             let scope = scope_bonus(item.kind);
             let recency = ctx.last_used_offsets.get(&item.label).copied();
+            let workspace = workspace_completion_bonus(&item);
             let weight = kind_weight(item.kind);
 
             // Used as a deterministic tie-breaker when scores/weights/labels tie.
@@ -5652,6 +5978,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 expected_bonus,
                 scope,
                 recency,
+                workspace,
                 weight,
                 kind_key,
             ))
@@ -5659,22 +5986,23 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         .collect();
 
     scored.sort_by(
-        |(a_item, a_score, a_expected, a_scope, a_recency, a_weight, a_kind),
-         (b_item, b_score, b_expected, b_scope, b_recency, b_weight, b_kind)| {
+        |(a_item, a_score, a_expected, a_scope, a_recency, a_workspace, a_weight, a_kind),
+         (b_item, b_score, b_expected, b_scope, b_recency, b_workspace, b_weight, b_kind)| {
             b_score
                 .rank_key()
                 .cmp(&a_score.rank_key())
-                .then_with(|| b_expected.cmp(a_expected))
-                .then_with(|| b_scope.cmp(a_scope))
-                .then_with(|| b_recency.cmp(a_recency))
-                .then_with(|| b_weight.cmp(a_weight))
-                .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
-                .then_with(|| a_item.label.cmp(&b_item.label))
-                .then_with(|| a_kind.cmp(b_kind))
+            .then_with(|| b_expected.cmp(a_expected))
+            .then_with(|| b_scope.cmp(a_scope))
+            .then_with(|| b_recency.cmp(a_recency))
+            .then_with(|| b_workspace.cmp(a_workspace))
+            .then_with(|| b_weight.cmp(a_weight))
+            .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+            .then_with(|| a_item.label.cmp(&b_item.label))
+            .then_with(|| a_kind.cmp(b_kind))
         },
     );
 
-    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _)| item));
+    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _)| item));
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {
