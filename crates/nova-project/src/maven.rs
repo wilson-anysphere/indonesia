@@ -1997,7 +1997,6 @@ fn exists_as_jar(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
         && std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
 }
-
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
     let version = dep.version.as_deref()?;
     if version.contains("${") {

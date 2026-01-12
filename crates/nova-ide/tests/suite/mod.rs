@@ -46,6 +46,7 @@ mod organize_imports_code_action;
 mod quarkus_intel;
 mod quick_fixes;
 mod quickfix_unresolved_reference;
+mod salsa_cross_file_imports;
 mod salsa_host_inputs_preserved;
 mod salsa_readonly_fast_path;
 mod salsa_reuse;
