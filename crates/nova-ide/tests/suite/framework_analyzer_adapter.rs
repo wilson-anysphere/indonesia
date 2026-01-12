@@ -27,7 +27,11 @@ impl FrameworkAnalyzer for TestAnalyzer {
         vec![CompletionItem::new("test completion")]
     }
 
-    fn navigation(&self, _db: &dyn Database, symbol: &nova_framework::Symbol) -> Vec<nova_framework::NavigationTarget> {
+    fn navigation(
+        &self,
+        _db: &dyn Database,
+        symbol: &nova_framework::Symbol,
+    ) -> Vec<nova_framework::NavigationTarget> {
         let file = match *symbol {
             nova_framework::Symbol::File(file) => file,
             nova_framework::Symbol::Class(_) => nova_ext::FileId::from_raw(0),
@@ -57,8 +61,7 @@ fn framework_analyzer_adapter_on_text_db_surfaces_results() {
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
     let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-    let adapter =
-        FrameworkAnalyzerAdapterOnTextDb::new("framework.test", TestAnalyzer).into_arc();
+    let adapter = FrameworkAnalyzerAdapterOnTextDb::new("framework.test", TestAnalyzer).into_arc();
     ide.registry_mut()
         .register_diagnostic_provider(adapter.clone())
         .unwrap();
@@ -89,3 +92,4 @@ fn framework_analyzer_adapter_on_text_db_surfaces_results() {
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].label, "test hint");
 }
+
