@@ -1790,11 +1790,14 @@ impl Debugger {
             };
 
             let data_id = encode_field_data_id(class_id, field_id, Some(object_id));
-            let description = self
-                .objects
-                .evaluate_name(handle)
-                .map(|base| format!("{base}.{name}"))
-                .unwrap_or_else(|| name.to_string());
+            let description = if self.objects.is_pinned(handle) {
+                format!("__novaPinned[{}].{name}", handle.as_u32())
+            } else {
+                self.objects
+                    .evaluate_name(handle)
+                    .map(|base| format!("{base}.{name}"))
+                    .unwrap_or_else(|| name.to_string())
+            };
 
             return Ok(json!({
                 "dataId": data_id,
@@ -3972,7 +3975,11 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 .await;
         }
 
-        let parent_eval = self.objects.evaluate_name(handle).map(|s| s.to_string());
+        let parent_eval = if self.objects.is_pinned(handle) {
+            Some(format!("__novaPinned[{}]", handle.as_u32()))
+        } else {
+            self.objects.evaluate_name(handle).map(|s| s.to_string())
+        };
 
         let children =
             match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
@@ -4028,7 +4035,11 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             .unwrap_or("<unknown>")
             .to_string();
 
-        let parent_eval = self.objects.evaluate_name(handle).map(|s| s.to_string());
+        let parent_eval = if self.objects.is_pinned(handle) {
+            Some(format!("__novaPinned[{}]", handle.as_u32()))
+        } else {
+            self.objects.evaluate_name(handle).map(|s| s.to_string())
+        };
         let paging = start.is_some() || count.is_some();
 
         let start_index = start.unwrap_or(0).max(0).min(length);
@@ -4103,8 +4114,6 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             };
 
             let evaluate_name = format!("__novaPinned[{}]", handle.as_u32());
-            self.objects
-                .set_evaluate_name(handle, evaluate_name.clone());
 
             let value = JdwpValue::Object {
                 tag: b'L',

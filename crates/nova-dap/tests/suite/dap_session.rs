@@ -1721,7 +1721,8 @@ async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
     let handle_id = obj_ref - OBJECT_HANDLE_BASE;
     assert!(handle_id > 0, "unexpected handle id derived from obj_ref");
 
-    // Populate the pinned scope so child variables use the pinned `evaluateName` base.
+    // Fetch the pinned scope (mirrors common DAP client behavior) and ensure child variables use
+    // the pinned `evaluateName` base.
     let pinned_vars_resp = client
         .request(
             "variables",
