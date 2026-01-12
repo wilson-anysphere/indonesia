@@ -257,6 +257,12 @@ pub enum TrackedSalsaMemo {
     ItemTree,
     /// File-level HIR item tree produced by [`NovaHir::hir_item_tree`].
     HirItemTree,
+    /// File-level scope graph produced by [`NovaResolve::scope_graph`].
+    ///
+    /// This can be large in workspaces where name resolution is triggered across
+    /// many files (e.g. during analysis/typeck), so we track it separately from
+    /// the HIR item tree.
+    ScopeGraph,
     /// Per-file `ProjectIndexes` fragment produced by [`NovaIndexing::file_index_delta`].
     ///
     /// This can be large in projects with many symbols and references, so we
@@ -315,6 +321,8 @@ struct FileMemoBytes {
     item_tree: Option<u64>,
     /// Bytes recorded for the `hir_item_tree` memo.
     hir_item_tree: u64,
+    /// Bytes recorded for the `scope_graph` memo.
+    scope_graph: u64,
     file_index_delta: u64,
 }
 
@@ -324,6 +332,7 @@ impl FileMemoBytes {
             + self.parse_java.unwrap_or(0)
             + self.item_tree.unwrap_or(0)
             + self.hir_item_tree
+            + self.scope_graph
             + self.file_index_delta
     }
 }
@@ -371,6 +380,7 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::ParseJava => entry.parse_java = Some(bytes),
             TrackedSalsaMemo::ItemTree => entry.item_tree = Some(bytes),
             TrackedSalsaMemo::HirItemTree => entry.hir_item_tree = bytes,
+            TrackedSalsaMemo::ScopeGraph => entry.scope_graph = bytes,
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
         }
 
@@ -4221,6 +4231,19 @@ class Foo {
             "expected hir_item_tree memos to increase tracked bytes"
         );
 
+        // New tracking: scope graphs.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.scope_graph(*file);
+            }
+        });
+
+        let after_scope_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_scope_bytes > after_hir_bytes,
+            "expected scope_graph memos to increase tracked bytes"
+        );
+
         // New tracking: per-file index deltas.
         db.with_snapshot(|snap| {
             for file in &files {
@@ -4230,7 +4253,7 @@ class Foo {
 
         let after_index_bytes = db.salsa_memo_bytes();
         assert!(
-            after_index_bytes > after_hir_bytes,
+            after_index_bytes > after_scope_bytes,
             "expected file_index_delta memos to increase tracked bytes"
         );
 
@@ -4241,12 +4264,14 @@ class Foo {
         );
 
         let hir_exec_before = executions(&db.inner.lock(), "hir_item_tree");
+        let scope_exec_before = executions(&db.inner.lock(), "scope_graph");
         let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
 
         // Validate memoization before eviction.
         db.with_snapshot(|snap| {
             for file in &files {
                 let _ = snap.hir_item_tree(*file);
+                let _ = snap.scope_graph(*file);
                 let _ = snap.file_index_delta(*file);
             }
         });
@@ -4260,6 +4285,11 @@ class Foo {
             delta_exec_before,
             "expected cached file_index_delta results prior to eviction"
         );
+        assert_eq!(
+            executions(&db.inner.lock(), "scope_graph"),
+            scope_exec_before,
+            "expected cached scope_graph results prior to eviction"
+        );
 
         manager.enforce();
 
@@ -4271,9 +4301,11 @@ class Foo {
 
         // Ensure queries recompute after eviction.
         let hir_exec_after_evict = executions(&db.inner.lock(), "hir_item_tree");
+        let scope_exec_after_evict = executions(&db.inner.lock(), "scope_graph");
         let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
         db.with_snapshot(|snap| {
             let _ = snap.hir_item_tree(files[0]);
+            let _ = snap.scope_graph(files[0]);
             let _ = snap.file_index_delta(files[0]);
         });
         assert!(
@@ -4283,6 +4315,10 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "file_index_delta") > delta_exec_after_evict,
             "expected file_index_delta to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "scope_graph") > scope_exec_after_evict,
+            "expected scope_graph to re-execute after memo eviction"
         );
     }
 

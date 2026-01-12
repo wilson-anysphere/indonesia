@@ -13,8 +13,7 @@ use crate::persistence::HasPersistence;
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
-use super::ArcEq;
-use super::{InternedClassKey, InternedClassKeyId, NovaInternedClassKeys};
+use super::{ArcEq, InternedClassKey, InternedClassKeyId, NovaInternedClassKeys, TrackedSalsaMemo};
 use ra_salsa::InternKey;
 
 #[ra_salsa::query_group(NovaResolveStorage)]
@@ -122,6 +121,13 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTree
     let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
 
     let result = Arc::new(built);
+    let approx_bytes = if db.file_exists(file) {
+        let text = db.file_content(file);
+        (text.len() as u64).saturating_mul(2)
+    } else {
+        0
+    };
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ScopeGraph, approx_bytes);
     db.record_query_stat("scope_graph", start.elapsed());
     result
 }

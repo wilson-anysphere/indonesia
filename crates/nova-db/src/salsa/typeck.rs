@@ -842,7 +842,6 @@ fn resolve_method_call_demand(
     };
     let jdk_provider: &dyn TypeProvider = &*jdk;
     let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
-
     let jpms_provider = jpms_env.as_deref().map(|env| {
         let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
         JpmsAccessibleTypeProvider::new(
