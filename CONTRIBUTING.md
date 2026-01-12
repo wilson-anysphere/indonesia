@@ -63,8 +63,8 @@ Some tests compare Nova’s output against on-disk “golden” expectations (pa
 before/after fixtures). To update those expectations:
 
 Note: the parser golden corpus is the `golden_corpus` test inside the `javac_corpus` integration
-test binary (`crates/nova-syntax/tests/javac_corpus.rs`). There is no standalone
-`--test golden_corpus` target — run it via `--test javac_corpus` (optionally filtering by test
+test binary (`crates/nova-syntax/tests/javac_corpus.rs`). There is no standalone integration test
+target named `golden_corpus` — run it via `--test javac_corpus` (optionally filtering by test
 name).
 
 ```bash

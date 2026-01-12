@@ -110,8 +110,8 @@ testdata/
 
 These fixtures are exercised by the `golden_corpus` test inside the `javac_corpus` integration
 test binary (`crates/nova-syntax/tests/javac_corpus.rs` includes
-`crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate `--test golden_corpus`
-target — run it via `--test javac_corpus` and (optionally) a test-name filter.
+`crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate integration test target
+named `golden_corpus` — run it via `--test javac_corpus` and (optionally) a test-name filter.
 
 **To add a test:**
 1. Create `testdata/parser/category/test_name.java`

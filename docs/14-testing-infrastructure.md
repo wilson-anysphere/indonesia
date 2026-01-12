@@ -222,7 +222,7 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
 - Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (included by `crates/nova-syntax/tests/javac_corpus.rs`)
 
 The golden corpus test is the `#[test] fn golden_corpus()` test inside the `javac_corpus`
-integration test binary. There is **no** separate `--test golden_corpus` integration test target;
+integration test binary. There is **no** separate integration test target named `golden_corpus`;
 run it via `--test javac_corpus` and (optionally) a test-name filter.
 
 **Run locally:**
