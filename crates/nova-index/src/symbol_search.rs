@@ -69,8 +69,7 @@ impl SymbolSearchIndex {
         let mut builder = TrigramIndexBuilder::new();
         for (id, entry) in entries.iter().enumerate() {
             let id = id as SymbolId;
-            builder.insert(id, &entry.symbol.name);
-            builder.insert(id, &entry.symbol.qualified_name);
+            builder.insert2(id, &entry.symbol.name, &entry.symbol.qualified_name);
         }
         let trigram = builder.build();
 

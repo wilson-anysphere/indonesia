@@ -240,6 +240,26 @@ impl TrigramIndexBuilder {
             .extend(self.scratch.iter().map(|&g| ((g as u64) << 32) | id as u64));
     }
 
+    /// Insert trigrams extracted from multiple `texts` for the same `id`.
+    ///
+    /// This is semantically equivalent to calling [`Self::insert`] repeatedly for
+    /// each input text, but it performs the scratch sort+dedup once and avoids
+    /// adding duplicate `(trigram, id)` pairs when the trigrams overlap between
+    /// texts.
+    pub fn insert2(&mut self, id: SymbolId, a: &str, b: &str) {
+        self.scratch.clear();
+        trigrams(a, &mut self.scratch);
+        trigrams(b, &mut self.scratch);
+        if self.scratch.is_empty() {
+            return;
+        }
+        self.scratch.sort_unstable();
+        self.scratch.dedup();
+
+        self.pairs
+            .extend(self.scratch.iter().map(|&g| ((g as u64) << 32) | id as u64));
+    }
+
     pub fn build(mut self) -> TrigramIndex {
         self.pairs.sort_unstable();
         self.pairs.dedup();
@@ -428,5 +448,51 @@ mod tests {
         assert_eq!(got.as_ptr(), postings.as_ptr());
         assert_eq!(got.len(), postings.len());
         assert!(scratch.out.is_empty());
+    }
+
+    #[test]
+    fn multi_text_insert_matches_repeated_insert() {
+        let symbols = [
+            (1, "HashMap", "java.util.HashMap"),
+            (2, "HashSet", "java.util.HashSet"),
+            (3, "Hmac", "crypto.Hmac"),
+            // Trigrams for this query are distributed across the two strings.
+            (4, "abcxx", "bcdeyy"),
+            // One string is too short to contribute trigrams.
+            (5, "ab", "abcdef"),
+        ];
+
+        let mut repeated = TrigramIndexBuilder::new();
+        let mut multi = TrigramIndexBuilder::new();
+
+        for (id, name, qualified) in symbols {
+            repeated.insert(id, name);
+            repeated.insert(id, qualified);
+
+            multi.insert2(id, name, qualified);
+        }
+
+        let repeated = repeated.build();
+        let multi = multi.build();
+
+        let queries = [
+            "Hash",
+            "HashM",
+            "java.util.Hash",
+            "util.HashMap",
+            "Hmac",
+            "crypto.Hmac",
+            "abcde",
+            "abcdef",
+            "does_not_match",
+        ];
+
+        for q in queries {
+            assert_eq!(
+                repeated.candidates(q),
+                multi.candidates(q),
+                "candidates diverged for query {q:?}"
+            );
+        }
     }
 }
