@@ -7308,12 +7308,13 @@ mod tests {
         let _allow_code_edits_without_anonymization =
             ScopedEnvVar::remove("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION");
         let _anonymize = ScopedEnvVar::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
+        let _include_file_paths = ScopedEnvVar::remove("NOVA_AI_INCLUDE_FILE_PATHS");
 
         let _redact_sensitive_strings = ScopedEnvVar::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
         let _redact_numeric_literals = ScopedEnvVar::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
         let _strip_or_redact_comments = ScopedEnvVar::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
 
-        let (cfg, _privacy) = load_ai_config_from_env()
+        let (cfg, privacy) = load_ai_config_from_env()
             .expect("load_ai_config_from_env")
             .expect("config should be present");
         assert_eq!(cfg.privacy.local_only, false);
@@ -7323,6 +7324,7 @@ mod tests {
         assert_eq!(cfg.privacy.redact_sensitive_strings, None);
         assert_eq!(cfg.privacy.redact_numeric_literals, None);
         assert_eq!(cfg.privacy.strip_or_redact_comments, None);
+        assert!(!privacy.include_file_paths);
 
         // Explicit opt-in for patch-based code edits (cloud-mode gating).
         {
@@ -7337,7 +7339,7 @@ mod tests {
             let _strip_or_redact_comments =
                 ScopedEnvVar::set("NOVA_AI_STRIP_OR_REDACT_COMMENTS", "1");
 
-            let (cfg, _privacy) = load_ai_config_from_env()
+            let (cfg, privacy) = load_ai_config_from_env()
                 .expect("load_ai_config_from_env")
                 .expect("config should be present");
             assert_eq!(cfg.privacy.local_only, false);
@@ -7347,6 +7349,16 @@ mod tests {
             assert_eq!(cfg.privacy.redact_sensitive_strings, Some(false));
             assert_eq!(cfg.privacy.redact_numeric_literals, Some(false));
             assert_eq!(cfg.privacy.strip_or_redact_comments, Some(true));
+            assert!(!privacy.include_file_paths);
+        }
+
+        // `NOVA_AI_INCLUDE_FILE_PATHS` explicitly opts into including paths in prompts.
+        {
+            let _include_file_paths = ScopedEnvVar::set("NOVA_AI_INCLUDE_FILE_PATHS", "1");
+            let (_cfg, privacy) = load_ai_config_from_env()
+                .expect("load_ai_config_from_env")
+                .expect("config should be present");
+            assert!(privacy.include_file_paths);
         }
 
         // `NOVA_AI_LOCAL_ONLY` forces local-only mode regardless of provider.
@@ -8513,7 +8525,14 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
             err
         })?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    Ok(result)
+    if work_done_token.is_some() {
+        Ok(result)
+    } else {
+        // `workspace/executeCommand` invoked via a standard LSP code action does not include a
+        // `workDoneToken`. Preserve legacy behavior for those callers by returning `null` while
+        // still applying the edit via `workspace/applyEdit`.
+        Ok(serde_json::Value::Null)
+    }
 }
 
 fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
@@ -8608,7 +8627,12 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             err
         })?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    Ok(result)
+    if work_done_token.is_some() {
+        Ok(result)
+    } else {
+        // Preserve legacy `workspace/executeCommand` return value for LSP code actions.
+        Ok(serde_json::Value::Null)
+    }
 }
 
 fn apply_code_action_outcome<O: RpcOut>(
