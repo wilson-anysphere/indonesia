@@ -29,7 +29,8 @@ use crate::ProjectId;
 /// ## Raw id mapping to `nova_ids::ClassId`
 ///
 /// Interned handles are thin wrappers around Salsa [`ra_salsa::InternId`], which
-/// is a small (non-zero) `u32` newtype.
+/// is a compact `u32` newtype (internally stored as a `NonZeroU32` so
+/// `Option<InternId>` is pointer-sized).
 ///
 /// Nova's canonical strongly-typed `nova_ids::ClassId` is a transparent wrapper
 /// around a `u32`, so converting between the two is straightforward:
