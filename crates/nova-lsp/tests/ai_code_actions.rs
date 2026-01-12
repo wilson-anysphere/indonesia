@@ -348,6 +348,200 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
 }
 
 #[test]
+fn stdio_server_chunks_long_ai_explain_error_log_messages() {
+    let mock_server = MockServer::start();
+
+    // Large enough that `nova-lsp` must split it across multiple `window/logMessage`
+    // notifications (see `AI_LOG_MESSAGE_CHUNK_BYTES`).
+    let long = "Nova AI output ".repeat(4_000);
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200).json_body(json!({ "completion": long }));
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", mock_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // open document so the server can attach snippets.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///Test.java",
+                    "languageId": "java",
+                    "version": 1,
+                    "text": "class Test { void run() { unknown(); } }"
+                }
+            }
+        }),
+    );
+
+    // request code actions with a diagnostic.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": "file:///Test.java" },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 10 }
+                },
+                "context": {
+                    "diagnostics": [{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 10 }
+                        },
+                        "message": "cannot find symbol"
+                    }]
+                }
+            }
+        }),
+    );
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let explain = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
+        .expect("explain code action");
+    let cmd = explain
+        .get("command")
+        .expect("command")
+        .get("command")
+        .and_then(|v| v.as_str())
+        .expect("command string");
+    let args = explain
+        .get("command")
+        .expect("command")
+        .get("arguments")
+        .cloned()
+        .expect("arguments");
+
+    // execute command (triggers the mock AI call).
+    let progress_token = json!("progress-token");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": cmd,
+                "arguments": args,
+                "workDoneToken": progress_token.clone()
+            }
+        }),
+    );
+
+    let mut progress_kinds = Vec::new();
+    let mut output_chunks = Vec::new();
+    let exec_resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+
+        if msg.get("method").and_then(|v| v.as_str()) == Some("$/progress") {
+            if msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token) {
+                if let Some(kind) = msg
+                    .get("params")
+                    .and_then(|p| p.get("value"))
+                    .and_then(|v| v.get("kind"))
+                    .and_then(|v| v.as_str())
+                {
+                    progress_kinds.push(kind.to_string());
+                }
+            }
+            continue;
+        }
+
+        if msg.get("method").and_then(|v| v.as_str()) == Some("window/logMessage") {
+            if let Some(text) = msg
+                .get("params")
+                .and_then(|p| p.get("message"))
+                .and_then(|m| m.as_str())
+            {
+                if text.starts_with("AI explainError") {
+                    let (_, chunk) = text
+                        .split_once(": ")
+                        .expect("AI chunk messages should contain ': ' delimiter");
+                    output_chunks.push(chunk.to_string());
+                }
+            }
+            continue;
+        }
+
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(3) {
+            break msg;
+        }
+        // Other notification/response; ignore.
+    };
+
+    let result = exec_resp
+        .get("result")
+        .and_then(|v| v.as_str())
+        .expect("executeCommand result string");
+    assert_eq!(result, long.as_str());
+    assert!(progress_kinds.contains(&"begin".to_string()));
+    assert!(progress_kinds.contains(&"end".to_string()));
+    assert!(
+        output_chunks.len() > 1,
+        "expected long AI output to be chunked, got {output_chunks:?}"
+    );
+    assert_eq!(output_chunks.join(""), long);
+
+    mock.assert_hits(1);
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     let mock_server = MockServer::start();
     // The code action request itself should not invoke the provider, but we need
