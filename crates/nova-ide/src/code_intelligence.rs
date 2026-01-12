@@ -10360,9 +10360,16 @@ fn semantic_member_completions(
     receiver_ty: &Type,
     call_kind: CallKind,
 ) -> Vec<CompletionItem> {
-    ensure_type_members_loaded(types, receiver_ty);
+    // Java arrays behave like `Object` for method/field lookup (JLS 10.7), in addition to having the
+    // special pseudo-field `length` (handled by the caller).
+    let receiver_for_members = match receiver_ty {
+        Type::Array(_) => Type::class(types.well_known().object, vec![]),
+        _ => receiver_ty.clone(),
+    };
 
-    let Some(class_id) = class_id_of_type(types, receiver_ty) else {
+    ensure_type_members_loaded(types, &receiver_for_members);
+
+    let Some(class_id) = class_id_of_type(types, &receiver_for_members) else {
         return Vec::new();
     };
 

@@ -105,6 +105,24 @@ class A { void m(){ int[] xs=null; xs.<|> } }
 }
 
 #[test]
+fn completion_includes_object_members_for_arrays() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { void m(){ int[] xs=null; xs.<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "toString")
+        .expect("expected completion list to contain Object.toString for arrays");
+
+    assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
+    assert_eq!(item.insert_text.as_deref(), Some("toString()"));
+}
+
+#[test]
 fn completion_is_suppressed_in_char_literal() {
     let (db, file, pos) = fixture(
         r#"
