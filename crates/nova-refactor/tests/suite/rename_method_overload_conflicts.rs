@@ -75,4 +75,3 @@ fn rename_method_rejects_duplicate_signature_in_same_type() {
         "expected NameCollision conflict: {conflicts:?}"
     );
 }
-
