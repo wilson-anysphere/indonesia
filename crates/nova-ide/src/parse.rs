@@ -1363,6 +1363,42 @@ record Point(int x, int y) {}
     }
 
     #[test]
+    fn enum_implements_interfaces_are_recorded() {
+        let uri = Uri::from_str("file:///E.java").unwrap();
+        let text = r#"
+enum E implements I, J {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].name, "E");
+        assert_eq!(parsed.types[0].super_class, None);
+        assert_eq!(
+            parsed.types[0].interfaces,
+            vec!["I".to_string(), "J".to_string()]
+        );
+    }
+
+    #[test]
+    fn record_implements_interfaces_are_recorded() {
+        let uri = Uri::from_str("file:///R.java").unwrap();
+        let text = r#"
+record R(int x) implements I, pkg.J<String> {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].name, "R");
+        assert_eq!(parsed.types[0].super_class, None);
+        assert_eq!(
+            parsed.types[0].interfaces,
+            vec!["I".to_string(), "J".to_string()]
+        );
+    }
+
+    #[test]
     fn receiverless_calls_are_indexed_as_this() {
         let uri = Uri::from_str("file:///C.java").unwrap();
         let text = r#"
