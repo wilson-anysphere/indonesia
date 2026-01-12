@@ -1778,17 +1778,7 @@ async fn handle_request_inner(
                             *guard = Some(proc);
                         }
 
-                        let name = match args.module_name.as_deref() {
-                            Some(module_name) => format!("{module_name}/{main_class}"),
-                            None => main_class.to_string(),
-                        };
-                        let name = if name.is_empty() {
-                            "java".to_string()
-                        } else {
-                            name
-                        };
-
-                        (vec![host], port, attach_target_label, name, pid)
+                        (vec![host], port, attach_target_label, main_class.to_string(), pid)
                     }
                 };
 

@@ -72,6 +72,41 @@ async fn wait_for_new_pid(path: &Path, old_pid: u32) -> u32 {
     panic!("pid file {path:?} was not updated after restart");
 }
 
+fn process_event_pid(msg: &Value) -> Option<u32> {
+    if msg.get("type").and_then(|v| v.as_str()) != Some("event") {
+        return None;
+    }
+    if msg.get("event").and_then(|v| v.as_str()) != Some("process") {
+        return None;
+    }
+    msg.get("body")
+        .and_then(|b| b.get("systemProcessId"))
+        .and_then(|v| v.as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+async fn read_until_process_event_pid(
+    reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    buffered: &[Value],
+) -> u32 {
+    for msg in buffered {
+        if let Some(pid) = process_event_pid(msg) {
+            return pid;
+        }
+    }
+
+    for _ in 0..200 {
+        let msg = tokio::time::timeout(Duration::from_secs(2), read_next(reader))
+            .await
+            .expect("timed out waiting for process event");
+        if let Some(pid) = process_event_pid(&msg) {
+            return pid;
+        }
+    }
+
+    panic!("did not receive process event with systemProcessId");
+}
+
 fn is_event(msg: &Value, name: &str) -> bool {
     msg.get("type").and_then(|v| v.as_str()) == Some("event")
         && msg.get("event").and_then(|v| v.as_str()) == Some(name)
@@ -177,13 +212,18 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
         }),
     )
     .await;
-    let (launch_resp, _) = read_until_response(&mut reader, 2).await;
+    let (launch_resp, launch_messages) = read_until_response(&mut reader, 2).await;
     assert!(launch_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
     let pid1 = wait_for_pid_file(&pid_path).await;
+    let process_pid1 = read_until_process_event_pid(&mut reader, &launch_messages).await;
+    assert_eq!(
+        process_pid1, pid1,
+        "expected process event pid to match pid file after launch"
+    );
     wait_for_file_contains(&heartbeat_path, &format!("heartbeat pid={pid1}")).await;
 
     #[cfg(target_os = "linux")]
@@ -207,6 +247,15 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
 
     let pid2 = wait_for_new_pid(&pid_path, pid1).await;
     assert_ne!(pid1, pid2, "expected restart to spawn a new process");
+    let process_pid2 = read_until_process_event_pid(&mut reader, &restart_messages).await;
+    assert_eq!(
+        process_pid2, pid2,
+        "expected process event pid to match pid file after restart"
+    );
+    assert_ne!(
+        process_pid1, process_pid2,
+        "expected restart to emit a process event for the new process"
+    );
     let _kill = KillOnDrop(pid2);
     wait_for_file_contains(&heartbeat_path, &format!("heartbeat pid={pid2}")).await;
 
