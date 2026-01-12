@@ -4194,6 +4194,12 @@ fn handle_code_action(
         }
     }
     // AI code actions (gracefully degrade when AI isn't configured).
+    //
+    // When `ai.privacy.excluded_paths` matches the active document:
+    // - We still offer "Explain this error", but we omit the code snippet so no code is sent to
+    //   the LLM from an excluded file.
+    // - We omit AI code-editing actions (generate/tests), since these operations require sending
+    //   code to the model.
     let ai_enabled = state.ai.is_some();
     let ai_excluded = doc_path
         .as_deref()
@@ -4204,9 +4210,6 @@ fn handle_code_action(
             nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
 
         // Explain error (diagnostic-driven).
-        //
-        // For `excluded_paths`, we still offer the action but omit the code snippet so the
-        // subsequent AI request can remain privacy-safe.
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let uri = Some(params.text_document.uri.clone());
             let range = Some(to_ide_range(&diagnostic.range));
@@ -7848,6 +7851,96 @@ mod tests {
     }
 
     #[test]
+    fn excluded_paths_disable_ai_explain_error_command() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        let secrets_dir = root.join("src").join("secrets");
+        std::fs::create_dir_all(&secrets_dir).expect("create src/secrets dir");
+
+        let secret_path = secrets_dir.join("Secret.java");
+        std::fs::write(&secret_path, "class Secret {}").expect("write Secret.java");
+        let secret_uri: lsp_types::Uri = url::Url::from_file_path(&secret_path)
+            .expect("file url")
+            .to_string()
+            .parse()
+            .expect("uri");
+
+        let mut cfg = nova_config::NovaConfig::default();
+        cfg.ai.enabled = true;
+        cfg.ai.privacy.excluded_paths = vec!["src/secrets/**".to_string()];
+
+        let mut state = ServerState::new(cfg, None, MemoryBudgetOverrides::default());
+        state.project_root = Some(root.to_path_buf());
+
+        let out = crate::rpc_out::WriteRpcOut::new(Vec::<u8>::new());
+        let err = run_ai_explain_error(
+            ExplainErrorArgs {
+                diagnostic_message: "boom".to_string(),
+                code: None,
+                uri: Some(secret_uri.to_string()),
+                range: None,
+            },
+            None,
+            &mut state,
+            &out,
+            CancellationToken::new(),
+        )
+        .expect_err("expected excluded_paths to block ai.explainError");
+
+        assert_eq!(err.0, -32600);
+        assert_eq!(
+            err.1,
+            "AI disabled for this file due to ai.privacy.excluded_paths"
+        );
+    }
+
+    #[test]
+    fn semantic_search_related_code_filters_excluded_paths() {
+        #[derive(Clone)]
+        struct StaticSemanticSearch {
+            results: Vec<nova_ai::SearchResult>,
+        }
+
+        impl nova_ai::SemanticSearch for StaticSemanticSearch {
+            fn search(&self, _query: &str) -> Vec<nova_ai::SearchResult> {
+                self.results.clone()
+            }
+        }
+
+        let mut cfg = nova_config::NovaConfig::default();
+        cfg.ai.enabled = true;
+        cfg.ai.features.semantic_search = true;
+        cfg.ai.privacy.excluded_paths = vec!["src/secrets/**".to_string()];
+
+        let mut state = ServerState::new(cfg, None, MemoryBudgetOverrides::default());
+        state.semantic_search = Arc::new(RwLock::new(
+            Box::new(StaticSemanticSearch {
+                results: vec![
+                    nova_ai::SearchResult {
+                        path: PathBuf::from("src/secrets/Secret.java"),
+                        range: 0..0,
+                        kind: "file".to_string(),
+                        score: 1.0,
+                        snippet: "DO_NOT_LEAK".to_string(),
+                    },
+                    nova_ai::SearchResult {
+                        path: PathBuf::from("src/Main.java"),
+                        range: 0..0,
+                        kind: "file".to_string(),
+                        score: 0.5,
+                        snippet: "class Main {}".to_string(),
+                    },
+                ],
+            }) as Box<dyn nova_ai::SemanticSearch>,
+        ));
+
+        let req = build_context_request(&state, "class Main {}".to_string(), None);
+        let enriched = maybe_add_related_code(&state, req);
+        assert_eq!(enriched.related_code.len(), 1);
+        assert_eq!(enriched.related_code[0].path, PathBuf::from("src/Main.java"));
+    }
+
+    #[test]
     fn build_context_request_attaches_project_and_semantic_context_when_available() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path();
@@ -8281,11 +8374,13 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    let mut is_excluded = false;
     if let Some(uri) = args.uri.as_deref() {
         if let Some(path) = path_from_uri(uri) {
             if is_ai_excluded_path(state, &path) {
-                is_excluded = true;
+                return Err((
+                    -32600,
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+                ));
             }
         }
     }
@@ -8293,37 +8388,26 @@ fn run_ai_explain_error(
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(rpc_out, "AI: explaining error…")?;
-    let (uri, range, code) = if is_excluded {
-        // We still allow the explain-error action, but strip all file-backed context when the
-        // diagnostic originates from an excluded path.
-        (None, None, String::new())
-    } else {
-        (
-            args.uri.as_deref(),
-            args.range,
-            args.code.unwrap_or_default(),
-        )
-    };
     let mut ctx = build_context_request_from_args(
-        state, uri, range, code, /*fallback_enclosing=*/ None,
+        state,
+        args.uri.as_deref(),
+        args.range,
+        args.code.unwrap_or_default(),
+        /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
     ctx.diagnostics.push(ContextDiagnostic {
-        file: if is_excluded { None } else { args.uri.clone() },
-        range: if is_excluded {
-            None
-        } else {
-            args.range.map(|range| nova_ai::patch::Range {
-                start: nova_ai::patch::Position {
-                    line: range.start.line,
-                    character: range.start.character,
-                },
-                end: nova_ai::patch::Position {
-                    line: range.end.line,
-                    character: range.end.character,
-                },
-            })
-        },
+        file: args.uri.clone(),
+        range: args.range.map(|range| nova_ai::patch::Range {
+            start: nova_ai::patch::Position {
+                line: range.start.line,
+                character: range.start.character,
+            },
+            end: nova_ai::patch::Position {
+                line: range.end.line,
+                character: range.end.character,
+            },
+        }),
         severity: ContextDiagnosticSeverity::Error,
         message: args.diagnostic_message.clone(),
         kind: Some(ContextDiagnosticKind::Other),
