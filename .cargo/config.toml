@@ -1,3 +1,10 @@
 [alias]
 xtask = "run -p xtask --"
 
+# Some environments configure a global rustc wrapper (commonly `sccache`) via user Cargo config.
+# In sandboxed/CI-like execution this can be flaky (e.g. a broken sccache server causes every
+# `cargo` invocation to fail). Disable wrappers by default for this repo; developers that want
+# a wrapper can opt back in by setting `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` in their env.
+[build]
+rustc-wrapper = ""
+rustc-workspace-wrapper = ""
