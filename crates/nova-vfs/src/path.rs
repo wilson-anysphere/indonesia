@@ -645,6 +645,19 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn local_paths_normalize_drive_letter_case() {
+        let upper = VfsPath::local(r"C:\a\b.java");
+        let lower = VfsPath::local(r"c:\a\b.java");
+        assert_eq!(upper, lower);
+
+        let uri_upper = VfsPath::uri("file:///C:/a/b.java");
+        let uri_lower = VfsPath::uri("file:///c:/a/b.java");
+        assert_eq!(upper, uri_upper);
+        assert_eq!(upper, uri_lower);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn file_uri_unc_paths_are_logically_normalized() {
         let uri = "file://server/share/a/b/../c.java";
         let expected = PathBuf::from(r"\\server\share\a\c.java");
