@@ -1720,7 +1720,9 @@ impl WorkspaceEngine {
             return;
         };
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
-        let diagnostics = nova_ide::file_diagnostics(&snapshot, file_id);
+        let diagnostics = self.query_db.with_snapshot(|snap| {
+            nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
+        });
 
         self.publish(WorkspaceEvent::DiagnosticsUpdated { file, diagnostics });
     }

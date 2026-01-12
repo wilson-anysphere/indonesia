@@ -17,7 +17,10 @@ use lsp_types::{
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf, QualifiedName, TypeIndex};
-use nova_db::{Database, FileId, NovaFlow, NovaInputs, NovaTypeck, SalsaDatabase};
+use nova_db::{
+    Database, FileId, NovaFlow, NovaInputs, NovaResolve, NovaSyntax, NovaTypeck, SalsaDatabase,
+    Snapshot,
+};
 use nova_fuzzy::FuzzyMatcher;
 use nova_jdk::JdkIndex;
 use nova_types::{
@@ -1083,6 +1086,65 @@ fn ensure_salsa_inputs_for_single_file(
     }
 }
 
+fn severity_rank(severity: Severity) -> u8 {
+    match severity {
+        Severity::Error => 0,
+        Severity::Warning => 1,
+        Severity::Info => 2,
+    }
+}
+
+fn span_key(span: Option<Span>) -> (usize, usize) {
+    match span {
+        Some(span) => (span.start, span.end),
+        None => (usize::MAX, usize::MAX),
+    }
+}
+
+fn sort_and_dedupe_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(|a, b| {
+        span_key(a.span)
+            .cmp(&span_key(b.span))
+            .then_with(|| severity_rank(a.severity).cmp(&severity_rank(b.severity)))
+            .then_with(|| a.code.as_ref().cmp(b.code.as_ref()))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+    diagnostics.dedup();
+}
+
+fn salsa_semantic_file_diagnostics(
+    db: &Snapshot,
+    file: FileId,
+    is_java: bool,
+) -> Vec<Diagnostic> {
+    if !is_java {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+
+    // 1) Java parser errors.
+    let parse = db.parse_java(file);
+    diagnostics.extend(parse.errors.iter().map(|e| {
+        Diagnostic::error(
+            "SYNTAX",
+            e.message.clone(),
+            Some(Span::new(e.range.start as usize, e.range.end as usize)),
+        )
+    }));
+
+    // 2) Version-aware syntax feature gating.
+    diagnostics.extend(db.syntax_feature_diagnostics(file).iter().cloned());
+
+    // 3) Import resolution diagnostics.
+    diagnostics.extend(db.import_diagnostics(file).iter().cloned());
+
+    // 4) Type checking + flow.
+    diagnostics.extend(db.type_diagnostics(file));
+    diagnostics.extend(db.flow_diagnostics_for_file(file).iter().cloned());
+
+    diagnostics
+}
 /// Core (non-framework) diagnostics for a single file.
 ///
 /// Framework diagnostics (Spring/JPA/Micronaut/Quarkus/Dagger) are provided via the unified
@@ -1172,8 +1234,12 @@ pub fn core_file_diagnostics(
     diagnostics
 }
 
-/// Aggregate all diagnostics for a single file.
-pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+/// Aggregate all diagnostics for a single file, computing semantic diagnostics using `semantic_db`.
+pub fn file_diagnostics_with_semantic_db(
+    db: &dyn Database,
+    semantic_db: &Snapshot,
+    file: FileId,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     let text = db.file_content(file);
@@ -1192,16 +1258,12 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
             diagnostics.extend(nova_framework_spring::diagnostics_for_config_file(
                 path, text, metadata,
             ));
+            sort_and_dedupe_diagnostics(&mut diagnostics);
             return diagnostics;
         }
     }
 
-    // 1) Syntax errors.
-    //
-    // `nova_syntax::parse` is a lightweight token-level parser that reports
-    // unterminated literals/comments. For richer "unexpected token" errors we
-    // also run the full Java grammar parser (`parse_java`) when the file is a
-    // Java source file.
+    // 1) Token-level syntax errors.
     let parse = nova_syntax::parse(text);
     diagnostics.extend(parse.errors.into_iter().map(|e| {
         Diagnostic::error(
@@ -1211,24 +1273,8 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         )
     }));
 
-    let java_parse = is_java.then(|| nova_syntax::parse_java(text));
-    if let Some(parse) = java_parse.as_ref() {
-        diagnostics.extend(parse.errors.iter().map(|e| {
-            Diagnostic::error(
-                "SYNTAX",
-                e.message.clone(),
-                Some(Span::new(e.range.start as usize, e.range.end as usize)),
-            )
-        }));
-    }
-
-    // 2) Demand-driven type-checking diagnostics (best-effort, Salsa-backed).
-    if is_java {
-        with_salsa_snapshot_for_single_file(db, file, text, |snap| {
-            diagnostics.extend(snap.type_diagnostics(file));
-            diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
-        });
-    }
+    // 2) Salsa-backed semantic diagnostics (Java parse errors, feature gating, imports, typeck, flow).
+    diagnostics.extend(salsa_semantic_file_diagnostics(semantic_db, file, is_java));
 
     // 3) Unresolved references (best-effort).
     let analysis = analyze(text);
@@ -1309,7 +1355,38 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         }
     }
 
+    sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+/// Aggregate all diagnostics for a single file.
+///
+/// This is a convenience wrapper that computes semantic diagnostics using a
+/// best-effort Salsa database seeded with only the current file.
+pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+    let text = db.file_content(file);
+    let project = nova_db::ProjectId::from_raw(0);
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, jdk);
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file, text.to_string());
+
+    // `import_diagnostics` requires these inputs.
+    let rel = db
+        .file_path(file)
+        .and_then(|path| path.to_str())
+        .unwrap_or("unknown.java")
+        .to_string();
+    salsa.set_file_rel_path(file, Arc::new(rel));
+    salsa.set_project_files(project, Arc::new(vec![file]));
+
+    let snap = salsa.snapshot();
+    file_diagnostics_with_semantic_db(db, &snap, file)
 }
 
 /// Map Nova diagnostics into LSP diagnostics.
