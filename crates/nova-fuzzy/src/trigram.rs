@@ -329,8 +329,16 @@ impl TrigramIndexBuilder {
     /// texts.
     pub fn insert2(&mut self, id: SymbolId, a: &str, b: &str) {
         self.scratch.clear();
-        trigrams(a, &mut self.scratch);
-        trigrams(b, &mut self.scratch);
+        #[cfg(feature = "unicode")]
+        {
+            trigrams_with_unicode_buf(a, &mut self.scratch, &mut self.unicode_buf);
+            trigrams_with_unicode_buf(b, &mut self.scratch, &mut self.unicode_buf);
+        }
+        #[cfg(not(feature = "unicode"))]
+        {
+            trigrams(a, &mut self.scratch);
+            trigrams(b, &mut self.scratch);
+        }
         if self.scratch.is_empty() {
             return;
         }
