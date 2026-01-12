@@ -441,6 +441,17 @@ completion_ranking_ms = 20
 multi_token_completion_ms = 250
 ```
 
+### Server-side overrides (environment variables)
+
+Some editor integrations set environment variables when starting `nova-lsp` to provide **server-side
+hard overrides** for AI behavior (for example: to disable multi-token completions without modifying
+`nova.toml`).
+
+These overrides are read at **process startup**, so changing them requires restarting the server.
+For details (including `NOVA_AI_COMPLETIONS_MAX_ITEMS`) and how they affect the completion protocol
+(`CompletionList.isIncomplete` and `nova/completion/more` polling), see `docs/protocol-extensions.md`
+(`nova/completion/more`).
+
 ### Code-editing policy (patches / file edits)
 
 Nova treats **patch-based code edits** (anything that applies edits to files) as higher risk than

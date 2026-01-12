@@ -1582,10 +1582,20 @@ This is the “poll for async AI completions” endpoint used by the VS Code ext
 Notes:
 
 - The stdio server only spawns background AI completions when `ai.enabled = true` and
-  `ai.features.multi_token_completion = true` in `nova.toml`, and neither `NOVA_DISABLE_AI` nor
-  `NOVA_DISABLE_AI_COMPLETIONS` is set (these environment variables override `nova.toml`). Clients
-  should also gate polling on `CompletionList.isIncomplete = true`; when AI completions are
-  disabled, the server returns `isIncomplete = false` and `nova/completion/more` will return an
+  `ai.features.multi_token_completion = true` in `nova.toml`, and multi-token completions are not
+  disabled by server-side env var overrides (see below).
+- `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s **AI multi-token completion max-items**
+  setting (how many AI completion items may be surfaced for a single completion context).
+  - `0` is treated as a **hard disable** of multi-token completions: the server does not spawn any
+    background AI completion tasks and the initial LSP `CompletionList.isIncomplete` is `false`.
+  - Values are clamped to a reasonable maximum (currently `32`).
+  - Empty / invalid values are ignored (the server falls back to config/default behavior).
+  - This override is read at process start; a server restart is required for changes to take effect.
+- Other server-side env var overrides that can disable AI completions entirely:
+  - `NOVA_DISABLE_AI=1` disables all AI features.
+  - `NOVA_DISABLE_AI_COMPLETIONS=1` disables multi-token completions.
+- Clients should gate polling on `CompletionList.isIncomplete = true`; when multi-token completions
+  are disabled, the server returns `isIncomplete = false` and `nova/completion/more` will return an
   empty result.
 
 #### Request params (note: snake_case)
