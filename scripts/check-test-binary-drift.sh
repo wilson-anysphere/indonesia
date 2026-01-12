@@ -18,6 +18,36 @@ fi
 
 head_sha="$(git rev-parse HEAD)"
 
+# Some workflows/docs rely on stable `cargo test --test <name>` entrypoints. Renaming these test
+# harness files breaks CI even if the overall number of test binaries stays constant.
+#
+# Only enforce pinning if the harness existed in the base commit (so new crates/targets are still
+# allowed to introduce a first harness).
+pinned_harnesses=(
+  "nova-types:javac_differential"
+)
+
+for entry in "${pinned_harnesses[@]}"; do
+  crate="${entry%%:*}"
+  test_name="${entry##*:}"
+  test_path="crates/${crate}/tests/${test_name}.rs"
+
+  if git cat-file -e "${base_sha}:${test_path}" 2>/dev/null; then
+    if ! git cat-file -e "${head_sha}:${test_path}" 2>/dev/null; then
+      cat >&2 <<EOF
+ERROR: Pinned integration test harness missing.
+
+${test_path} existed in the PR base commit but is missing in HEAD.
+
+This file is a stable CI/docs entrypoint (cargo test -p ${crate} --test ${test_name}).
+Do not rename/move it; instead, keep the harness and add new tests under a subdirectory (e.g.
+crates/${crate}/tests/suite/) and include them via a module.
+EOF
+      exit 1
+    fi
+  fi
+done
+
 # Only run the heavier per-crate counting if the PR touched top-level integration test files.
 #
 # "Top-level" means exactly: crates/<crate>/tests/<name>.rs
