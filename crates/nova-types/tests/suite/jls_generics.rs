@@ -487,6 +487,61 @@ fn method_resolution_prefers_class_bound_over_interface_bound_for_type_var_recei
 }
 
 #[test]
+fn field_resolution_prefers_class_bound_over_interface_bound_for_type_var_receiver() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+
+    let iface = env.add_class(ClassDef {
+        name: "com.example.IFIeld".to_string(),
+        kind: ClassKind::Interface,
+        type_params: vec![],
+        super_class: None,
+        interfaces: vec![],
+        fields: vec![FieldDef {
+            name: "foo".to_string(),
+            ty: Type::class(object, vec![]),
+            is_static: true,
+            is_final: true,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let class = env.add_class(ClassDef {
+        name: "com.example.AField".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![Type::class(iface, vec![])],
+        fields: vec![FieldDef {
+            name: "foo".to_string(),
+            ty: Type::class(string, vec![]),
+            is_static: false,
+            is_final: false,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    // Intentionally put the interface bound first.
+    let tv = env.add_type_param(
+        "T",
+        vec![Type::class(iface, vec![]), Type::class(class, vec![])],
+    );
+
+    let receiver = Type::TypeVar(tv);
+
+    let mut ctx = TyContext::new(&env);
+    let field = ctx
+        .resolve_field(&receiver, "foo", CallKind::Instance)
+        .expect("field should resolve");
+
+    assert_eq!(field.ty, Type::class(string, vec![]));
+    assert!(!field.is_static);
+}
+
+#[test]
 fn field_resolution_applies_capture_conversion_for_extends_wildcard() {
     let mut env = TypeStore::with_minimal_jdk();
     let object = env.well_known().object;
