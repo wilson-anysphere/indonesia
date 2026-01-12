@@ -2403,7 +2403,11 @@ pub fn inline_variable(
     // require the earliest inlined usage statement to be the immediately following statement in
     // the same block statement list.
     if remove_decl && init_is_order_sensitive {
-        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        if init_has_side_effects {
+            check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        } else {
+            check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        }
     }
 
     let mut edits: Vec<TextEdit> = Vec::with_capacity(targets.len());
