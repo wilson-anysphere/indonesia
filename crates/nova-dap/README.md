@@ -267,8 +267,8 @@ hit or step). `frameId` must refer to a currently-valid stack frame (from the mo
 - **Arguments:** JSON object with `camelCase` keys:
   - `expression` (string, required)
   - `frameId` (number, required)
-  - `maxSampleSize` (number, optional)
-  - `maxTotalTimeMs` (number, optional)
+  - `maxSampleSize` (number, optional, default `25`)
+  - `maxTotalTimeMs` (number, optional, default `250`)
   - `allowSideEffects` (bool, optional, default `false`)
   - `allowTerminalOps` (bool, optional, default `false`)
 
