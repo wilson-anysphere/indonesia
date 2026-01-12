@@ -492,7 +492,21 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
     };
 
     match build_system {
-        BuildSystem::Maven => name == "pom.xml",
+        BuildSystem::Maven => {
+            if matches!(name, "pom.xml" | "mvnw" | "mvnw.cmd") {
+                return true;
+            }
+
+            match name {
+                "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
+                "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
+                "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
+                "maven-wrapper.properties" => {
+                    path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
+                }
+                _ => false,
+            }
+        }
         BuildSystem::Gradle => matches!(
             name,
             "build.gradle"
@@ -527,5 +541,38 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 )
                 || path.extension().is_some_and(|ext| ext == "bzl")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maven_build_file_detection_includes_mvn_wrapper_and_mvn_config() {
+        let maven_build_markers = [
+            "pom.xml",
+            "mvnw",
+            "mvnw.cmd",
+            ".mvn/maven.config",
+            ".mvn/jvm.config",
+            ".mvn/extensions.xml",
+            ".mvn/wrapper/maven-wrapper.properties",
+        ];
+
+        for path in maven_build_markers {
+            assert!(
+                is_build_file(BuildSystem::Maven, Path::new(path)),
+                "expected {path} to be treated as a Maven build marker"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_build_file_detection_is_path_aware_for_wrapper_properties() {
+        assert!(
+            !is_build_file(BuildSystem::Maven, Path::new("maven-wrapper.properties")),
+            "misplaced maven-wrapper.properties at workspace root should not be treated as a build file"
+        );
     }
 }
