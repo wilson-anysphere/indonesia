@@ -70,7 +70,7 @@ cargo check --all-features    # Unbounded work
 ### FORBIDDEN (no exceptions):
 
 - `cargo build` / `cargo test` / `cargo check` **without wrapper scripts**
-- `cargo test` **without scoping** (`-p <crate>`, `--test=<name>`, or `--lib`)
+- `cargo test` **without package scoping** (`-p/--package <crate>` or `--manifest-path <path>`)
 - `cargo build --all-targets`
 - `cargo test --all-targets`
 - `cargo check --all-features --tests`
@@ -79,14 +79,15 @@ cargo check --all-features    # Unbounded work
 ### MANDATORY:
 
 - **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
-- **Always scope test runs**: `-p <crate>`, `--test=<name>`, `--lib`, or `--bin <name>`
+- **Always scope test runs to a package**: `-p/--package <crate>` or `--manifest-path <path>`
+  - Consider further scoping with `--test <name>`, `--lib`, or `--bin <name>`
 
 ```bash
  # CORRECT:
  bash scripts/cargo_agent.sh build --release
  bash scripts/cargo_agent.sh test -p nova-core --lib
  bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
- bash scripts/cargo_agent.sh check -p nova-parser
+ bash scripts/cargo_agent.sh check -p nova-syntax
 
 # WRONG — WILL DESTROY HOST:
 cargo test
