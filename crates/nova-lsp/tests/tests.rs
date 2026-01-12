@@ -16,6 +16,8 @@ mod ide_extensions_navigation;
 mod mapstruct_completions;
 #[path = "suite/mapstruct_goto_definition.rs"]
 mod mapstruct_goto_definition;
+#[path = "suite/mapstruct_implementation.rs"]
+mod mapstruct_implementation;
 #[path = "suite/micronaut_extensions.rs"]
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
