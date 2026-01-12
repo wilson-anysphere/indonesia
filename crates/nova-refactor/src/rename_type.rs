@@ -646,16 +646,6 @@ fn expr_scope_for_offset(
                     visit_expr(body, *item, offset, best_expr, best_stmt);
                 }
             }
-            Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    visit_expr(body, *item, offset, best_expr, best_stmt);
-                }
-            }
-            Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    visit_expr(body, *item, offset, best_expr, best_stmt);
-                }
-            }
             Expr::Unary { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
             Expr::Binary { lhs, rhs, .. } => {
                 visit_expr(body, *lhs, offset, best_expr, best_stmt);
