@@ -95,6 +95,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
 /// - `FLOW_UNASSIGNED` → `Initialize '<name>'`
 /// - `type-mismatch` → `Cast to <expected>` / `Convert to String`
+/// - `return-mismatch` → `Remove returned value` / `Cast to <expected>`
 /// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
 /// - `FLOW_NULL_DEREF` → `Wrap with Objects.requireNonNull`
@@ -150,6 +151,7 @@ pub fn diagnostic_quick_fixes(
             actions.push(action);
         }
         actions.extend(type_mismatch_quick_fixes(source, &uri, &selection, diag));
+        actions.extend(return_mismatch_quick_fixes(source, &uri, &selection, diag));
         if let Some(action) = flow_null_deref_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
@@ -642,6 +644,81 @@ fn type_mismatch_quick_fixes(
     actions
 }
 
+fn return_mismatch_quick_fixes(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
+    if diagnostic_code(diagnostic) != Some("return-mismatch") {
+        return Vec::new();
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return Vec::new();
+    }
+
+    let (start_pos, end_pos) = normalize_range(&diagnostic.range);
+    let range = Range {
+        start: start_pos,
+        end: end_pos,
+    };
+
+    fn single_replace_edit(uri: &Uri, range: Range, new_text: String) -> WorkspaceEdit {
+        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+        changes.insert(uri.clone(), vec![TextEdit { range, new_text }]);
+        WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    if diagnostic
+        .message
+        .contains("cannot return a value from a `void` method")
+    {
+        return vec![CodeAction {
+            title: "Remove returned value".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(single_replace_edit(uri, range, String::new())),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            ..CodeAction::default()
+        }];
+    }
+
+    let Some((expected, found)) = parse_return_mismatch(&diagnostic.message) else {
+        return Vec::new();
+    };
+    if found == "void" {
+        return Vec::new();
+    }
+
+    let start_offset = crate::text::position_to_offset(source, start_pos);
+    let end_offset = crate::text::position_to_offset(source, end_pos);
+    let (Some(start_offset), Some(end_offset)) = (start_offset, end_offset) else {
+        return Vec::new();
+    };
+    let (start_offset, end_offset) = (start_offset.min(end_offset), start_offset.max(end_offset));
+
+    let expr = source
+        .get(start_offset..end_offset)
+        .unwrap_or_default()
+        .trim();
+    if expr.is_empty() {
+        return Vec::new();
+    }
+
+    let replacement = format!("({expected}) ({expr})");
+    vec![CodeAction {
+        title: format!("Cast to {expected}"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(single_replace_edit(uri, range, replacement)),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    }]
+}
+
 fn create_method_quick_fix(
     source: &str,
     uri: &Uri,
@@ -828,6 +905,12 @@ fn backticked_name(message: &str) -> Option<&str> {
 
 fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
     let message = message.strip_prefix("type mismatch: expected ")?;
+    let (expected, found) = message.split_once(", found ")?;
+    Some((expected.trim().to_string(), found.trim().to_string()))
+}
+
+fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
+    let message = message.strip_prefix("return type mismatch: expected ")?;
     let (expected, found) = message.split_once(", found ")?;
     Some((expected.trim().to_string(), found.trim().to_string()))
 }

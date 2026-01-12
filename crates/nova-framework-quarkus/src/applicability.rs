@@ -58,8 +58,38 @@ pub fn is_quarkus_applicable_with_db(db: &dyn Database, project: ProjectId) -> b
         return true;
     }
 
-    db.has_class_on_classpath_prefix(project, "io.quarkus.")
+    if db.has_class_on_classpath_prefix(project, "io.quarkus.")
         || db.has_class_on_classpath_prefix(project, "io/quarkus/")
+    {
+        return true;
+    }
+
+    // Best-effort fallback for databases that don't provide dependency/classpath information
+    // (e.g. in-memory IDE fixtures): scan a small subset of project files for Quarkus markers.
+    //
+    // This intentionally trades perfect applicability detection for speed.
+    let mut sources = Vec::new();
+    for file in db.all_files(project).into_iter().take(32) {
+        if let Some(path) = db.file_path(file) {
+            if !path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+            {
+                continue;
+            }
+        }
+
+        let Some(text) = db.file_text(file) else {
+            continue;
+        };
+        sources.push(text);
+        if sources.len() >= 16 {
+            break;
+        }
+    }
+
+    is_quarkus_applicable(&[], &sources)
 }
 
 fn classpath_entry_has_quarkus(path: &Path) -> bool {
