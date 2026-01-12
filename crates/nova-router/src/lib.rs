@@ -2813,33 +2813,34 @@ impl GlobalSymbolIndex {
         // leading UTF-8 bytes).
         //
         // Keep the ASCII candidate-selection path exactly as before, but for non-ASCII queries:
-        // - Use a Unicode-aware notion of "length" (Unicode scalar values) rather than bytes.
-        // - Avoid the `prefix1` first-byte buckets and fall back to trigram candidates when
-        //   the query is long enough, else bounded scan.
+        // - Avoid the `prefix1` first-byte buckets (they can miss Unicode casefold matches).
+        // - Use `nova-fuzzy`'s trigram candidate filtering (which applies NFKC+casefold) when it
+        //   can produce trigrams, else fall back to a bounded scan.
+        //
+        // Note: We intentionally don't use `query.as_bytes().len()` or even `query.chars().count()`
+        // as the trigram threshold here, because Unicode normalization/casefolding can expand a
+        // single scalar value into multiple characters (e.g. ligatures). Let `nova-fuzzy` decide
+        // based on its own preprocessing path.
         #[cfg(feature = "unicode")]
         if !query.is_ascii() {
-            let query_len_chars = query.chars().take(3).count();
-
-            if query_len_chars >= 3 {
-                let have_trigram_candidates = TRIGRAM_SCRATCH.with(|scratch| {
-                    let mut scratch = scratch.borrow_mut();
-                    let candidates = self.trigram.candidates_with_scratch(query, &mut *scratch);
-                    if candidates.is_empty() {
-                        false
-                    } else {
-                        self.score_candidates_top_k(
-                            candidates.iter().copied(),
-                            &mut matcher,
-                            limit,
-                            &mut scored,
-                        );
-                        true
-                    }
-                });
-
-                if have_trigram_candidates {
-                    return self.finish_top_k(scored, limit);
+            let have_trigram_candidates = TRIGRAM_SCRATCH.with(|scratch| {
+                let mut scratch = scratch.borrow_mut();
+                let candidates = self.trigram.candidates_with_scratch(query, &mut *scratch);
+                if candidates.is_empty() {
+                    false
+                } else {
+                    self.score_candidates_top_k(
+                        candidates.iter().copied(),
+                        &mut matcher,
+                        limit,
+                        &mut scored,
+                    );
+                    true
                 }
+            });
+
+            if have_trigram_candidates {
+                return self.finish_top_k(scored, limit);
             }
 
             let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
@@ -3038,22 +3039,14 @@ impl GlobalSymbolIndex {
 
         #[cfg(feature = "unicode")]
         if !query.is_ascii() {
-            let query_len_chars = query.chars().take(3).count();
+            let mut candidate_scratch = TrigramCandidateScratch::default();
+            let candidates = self
+                .trigram
+                .candidates_with_scratch(query, &mut candidate_scratch);
 
-            if query_len_chars >= 3 {
-                let mut candidate_scratch = TrigramCandidateScratch::default();
-                let candidates = self
-                    .trigram
-                    .candidates_with_scratch(query, &mut candidate_scratch);
-
-                if !candidates.is_empty() {
-                    self.score_candidates_all(
-                        candidates.iter().copied(),
-                        &mut matcher,
-                        &mut scored,
-                    );
-                    return self.finish(scored, limit);
-                }
+            if !candidates.is_empty() {
+                self.score_candidates_all(candidates.iter().copied(), &mut matcher, &mut scored);
+                return self.finish(scored, limit);
             }
 
             let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
@@ -3590,6 +3583,11 @@ mod tests {
         let results = index.search("strasse", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Straße");
+
+        // And a non-ASCII query should also match (exercises the router's Unicode query path).
+        let results = index.search("straße", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Straße");
     }
 
     #[cfg(feature = "unicode")]
@@ -3623,5 +3621,21 @@ mod tests {
             names.contains(&"Σome"),
             "expected uppercase sigma symbol to match via Unicode case folding, got {names:?}"
         );
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn global_symbol_search_unicode_nfkc_normalization_expansions_work_end_to_end() {
+        // NFKC normalization can expand compatibility characters (e.g. the "ﬃ" ligature).
+        // Ensure normalization+casefold is applied end-to-end in `GlobalSymbolIndex::search`.
+        let symbols = vec![Symbol {
+            name: "ffi".into(),
+            path: "a.java".into(),
+        }];
+
+        let index = GlobalSymbolIndex::new(symbols, 0);
+        let results = index.search("ﬃ", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "ffi");
     }
 }
