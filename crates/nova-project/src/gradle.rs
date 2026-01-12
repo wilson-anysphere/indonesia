@@ -1659,27 +1659,39 @@ fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
 }
 
 fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
+    static RE_PARENS: OnceLock<Regex> = OnceLock::new();
+    static RE_NO_PARENS: OnceLock<Regex> = OnceLock::new();
+
+    let re_parens = RE_PARENS.get_or_init(|| {
         // Keep this list conservative: only configurations that are commonly used for
         // Java compilation or annotation processing.
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b{configs}\b\s*\(?\s*project\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)?"#,
+            r#"(?i)\b{configs}\b\s*\(?\s*project\s*\(\s*(?:path\s*[:=]\s*)?['"]([^'"]+)['"][^)]*\)\s*\)?"#,
+        ))
+        .expect("valid regex")
+    });
+
+    let re_no_parens = RE_NO_PARENS.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b{configs}\b\s*\(?\s*project\s+(?:path\s*[:=]\s*)?['"]([^'"]+)['"]"#,
         ))
         .expect("valid regex")
     });
 
     let mut deps = Vec::new();
-    for caps in re.captures_iter(contents) {
-        let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
-            continue;
-        };
-        let project_path = project_path.trim();
-        if project_path.is_empty() {
-            continue;
+    for re in [re_parens, re_no_parens] {
+        for caps in re.captures_iter(contents) {
+            let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let project_path = project_path.trim();
+            if project_path.is_empty() {
+                continue;
+            }
+            deps.push(normalize_project_path(project_path));
         }
-        deps.push(normalize_project_path(project_path));
     }
     deps
 }
@@ -2247,7 +2259,10 @@ fn split_known_scope(scope: Option<&str>) -> (Option<&str>, Option<&str>) {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use super::{parse_gradle_dependencies_from_text, sort_dedup_dependencies};
+    use super::{
+        parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
+        sort_dedup_dependencies, strip_gradle_comments,
+    };
 
     #[test]
     fn parses_gradle_dependencies_from_text_string_and_map_notation() {
@@ -2408,5 +2423,43 @@ dependencies {
         for (key, scope) in expected_scopes {
             assert_eq!(scopes.get(&key), Some(&Some(scope.to_string())));
         }
+    }
+
+    #[test]
+    fn parses_gradle_project_dependencies_from_text_supported_patterns() {
+        let build_script = r#"
+dependencies {
+    implementation project(':lib')
+    implementation(project(":lib2"))
+
+    // Groovy map notation.
+    implementation project(path: ':lib3')
+    implementation project path: ':lib4'
+
+    // Kotlin named args.
+    testImplementation(project(path = ":lib5"))
+    testImplementation(project(path = ":lib6", configuration = "default"))
+
+    // No-parens Groovy call.
+    testImplementation project ":lib7"
+
+    // Comment stripping should prevent false positives.
+    // implementation project(':ignored')
+    /* implementation(project(":ignored2")) */
+}
+"#;
+
+        let stripped = strip_gradle_comments(build_script);
+        let deps = parse_gradle_project_dependencies_from_text(&stripped);
+        let got: BTreeSet<_> = deps.into_iter().collect();
+
+        let expected: BTreeSet<String> = [
+            ":lib", ":lib2", ":lib3", ":lib4", ":lib5", ":lib6", ":lib7",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(got, expected);
     }
 }
