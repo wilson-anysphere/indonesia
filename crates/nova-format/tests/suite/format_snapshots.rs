@@ -734,6 +734,11 @@ fn ast_formatting_preserves_string_templates_verbatim() {
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
     assert!(
+        !formatted.contains("\\ {"),
+        "formatter must not inject whitespace into string template delimiter `\\{{`: {formatted}"
+    );
+
+    assert!(
         formatted.contains(r#"STR."Hello \{name}""#),
         "expected formatter to preserve single-line template: {formatted}"
     );
