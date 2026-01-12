@@ -5996,7 +5996,6 @@ fn collect_switch_contexts(
                     item_trees,
                     out,
                 );
-
                 let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
                     walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
                     return;
@@ -6144,7 +6143,6 @@ fn collect_switch_contexts(
                     item_trees,
                     out,
                 );
-
                 if let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) {
                     let selector_enum = infer_switch_selector_enum_type(
                         body,
