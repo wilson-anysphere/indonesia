@@ -1158,6 +1158,12 @@ fn resolve_method_call_demand(
                         visit_expr(body, *arg, parent_expr, visited_expr);
                     }
                 }
+                HirExpr::ArrayCreation { dim_exprs, .. } => {
+                    for dim_expr in dim_exprs {
+                        set_parent(parent_expr, *dim_expr);
+                        visit_expr(body, *dim_expr, parent_expr, visited_expr);
+                    }
+                }
                 HirExpr::Unary { expr: inner, .. } => {
                     set_parent(parent_expr, *inner);
                     visit_expr(body, *inner, parent_expr, visited_expr);
@@ -4835,6 +4841,61 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 args,
                 expected,
             ),
+            HirExpr::ArrayCreation {
+                elem_ty_text,
+                elem_ty_range,
+                dim_exprs,
+                extra_dims,
+                ..
+            } => {
+                let elem_ty =
+                    self.resolve_source_type(loader, elem_ty_text.as_str(), Some(*elem_ty_range));
+                let total_dims = dim_exprs.len().saturating_add(*extra_dims);
+
+                for dim_expr in dim_exprs {
+                    let dim_ty = self.infer_expr(loader, *dim_expr).ty;
+                    if dim_ty.is_errorish() {
+                        continue;
+                    }
+
+                    let is_integral = matches!(
+                        dim_ty,
+                        Type::Primitive(
+                            PrimitiveType::Byte
+                                | PrimitiveType::Short
+                                | PrimitiveType::Char
+                                | PrimitiveType::Int
+                        )
+                    );
+                    if !is_integral {
+                        let found = format_type(&*loader.store, &dim_ty);
+                        self.diagnostics.push(Diagnostic::error(
+                            "array-dimension-type",
+                            format!(
+                                "array dimension must be an integral type (byte, short, char, or int), found {found}"
+                            ),
+                            Some(self.body.exprs[*dim_expr].range()),
+                        ));
+                    }
+                }
+
+                if total_dims == 0 {
+                    ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
+                    }
+                } else {
+                    let mut ty = elem_ty;
+                    for _ in 0..total_dims {
+                        ty = Type::Array(Box::new(ty));
+                    }
+
+                    ExprInfo {
+                        ty,
+                        is_type_ref: false,
+                    }
+                }
+            }
             HirExpr::Unary {
                 op, expr: operand, ..
             } => {
@@ -4842,7 +4903,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let span = self.body.exprs[expr].range();
                 let env_ro: &dyn TypeEnv = &*loader.store;
                 let inner_prim = primitive_like(env_ro, &inner);
-
                 let ty = match op {
                     UnaryOp::Not => {
                         if !inner.is_errorish()
@@ -8496,6 +8556,9 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
         HirExpr::New { args, .. } => args
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirExpr::ArrayCreation { dim_exprs, .. } => dim_exprs
+            .iter()
+            .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Instanceof { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Binary { lhs, rhs, .. } => {
@@ -8737,6 +8800,11 @@ fn find_enclosing_call_with_arg_in_expr(
                 find_enclosing_call_with_arg_in_expr(body, *arg, target, target_range, best);
             }
         }
+        HirExpr::ArrayCreation { dim_exprs, .. } => {
+            for dim_expr in dim_exprs {
+                find_enclosing_call_with_arg_in_expr(body, *dim_expr, target, target_range, best);
+            }
+        }
         HirExpr::Unary { expr, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
         }
@@ -8830,6 +8898,11 @@ fn find_best_expr_in_expr(
         HirExpr::New { args, .. } => {
             for arg in args {
                 find_best_expr_in_expr(body, *arg, offset, owner, best);
+            }
+        }
+        HirExpr::ArrayCreation { dim_exprs, .. } => {
+            for dim_expr in dim_exprs {
+                find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
             }
         }
         HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),

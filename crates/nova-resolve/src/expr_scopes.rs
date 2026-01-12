@@ -364,6 +364,11 @@ impl Builder {
                     self.visit_expr(body, arg, scope);
                 }
             }
+            Expr::ArrayCreation { dim_exprs, .. } => {
+                for &dim in dim_exprs {
+                    self.visit_expr(body, dim, scope);
+                }
+            }
             Expr::Unary { expr, .. } => {
                 self.visit_expr(body, *expr, scope);
             }

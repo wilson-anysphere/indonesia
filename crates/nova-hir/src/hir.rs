@@ -306,6 +306,13 @@ pub enum Expr {
         args: Vec<ExprId>,
         range: Span,
     },
+    ArrayCreation {
+        elem_ty_text: String,
+        elem_ty_range: Span,
+        dim_exprs: Vec<ExprId>,
+        extra_dims: usize,
+        range: Span,
+    },
     Unary {
         op: UnaryOp,
         expr: ExprId,
@@ -379,6 +386,7 @@ impl Expr {
             | Expr::ClassLiteral { range, .. }
             | Expr::Cast { range, .. }
             | Expr::New { range, .. }
+            | Expr::ArrayCreation { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }
             | Expr::Instanceof { range, .. }

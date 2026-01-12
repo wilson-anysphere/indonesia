@@ -418,6 +418,7 @@ pub mod ast {
         FieldAccess(FieldAccessExpr),
         ArrayAccess(ArrayAccessExpr),
         New(NewExpr),
+        ArrayCreation(ArrayCreationExpr),
         Unary(UnaryExpr),
         Binary(BinaryExpr),
         Instanceof(InstanceofExpr),
@@ -457,6 +458,7 @@ pub mod ast {
                 Expr::FieldAccess(expr) => expr.range,
                 Expr::ArrayAccess(expr) => expr.range,
                 Expr::New(expr) => expr.range,
+                Expr::ArrayCreation(expr) => expr.range,
                 Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
                 Expr::Instanceof(expr) => expr.range,
@@ -538,6 +540,14 @@ pub mod ast {
     pub struct NewExpr {
         pub class: TypeRef,
         pub args: Vec<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ArrayCreationExpr {
+        pub elem_ty: TypeRef,
+        pub dim_exprs: Vec<Expr>,
+        pub extra_dims: usize,
         pub range: Span,
     }
 
@@ -2548,58 +2558,48 @@ impl Lowerer {
     }
 
     fn lower_array_creation_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let range = self.spans.map_node(node);
+
         let ty_node = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Type);
-        let mut class = ty_node
+        let elem_ty = ty_node
             .as_ref()
             .map(|n| self.lower_type_ref(n))
             .unwrap_or_else(|| ast::TypeRef {
                 text: String::new(),
-                range: self.spans.map_node(node),
+                range,
             });
 
-        // Best-effort: lower dimension expressions (`new T[expr]`) as "args" so downstream HIR
-        // traversal still visits nested expressions.
-        let mut args = Vec::new();
-
-        let mut dims = 0usize;
-        if let Some(dim_exprs) = node
+        let dim_exprs = node
             .children()
             .find(|child| child.kind() == SyntaxKind::DimExprs)
-        {
-            for dim_expr in dim_exprs
-                .children()
-                .filter(|child| child.kind() == SyntaxKind::DimExpr)
-            {
-                dims += 1;
-                if let Some(expr) = dim_expr
+            .map(|dim_exprs| {
+                dim_exprs
                     .children()
-                    .find(|child| is_expression_kind(child.kind()))
-                {
-                    args.push(self.lower_expr(&expr));
-                }
-            }
-        }
+                    .filter(|child| child.kind() == SyntaxKind::DimExpr)
+                    .map(|dim_expr| {
+                        dim_expr
+                            .children()
+                            .find(|child| is_expression_kind(child.kind()))
+                            .map(|expr| self.lower_expr(&expr))
+                            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(&dim_expr)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        if let Some(dims_node) = node
+        let extra_dims = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Dims)
-        {
-            dims += dims_node
-                .children()
-                .filter(|child| child.kind() == SyntaxKind::Dim)
-                .count();
-        }
+            .map(|dims| dims.children().filter(|child| child.kind() == SyntaxKind::Dim).count())
+            .unwrap_or(0);
 
-        if dims > 0 {
-            class.text = format!("{}{}", class.text, "[]".repeat(dims));
-        }
-
-        ast::Expr::New(ast::NewExpr {
-            class,
-            args,
-            range: self.spans.map_node(node),
+        ast::Expr::ArrayCreation(ast::ArrayCreationExpr {
+            elem_ty,
+            dim_exprs,
+            extra_dims,
+            range,
         })
     }
 
@@ -3363,6 +3363,20 @@ mod tests {
                 .iter()
                 .any(|stmt| matches!(stmt, ast::Stmt::LocalVar(_))),
             "expected labeled inner block to contain local variable statement"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_array_creation() {
+        let block = parse_block("{ new int[1]; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        assert!(
+            matches!(expr_stmt.expr, ast::Expr::ArrayCreation(_)),
+            "expected array creation expression"
         );
     }
 }

@@ -737,6 +737,11 @@ impl<'a> ScopeBuilder<'a> {
                     self.record_expr_scopes(scope, owner, body, *arg);
                 }
             }
+            hir::Expr::ArrayCreation { dim_exprs, .. } => {
+                for dim in dim_exprs {
+                    self.record_expr_scopes(scope, owner, body, *dim);
+                }
+            }
             hir::Expr::Unary { expr, .. } => {
                 self.record_expr_scopes(scope, owner, body, *expr);
             }

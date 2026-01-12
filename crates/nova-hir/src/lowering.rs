@@ -1291,6 +1291,21 @@ impl<'a> BodyLower<'a> {
                     range: new_expr.range,
                 })
             }
+            syntax::Expr::ArrayCreation(array) => {
+                let mut dim_exprs = Vec::with_capacity(array.dim_exprs.len());
+                for expr in &array.dim_exprs {
+                    self.check_cancelled();
+                    dim_exprs.push(self.lower_expr(expr));
+                }
+
+                self.alloc_expr(Expr::ArrayCreation {
+                    elem_ty_text: array.elem_ty.text.clone(),
+                    elem_ty_range: array.elem_ty.range,
+                    dim_exprs,
+                    extra_dims: array.extra_dims,
+                    range: array.range,
+                })
+            }
             syntax::Expr::Unary(unary) => {
                 let expr = self.lower_expr(&unary.expr);
                 let op = match unary.op {
