@@ -2384,9 +2384,32 @@ class C {
 
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
+    let static_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "static-context")
+        .collect();
+    assert_eq!(
+        static_diags.len(),
+        1,
+        "expected exactly one static-context diagnostic, got {diags:?}"
+    );
+    let diag = static_diags[0];
+    assert_eq!(
+        diag.message,
+        "cannot call instance method `foo` from a static context",
+        "unexpected diagnostic message: {diag:?}"
+    );
+    let span = diag.span.expect("static-context diagnostic should have a span");
+    let snippet = src
+        .get(span.start..span.end)
+        .unwrap_or("<invalid span>")
+        .trim()
+        .trim_end_matches(';');
+    assert_eq!(snippet, "C.foo()", "unexpected span snippet for {diag:?}");
+
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "static-context"),
-        "expected a static-context diagnostic, got {diags:?}"
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics; got {diags:?}"
     );
 }
 
@@ -2403,9 +2426,31 @@ class C {
 
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
+    let static_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "static-context")
+        .collect();
+    assert_eq!(
+        static_diags.len(),
+        1,
+        "expected exactly one static-context diagnostic, got {diags:?}"
+    );
+    let diag = static_diags[0];
+    assert_eq!(
+        diag.message,
+        "cannot reference instance field `x` from a static context",
+        "unexpected diagnostic message: {diag:?}"
+    );
+    let span = diag.span.expect("static-context diagnostic should have a span");
+    let snippet = src
+        .get(span.start..span.end)
+        .unwrap_or("<invalid span>")
+        .trim();
+    assert_eq!(snippet, "C.x", "unexpected span snippet for {diag:?}");
+
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "static-context"),
-        "expected a static-context diagnostic, got {diags:?}"
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected no unresolved-field diagnostics; got {diags:?}"
     );
 }
 
