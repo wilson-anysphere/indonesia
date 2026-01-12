@@ -376,6 +376,19 @@ pub fn edits_for_range_formatting(
         return Err(FormatError::InvalidRange);
     }
 
+    // Range formatting reparses the selected snippet in isolation. If the selection boundary cuts
+    // through a string/char/comment token, the snippet is no longer valid Java and can be lexed in
+    // a way that treats braces/semicolons as structural punctuation, corrupting the literal/comment
+    // contents. Avoid this by producing no edits when either boundary lies *inside* such a token.
+    //
+    // We only check boundaries: selecting an entire literal token (including its delimiters) is
+    // safe because it remains lexable as a literal in the snippet parse.
+    if range_boundary_is_inside_non_code_token(tree, range.start())
+        || range_boundary_is_inside_non_code_token(tree, range.end())
+    {
+        return Ok(Vec::new());
+    }
+
     let indent = indent_level_at(tree, source, range.start());
     let snippet = &source[start..end];
     let snippet_tree = nova_syntax::parse(snippet);
@@ -424,6 +437,26 @@ pub fn edits_for_range_formatting(
     }
 
     Ok(out)
+}
+
+fn range_boundary_is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) -> bool {
+    let offset = u32::from(offset);
+    for tok in tree.tokens() {
+        if tok.range.end > offset {
+            if tok.range.start < offset && offset < tok.range.end {
+                return matches!(
+                    tok.kind,
+                    SyntaxKind::StringLiteral
+                        | SyntaxKind::CharLiteral
+                        | SyntaxKind::LineComment
+                        | SyntaxKind::BlockComment
+                        | SyntaxKind::DocComment
+                );
+            }
+            break;
+        }
+    }
+    false
 }
 
 /// Best-effort on-type formatting.

@@ -1039,6 +1039,26 @@ fn range_formatting_returns_minimal_edits_within_range() {
 }
 
 #[test]
+fn range_formatting_is_noop_inside_text_block_template() {
+    let input =
+        "class Foo {\n    void m() {\n        String t = STR.\"\"\"\n            hello }\n            \"\"\";\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select only the `hello }` line *inside* the template body, excluding the template
+    // delimiters. Range formatting reparses snippets in isolation, so this would otherwise treat
+    // `}` as structural punctuation and potentially rewrite the template contents.
+    let line = 3;
+    let start = Position::new(line, 0);
+    let end_offset = index.line_end(line).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty());
+}
+
+#[test]
 fn range_formatting_inside_switch_case_uses_case_indent() {
     let input = "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n        int y=2;\n        break;\n        default:\n        break;\n        }\n    }\n}\n";
     let tree = parse(input);
