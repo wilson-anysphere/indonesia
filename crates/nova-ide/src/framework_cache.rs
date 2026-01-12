@@ -26,8 +26,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
-use regex::Regex;
-
 use nova_config_metadata::MetadataIndex;
 use nova_db::{Database, FileId};
 use nova_scheduler::CancellationToken;
@@ -209,29 +207,23 @@ pub fn framework_diagnostics(
             }
 
             let has_mapstruct_dependency = match project_config(&root) {
-                Some(config)
-                    if matches!(
-                        config.build_system,
-                        nova_project::BuildSystem::Maven
-                            | nova_project::BuildSystem::Gradle
-                            | nova_project::BuildSystem::Bazel
-                    ) =>
-                {
-                    config.dependencies.iter().any(|dep| {
+                Some(config) => match config.build_system {
+                    nova_project::BuildSystem::Maven
+                    | nova_project::BuildSystem::Gradle
+                    | nova_project::BuildSystem::Bazel => config.dependencies.iter().any(|dep| {
                         dep.group_id == "org.mapstruct"
                             && matches!(
                                 dep.artifact_id.as_str(),
                                 "mapstruct" | "mapstruct-processor"
                             )
-                    })
-                }
-                // If the project config is missing, fall back to a cheap build-file scan for
-                // Maven/Gradle projects. This keeps MapStruct's missing-dependency diagnostic
-                // working even when full project loading fails.
-                //
-                // If we still can't determine dependency presence, treat it as unknown/assumed
-                // present to avoid noisy false positives in "Simple" projects.
-                _ => mapstruct_dependency_from_build_files(&root, file_path).unwrap_or(true),
+                    }),
+                    // For "Simple" (build-tool-less) workspaces we can't reliably infer
+                    // dependencies; assume they're present to avoid noisy false positives.
+                    nova_project::BuildSystem::Simple => true,
+                },
+                // If we can't load a project config at all, treat dependency presence as unknown and
+                // assume it's present to avoid false positives.
+                None => true,
             };
 
             if cancel.is_cancelled() {
@@ -1046,110 +1038,6 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
 fn is_java_file(db: &dyn Database, file: FileId) -> bool {
     db.file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-}
-
-fn mapstruct_dependency_from_build_files(root: &Path, file_path: &Path) -> Option<bool> {
-    // Maven: scan `pom.xml` files from the file's directory up to the workspace root.
-    if root.join("pom.xml").is_file() {
-        return mapstruct_dependency_from_maven_poms(root, file_path);
-    }
-
-    // Gradle: best-effort scan for MapStruct coordinates in common build files.
-    // (This is intentionally coarse; if we can't determine, we return `None`.)
-    let gradle_markers = [
-        root.join("build.gradle"),
-        root.join("build.gradle.kts"),
-        root.join("settings.gradle"),
-        root.join("settings.gradle.kts"),
-    ];
-    if gradle_markers.iter().any(|path| path.is_file()) {
-        return mapstruct_dependency_from_gradle_files(root);
-    }
-
-    None
-}
-
-fn mapstruct_dependency_from_maven_poms(root: &Path, file_path: &Path) -> Option<bool> {
-    static MAPSTRUCT_DEP_RE: Lazy<Regex> = Lazy::new(|| {
-        // Best-effort: look for a dependency declaration that includes both `org.mapstruct` and the
-        // expected artifact IDs. This intentionally does not attempt full XML parsing.
-        Regex::new(
-            r"(?is)<groupId>\s*org\.mapstruct\s*</groupId>[\s\S]*?<artifactId>\s*(mapstruct|mapstruct-processor)\s*</artifactId>",
-        )
-        .expect("valid MAPSTRUCT_DEP_RE")
-    });
-
-    let mut any_pom_read = false;
-    let mut dir = file_path.parent()?;
-    let mut checked_root = false;
-
-    loop {
-        // If we hit the root, make sure we check the root POM exactly once.
-        if dir == root {
-            checked_root = true;
-        }
-
-        let pom = dir.join("pom.xml");
-        if pom.is_file() {
-            if let Ok(contents) = std::fs::read_to_string(&pom) {
-                any_pom_read = true;
-                if MAPSTRUCT_DEP_RE.is_match(&contents) {
-                    return Some(true);
-                }
-            }
-        }
-
-        if dir == root {
-            break;
-        }
-        let Some(parent) = dir.parent() else {
-            break;
-        };
-        if parent == dir {
-            break;
-        }
-        dir = parent;
-    }
-
-    // If `root` isn't an ancestor of `file_path` (e.g. due to symlinks), still check `root/pom.xml`.
-    if !checked_root {
-        let pom = root.join("pom.xml");
-        if pom.is_file() {
-            if let Ok(contents) = std::fs::read_to_string(&pom) {
-                any_pom_read = true;
-                if MAPSTRUCT_DEP_RE.is_match(&contents) {
-                    return Some(true);
-                }
-            }
-        }
-    }
-
-    any_pom_read.then_some(false)
-}
-
-fn mapstruct_dependency_from_gradle_files(root: &Path) -> Option<bool> {
-    let candidates = [
-        root.join("build.gradle"),
-        root.join("build.gradle.kts"),
-        root.join("settings.gradle"),
-        root.join("settings.gradle.kts"),
-    ];
-
-    let mut any_read = false;
-    for path in candidates {
-        if !path.is_file() {
-            continue;
-        }
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            any_read = true;
-            // Best-effort: accept any mention of MapStruct Maven coordinates.
-            if contents.contains("org.mapstruct") && contents.contains("mapstruct") {
-                return Some(true);
-            }
-        }
-    }
-
-    any_read.then_some(false)
 }
 
 pub(crate) fn is_application_properties(path: &Path) -> bool {

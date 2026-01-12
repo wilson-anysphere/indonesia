@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use crate::framework_harness::ide_with_default_registry;
+use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
+use nova_ext::ProjectId;
+use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
 use tempfile::tempdir;
@@ -47,8 +49,12 @@ class Target {
     let mapper_file = db.file_id_for_path(&mapper_path);
     db.set_file_text(mapper_file, mapper_text.to_string());
 
-    let db = Arc::new(db);
-    let ide = ide_with_default_registry(Arc::clone(&db));
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
     assert!(
@@ -107,8 +113,12 @@ class Target {
     let mapper_file = db.file_id_for_path(&mapper_path);
     db.set_file_text(mapper_file, mapper_text.to_string());
 
-    let db = Arc::new(db);
-    let ide = ide_with_default_registry(Arc::clone(&db));
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
     assert!(
@@ -182,8 +192,12 @@ public interface MyMapper {
     let mapper_file = db.file_id_for_path(&mapper_path);
     db.set_file_text(mapper_file, mapper_text.to_string());
 
-    let db = Arc::new(db);
-    let ide = ide_with_default_registry(Arc::clone(&db));
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
 
