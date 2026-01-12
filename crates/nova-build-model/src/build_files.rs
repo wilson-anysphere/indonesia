@@ -140,22 +140,44 @@ fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
             continue;
         }
 
-        let quote = bytes[idx];
-        idx += 1;
-        let start_idx = idx;
-        while idx < bytes.len() && bytes[idx] != quote {
-            // Best-effort escape handling.
-            if bytes[idx] == b'\\' {
-                idx = (idx + 2).min(bytes.len());
+        // Support Gradle/Kotlin/Groovy raw strings: `'''...'''` / `\"\"\"...\"\"\"`.
+        let raw_dir = if bytes[idx..].starts_with(b"'''") {
+            idx += 3;
+            let start_idx = idx;
+            while idx < bytes.len() && !bytes[idx..].starts_with(b"'''") {
+                idx += 1;
+            }
+            if idx >= bytes.len() {
                 continue;
             }
+            &contents[start_idx..idx]
+        } else if bytes[idx..].starts_with(b"\"\"\"") {
+            idx += 3;
+            let start_idx = idx;
+            while idx < bytes.len() && !bytes[idx..].starts_with(b"\"\"\"") {
+                idx += 1;
+            }
+            if idx >= bytes.len() {
+                continue;
+            }
+            &contents[start_idx..idx]
+        } else {
+            let quote = bytes[idx];
             idx += 1;
-        }
-        if idx >= bytes.len() {
-            continue;
-        }
-
-        let raw_dir = &contents[start_idx..idx];
+            let start_idx = idx;
+            while idx < bytes.len() && bytes[idx] != quote {
+                // Best-effort escape handling.
+                if bytes[idx] == b'\\' {
+                    idx = (idx + 2).min(bytes.len());
+                    continue;
+                }
+                idx += 1;
+            }
+            if idx >= bytes.len() {
+                continue;
+            }
+            &contents[start_idx..idx]
+        };
         let raw_dir = raw_dir.trim();
         if raw_dir.is_empty() {
             continue;
@@ -719,6 +741,54 @@ mod tests {
         let expected_included_build_gradle = root.join("../included/build.gradle");
         assert!(
             files.contains(&expected_included_build_gradle),
+            "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_parses_include_build_with_triple_double_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included = dir.path().join("included");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&included).unwrap();
+
+        // Kotlin raw string literal (settings.gradle.kts).
+        write_file(
+            &root.join("settings.gradle.kts"),
+            b"includeBuild(\"\"\"../included\"\"\")\n",
+        );
+        write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../included/build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_parses_include_build_with_triple_single_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included = dir.path().join("included");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&included).unwrap();
+
+        // Groovy raw string literal (settings.gradle).
+        write_file(
+            &root.join("settings.gradle"),
+            b"includeBuild '''../included'''\n",
+        );
+        write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../included/build.gradle");
+        assert!(
+            files.contains(&expected),
             "expected included build.gradle to be included in build file collection; got: {files:?}"
         );
     }
