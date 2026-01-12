@@ -127,6 +127,10 @@ impl SyntaxTreeStore {
         self.get_if_current(file, text)
     }
 
+    pub fn contains(&self, file: FileId) -> bool {
+        self.inner.lock().unwrap().contains_key(&file)
+    }
+
     pub fn remove(&self, file: FileId) {
         let mut inner = self.inner.lock().unwrap();
         if inner.remove(&file).is_some() {
@@ -138,6 +142,10 @@ impl SyntaxTreeStore {
         let mut inner = self.inner.lock().unwrap();
         inner.retain(|file, _| self.open_docs.is_open(*file));
         self.update_tracker_locked(&inner);
+    }
+
+    pub fn tracked_bytes(&self) -> u64 {
+        self.tracker.get().map(|t| t.bytes()).unwrap_or(0)
     }
 
     fn clear_all(&self) {

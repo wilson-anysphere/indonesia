@@ -1660,8 +1660,12 @@ impl Database {
     }
 
     /// Remove any pinned `parse_java` result for `file` from the shared
-    /// [`nova_syntax::JavaParseStore`] (if configured) and restore the query-cache
-    /// entry in the Salsa memo footprint.
+    /// [`nova_syntax::JavaParseStore`] (if configured) and restore the memo
+    /// footprint entry if it had been suppressed while pinned.
+    ///
+    /// This is intended to be called when an editor document is closed (or when
+    /// a rename/move closes a `FileId`): the parse result is no longer pinned
+    /// and should not be retained in the open-document store.
     pub fn unpin_java_parse_tree(&self, file: FileId) {
         let store = self.inner.lock().java_parse_store.clone();
         if let Some(store) = store.as_ref() {

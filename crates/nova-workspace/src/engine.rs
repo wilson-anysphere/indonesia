@@ -1144,6 +1144,7 @@ impl WorkspaceEngine {
             // The document is no longer open; unpin its syntax tree so memory
             // accounting attributes it back to Salsa memoization.
             self.query_db.unpin_syntax_tree(file_id);
+            self.query_db.unpin_java_parse_tree(file_id);
             self.query_db.unpin_item_tree(file_id);
             self.query_db.unpin_java_parse_tree(file_id);
         }
@@ -1643,6 +1644,11 @@ impl WorkspaceEngine {
         // previous id is no longer reachable from any path.
         if let Some(id_to) = id_to {
             if id_to != file_id {
+                // The destination id is no longer reachable and cannot be open in the editor.
+                // Drop any pinned open-document caches promptly.
+                self.query_db.unpin_syntax_tree(id_to);
+                self.query_db.unpin_java_parse_tree(id_to);
+                self.query_db.unpin_item_tree(id_to);
                 self.query_db.set_file_exists(id_to, false);
                 self.update_project_files_membership(&to_vfs, id_to, false);
             }
@@ -1652,6 +1658,11 @@ impl WorkspaceEngine {
         // destination id, the source id has been cleared from the registry.
         if let Some(id_from) = id_from {
             if to_was_known && Some(file_id) == id_to && id_from != file_id {
+                // The move orphaned the source id, so it is no longer open in the editor.
+                // Drop any pinned open-document caches promptly.
+                self.query_db.unpin_syntax_tree(id_from);
+                self.query_db.unpin_java_parse_tree(id_from);
+                self.query_db.unpin_item_tree(id_from);
                 self.query_db.set_file_exists(id_from, false);
                 self.update_project_files_membership(&from_vfs, id_from, false);
             } else {
@@ -3487,6 +3498,142 @@ mod tests {
 
         // Only `a` (5) + `dst` (4) remain in the overlay.
         assert_eq!(overlay_bytes(&memory), baseline + 9);
+    }
+
+    #[test]
+    fn close_document_releases_open_document_pins() {
+        use nova_db::salsa::{
+            HasItemTreeStore, HasJavaParseStore, HasSyntaxTreeStore, NovaSemantic, NovaSyntax,
+        };
+
+        let workspace = crate::Workspace::new_in_memory();
+        let engine = workspace.engine_for_tests();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
+
+        let (syntax_store, java_store, item_store) = engine.query_db.with_snapshot(|snap| {
+            (
+                snap.syntax_tree_store().expect("syntax tree store should be attached"),
+                snap.java_parse_store().expect("java parse store should be attached"),
+                snap.item_tree_store().expect("item tree store should be attached"),
+            )
+        });
+
+        // Trigger the memoized queries that write into the open-document pin stores.
+        engine.query_db.with_snapshot(|snap| {
+            let _ = snap.parse(file_id);
+            let _ = snap.parse_java(file_id);
+            let _ = snap.item_tree(file_id);
+        });
+
+        assert!(syntax_store.contains(file_id));
+        assert!(java_store.contains(file_id));
+        assert!(item_store.contains(file_id));
+
+        let syntax_bytes_before = syntax_store.tracked_bytes();
+        let java_bytes_before = java_store.tracked_bytes();
+        let item_tree_bytes_before = item_store.tracked_bytes();
+        assert!(syntax_bytes_before > 0);
+        assert!(java_bytes_before > 0);
+        assert!(item_tree_bytes_before > 0);
+
+        workspace.close_document(&path);
+
+        assert!(!syntax_store.contains(file_id));
+        assert!(!java_store.contains(file_id));
+        assert!(!item_store.contains(file_id));
+
+        assert!(
+            syntax_store.tracked_bytes() < syntax_bytes_before,
+            "expected syntax store bytes to decrease after close"
+        );
+        assert!(
+            java_store.tracked_bytes() < java_bytes_before,
+            "expected java parse store bytes to decrease after close"
+        );
+        assert!(
+            item_store.tracked_bytes() < item_tree_bytes_before,
+            "expected item tree store bytes to decrease after close"
+        );
+    }
+
+    #[test]
+    fn move_events_drop_open_document_pins_for_closed_file_ids() {
+        use nova_db::salsa::{
+            HasItemTreeStore, HasJavaParseStore, HasSyntaxTreeStore, NovaSemantic, NovaSyntax,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let file_a = root.join("src/A.java");
+        let file_b = root.join("src/B.java");
+        fs::write(&file_a, "class A { disk }".as_bytes()).unwrap();
+        fs::write(&file_b, "class B { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Created(file_a.clone()),
+            NormalizedEvent::Created(file_b.clone()),
+        ]);
+
+        let vfs_a = VfsPath::local(file_a.clone());
+        let vfs_b = VfsPath::local(file_b.clone());
+        let id_a = engine.vfs.get_id(&vfs_a).unwrap();
+
+        let (syntax_store, java_store, item_store) = engine.query_db.with_snapshot(|snap| {
+            (
+                snap.syntax_tree_store().expect("syntax tree store should be attached"),
+                snap.java_parse_store().expect("java parse store should be attached"),
+                snap.item_tree_store().expect("item tree store should be attached"),
+            )
+        });
+
+        // Open + compute pinned artifacts for A.
+        let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
+        assert_eq!(opened, id_a);
+        engine.query_db.with_snapshot(|snap| {
+            let _ = snap.parse(id_a);
+            let _ = snap.parse_java(id_a);
+            let _ = snap.item_tree(id_a);
+        });
+
+        assert!(syntax_store.contains(id_a));
+        assert!(java_store.contains(id_a));
+        assert!(item_store.contains(id_a));
+
+        // Move the open document onto an already-known destination id. This will orphan `id_a`.
+        fs::remove_file(&file_b).unwrap();
+        fs::rename(&file_a, &file_b).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: file_a.clone(),
+            to: file_b.clone(),
+        }]);
+
+        assert!(
+            !syntax_store.contains(id_a),
+            "expected syntax tree pin to be dropped for orphaned id"
+        );
+        assert!(
+            !java_store.contains(id_a),
+            "expected java parse pin to be dropped for orphaned id"
+        );
+        assert!(
+            !item_store.contains(id_a),
+            "expected item tree pin to be dropped for orphaned id"
+        );
+
+        // Sanity check that the overlay is still open (under a different id).
+        let id_b = engine.vfs.get_id(&vfs_b).expect("expected B to have a file id");
+        assert!(engine.vfs.open_documents().is_open(id_b));
     }
 
     #[test]

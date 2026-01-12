@@ -133,6 +133,14 @@ impl ItemTreeStore {
         self.update_tracker_locked(&inner);
     }
 
+    pub fn contains(&self, file: FileId) -> bool {
+        self.inner.lock().unwrap().contains_key(&file)
+    }
+
+    pub fn tracked_bytes(&self) -> u64 {
+        self.tracker.get().map(|t| t.bytes()).unwrap_or(0)
+    }
+
     fn clear_all(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.clear();
