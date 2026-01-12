@@ -24,6 +24,19 @@ const MAX_CACHED_ROOTS: usize = 32;
 
 static COMPLETION_CACHE: Lazy<CompletionEnvCache> = Lazy::new(CompletionEnvCache::new);
 
+/// A best-effort identifier for the current database instance.
+///
+/// The completion env cache is global (shared across threads) and keyed by project root. In tests,
+/// many fixtures reuse the same virtual roots (e.g. `/workspace`) while constructing independent
+/// in-memory databases, so we include the database address in the key to avoid cross-test
+/// interference under parallel execution.
+fn db_cache_id(db: &dyn Database) -> usize {
+    // Cast the fat pointer to a thin pointer, dropping the vtable metadata.
+    db as *const dyn Database as *const () as usize
+}
+
+type CompletionCacheKey = (usize, PathBuf);
+
 /// A completion-time environment: types + workspace type index.
 ///
 /// This is intended to be shared (`Arc`) across requests; it must be treated as immutable.
@@ -105,7 +118,7 @@ impl WorkspaceTypeIndex {
 
 #[derive(Debug)]
 struct CompletionEnvCache {
-    entries: Mutex<LruCache<PathBuf, CachedCompletionEnv>>,
+    entries: Mutex<LruCache<CompletionCacheKey, CachedCompletionEnv>>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +137,7 @@ impl CompletionEnvCache {
     fn env_for_root(&self, db: &dyn Database, raw_root: &Path) -> Arc<CompletionEnv> {
         let canonical_root = normalize_root_for_cache(raw_root);
         let has_alt_root = canonical_root != raw_root;
+        let key = (db_cache_id(db), canonical_root.clone());
 
         // Collect java files under the root (fallback to all Java files if the root contains none).
         let mut under_root = Vec::<(PathBuf, FileId)>::new();
@@ -165,7 +179,7 @@ impl CompletionEnvCache {
         // Cache hit.
         {
             let mut cache = lock_unpoison(&self.entries);
-            if let Some(entry) = cache.get_cloned(&canonical_root) {
+            if let Some(entry) = cache.get_cloned(&key) {
                 if entry.fingerprint == fingerprint {
                     return entry.env;
                 }
@@ -178,7 +192,7 @@ impl CompletionEnvCache {
             fingerprint,
             env: Arc::clone(&env),
         };
-        lock_unpoison(&self.entries).insert(canonical_root, entry);
+        lock_unpoison(&self.entries).insert(key, entry);
         env
     }
 }

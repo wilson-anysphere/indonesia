@@ -35,6 +35,18 @@ const MAX_CACHED_ROOTS: usize = 32;
 
 static WORKSPACE_CACHE: Lazy<FrameworkWorkspaceCache> = Lazy::new(FrameworkWorkspaceCache::new);
 
+/// Best-effort identifier for the current database instance.
+///
+/// `FrameworkWorkspaceCache` is a global cache shared across threads. Many tests construct
+/// independent in-memory databases but reuse the same virtual roots (e.g. `/workspace`). Include
+/// the database address in keys for db-backed workspace caches to avoid cross-test interference
+/// under parallel execution.
+fn db_cache_id(db: &dyn Database) -> usize {
+    db as *const dyn Database as *const () as usize
+}
+
+type DbRootKey = (usize, PathBuf);
+
 /// Walk upwards from `path` and attempt to locate the workspace/project root.
 ///
 /// This uses [`nova_project::workspace_root`] for the shared Maven/Gradle/Bazel/Simple
@@ -48,14 +60,13 @@ pub fn project_root_for_path(path: &Path) -> PathBuf {
         path.parent().unwrap_or(path)
     };
 
-    if let Some(root) = nova_project::workspace_root(start) {
-        return root;
-    }
-
-    // Best-effort fallback for in-memory DB fixtures: if the path has a `src/` segment, treat its
-    // parent as the project root. This matches the heuristics used by early framework analyzers and
-    // keeps tests that use virtual paths predictable.
-    if !path.exists() {
+    // Best-effort fallback for in-memory DB fixtures: when the path lives in a virtual/unbacked
+    // directory, avoid `nova_project::workspace_root` (which consults the host filesystem and can
+    // pick surprising roots like `/` if the machine happens to have a `/src` folder).
+    //
+    // If the virtual path has a `src/` segment, treat its parent as the project root. This matches
+    // early framework analyzer heuristics and keeps test fixtures deterministic.
+    if !start.exists() {
         for ancestor in start.ancestors() {
             if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
                 if let Some(parent) = ancestor.parent() {
@@ -63,6 +74,12 @@ pub fn project_root_for_path(path: &Path) -> PathBuf {
                 }
             }
         }
+
+        return start.to_path_buf();
+    }
+
+    if let Some(root) = nova_project::workspace_root(start) {
+        return root;
     }
 
     start.to_path_buf()
@@ -433,8 +450,8 @@ pub fn framework_completions(
 pub struct FrameworkWorkspaceCache {
     project_configs: Mutex<LruCache<PathBuf, CachedProjectConfig>>,
     spring_metadata: Mutex<LruCache<PathBuf, CachedMetadataIndex>>,
-    spring_workspace: Mutex<LruCache<PathBuf, CachedSpringWorkspace>>,
-    quarkus: Mutex<LruCache<PathBuf, CachedQuarkusWorkspace>>,
+    spring_workspace: Mutex<LruCache<DbRootKey, CachedSpringWorkspace>>,
+    quarkus: Mutex<LruCache<DbRootKey, CachedQuarkusWorkspace>>,
 }
 
 #[derive(Clone, Debug)]
@@ -580,6 +597,7 @@ impl FrameworkWorkspaceCache {
         let raw_root = root.to_path_buf();
         let canonical_root = normalize_root_for_cache(root);
         let has_alt_root = canonical_root != raw_root;
+        let key = (db_cache_id(db), canonical_root.clone());
 
         let build_fingerprint = build_marker_fingerprint(&canonical_root);
 
@@ -590,13 +608,13 @@ impl FrameworkWorkspaceCache {
         build_fingerprint.hash(&mut hasher);
 
         for file_id in db.all_file_ids() {
-            if cancel.is_cancelled() {
-                if let Some(existing) =
-                    lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
-                {
-                    return SpringWorkspace {
-                        is_spring: existing.is_spring,
-                        index: existing.index,
+                if cancel.is_cancelled() {
+                    if let Some(existing) =
+                        lock_unpoison(&self.spring_workspace).get_cloned(&key)
+                    {
+                        return SpringWorkspace {
+                            is_spring: existing.is_spring,
+                            index: existing.index,
                     };
                 }
                 return SpringWorkspace {
@@ -646,7 +664,7 @@ impl FrameworkWorkspaceCache {
         // Fast path: cache hit.
         {
             let mut cache = lock_unpoison(&self.spring_workspace);
-            if let Some(entry) = cache.get_cloned(&canonical_root) {
+            if let Some(entry) = cache.get_cloned(&key) {
                 if entry.fingerprint == fingerprint {
                     return SpringWorkspace {
                         is_spring: entry.is_spring,
@@ -658,7 +676,7 @@ impl FrameworkWorkspaceCache {
 
         if cancel.is_cancelled() {
             if let Some(existing) =
-                lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
+                lock_unpoison(&self.spring_workspace).get_cloned(&key)
             {
                 return SpringWorkspace {
                     is_spring: existing.is_spring,
@@ -682,7 +700,7 @@ impl FrameworkWorkspaceCache {
                 is_spring,
                 index: Arc::clone(&index),
             };
-            lock_unpoison(&self.spring_workspace).insert(canonical_root, entry);
+            lock_unpoison(&self.spring_workspace).insert(key.clone(), entry);
             return SpringWorkspace { is_spring, index };
         }
 
@@ -692,7 +710,7 @@ impl FrameworkWorkspaceCache {
         for (path, file_id, kind) in files {
             if cancel.is_cancelled() {
                 if let Some(existing) =
-                    lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
+                    lock_unpoison(&self.spring_workspace).get_cloned(&key)
                 {
                     return SpringWorkspace {
                         is_spring: existing.is_spring,
@@ -726,7 +744,7 @@ impl FrameworkWorkspaceCache {
             is_spring,
             index: Arc::clone(&index),
         };
-        lock_unpoison(&self.spring_workspace).insert(canonical_root, entry);
+        lock_unpoison(&self.spring_workspace).insert(key, entry);
         SpringWorkspace { is_spring, index }
     }
 
@@ -740,6 +758,7 @@ impl FrameworkWorkspaceCache {
         let raw_root = root.to_path_buf();
         let canonical_root = normalize_root_for_cache(root);
         let has_alt_root = canonical_root != raw_root;
+        let key = (db_cache_id(db), canonical_root.clone());
 
         let build_fingerprint = build_marker_fingerprint(&canonical_root);
 
@@ -749,7 +768,7 @@ impl FrameworkWorkspaceCache {
 
         for file_id in db.all_file_ids() {
             if cancel.is_cancelled() {
-                return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+                return lock_unpoison(&self.quarkus).get_cloned(&key);
             }
 
             let Some(path) = db.file_path(file_id) else {
@@ -781,7 +800,7 @@ impl FrameworkWorkspaceCache {
         build_fingerprint.hash(&mut hasher);
         for (path, file_id) in &files {
             if cancel.is_cancelled() {
-                return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+                return lock_unpoison(&self.quarkus).get_cloned(&key);
             }
             path.hash(&mut hasher);
             let text = db.file_content(*file_id);
@@ -793,7 +812,7 @@ impl FrameworkWorkspaceCache {
         // Cache hit.
         {
             let mut cache = lock_unpoison(&self.quarkus);
-            if let Some(entry) = cache.get_cloned(&canonical_root) {
+            if let Some(entry) = cache.get_cloned(&key) {
                 if entry.fingerprint == fingerprint {
                     return Some(entry);
                 }
@@ -802,7 +821,7 @@ impl FrameworkWorkspaceCache {
 
         // If cancelled, fall back to a stale entry.
         if cancel.is_cancelled() {
-            return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+            return lock_unpoison(&self.quarkus).get_cloned(&key);
         }
 
         // Determine applicability. If the caller passed a small subset of sources, use that for the
@@ -835,7 +854,7 @@ impl FrameworkWorkspaceCache {
             file_id_to_source,
             analysis,
         };
-        lock_unpoison(&self.quarkus).insert(canonical_root, entry.clone());
+        lock_unpoison(&self.quarkus).insert(key, entry.clone());
         Some(entry)
     }
 }
