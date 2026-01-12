@@ -1858,6 +1858,13 @@ return a JSON string result (the generated snippet) so clients can still present
 When `applied` is `true`, the server also sends a `workspace/applyEdit` request containing the same
 `WorkspaceEdit`.
 
+##### Errors
+
+- `-32600` if AI is not configured, or if the operation is blocked by privacy policy / excluded
+  paths.
+- `-32603` for internal failures (model/provider errors, patch parsing/validation failures, etc).
+- `-32800` if the request is cancelled.
+
 ##### Privacy gating (code edits)
 
 Patch-based AI code edits are gated by `ai.privacy`:
@@ -1926,3 +1933,7 @@ return a JSON string result (the generated snippet).
 ##### Side effects
 
 When `applied` is `true`, the server also sends `workspace/applyEdit`.
+
+##### Errors
+
+Same as `nova.ai.generateMethodBody`.
