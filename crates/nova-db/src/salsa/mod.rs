@@ -40,6 +40,7 @@ mod inputs;
 mod interned_class_key;
 mod item_tree_store;
 mod java_parse_cache;
+mod jpms;
 mod resolve;
 mod semantic;
 mod stats;
