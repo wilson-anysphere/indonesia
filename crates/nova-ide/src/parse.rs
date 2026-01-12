@@ -199,6 +199,64 @@ fn qualifies_as_type(name: &str) -> bool {
     ) || name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
+fn parse_type_ref(tokens: &[Token], mut i: usize, end: usize) -> Option<(String, Span, usize)> {
+    // Best-effort parsing for type references used in locals/fields:
+    // - `Foo`
+    // - `foo.bar.Baz` (qualified types; we keep the last segment)
+    // - `Foo<T>` / `Foo<T, U>`
+    // - `Foo[]` / `Foo[][]`
+    if i >= end {
+        return None;
+    }
+
+    let first = tokens.get(i).and_then(|t| t.ident())?;
+    let mut ty = first.to_string();
+    let mut ty_span = tokens.get(i).map(|t| t.span)?;
+    i += 1;
+
+    // Qualified type: a.b.C -> take last segment.
+    while i + 1 < end && tokens.get(i).and_then(|t| t.symbol()) == Some('.') {
+        let Some(seg) = tokens.get(i + 1).and_then(|t| t.ident()) else {
+            break;
+        };
+        ty = seg.to_string();
+        ty_span = tokens.get(i + 1).map(|t| t.span)?;
+        i += 2;
+    }
+
+    if !qualifies_as_type(&ty) {
+        return None;
+    }
+
+    // Generic args: Foo<...>
+    if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('<') {
+        let close = find_matching(tokens, i, '<', '>')?;
+        i = close + 1;
+    }
+
+    // Array suffix: Foo[] / Foo[][]
+    while i + 1 < end
+        && tokens.get(i).and_then(|t| t.symbol()) == Some('[')
+        && tokens.get(i + 1).and_then(|t| t.symbol()) == Some(']')
+    {
+        i += 2;
+    }
+
+    Some((ty, ty_span, i))
+}
+
+fn parse_var_decl(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<(String, Span, String, Span, usize)> {
+    let (ty, ty_span, mut i) = parse_type_ref(tokens, start, end)?;
+    let name = tokens.get(i).and_then(|t| t.ident())?.to_string();
+    let name_span = tokens.get(i).map(|t| t.span)?;
+    i += 1;
+    Some((ty, ty_span, name, name_span, i))
+}
+
 fn is_receiverless_call_keyword(name: &str) -> bool {
     // Keywords/constructs that are commonly followed by `(` but are not method calls.
     //
@@ -238,6 +296,46 @@ fn is_generic_member_call(tokens: &[Token], method_idx: usize) -> bool {
                 depth -= 1;
                 if depth == 0 {
                     return tokens.get(j.wrapping_sub(1)).and_then(|t| t.symbol()) == Some('.');
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    false
+}
+
+fn is_generic_type_suffix(tokens: &[Token], close_angle_idx: usize) -> bool {
+    // Detect whether `>` at `close_angle_idx` closes type arguments for a type name,
+    // as opposed to explicit type arguments in a method invocation (e.g. `<T>foo()` or
+    // `recv.<T>foo()`).
+    //
+    // We treat it as a type suffix when the matching `<` is preceded by an identifier
+    // that qualifies as a type name (`List<String> foo()`).
+    let Some('>') = tokens.get(close_angle_idx).and_then(|t| t.symbol()) else {
+        return false;
+    };
+
+    let mut depth = 0usize;
+    let mut j = close_angle_idx;
+    loop {
+        match tokens.get(j).and_then(|t| t.symbol()) {
+            Some('>') => depth += 1,
+            Some('<') => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let Some(before) = tokens.get(j.wrapping_sub(1)).and_then(|t| t.ident()) else {
+                        return false;
+                    };
+                    return qualifies_as_type(before);
                 }
             }
             _ => {}
@@ -331,16 +429,22 @@ fn parse_method_body(
         }
 
         // Local variable: Type name
-        if let (Some(ty), Some(name)) = (
-            tokens.get(i).and_then(|t| t.ident()),
-            tokens.get(i + 1).and_then(|t| t.ident()),
-        ) {
-            if qualifies_as_type(ty) {
-                let mut resolved_ty = ty.to_string();
+        let mut decl_start = i;
+        while decl_start < body_end && tokens.get(decl_start).and_then(|t| t.ident()) == Some("final")
+        {
+            decl_start += 1;
+        }
+
+        if let Some((ty, ty_span, name, name_span, after_name)) =
+            parse_var_decl(tokens, decl_start, body_end)
+        {
+            let next_sym = tokens.get(after_name).and_then(|t| t.symbol());
+            if matches!(next_sym, Some('=') | Some(';')) {
+                let mut resolved_ty = ty.clone();
 
                 if ty == "var" {
                     // Best-effort: infer from `new Foo(` in the same statement.
-                    let mut j = i + 2;
+                    let mut j = after_name;
                     while j < body_end {
                         if tokens.get(j).and_then(|t| t.symbol()) == Some(';') {
                             break;
@@ -357,9 +461,9 @@ fn parse_method_body(
 
                 locals.push(VarDef {
                     ty: resolved_ty,
-                    ty_span: tokens[i].span,
-                    name: name.to_string(),
-                    name_span: tokens[i + 1].span,
+                    ty_span,
+                    name,
+                    name_span,
                 });
             }
         }
@@ -406,10 +510,16 @@ fn parse_type_body(
 
         // Method decl/def: <...> name ( ... ) { ... } | ;
         let prev_ident = tokens.get(i.wrapping_sub(1)).and_then(|t| t.ident());
+        let prev_symbol = tokens.get(i.wrapping_sub(1)).and_then(|t| t.symbol());
+        let has_return_type = prev_ident.is_some()
+            || prev_symbol == Some(']')
+            || (prev_symbol == Some('>') && is_generic_type_suffix(tokens, i.wrapping_sub(1)));
         if tokens.get(i).and_then(|t| t.ident()).is_some()
             && tokens.get(i + 1).and_then(|t| t.symbol()) == Some('(')
-            && prev_ident.is_some()
+            && has_return_type
             && prev_ident != Some("new")
+            && prev_symbol != Some('=')
+            && prev_symbol != Some('.')
         {
             let name = tokens[i].ident().unwrap().to_string();
             let name_span = tokens[i].span;
@@ -466,20 +576,18 @@ fn parse_type_body(
         }
 
         // Field: Type name;
-        if let (Some(ty), Some(name)) = (
-            tokens.get(i).and_then(|t| t.ident()),
-            tokens.get(i + 1).and_then(|t| t.ident()),
-        ) {
-            if qualifies_as_type(ty) && tokens.get(i + 2).and_then(|t| t.symbol()) != Some('(') {
+        if let Some((ty, ty_span, name, name_span, after_name)) = parse_var_decl(tokens, i, body_end)
+        {
+            if tokens.get(after_name).and_then(|t| t.symbol()) != Some('(') {
                 fields.push(FieldDef {
-                    ty: ty.to_string(),
-                    ty_span: tokens[i].span,
-                    name: name.to_string(),
-                    name_span: tokens[i + 1].span,
+                    ty,
+                    ty_span,
+                    name,
+                    name_span,
                 });
 
                 // Skip to ';' to avoid re-parsing parts of the declaration.
-                let mut j = i + 2;
+                let mut j = after_name;
                 while j < body_end {
                     if tokens.get(j).and_then(|t| t.symbol()) == Some(';') {
                         i = j + 1;
