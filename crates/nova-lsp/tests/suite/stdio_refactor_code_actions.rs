@@ -723,6 +723,118 @@ fn stdio_server_resolves_extract_variable_code_action() {
 }
 
 #[test]
+fn stdio_server_does_not_offer_extract_variable_in_try_with_resources_header() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let file_path = temp.path().join("Test.java");
+
+    // Selecting a pure subexpression inside a try-with-resources resource initializer should not
+    // offer Extract Variable, since extracting within the `try (...)` header can change
+    // AutoCloseable lifetime/closing behavior.
+    let source = "class C {\n    void m() throws Exception {\n        try (java.io.ByteArrayInputStream r = new java.io.ByteArrayInputStream(new byte[1 + 2])) {\n            r.read();\n        }\n    }\n}\n";
+    fs::write(&file_path, source).expect("write file");
+
+    let uri: Uri = Url::from_file_path(&file_path)
+        .expect("uri")
+        .to_string()
+        .parse()
+        .expect("uri");
+
+    let expr_start = source.find("1 + 2").expect("expression start");
+    let expr_end = expr_start + "1 + 2".len();
+    let index = LineIndex::new(source);
+    let start = index.position(source, TextSize::from(expr_start as u32));
+    let end = index.position(source, TextSize::from(expr_end as u32));
+    let range = Range::new(
+        Position::new(start.line, start.character),
+        Position::new(end.line, end.character),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) didOpen
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // 3) request code actions for the expression selection
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.get("title").and_then(|v| v.as_str()) != Some("Extract variable…")),
+        "expected Extract Variable to not be offered inside try-with-resources header; got: {actions:?}"
+    );
+
+    // 4) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_offers_inline_variable_code_actions() {
     let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
