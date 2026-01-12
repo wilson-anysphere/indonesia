@@ -1,0 +1,84 @@
+CompilationUnit
+  RecordDeclaration
+    Modifiers
+    RecordKw "record"
+    Whitespace " "
+    Identifier "Point"
+    ParameterList
+      LParen "("
+      Parameter
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "x"
+      Comma ","
+      Whitespace " "
+      Parameter
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "y"
+      RParen ")"
+    Whitespace " "
+    RecordBody
+      LBrace "{"
+      Whitespace "\n  "
+      CompactConstructorDeclaration
+        Modifiers
+        Identifier "Point"
+        Whitespace " "
+        ThrowsKw "throws"
+        Type
+          Whitespace " "
+          NamedType
+            Identifier "java"
+            Dot "."
+            Identifier "io"
+            Dot "."
+            Identifier "IOException"
+            Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          IfStatement
+            IfKw "if"
+            Whitespace " "
+            LParen "("
+            BinaryExpression
+              NameExpression
+                Identifier "x"
+                Whitespace " "
+              Less "<"
+              Whitespace " "
+              LiteralExpression
+                IntLiteral "0"
+            RParen ")"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace "\n      "
+              ThrowStatement
+                ThrowKw "throw"
+                Whitespace " "
+                NewExpression
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "RuntimeException"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n    "
+              RBrace "}"
+            Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
