@@ -102,12 +102,8 @@ integration test target named `golden_corpus` — run it via `--test harness` (o
 test name).
 
 ```bash
-# Local dev
-cargo test --locked -p nova-syntax --test harness
-BLESS=1 cargo test --locked -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 cargo test --locked -p nova-refactor
-
-# Agent / multi-runner
+# Agent / multi-runner (required) — also works fine on workstations.
+# (Workstation equivalent: replace `bash scripts/cargo_agent.sh` with `cargo`.)
 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
@@ -118,11 +114,8 @@ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
 Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
-# Local dev
-INSTA_UPDATE=always cargo test --locked -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always cargo test --locked -p nova-format --test harness suite::format_snapshots
-
-# Agent / multi-runner
+# Agent / multi-runner (required) — also works fine on workstations.
+# (Workstation equivalent: replace `bash scripts/cargo_agent.sh` with `cargo`.)
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 ```
