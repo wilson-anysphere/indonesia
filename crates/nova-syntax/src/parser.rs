@@ -1630,8 +1630,10 @@ impl<'a> Parser<'a> {
         if can_start_expression(kind) {
             return true;
         }
-        (is_primitive_type(kind) || kind == SyntaxKind::VoidKw)
-            && self.at_primitive_class_literal_start()
+        if is_primitive_type(kind) {
+            return self.at_primitive_type_suffix_start();
+        }
+        kind == SyntaxKind::VoidKw && self.at_primitive_class_literal_start()
     }
 
     fn parse_annotation_element_value_array_initializer(&mut self) {
@@ -2971,17 +2973,21 @@ impl<'a> Parser<'a> {
                     self.builder.finish_node();
                 }
             }
-            kind if (is_primitive_type(kind) || kind == SyntaxKind::VoidKw)
-                && self.at_primitive_class_literal_start() =>
+            kind if (is_primitive_type(kind) && self.at_primitive_type_suffix_start())
+                || (kind == SyntaxKind::VoidKw && self.at_primitive_class_literal_start()) =>
             {
-                // `int.class` / `int[].class` class literals are valid Java expressions, but
-                // primitive type keywords are not normally accepted as expression primaries.
-                // Treat them as a name expression when followed by a class-literal suffix so the
-                // postfix parser can build a `ClassLiteralExpression` node without producing
-                // spurious parse errors.
+                // `int.class`, `int[]::new`, etc are valid Java expressions, but primitive type
+                // keywords are not normally accepted as expression primaries. Treat them like a
+                // name in this narrow context so the postfix parser can build class literals and
+                // method/constructor references without producing spurious parse errors.
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::NameExpression.into());
                 self.bump();
+                // Preserve array type suffixes: `int[]::new`, `int[].class`, etc.
+                while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                    self.bump();
+                    self.bump();
+                }
                 self.builder.finish_node();
             }
             _ => {
@@ -3171,6 +3177,20 @@ impl<'a> Parser<'a> {
         }
         self.nth(offset) == Some(SyntaxKind::Dot)
             && self.nth(offset + 1) == Some(SyntaxKind::ClassKw)
+    }
+
+    fn at_primitive_method_reference_start(&mut self) -> bool {
+        let mut offset = 1usize;
+        while self.nth(offset) == Some(SyntaxKind::LBracket)
+            && self.nth(offset + 1) == Some(SyntaxKind::RBracket)
+        {
+            offset += 2;
+        }
+        self.nth(offset) == Some(SyntaxKind::DoubleColon)
+    }
+
+    fn at_primitive_type_suffix_start(&mut self) -> bool {
+        self.at_primitive_class_literal_start() || self.at_primitive_method_reference_start()
     }
 
     fn parse_instanceof_type_or_pattern(&mut self) {
