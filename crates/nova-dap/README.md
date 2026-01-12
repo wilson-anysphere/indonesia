@@ -398,5 +398,5 @@ green even when the feature is enabled.
 Run it locally with:
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test real_jvm suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
 ```

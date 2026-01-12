@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Nova Java debug adapter (DAP)."
+autotests = false
 
 [package.metadata.dist]
 dist = true
@@ -53,6 +54,10 @@ path = "src/lib.rs"
 # built-in "skip"), so CI can still run them safely in environments without a
 # JDK.
 real-jvm-tests = []
+
+[[test]]
+name = "tests"
+path = "tests/real_jvm.rs"
 
 [[bin]]
 name = "nova_dap_test_helper"

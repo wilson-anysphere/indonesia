@@ -381,13 +381,13 @@ cargo test --locked -p nova-lsp --test tests stdio_
 
 #### 3b) DAP end-to-end tests (in-memory transport)
 
-**Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/real_jvm.rs`;
-most tests use in-memory duplex streams + a mock JDWP server).
+**Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/real_jvm.rs`,
+run via `cargo test -p nova-dap --test tests`; most tests use in-memory duplex streams + a mock JDWP server).
 
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-dap --test real_jvm
+bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests
 ```
 
 #### 3c) DAP end-to-end tests (real JVM; optional)
@@ -398,13 +398,13 @@ If the tools are missing, the test prints a message and returns early so normal 
 
 **Where:**
 
-- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (run via `crates/nova-dap/tests/real_jvm.rs`)
+- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (run via `cargo test -p nova-dap --test tests suite::real_jvm`)
 - Java fixture: `crates/nova-dap/testdata/java/Main.java`
 
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test real_jvm suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.

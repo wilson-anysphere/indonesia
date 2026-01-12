@@ -33,7 +33,7 @@ doctests separately via `cargo test --locked --workspace --doc` on dedicated run
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
-  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test real_jvm suite::real_jvm …`)
+  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm …`)
   - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows

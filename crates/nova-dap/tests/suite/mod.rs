@@ -1,7 +1,7 @@
 // Consolidated integration test suite.
 //
 // This module is compiled by `tests/real_jvm.rs` so
-// `bash scripts/cargo_agent.sh test --locked -p nova-dap --test real_jvm`
+// `bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests`
 // builds a single integration test binary containing most of the crate's
 // end-to-end tests (see repo guidance about using one integration test harness
 // per crate).
