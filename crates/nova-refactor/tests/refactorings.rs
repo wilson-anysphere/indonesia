@@ -1026,6 +1026,45 @@ fn extract_variable_rejects_switch_expression_rule_expression() {
 }
 
 #[test]
+fn extract_variable_rejects_switch_expression_rule_expression_nested() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  static int foo(int x) { return x; }
+
+  int m(int x) {
+    int y = switch (x) {
+      case 1 -> foo(/*start*/1 + 2/*end*/);
+      default -> 0;
+    };
+    return y;
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from switch expression rule body"
+        ),
+        "expected switch expression rule rejection, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_switch_expression_rule_throw_statement_body() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
