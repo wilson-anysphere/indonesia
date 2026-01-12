@@ -143,3 +143,4 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
         overlay_text
     );
 }
+
