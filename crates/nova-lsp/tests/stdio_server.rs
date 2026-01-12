@@ -1549,9 +1549,9 @@ exit 1
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
