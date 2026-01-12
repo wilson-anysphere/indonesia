@@ -153,7 +153,24 @@ impl From<&nova_build_model::ClasspathEntry> for ClasspathEntry {
             nova_build_model::ClasspathEntryKind::Directory => {
                 ClasspathEntry::ClassDir(value.path.clone())
             }
-            nova_build_model::ClasspathEntryKind::Jar => ClasspathEntry::Jar(value.path.clone()),
+            nova_build_model::ClasspathEntryKind::Jar => {
+                // `nova-build-model` only has a single "Jar" kind, but downstream consumers need
+                // to distinguish `.jar` vs `.jmod` for correct JPMS/module-info handling.
+                //
+                // Additionally, some build tooling can "explode" jars into directories (sometimes
+                // still ending with `.jar`). Preserve on-disk semantics by treating directories as
+                // class directories.
+                if value.path.is_dir() {
+                    return ClasspathEntry::ClassDir(value.path.clone());
+                }
+
+                let ext = value.path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+                if ext.eq_ignore_ascii_case("jmod") {
+                    ClasspathEntry::Jmod(value.path.clone())
+                } else {
+                    ClasspathEntry::Jar(value.path.clone())
+                }
+            }
         }
     }
 }
@@ -2047,6 +2064,27 @@ mod tests {
         let meta = entry.module_meta_for_module_path().unwrap();
         assert_eq!(meta.kind, ModuleNameKind::Automatic);
         assert_eq!(meta.name.unwrap().as_str(), "foo.bar");
+    }
+
+    #[test]
+    fn build_model_entries_convert_jmods_by_extension() {
+        let entry = nova_build_model::ClasspathEntry {
+            kind: nova_build_model::ClasspathEntryKind::Jar,
+            path: PathBuf::from("foo.JMOD"),
+        };
+        assert!(matches!(ClasspathEntry::from(&entry), ClasspathEntry::Jmod(_)));
+    }
+
+    #[test]
+    fn build_model_entries_convert_exploded_jars_as_directories() {
+        let tmp = TempDir::new().unwrap();
+        let exploded = tmp.path().join("dep.jar");
+        std::fs::create_dir_all(&exploded).unwrap();
+        let entry = nova_build_model::ClasspathEntry {
+            kind: nova_build_model::ClasspathEntryKind::Jar,
+            path: exploded.clone(),
+        };
+        assert!(matches!(ClasspathEntry::from(&entry), ClasspathEntry::ClassDir(p) if p == exploded));
     }
 
     #[test]
