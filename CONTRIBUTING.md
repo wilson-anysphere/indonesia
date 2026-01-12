@@ -32,7 +32,7 @@ Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo t
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
-  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm …`)
+  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests suite::real_jvm …`)
   - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows
@@ -41,24 +41,24 @@ Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo t
 
 ```bash
 # Local dev (recommended: build the crate you're working on)
-cargo build -p nova-cli
+cargo build --locked -p nova-cli
 
 # Agent / multi-runner (memory-capped wrapper)
-bash scripts/cargo_agent.sh build -p nova-cli
+bash scripts/cargo_agent.sh build --locked -p nova-cli
 ```
 
 ### Run
 
 ```bash
 # Local dev
-cargo run -p nova-cli -- --help
-cargo run -p nova-lsp -- --version
-bash scripts/cargo_agent.sh run -p nova-dap -- --version
+cargo run --locked -p nova-cli -- --help
+cargo run --locked -p nova-lsp -- --version
+bash scripts/cargo_agent.sh run --locked -p nova-dap -- --version
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh run -p nova-cli -- --help
-bash scripts/cargo_agent.sh run -p nova-lsp -- --version
-bash scripts/cargo_agent.sh run -p nova-dap -- --version
+bash scripts/cargo_agent.sh run --locked -p nova-cli -- --help
+bash scripts/cargo_agent.sh run --locked -p nova-lsp -- --version
+bash scripts/cargo_agent.sh run --locked -p nova-dap -- --version
 ```
 
 ### Tests
@@ -69,18 +69,18 @@ cargo install cargo-nextest --locked
 bash scripts/cargo_agent.sh install cargo-nextest --locked
 
 # Local dev (recommended: keep runs scoped to the crate/target you're changing)
-cargo nextest run -p nova-core --profile ci
+cargo nextest run --locked -p nova-core --profile ci
 
 # Nextest does not run doctests; run them separately.
-cargo test -p nova-core --doc
+cargo test --locked -p nova-core --doc
 
 # Exercise feature-gated code paths for a single crate (slower)
-cargo nextest run -p nova-core --profile ci --all-features
+cargo nextest run --locked -p nova-core --profile ci --all-features
 
 # Agent / multi-runner (same commands, via the wrapper)
-bash scripts/cargo_agent.sh nextest run -p nova-core --profile ci
-bash scripts/cargo_agent.sh test -p nova-core --doc
-bash scripts/cargo_agent.sh nextest run -p nova-core --profile ci --all-features
+bash scripts/cargo_agent.sh nextest run --locked -p nova-core --profile ci
+bash scripts/cargo_agent.sh test --locked -p nova-core --doc
+bash scripts/cargo_agent.sh nextest run --locked -p nova-core --profile ci --all-features
 ```
 
 CI runs the full workspace suite on dedicated runners (`cargo nextest run --locked --workspace --profile ci`,
@@ -101,14 +101,14 @@ integration test target named `golden_corpus` — run it via `--test harness` (o
 
 ```bash
 # Local dev
-cargo test -p nova-syntax --test harness
-BLESS=1 cargo test -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 cargo test -p nova-refactor
+cargo test --locked -p nova-syntax --test harness
+BLESS=1 cargo test --locked -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 cargo test --locked -p nova-refactor
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
 ```
 
 #### Formatter snapshots (`INSTA_UPDATE=always`)
@@ -117,12 +117,12 @@ Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
 # Local dev
-INSTA_UPDATE=always cargo test -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always cargo test -p nova-format --test harness suite::format_snapshots
+INSTA_UPDATE=always cargo test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always cargo test --locked -p nova-format --test harness suite::format_snapshots
 
 # Agent / multi-runner
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 ```
 
 #### `javac` differential tests (ignored)
@@ -131,10 +131,10 @@ Requires a JDK (`javac` on `PATH`):
 
 ```bash
 # Local dev
-cargo test -p nova-types --test javac_differential -- --ignored
+cargo test --locked -p nova-types --test javac_differential -- --ignored
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
 ```
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
@@ -144,12 +144,12 @@ bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ig
 
 # or run directly after cloning fixtures:
 # Local dev
-cargo test -p nova-project --test harness -- --ignored real_projects::
-cargo test -p nova-cli --test harness -- --ignored suite::real_projects::
+cargo test --locked -p nova-project --test harness -- --ignored real_projects::
+cargo test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
-bash scripts/cargo_agent.sh test -p nova-cli --test harness -- --ignored suite::real_projects::
+bash scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored real_projects::
+bash scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
 ```
 
 ### Format & lint
@@ -157,11 +157,11 @@ bash scripts/cargo_agent.sh test -p nova-cli --test harness -- --ignored suite::
 ```bash
 # Local dev
 cargo fmt --all -- --check
-cargo clippy -p nova-core --all-targets --all-features -- -D warnings
+cargo clippy --locked -p nova-core --all-targets --all-features -- -D warnings
 
 # Agent / multi-runner
 bash scripts/cargo_agent.sh fmt --all -- --check
-bash scripts/cargo_agent.sh clippy -p nova-core --all-targets --all-features -- -D warnings
+bash scripts/cargo_agent.sh clippy --locked -p nova-core --all-targets --all-features -- -D warnings
 
 # Repo invariants (CI runs this; nova-devtools)
 ./scripts/check-repo-invariants.sh
@@ -269,18 +269,18 @@ To run the same suite locally:
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 
 # Local dev
-cargo bench -p nova-core --bench critical_paths
-cargo bench -p nova-syntax --bench parse_java
-cargo bench -p nova-format --bench format
-cargo bench -p nova-refactor --bench refactor
-cargo bench -p nova-classpath --bench index
+cargo bench --locked -p nova-core --bench critical_paths
+cargo bench --locked -p nova-syntax --bench parse_java
+cargo bench --locked -p nova-format --bench format
+cargo bench --locked -p nova-refactor --bench refactor
+cargo bench --locked -p nova-classpath --bench index
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh bench -p nova-core --bench critical_paths
-bash scripts/cargo_agent.sh bench -p nova-syntax --bench parse_java
-bash scripts/cargo_agent.sh bench -p nova-format --bench format
-bash scripts/cargo_agent.sh bench -p nova-refactor --bench refactor
-bash scripts/cargo_agent.sh bench -p nova-classpath --bench index
+bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
+bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
+bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
+bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
 ```
 
 For capture/compare tooling and threshold configuration, see [`perf/README.md`](perf/README.md).
