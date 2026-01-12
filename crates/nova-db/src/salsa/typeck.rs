@@ -3051,28 +3051,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
-    fn validate_statement_expression(&mut self, expr: HirExprId) {
-        let expr_range = self.body.exprs[expr].range();
-        match &self.body.exprs[expr] {
-            HirExpr::Missing { .. } => {}
-            _ if self.range_is_wrapped_in_parens(expr_range) => {
-                // Parenthesized expressions are not valid statement expressions (JLS 14.8).
-                //
-                // `nova-syntax` lowers parenthesized expressions to their inner expression node,
-                // so a parenthesized assignment like `(x = 1);` would otherwise look like a plain
-                // `HirExpr::Assign` here.
-                self.diagnostics.push(Diagnostic::error(
-                    "invalid-statement-expression",
-                    "invalid expression statement",
-                    Some(expr_range),
-                ));
-            }
+    fn is_statement_expression(&self, expr: HirExprId) -> bool {
+        let expr_data = &self.body.exprs[expr];
+        let expr_range = expr_data.range();
+
+        match expr_data {
+            HirExpr::Missing { .. } => true,
+            _ if self.range_is_wrapped_in_parens(expr_range) => false,
             HirExpr::Assign { .. }
             | HirExpr::Call { .. }
             | HirExpr::Unary {
                 op: UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec,
                 ..
-            } => {}
+            } => true,
             HirExpr::New {
                 class,
                 class_range,
@@ -3093,21 +3084,37 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let syntactic_is_array =
                     class.contains('[') || self.new_expr_array_dims(*class_range, *range).is_some();
 
-                if inferred_is_array || syntactic_is_array {
-                    self.diagnostics.push(Diagnostic::error(
-                        "invalid-statement-expression",
-                        "invalid expression statement",
-                        Some(expr_range),
-                    ));
-                }
+                !(inferred_is_array || syntactic_is_array)
             }
-            _ => {
-                self.diagnostics.push(Diagnostic::error(
-                    "invalid-statement-expression",
-                    "invalid expression statement",
-                    Some(expr_range),
-                ));
-            }
+            _ => false,
+        }
+    }
+
+    fn validate_statement_expression(&mut self, expr: HirExprId) {
+        if matches!(&self.body.exprs[expr], HirExpr::Missing { .. }) {
+            return;
+        }
+
+        if !self.is_statement_expression(expr) {
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-statement-expression",
+                "invalid expression statement",
+                Some(self.body.exprs[expr].range()),
+            ));
+        }
+    }
+
+    fn validate_for_update_expression(&mut self, expr: HirExprId) {
+        if matches!(&self.body.exprs[expr], HirExpr::Missing { .. }) {
+            return;
+        }
+
+        if !self.is_statement_expression(expr) {
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-for-update-expression",
+                "invalid expression in for-loop update",
+                Some(self.body.exprs[expr].range()),
+            ));
         }
     }
 
@@ -3396,7 +3403,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
                 for expr in update {
                     let _ = self.infer_expr(loader, *expr);
-                    self.validate_statement_expression(*expr);
+                    self.validate_for_update_expression(*expr);
                 }
                 self.check_stmt(loader, *body, expected_return);
             }
@@ -5833,7 +5840,6 @@ fn unbox_class_name(name: &str) -> Option<PrimitiveType> {
         _ => return None,
     })
 }
-
 fn params_for_owner(tree: &nova_hir::item_tree::ItemTree, owner: DefWithBodyId) -> Vec<ParamId> {
     match owner {
         DefWithBodyId::Method(m) => tree

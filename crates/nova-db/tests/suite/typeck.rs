@@ -378,8 +378,29 @@ class C {
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "invalid-statement-expression"),
-        "expected invalid-statement-expression diagnostic; got {diags:?}"
+            .any(|d| d.code.as_ref() == "invalid-for-update-expression"),
+        "expected invalid-for-update-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn allows_method_call_in_for_update() {
+    let src = r#"
+class C {
+    void tick() {}
+    void m() {
+        for (;; tick()) {}
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-for-update-expression"),
+        "expected no invalid-for-update-expression diagnostics; got {diags:?}"
     );
 }
 
