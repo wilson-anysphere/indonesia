@@ -840,8 +840,18 @@ fn parse_type_body(
         i += 1;
     }
 
-    methods.sort_by(|a, b| a.name.cmp(&b.name));
-    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    methods.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.name_span.start.cmp(&b.name_span.start))
+            .then_with(|| a.name_span.end.cmp(&b.name_span.end))
+    });
+    fields.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.name_span.start.cmp(&b.name_span.start))
+            .then_with(|| a.name_span.end.cmp(&b.name_span.end))
+    });
     calls.sort_by(|a, b| {
         a.method_span
             .start

@@ -9245,6 +9245,25 @@ fn call_hierarchy_incoming_calls_impl(
         return Vec::new();
     };
 
+    // When the request comes from an LSP `CallHierarchyItem` we generally have a
+    // precise `selectionRange` span. However, our workspace resolution is
+    // name-based (no overload/signature support), so matching by name-span can
+    // cause calls to disappear when the target method is an overload that isn't
+    // the first one chosen by `WorkspaceHierarchyIndex::resolve_method_definition`.
+    //
+    // Instead, best-effort disambiguate by (type_name, method_name) when we can
+    // recover the owning type from the span.
+    let target_type_name = if has_span_override {
+        target_parsed.types.iter().find_map(|ty| {
+            ty.methods
+                .iter()
+                .any(|m| m.name_span == target_name_span)
+                .then_some(ty.name.clone())
+        })
+    } else {
+        None
+    };
+
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct CallerKey {
         file_id: FileId,
@@ -9285,7 +9304,22 @@ fn call_hierarchy_incoming_calls_impl(
                 continue;
             };
 
-            if resolved.file_id != file || resolved.name_span != target_name_span {
+            let matches_target = if has_span_override {
+                // Prefer type-name matching when available to avoid empty results
+                // for overloads.
+                match target_type_name.as_deref() {
+                    Some(target_type) => {
+                        resolved.file_id == file
+                            && resolved.type_name == target_type
+                            && resolved.name == method_name
+                    }
+                    None => resolved.file_id == file && resolved.name == method_name,
+                }
+            } else {
+                resolved.file_id == file && resolved.name_span == target_name_span
+            };
+
+            if !matches_target {
                 continue;
             }
 
