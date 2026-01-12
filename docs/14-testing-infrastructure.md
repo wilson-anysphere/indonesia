@@ -306,7 +306,7 @@ cargo test -p nova-lsp stdio_
 **Run locally:**
 
 ```bash
-cargo test -p nova-dap
+bash scripts/cargo_agent.sh test -p nova-dap
 ```
 
 #### 3c) DAP end-to-end tests (real JVM; optional)
@@ -322,7 +322,7 @@ This requires a local JDK (`java` + `javac` on `PATH`) and is opt-in so normal C
 **Run locally:**
 
 ```bash
-cargo test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.

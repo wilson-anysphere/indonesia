@@ -19,7 +19,7 @@ well-tested.
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
-  - DAP real-JVM smoke test (`cargo test -p nova-dap --features real-jvm-tests ...`)
+  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests ...`)
   - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows
@@ -35,7 +35,7 @@ cargo build
 ```bash
 cargo run -p nova-cli -- --help
 cargo run -p nova-lsp -- --version
-cargo run -p nova-dap -- --version
+bash scripts/cargo_agent.sh run -p nova-dap -- --version
 ```
 
 ### Tests
