@@ -61,6 +61,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::ExactFileName("libs.versions.toml")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::Glob("**/gradle/*.versions.toml")));
     assert!(gradle.watch_files().contains(&PathPattern::Glob("**/*.gradle")));
     assert!(gradle
         .watch_files()
