@@ -1300,6 +1300,24 @@ class C {
 }
 
 #[test]
+fn instanceof_incompatible_reference_types_is_error() {
+    let src = r#"
+class C {
+    boolean m(String s){
+        return s instanceof Integer;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-instanceof"),
+        "expected invalid-instanceof diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn boxed_primitive_equality_with_null_is_boolean() {
     let src = r#"
 class C {
