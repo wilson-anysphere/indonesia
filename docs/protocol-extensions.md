@@ -759,7 +759,8 @@ Notes:
 ```json
 {
   "endpoints": [
-    { "path": "/api/hello", "methods": ["GET"], "file": "src/main/java/com/example/Hello.java", "line": 42 }
+    { "path": "/api/hello", "methods": ["GET"], "file": "src/main/java/com/example/Hello.java", "line": 42 },
+    { "path": "/api/health", "methods": ["GET"], "file": null, "line": 1 }
   ]
 }
 ```
@@ -767,7 +768,10 @@ Notes:
 Notes:
 
 - `line` is **1-based** (matches `nova-framework-web`).
-- `file` is a best-effort relative path when `projectRoot` is provided.
+- `file` is a best-effort relative path when `projectRoot` is provided, but it may be `null` (or
+  missing) when the extractor cannot determine a source location.
+  - Clients should still display the endpoint, but disable navigation (or show “location
+    unavailable”) when `file` is unavailable.
 
 ---
 
