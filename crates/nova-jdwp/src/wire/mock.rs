@@ -2331,6 +2331,52 @@ async fn handle_packet(
 
             match res {
                 Ok(args) => {
+                    // When the reply is intentionally delayed (used by higher-level adapter tests),
+                    // also emit a breakpoint event while the command is "in flight". This mimics
+                    // real JDWP behavior where `InvokeMethod` can execute user code and trigger
+                    // async events while the debugger is awaiting the reply.
+                    //
+                    // This is intentionally best-effort and only kicks in when:
+                    // - The reply is configured to be delayed for this command, and
+                    // - A breakpoint event request is configured.
+                    if let Some(delay) = state.reply_delay(packet.command_set, packet.command) {
+                        if !delay.is_zero() {
+                            let breakpoint_request = { *state.breakpoint_request.lock().await };
+                            let breakpoint_suspend_policy =
+                                { *state.breakpoint_suspend_policy.lock().await };
+
+                            if let Some(stop_packet) = make_stop_event_packet(
+                                state,
+                                id_sizes,
+                                breakpoint_request,
+                                breakpoint_suspend_policy,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ) {
+                                let writer = writer.clone();
+                                let shutdown = shutdown.clone();
+                                let event_delay = if delay > Duration::from_millis(100) {
+                                    Duration::from_millis(50)
+                                } else {
+                                    let ms = (delay.as_millis() / 2).max(1);
+                                    Duration::from_millis(ms as u64)
+                                };
+
+                                tokio::spawn(async move {
+                                    tokio::select! {
+                                        _ = shutdown.cancelled() => {}
+                                        _ = tokio::time::sleep(event_delay) => {
+                                            let mut guard = writer.lock().await;
+                                            let _ = guard.write_all(&stop_packet).await;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+
                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);

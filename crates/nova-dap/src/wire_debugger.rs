@@ -17,8 +17,8 @@ use nova_core::Line;
 use nova_db::InMemoryFileStore;
 use nova_jdwp::wire::{
     inspect::{Inspector, ObjectKindPreview, ERROR_INVALID_OBJECT},
-    ClassInfo, EventModifier, FrameInfo, JdwpClient, JdwpError, JdwpEvent, JdwpValue, LineTable,
-    Location, MethodInfo, ObjectId, ReferenceTypeId, ThreadId, VariableInfo,
+    ClassInfo, EventModifier, FrameId, FrameInfo, JdwpClient, JdwpError, JdwpEvent, JdwpValue,
+    LineTable, Location, MethodInfo, ObjectId, ReferenceTypeId, ThreadId, VariableInfo,
 };
 
 use crate::breakpoints::map_line_breakpoints;
@@ -426,6 +426,17 @@ impl Debugger {
 
     pub fn jdwp_client(&self) -> JdwpClient {
         self.jdwp.clone()
+    }
+
+    /// Resolve a DAP `frameId` to the underlying JDWP thread/frame identifiers.
+    ///
+    /// This is intentionally synchronous (no `.await`) so call sites can snapshot
+    /// the frame identity while holding the outer `Debugger` mutex, then drop the
+    /// lock before performing potentially long-running JDWP operations (e.g.
+    /// `InvokeMethod`).
+    pub(crate) fn jdwp_frame(&self, frame_id: i64) -> Option<(ThreadId, FrameId)> {
+        let handle = self.frame_handles.get(frame_id)?;
+        Some((handle.thread, handle.frame_id))
     }
     pub async fn capabilities(&self) -> nova_jdwp::wire::types::JdwpCapabilitiesNew {
         self.jdwp.capabilities().await

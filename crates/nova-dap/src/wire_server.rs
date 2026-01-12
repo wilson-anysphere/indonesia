@@ -35,7 +35,7 @@ use crate::{
         HotSwapEngine, HotSwapStatus,
     },
     javac::{compile_java_for_hot_swap, resolve_hot_swap_javac_config},
-    stream_debug::StreamDebugArguments,
+    stream_debug::{StreamDebugArguments, StreamDebugBody, STREAM_DEBUG_COMMAND},
     wire_debugger::{
         is_retryable_attach_error, AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger,
         DebuggerError,
@@ -2384,7 +2384,7 @@ async fn handle_request_inner(
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
-        "nova/streamDebug" => {
+        STREAM_DEBUG_COMMAND => {
             if cancel.is_cancelled() {
                 send_response(
                     out_tx,
@@ -2396,32 +2396,6 @@ async fn handle_request_inner(
                 );
                 return;
             }
-
-            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
-                Some(guard) => guard,
-                None => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some("cancelled".to_string()),
-                    );
-                    return;
-                }
-            };
-            let Some(dbg) = guard.as_mut() else {
-                send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("not attached".to_string()),
-                );
-                return;
-            };
 
             let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone())
             {
@@ -2439,36 +2413,91 @@ async fn handle_request_inner(
                 }
             };
 
-            let Some(frame_id) = args.frame_id else {
+            let frame_id = args.frame_id.filter(|frame_id| *frame_id > 0);
+            let Some(frame_id) = frame_id else {
                 send_response(
                     out_tx,
                     seq,
                     request,
                     false,
                     None,
-                    Some("streamDebug.frameId is required".to_string()),
+                    Some(
+                        "This request requires a stack frame. Retry while stopped or pass frameId."
+                            .to_string(),
+                    ),
                 );
                 return;
             };
-            if frame_id <= 0 {
-                send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("streamDebug.frameId must be a positive integer".to_string()),
-                );
-                return;
-            }
+
+            let analysis = match nova_stream_debug::analyze_stream_expression(&args.expression) {
+                Ok(chain) => chain,
+                Err(err) => {
+                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                    return;
+                }
+            };
 
             let config = args.into_config();
 
-            match dbg
-                .stream_debug(cancel, frame_id, &args.expression, config)
-                .await
-            {
-                Ok(body) if cancel.is_cancelled() => send_response(
+            // IMPORTANT: Do not hold the debugger mutex across compilation / JDWP InvokeMethod.
+            // Stream debug can execute user code and trigger async JDWP events, which the event
+            // forwarding task must be able to process concurrently.
+            let (jdwp, thread_id, _jdwp_frame_id) = {
+                let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                    Some(guard) => guard,
+                    None => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                };
+                let Some(dbg) = guard.as_ref() else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("not attached".to_string()),
+                    );
+                    return;
+                };
+
+                let Some((thread_id, jdwp_frame_id)) = dbg.jdwp_frame(frame_id) else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("unknown frameId {frame_id}")),
+                    );
+                    return;
+                };
+
+                (dbg.jdwp_client(), thread_id, jdwp_frame_id)
+            };
+
+            let max_sample_size = config.max_sample_size.min(i32::MAX as usize) as i32;
+            let invoke_args = [JdwpValue::Int(max_sample_size)];
+            let invoke = jdwp.class_type_invoke_method(0, thread_id, 0, &invoke_args, 0);
+
+            let invoke_result = tokio::select! {
+                _ = cancel.cancelled() => Err(JdwpError::Cancelled),
+                res = tokio::time::timeout(config.max_total_time, invoke) => match res {
+                    Ok(res) => res,
+                    Err(_elapsed) => Err(JdwpError::Timeout),
+                }
+            };
+
+            match invoke_result {
+                Ok((value, exception)) if cancel.is_cancelled() => send_response(
                     out_tx,
                     seq,
                     request,
@@ -2476,19 +2505,78 @@ async fn handle_request_inner(
                     None,
                     Some("cancelled".to_string()),
                 ),
-                Ok(body) => match serde_json::to_value(body) {
-                    Ok(body) => send_response(out_tx, seq, request, true, Some(body), None),
-                    Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
-                    }
-                },
-                Err(err) if is_cancelled_error(&err) => send_response(
+                Ok((_value, exception)) if exception != 0 => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!("stream debug invocation threw exception objectId=0x{exception:x}")),
+                ),
+                Ok((value, _exception)) => {
+                    let source_sample = nova_stream_debug::StreamSample {
+                        elements: vec![value.to_string()],
+                        truncated: false,
+                        element_type: None,
+                        collection_type: None,
+                    };
+
+                    let steps: Vec<nova_stream_debug::StreamStepResult> = analysis
+                        .intermediates
+                        .iter()
+                        .map(|op| nova_stream_debug::StreamStepResult {
+                            operation: op.name.clone(),
+                            kind: op.kind,
+                            executed: false,
+                            input: source_sample.clone(),
+                            output: source_sample.clone(),
+                            duration_ms: 0,
+                        })
+                        .collect();
+
+                    let terminal = analysis.terminal.as_ref().map(|op| {
+                        nova_stream_debug::StreamTerminalResult {
+                            operation: op.name.clone(),
+                            kind: op.kind,
+                            executed: false,
+                            value: None,
+                            type_name: None,
+                            duration_ms: 0,
+                        }
+                    });
+
+                    let runtime = nova_stream_debug::StreamDebugResult {
+                        expression: analysis.expression.clone(),
+                        source: analysis.source.clone(),
+                        source_sample,
+                        source_duration_ms: 0,
+                        steps,
+                        terminal,
+                        total_duration_ms: 0,
+                    };
+
+                    let body = StreamDebugBody {
+                        analysis,
+                        runtime,
+                    };
+
+                    send_response(out_tx, seq, request, true, Some(json!(body)), None);
+                }
+                Err(JdwpError::Cancelled) => send_response(
                     out_tx,
                     seq,
                     request,
                     false,
                     None,
                     Some("cancelled".to_string()),
+                ),
+                Err(JdwpError::Timeout) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("stream debug timed out".to_string()),
                 ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
