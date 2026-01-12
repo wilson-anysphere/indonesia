@@ -31,10 +31,6 @@ forbid_upward_to = ["protocol"]
 # to = "nova-lsp"
 
 [[policy.dev.allowlist]]
-from = "nova-project"
-to = "nova-workspace"
-
-[[policy.dev.allowlist]]
 from = "nova-syntax"
 to = "xtask"
 

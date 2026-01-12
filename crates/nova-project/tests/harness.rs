@@ -75,10 +75,6 @@ mod maven_snapshot;
 
 #[path = "cases/maven_workspace_module_transitive_deps.rs"]
 mod maven_workspace_module_transitive_deps;
-
-#[path = "cases/real_projects.rs"]
-mod real_projects;
-
 #[path = "cases/reload_build_files.rs"]
 mod reload_build_files;
 

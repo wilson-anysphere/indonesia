@@ -11,7 +11,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/real-projects.yml"
-      - "crates/nova-project/tests/cases/real_projects.rs"
+      - "crates/nova-workspace/tests/harness.rs"
+      - "crates/nova-workspace/tests/suite/mod.rs"
+      - "crates/nova-workspace/tests/suite/real_projects.rs"
       - "crates/nova-cli/tests/harness.rs"
       - "crates/nova-cli/tests/suite/mod.rs"
       - "crates/nova-cli/tests/suite/real_projects.rs"
