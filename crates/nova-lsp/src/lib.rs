@@ -52,6 +52,8 @@ pub mod refactor_workspace;
 pub mod text_pos;
 
 mod cancellation;
+#[cfg(test)]
+mod rename_lsp;
 #[cfg(feature = "ai")]
 mod completion_more;
 mod diagnostics;
