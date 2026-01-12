@@ -287,7 +287,17 @@ impl ExtractMethod {
             }
         }
 
-        if let Some(selection_info) = find_statement_selection(&method_body, selection) {
+        let mut selection_info = find_statement_selection(&method_body, selection);
+        if selection_info.is_none() {
+            if let Some(stmt) = find_statement_exact_anywhere(&method_body, selection) {
+                selection_info = Some(StatementSelection {
+                    block: method_body.clone(),
+                    statements: vec![stmt],
+                });
+            }
+        }
+
+        if let Some(selection_info) = selection_info {
             // For statement-region extraction, require that the trimmed selection ends at a
             // statement terminator (`;` or `}`) so we never leave behind an extra `;` (which can
             // break `if/else`, `do/while`, etc).
@@ -1143,6 +1153,17 @@ fn find_statement_selection(
     }
 
     best.map(|(_, sel)| sel)
+}
+
+fn find_statement_exact_anywhere(
+    method_body: &ast::Block,
+    selection: TextRange,
+) -> Option<ast::Statement> {
+    method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::Statement::cast)
+        .find(|stmt| non_trivia_range(stmt.syntax()).is_some_and(|range| range == selection))
 }
 
 #[derive(Debug, Clone)]
