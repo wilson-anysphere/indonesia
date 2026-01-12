@@ -3617,7 +3617,28 @@ pub fn resolve_field(
     let mut seen = HashSet::new();
     match receiver {
         Type::Intersection(types) => {
-            for ty in types {
+            // Ensure intersection receivers are deterministic for member access. This keeps field
+            // lookup stable even when an intersection is constructed in a different order (e.g.
+            // from inference bounds or error recovery).
+            let mut flat = Vec::new();
+            let mut stack = types;
+            while let Some(t) = stack.pop() {
+                match t {
+                    Type::Intersection(parts) => stack.extend(parts),
+                    other => flat.push(other),
+                }
+            }
+
+            let mut part_seen = HashSet::new();
+            let mut uniq = Vec::new();
+            for t in flat {
+                if part_seen.insert(t.clone()) {
+                    uniq.push(t);
+                }
+            }
+            uniq.sort_by_cached_key(|ty| (intersection_component_rank(env, ty), type_sort_key(env, ty)));
+
+            for ty in uniq {
                 match ty {
                     Type::Class(_) => queue.push_back(ty),
                     Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
@@ -4966,28 +4987,34 @@ fn total_conversion_score(method: &ResolvedMethod) -> u32 {
 }
 
 fn rank_resolved_methods(
-    _env: &dyn TypeEnv,
+    env: &dyn TypeEnv,
     call: &MethodCall<'_>,
     methods: &mut [ResolvedMethod],
 ) {
-    methods.sort_by(|a, b| {
-        let ka = (
-            u8::from(call.call_kind == CallKind::Instance && a.is_static),
-            u8::from(a.is_varargs),
-            u8::from(a.used_varargs),
-            total_conversion_score(a),
-            u8::from(!a.inferred_type_args.is_empty()),
-            a.warnings.len(),
+    methods.sort_by_cached_key(|m| {
+        let primary = (
+            u8::from(call.call_kind == CallKind::Instance && m.is_static),
+            u8::from(m.is_varargs),
+            u8::from(m.used_varargs),
+            total_conversion_score(m),
+            u8::from(!m.inferred_type_args.is_empty()),
+            m.warnings.len(),
         );
-        let kb = (
-            u8::from(call.call_kind == CallKind::Instance && b.is_static),
-            u8::from(b.is_varargs),
-            u8::from(b.used_varargs),
-            total_conversion_score(b),
-            u8::from(!b.inferred_type_args.is_empty()),
-            b.warnings.len(),
+
+        // Stable tie-break for diagnostics: keep ordering independent of candidate
+        // collection order (e.g. intersection bound ordering).
+        let tie = (
+            m.owner.to_raw(),
+            m.name.clone(),
+            m.params.iter().map(|t| type_sort_key(env, t)).collect::<Vec<_>>(),
+            type_sort_key(env, &m.return_type),
+            m.inferred_type_args
+                .iter()
+                .map(|t| type_sort_key(env, t))
+                .collect::<Vec<_>>(),
         );
-        ka.cmp(&kb)
+
+        (primary, tie)
     });
 }
 fn is_more_specific(

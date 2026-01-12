@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use nova_types::{
-    resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
-    Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
+    resolve_constructor_call, resolve_field, CallKind, ClassDef, ClassKind, FieldDef, FieldStub,
+    MethodResolution, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -145,6 +145,75 @@ fn resolves_field_from_loaded_stub_class() {
     assert_eq!(util.params, vec![]);
     assert_eq!(util.return_type, Type::int());
     assert!(util.is_static);
+}
+
+#[test]
+fn resolve_field_intersection_receiver_is_order_independent() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+
+    let iface = env.add_class(ClassDef {
+        name: "com.example.IFields".to_string(),
+        kind: ClassKind::Interface,
+        type_params: vec![],
+        super_class: None,
+        interfaces: vec![],
+        fields: vec![FieldDef {
+            name: "foo".to_string(),
+            ty: Type::class(object, vec![]),
+            is_static: true,
+            is_final: true,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let class = env.add_class(ClassDef {
+        name: "com.example.AFields".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![Type::class(iface, vec![])],
+        fields: vec![FieldDef {
+            name: "foo".to_string(),
+            ty: Type::class(string, vec![]),
+            is_static: false,
+            is_final: false,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let receiver_iface_first = Type::Intersection(vec![
+        Type::class(iface, vec![]),
+        Type::class(class, vec![]),
+    ]);
+    let receiver_class_first = Type::Intersection(vec![
+        Type::class(class, vec![]),
+        Type::class(iface, vec![]),
+    ]);
+
+    let f1 = resolve_field(
+        &env,
+        &receiver_iface_first,
+        "foo",
+        CallKind::Instance,
+    )
+    .expect("field should resolve");
+    let f2 = resolve_field(
+        &env,
+        &receiver_class_first,
+        "foo",
+        CallKind::Instance,
+    )
+    .expect("field should resolve");
+
+    // Should always prefer the class-bound field regardless of intersection ordering.
+    assert_eq!(f1.ty, Type::class(string, vec![]));
+    assert!(!f1.is_static);
+    assert_eq!(f2.ty, Type::class(string, vec![]));
+    assert!(!f2.is_static);
 }
 
 #[test]
