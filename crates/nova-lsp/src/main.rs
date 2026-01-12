@@ -8151,7 +8151,7 @@ fn run_ai_generate_tests_code_action(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    // AI code generation is a code-editing operation. Enforce privacy policy early so clients
+    // AI test generation is a code-editing operation. Enforce privacy policy early so clients
     // always see the policy error even if they invoke the command with incomplete arguments.
     nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
         .map_err(|e| (-32603, e.to_string()))?;
@@ -8188,12 +8188,29 @@ fn run_ai_generate_tests_code_action(
     );
 
     let (root_uri, file_rel) = ai_workspace_root_uri_and_rel_path(state, &file_path)?;
-    let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
+
+    // Prefer generating/updating a dedicated test file under `src/test/java/` when we can infer
+    // one from the source file's package + class name. This allows the AI patch to safely create
+    // a new file (e.g. `ExampleTest.java`) instead of editing the production source file.
+    let mut config = nova_ai_codegen::CodeGenerationConfig::default();
+    let mut workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
+    if let Some(test_file) = derive_test_file_path(&source, &file_path) {
+        config.safety.allow_new_files = true;
+        config.safety.allowed_path_prefixes = vec![file_rel.clone(), test_file.clone()];
+
+        // Best-effort: include the current test file contents if it exists so the AI patch can
+        // update it instead of always creating a brand new file.
+        if let Some(root) = state.project_root.as_deref() {
+            if let Ok(existing) = std::fs::read_to_string(root.join(&test_file)) {
+                workspace.insert(test_file, existing);
+            }
+        }
+    }
     let ai_client =
         nova_ai::AiClient::from_config(&state.ai_config).map_err(|e| (-32603, e.to_string()))?;
     let executor = nova_lsp::AiCodeActionExecutor::new(
         &ai_client,
-        nova_ai_codegen::CodeGenerationConfig::default(),
+        config,
         state.ai_config.privacy.clone(),
     );
 

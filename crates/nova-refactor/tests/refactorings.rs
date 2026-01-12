@@ -1788,6 +1788,77 @@ fn extract_variable_rejects_for_condition_or_update_extraction() {
 }
 
 #[test]
+fn extract_variable_rejects_for_condition() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    for (int i = 0; /*start*/i < 10/*end*/; i++) {
+      System.out.println(i);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "cond".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_still_works_inside_for_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    for (int i = 0; i < 10; i++) {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    for (int i = 0; i < 10; i++) {
+      var sum = 1 + 2;
+      System.out.println(sum);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_short_circuit_rhs_extraction() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
