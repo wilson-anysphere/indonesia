@@ -5767,9 +5767,21 @@ fn collect_switch_contexts(
                     walk_expr(body, *arg, owner, scope_result, resolver, item_trees, out);
                 }
             }
-            hir::Expr::ArrayCreation { dim_exprs, .. } => {
+            hir::Expr::ArrayCreation {
+                dim_exprs,
+                initializer,
+                ..
+            } => {
                 for dim in dim_exprs {
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
+                }
+                if let Some(init) = initializer {
+                    walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::Unary { expr, .. }
@@ -7239,6 +7251,34 @@ fn record_lightweight_expr(
                     file,
                     text,
                     dim_expr,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            if let Some(initializer) = &array.initializer {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    initializer,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::ArrayInitializer(array) => {
+            for item in &array.items {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    item,
                     type_scopes,
                     scope_result,
                     resolver,
