@@ -125,6 +125,11 @@ pub trait RefactorDatabase {
         Vec::new()
     }
 
+    /// Best-effort symbol lookup at a given byte offset.
+    ///
+    /// The default implementation returns `None`. Semantic databases (like
+    /// [`crate::java::RefactorJavaDatabase`]) can override this to support
+    /// refactorings that need to resolve identifiers within an expression.
     fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
         None
     }
@@ -132,7 +137,6 @@ pub trait RefactorDatabase {
     fn file_exists(&self, file: &FileId) -> bool {
         self.file_text(file).is_some()
     }
-
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition>;
     fn symbol_scope(&self, symbol: SymbolId) -> Option<u32>;
     fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {

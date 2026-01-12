@@ -8324,6 +8324,9 @@ fn find_enclosing_call_with_arg_in_expr(
         HirExpr::ClassLiteral { ty, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *ty, target, target_range, best);
         }
+        HirExpr::Cast { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
         HirExpr::Call { callee, args, .. } => {
             if args.iter().any(|arg| *arg == target) {
                 let len = range.len();

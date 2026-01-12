@@ -2838,7 +2838,7 @@ fn extract_variable_rejects_expression_in_assert_condition() {
 
     assert!(
         matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
-        "expected assert ExtractNotSupportedInAssert error, got: {err:?}"
+        "expected ExtractNotSupportedInAssert error, got: {err:?}"
     );
 }
 
@@ -2870,7 +2870,7 @@ fn extract_variable_rejects_expression_in_assert_message() {
 
     assert!(
         matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
-        "expected assert ExtractNotSupportedInAssert error, got: {err:?}"
+        "expected ExtractNotSupportedInAssert error, got: {err:?}"
     );
 }
 
@@ -4647,6 +4647,100 @@ fn inline_variable_rejects_crossing_lambda_execution_context() {
     let offset = src.find("int a").unwrap() + "int ".len();
     let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
+    let mut refs = db.find_references(symbol);
+    assert_eq!(refs.len(), 1, "expected a single usage of a");
+    let usage = refs.pop().unwrap().range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
+fn inline_variable_rejects_mutated_dependency() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    x = 2;
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    assert_eq!(refs.len(), 1, "expected a single usage of a");
+    let usage = refs.pop().unwrap().range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }));
+}
+
+#[test]
+fn inline_variable_allows_stable_dependency() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int x) {
+    int a = x;
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    let expected = r#"class Test {
+  void m(int x) {
+    System.out.println(x);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_rejects_field_dependency() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { int x = 1; void m() { int a = x; System.out.println(a); } }
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
     let err = inline_variable(
         &db,
         InlineVariableParams {
@@ -4696,6 +4790,39 @@ fn inline_variable_allows_inlining_within_same_lambda_execution_context() {
 }
 "#;
     assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_rejects_lambda_capture_breakage() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 0;
+    int a = x;
+    x++;
+    Runnable r = () -> System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    assert_eq!(refs.len(), 1, "expected a single usage of a");
+    let usage = refs.pop().unwrap().range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
 }
 
 #[test]

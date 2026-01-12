@@ -1131,6 +1131,32 @@ pub fn inline_variable(
         check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
     }
 
+    // --- Initializer dependency stability analysis ---
+    //
+    // Inlining can change semantics when the initializer reads other locals/parameters whose
+    // values may change between the declaration statement and the usage site being inlined.
+    let referenced_symbols = collect_initializer_locals_and_params(db, &def.file, &init_expr)?;
+    if !referenced_symbols.is_empty() {
+        let decl_end = decl.statement_range.end;
+        for dep in referenced_symbols {
+            for r in db.find_references(dep) {
+                if r.file != def.file {
+                    continue;
+                }
+                if !reference_is_write(&parsed, r.range)? {
+                    continue;
+                }
+                let write_offset = r.range.start;
+                for usage in &targets {
+                    let usage_start = usage.range.start;
+                    if decl_end < write_offset && write_offset < usage_start {
+                        return Err(RefactorError::InlineNotSupported);
+                    }
+                }
+            }
+        }
+    }
+
     let mut edits: Vec<TextEdit> = targets
         .into_iter()
         .map(|usage| TextEdit::replace(usage.file, usage.range, init_replacement.clone()))
@@ -2834,6 +2860,7 @@ fn best_type_at_range_display(
         // These are not valid Java types for variable declarations.
         if ty.is_empty()
             || ty == "<?>"
+            || ty == "<?>" // Legacy placeholder.
             || ty == "<error>"
             || ty.eq_ignore_ascii_case("null")
             || ty == "void"
@@ -3313,6 +3340,48 @@ fn binary_short_circuit_operator_kind(binary: &ast::BinaryExpression) -> Option<
     }
 
     None
+}
+
+fn collect_initializer_locals_and_params(
+    db: &dyn RefactorDatabase,
+    file: &FileId,
+    initializer: &ast::Expression,
+) -> Result<HashSet<SymbolId>, RefactorError> {
+    let mut out: HashSet<SymbolId> = HashSet::new();
+
+    for name_expr in initializer
+        .syntax()
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
+    {
+        let Some(ident) = name_expr
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
+            continue;
+        };
+
+        let range = syntax_token_range(&ident);
+        let Some(symbol) = db.symbol_at(file, range.start) else {
+            return Err(RefactorError::InlineNotSupported);
+        };
+        match db.symbol_kind(symbol) {
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+                out.insert(symbol);
+            }
+            // Fields can be mutated independently of the variable we're inlining; the current
+            // dependency stability analysis is scoped to locals/params, so conservatively reject.
+            Some(JavaSymbolKind::Field) => return Err(RefactorError::InlineNotSupported),
+            // Non-value symbols (methods/types) do not affect the "captured value" semantics we
+            // are checking for here.
+            Some(JavaSymbolKind::Method | JavaSymbolKind::Type | JavaSymbolKind::Package) => {}
+            None => return Err(RefactorError::InlineNotSupported),
+        };
+    }
+
+    Ok(out)
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
