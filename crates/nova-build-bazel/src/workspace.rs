@@ -353,9 +353,26 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 // If the workspace root is a symlink, callers may pass canonical paths (e.g.
                 // editors that normalize paths). Fall back to canonicalization to avoid incorrectly
                 // rejecting files that are logically inside the workspace.
-                match (fs::canonicalize(&self.root), fs::canonicalize(&abs_file)) {
-                    (Ok(root), Ok(file)) => file
-                        .strip_prefix(&root)
+                let root_canon = fs::canonicalize(&self.root).with_context(|| {
+                    format!(
+                        "failed to canonicalize Bazel workspace root {}",
+                        self.root.display()
+                    )
+                })?;
+
+                // First try a purely lexical prefix check against the canonical workspace root.
+                // This supports non-existent files (e.g. new files) as long as the path is
+                // workspace-local.
+                if let Ok(rel) = abs_file.strip_prefix(&root_canon) {
+                    rel.to_path_buf()
+                } else {
+                    // Fall back to canonicalizing the file if it exists (this can resolve
+                    // symlinks/`..` segments on the file path).
+                    let file_canon = fs::canonicalize(&abs_file).with_context(|| {
+                        format!("failed to canonicalize file path {}", abs_file.display())
+                    })?;
+                    file_canon
+                        .strip_prefix(&root_canon)
                         .map(|rel| rel.to_path_buf())
                         .with_context(|| {
                             format!(
@@ -363,14 +380,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                                 abs_file.display(),
                                 self.root.display()
                             )
-                        })?,
-                    _ => {
-                        bail!(
-                            "path {} is outside the Bazel workspace root {}",
-                            abs_file.display(),
-                            self.root.display()
-                        );
-                    }
+                        })?
                 }
             }
         };
