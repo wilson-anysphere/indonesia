@@ -649,7 +649,7 @@ fn parse_method_body(
                     find_statement_terminator(tokens, after_name, body_end).unwrap_or(body_end);
                 let mut resolved_ty = ty.clone();
 
-                if ty == "var" {
+                if ty == "var" && next_sym == Some('=') {
                     // Best-effort: infer from `new Foo(` in the same statement.
                     let mut j = after_name;
                     while j < stmt_end {
@@ -680,6 +680,13 @@ fn parse_method_body(
                         name_span,
                     });
                 }
+            } else if matches!(next_sym, Some(':') | Some(')')) {
+                locals.push(VarDef {
+                    ty,
+                    ty_span,
+                    name,
+                    name_span,
+                });
             }
         }
 

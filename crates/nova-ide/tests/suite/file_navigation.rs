@@ -508,6 +508,29 @@ class Main {
 }
 
 #[test]
+fn go_to_type_definition_on_for_each_variable_returns_class() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main {
+    void test(java.util.List<Foo> xs){
+        for (Foo x : xs) { $0x.toString(); }
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_on_param_usage_returns_param_type_definition() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -524,6 +547,54 @@ class Main { void test(Foo foo){ $0foo.toString(); } }
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_on_catch_variable_returns_variable() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Main.java
+class Main {
+    void test(){
+        try {} catch (Exception $1e) { $0e.toString(); }
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_and_type_definition_on_instanceof_pattern_variable() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main {
+    void test(Object o){
+        if (o instanceof Foo $2f) { $0f.toString(); }
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+
+    let decl = declaration(&fixture.db, file, pos).expect("expected declaration location");
+    assert_eq!(decl.uri, fixture.marker_uri(2));
+    assert_eq!(decl.range.start, fixture.marker_position(2));
+
+    let ty = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+    assert_eq!(ty.uri, fixture.marker_uri(1));
+    assert_eq!(ty.range.start, fixture.marker_position(1));
 }
 
 #[test]
