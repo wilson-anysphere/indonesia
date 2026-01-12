@@ -441,10 +441,6 @@ fn mapping_property_completions(
     value_span: Span,
     ty: &JavaType,
 ) -> Vec<CompletionItem> {
-    let Some(props) = workspace.properties_for_type(db, ty) else {
-        return Vec::new();
-    };
-
     let cursor = offset.min(value_span.end).min(file_text.len());
     if cursor < value_span.start || value_span.start > file_text.len() {
         return Vec::new();
@@ -458,9 +454,23 @@ fn mapping_property_completions(
     let segment_start = value_span.start + segment_start_rel;
     let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
 
+    // Resolve the type for nested property paths (`foo.bar.<cursor>`).
+    let resolved_ty = if segment_start_rel > 0 {
+        let path = before_cursor
+            .get(..segment_start_rel.saturating_sub(1))
+            .unwrap_or_default();
+        resolve_property_path_type(db, workspace, ty, path).unwrap_or_else(|| ty.clone())
+    } else {
+        ty.clone()
+    };
+
+    let Some(prop_types) = workspace.property_types_for_type(db, &resolved_ty) else {
+        return Vec::new();
+    };
+
     let replace_span = Span::new(segment_start, cursor);
-    let mut items: Vec<CompletionItem> = props
-        .iter()
+    let mut items: Vec<CompletionItem> = prop_types
+        .keys()
         .filter(|name| name.starts_with(prefix))
         .map(|name| CompletionItem {
             label: name.clone(),
@@ -470,6 +480,30 @@ fn mapping_property_completions(
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
+}
+
+fn resolve_property_path_type(
+    db: &dyn Database,
+    workspace: &workspace::MapStructWorkspace,
+    root: &JavaType,
+    path: &str,
+) -> Option<JavaType> {
+    let mut current = root.clone();
+    if path.trim().is_empty() {
+        return Some(current);
+    }
+
+    for seg in path.split('.') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            return None;
+        }
+        let map = workspace.property_types_for_type(db, &current)?;
+        let next = map.get(seg)?.clone();
+        current = next;
+    }
+
+    Some(current)
 }
 
 fn source_roots(project_root: &Path) -> Vec<PathBuf> {
@@ -1601,6 +1635,165 @@ fn collect_properties_in_class(root: Node<'_>, source: &str, class_name: &str) -
                 if let Some(prop) = property_name_from_accessor(node_text(source, name_node)) {
                     props.insert(prop);
                 }
+            }
+        }
+    });
+    props
+}
+
+fn collect_property_types_in_class(
+    root: Node<'_>,
+    source: &str,
+    class_name: &str,
+    default_package: Option<&str>,
+    imports: &JavaImports,
+) -> HashMap<String, JavaType> {
+    let mut props: HashMap<String, JavaType> = HashMap::new();
+    visit_nodes(root, &mut |node| {
+        let decl_kind = node.kind();
+        if !matches!(
+            decl_kind,
+            "class_declaration" | "interface_declaration" | "record_declaration"
+        ) {
+            return;
+        }
+        let name_node = node
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(node, "identifier"));
+        let Some(name_node) = name_node else {
+            return;
+        };
+        if node_text(source, name_node) != class_name {
+            return;
+        }
+
+        // Record components (header params) provide property types.
+        if decl_kind == "record_declaration" {
+            if let Some(params) = node
+                .child_by_field_name("parameters")
+                .or_else(|| find_named_child(node, "formal_parameters"))
+            {
+                let mut cursor = params.walk();
+                for child in params.named_children(&mut cursor) {
+                    if child.kind() != "formal_parameter" {
+                        continue;
+                    }
+                    let Some(ty_node) = child
+                        .child_by_field_name("type")
+                        .or_else(|| infer_type_node(child))
+                    else {
+                        continue;
+                    };
+                    let Some(name_node) = child
+                        .child_by_field_name("name")
+                        .or_else(|| find_named_child(child, "identifier"))
+                    else {
+                        continue;
+                    };
+                    let name = node_text(source, name_node).to_string();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let ty = parse_java_type_with_imports(
+                        node_text(source, ty_node),
+                        default_package,
+                        imports,
+                    );
+                    props.entry(name).or_insert(ty);
+                }
+            }
+        }
+
+        let body = node
+            .child_by_field_name("body")
+            .or_else(|| match decl_kind {
+                "interface_declaration" => find_named_child(node, "interface_body"),
+                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+            });
+        let Some(body) = body else {
+            return;
+        };
+
+        let mut cursor = body.walk();
+        for child in body.named_children(&mut cursor) {
+            match child.kind() {
+                "field_declaration" => {
+                    let Some(ty_node) = child
+                        .child_by_field_name("type")
+                        .or_else(|| infer_type_node(child))
+                    else {
+                        continue;
+                    };
+                    let ty = parse_java_type_with_imports(
+                        node_text(source, ty_node),
+                        default_package,
+                        imports,
+                    );
+
+                    let mut decl_cursor = child.walk();
+                    for declarator in child.named_children(&mut decl_cursor) {
+                        if declarator.kind() != "variable_declarator" {
+                            continue;
+                        }
+                        let name_node = declarator.child_by_field_name("name").or_else(|| {
+                            declarator
+                                .named_children(&mut declarator.walk())
+                                .find(|n| n.kind() == "identifier")
+                        });
+                        let Some(name_node) = name_node else {
+                            continue;
+                        };
+                        let name = node_text(source, name_node).to_string();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        props.entry(name).or_insert_with(|| ty.clone());
+                    }
+                }
+                "method_declaration" => {
+                    let name_node = child
+                        .child_by_field_name("name")
+                        .or_else(|| find_named_child(child, "identifier"));
+                    let Some(name_node) = name_node else {
+                        continue;
+                    };
+                    let method_name = node_text(source, name_node);
+
+                    // Getter / boolean accessor.
+                    if let Some(prop) = property_name_from_accessor(method_name) {
+                        if let Some(return_node) = child
+                            .child_by_field_name("type")
+                            .or_else(|| infer_type_node(child))
+                        {
+                            let return_ty = parse_java_type_with_imports(
+                                node_text(source, return_node),
+                                default_package,
+                                imports,
+                            );
+                            props.entry(prop).or_insert(return_ty);
+                        }
+                        continue;
+                    }
+
+                    // Setter: infer property type from first parameter.
+                    if let Some(rest) = method_name.strip_prefix("set") {
+                        if rest.is_empty() {
+                            continue;
+                        }
+                        let prop = decapitalize(rest);
+                        let params_node = child
+                            .child_by_field_name("parameters")
+                            .or_else(|| find_named_child(child, "formal_parameters"));
+                        let Some(params_node) = params_node else {
+                            continue;
+                        };
+                        let params = parse_formal_parameters(params_node, source, default_package, imports);
+                        if let Some(first) = params.first() {
+                            props.entry(prop).or_insert(first.ty.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     });

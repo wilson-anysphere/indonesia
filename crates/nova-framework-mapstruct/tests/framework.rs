@@ -422,3 +422,89 @@ public class Car {
     assert_eq!(span, Span::new(cursor_offset - 2, cursor_offset));
 }
 
+#[test]
+fn completion_in_nested_target_path_suggests_nested_properties() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_classpath_class(project, "org.mapstruct.Mapper");
+
+    let mapper_with_cursor = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+  @Mapping(target="engine.ho<cursor>", source="name")
+  CarDto carToCarDto(Car car);
+}
+"#;
+
+    let cursor_offset = mapper_with_cursor
+        .find("<cursor>")
+        .expect("cursor marker");
+    let mapper = mapper_with_cursor.replace("<cursor>", "");
+
+    let mapper_file = db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarMapper.java",
+        mapper.clone(),
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/EngineDto.java",
+        r#"
+package com.example;
+
+public class EngineDto {
+  public int horsepower;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarDto.java",
+        r#"
+package com.example;
+
+public class CarDto {
+  public EngineDto engine;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/Car.java",
+        r#"
+package com.example;
+
+public class Car {
+  public String name;
+}
+"#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file: mapper_file,
+        offset: cursor_offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+
+    assert!(
+        items.iter().any(|i| i.label == "horsepower"),
+        "expected `horsepower` completion, got: {items:?}"
+    );
+
+    let hp = items.iter().find(|i| i.label == "horsepower").unwrap();
+    let span = hp.replace_span.expect("replace_span");
+    assert_eq!(&mapper[span.start..span.end], "ho");
+}
+

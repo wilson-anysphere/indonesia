@@ -85,6 +85,7 @@ pub(crate) struct MapStructWorkspace {
     pub(crate) analysis: AnalysisResult,
     type_to_file: HashMap<String, FileId>,
     properties: Mutex<HashMap<String, Option<Arc<HashSet<String>>>>>,
+    property_types: Mutex<HashMap<String, Option<Arc<HashMap<String, JavaType>>>>>,
 }
 
 impl MapStructWorkspace {
@@ -179,6 +180,61 @@ impl MapStructWorkspace {
         let props = Arc::new(props);
         lock_unpoison(&self.properties).insert(cache_key, Some(props.clone()));
         Some(props)
+    }
+
+    pub(crate) fn property_types_for_type(
+        &self,
+        db: &dyn Database,
+        ty: &JavaType,
+    ) -> Option<Arc<HashMap<String, JavaType>>> {
+        let key = ty.qualified_name();
+        if key.is_empty() {
+            return None;
+        }
+
+        {
+            let cache = lock_unpoison(&self.property_types);
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
+        let (file_id, cache_key) = match self.type_to_file.get(&key).copied() {
+            Some(file) => (Some(file), key),
+            None => match self.type_to_file.get(&ty.name).copied() {
+                Some(file) => (Some(file), key),
+                None => (None, key),
+            },
+        };
+
+        let Some(file_id) = file_id else {
+            lock_unpoison(&self.property_types).insert(cache_key, None);
+            return None;
+        };
+
+        let Some(text) = db.file_text(file_id) else {
+            lock_unpoison(&self.property_types).insert(cache_key, None);
+            return None;
+        };
+
+        let Ok(tree) = nova_framework_parse::parse_java(text) else {
+            lock_unpoison(&self.property_types).insert(cache_key, None);
+            return None;
+        };
+
+        let root = tree.root_node();
+        let package = crate::package_of_source(root, text);
+        let imports = crate::imports_of_source(root, text);
+        let map = crate::collect_property_types_in_class(
+            root,
+            text,
+            &ty.name,
+            package.as_deref(),
+            &imports,
+        );
+        let map = Arc::new(map);
+        lock_unpoison(&self.property_types).insert(cache_key, Some(map.clone()));
+        Some(map)
     }
 }
 
@@ -405,6 +461,7 @@ impl WorkspaceBuilder {
             },
             type_to_file: self.type_to_file,
             properties: Mutex::new(self.properties),
+            property_types: Mutex::new(HashMap::new()),
         }
     }
 }
