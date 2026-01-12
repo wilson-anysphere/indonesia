@@ -5126,6 +5126,43 @@ class Use {
 }
 
 #[test]
+fn rename_nested_type_updates_qualified_method_reference_receiver() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  static class Inner {
+    static void m() {}
+  }
+}
+
+class Use {
+  void f() {
+    Runnable r = Outer.Inner::m;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Outer.Inner::m").unwrap() + "Outer.".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Inner");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("Outer.Renamed::m"));
+    assert!(!after.contains("Outer.Inner::m"));
+}
+
+#[test]
 fn rename_static_method_called_via_nested_type_updates_call_site() {
     let file = FileId::new("Test.java");
     let src = r#"class Outer {
@@ -5217,6 +5254,66 @@ class Foo {
 
     assert!(updated_use.contains("com.example.Bar.staticM()"));
     assert!(!updated_use.contains("com.example.Foo.staticM()"));
+
+    assert!(updated_foo.contains("class Bar"));
+    assert!(!updated_foo.contains("class Foo"));
+}
+
+#[test]
+fn rename_fully_qualified_type_in_method_reference_updates_segment() {
+    let foo_file = FileId::new("Foo.java");
+    let use_file = FileId::new("Use.java");
+
+    let foo_src = r#"package com.example;
+
+class Foo {
+  static void staticM() {}
+}
+"#;
+
+    let use_src = r#"class Use {
+  void f() {
+    Runnable r = com.example.Foo::staticM;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), foo_src.to_string()),
+        (use_file.clone(), use_src.to_string()),
+    ]);
+
+    let offset = use_src.find("com.example.Foo::staticM").unwrap() + "com.example.".len() + 1;
+    let symbol = db.symbol_at(&use_file, offset).expect("symbol at Foo");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let foo_edits: Vec<_> = edit
+        .text_edits
+        .iter()
+        .filter(|e| e.file == foo_file)
+        .cloned()
+        .collect();
+    let use_edits: Vec<_> = edit
+        .text_edits
+        .iter()
+        .filter(|e| e.file == use_file)
+        .cloned()
+        .collect();
+
+    let updated_foo = apply_text_edits(foo_src, &foo_edits).unwrap();
+    let updated_use = apply_text_edits(use_src, &use_edits).unwrap();
+
+    assert!(updated_use.contains("com.example.Bar::staticM"));
+    assert!(!updated_use.contains("com.example.Foo::staticM"));
 
     assert!(updated_foo.contains("class Bar"));
     assert!(!updated_foo.contains("class Foo"));
