@@ -103,6 +103,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `return-mismatch` → `Remove returned value` / `Cast to <expected>`
 /// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
+/// - `duplicate-import` → `Remove duplicate import`
 /// - `FLOW_NULL_DEREF` → `Wrap with Objects.requireNonNull`
 pub fn diagnostic_quick_fixes(
     source: &str,
@@ -148,6 +149,9 @@ pub fn diagnostic_quick_fixes(
             actions.push(action);
         }
         if let Some(action) = remove_unresolved_import_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
+        if let Some(action) = remove_duplicate_import_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
         actions.extend(type_mismatch_quick_fixes(source, &uri, &selection, diag));
@@ -792,6 +796,44 @@ fn remove_unresolved_import_quick_fix(
 
     Some(CodeAction {
         title: "Remove unresolved import".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    })
+}
+
+fn remove_duplicate_import_quick_fix(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Option<CodeAction> {
+    if diagnostic_code(diagnostic)? != "duplicate-import" {
+        return None;
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return None;
+    }
+
+    let delete_range = full_line_range(source, &diagnostic.range)?;
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: delete_range,
+            new_text: String::new(),
+        }],
+    );
+
+    Some(CodeAction {
+        title: "Remove duplicate import".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
         edit: Some(WorkspaceEdit {
             changes: Some(changes),

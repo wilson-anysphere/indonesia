@@ -121,6 +121,19 @@ pub fn __nav_resolve_reset_workspace_index_build_counts() {
     nav_resolve::reset_workspace_index_build_counts();
 }
 
+/// Test-only entry point to exercise the `quick_fix` (Nova diagnostic) quick-fix pipeline from
+/// integration tests without needing to run full diagnostics.
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub fn __quick_fixes_for_diagnostics(
+    uri: &lsp_types::Uri,
+    source: &str,
+    selection: nova_types::Span,
+    diagnostics: &[nova_types::Diagnostic],
+) -> Vec<lsp_types::CodeActionOrCommand> {
+    crate::quick_fix::quick_fixes_for_diagnostics(uri, source, selection, diagnostics)
+}
+
 #[cfg(feature = "ai")]
 mod ai_completion_context;
 #[cfg(feature = "ai")]

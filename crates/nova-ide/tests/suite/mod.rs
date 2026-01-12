@@ -15,6 +15,7 @@ mod create_symbol_diagnostic_quick_fixes;
 mod create_symbol_quick_fixes;
 mod dagger_intel;
 mod decompile;
+mod duplicate_imports;
 mod file_diagnostics;
 mod file_navigation;
 mod file_navigation_cache;
