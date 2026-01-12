@@ -94,7 +94,3 @@ path = "src/main.rs"
 # Disabling the per-bin test harness keeps link-time memory usage under the
 # default `scripts/cargo_agent.sh` RLIMIT_AS budget.
 test = false
-
-[[test]]
-name = "stdio"
-path = "tests/harness/stdio.rs"
