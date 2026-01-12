@@ -89,12 +89,10 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
         }
 
         // Apply the current instantiation's substitution to its supertypes.
-        let subst = class_def
-            .type_params
-            .iter()
-            .copied()
-            .zip(args.into_iter())
-            .collect::<HashMap<_, _>>();
+        let mut subst: HashMap<TypeVarId, Type> = HashMap::with_capacity(class_def.type_params.len());
+        for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
+            subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
+        }
 
         if let Some(sc) = &class_def.super_class {
             let sc = crate::substitute(sc, &subst);
@@ -143,9 +141,18 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
                     return None;
                 }
                 let sig = env.type_param(*id).and_then(|tp| {
-                    tp.upper_bounds
-                        .iter()
-                        .find_map(|b| inner(env, b, seen_type_vars))
+                    let mut sig: Option<SamSignature> = None;
+                    for bound in &tp.upper_bounds {
+                        let Some(bound_sig) = inner(env, bound, seen_type_vars) else {
+                            continue;
+                        };
+                        match &sig {
+                            None => sig = Some(bound_sig),
+                            Some(existing) if *existing == bound_sig => {}
+                            Some(_) => return None,
+                        }
+                    }
+                    sig
                 });
                 seen_type_vars.remove(id);
                 return sig;
@@ -480,5 +487,44 @@ mod tests {
             .expect("type variable with functional interface bound should be functional");
         assert_eq!(sig.params, vec![string]);
         assert_eq!(sig.return_type, integer);
+    }
+
+    #[test]
+    fn sam_signature_rejects_type_var_with_conflicting_functional_bounds() {
+        let mut store = TypeStore::with_minimal_jdk();
+        let runnable = store
+            .class_id("java.lang.Runnable")
+            .expect("minimal JDK should define java.lang.Runnable");
+        let function = store
+            .class_id("java.util.function.Function")
+            .expect("minimal JDK should define java.util.function.Function");
+
+        let string = Type::class(store.well_known().string, vec![]);
+        let integer = Type::class(store.well_known().integer, vec![]);
+        let tv = store.add_type_param(
+            "F",
+            vec![
+                Type::class(runnable, vec![]),
+                Type::class(function, vec![string, integer]),
+            ],
+        );
+
+        assert!(
+            sam_signature(&store, &Type::TypeVar(tv)).is_none(),
+            "conflicting functional bounds should not be treated as a functional interface"
+        );
+    }
+
+    #[test]
+    fn instantiate_as_supertype_preserves_raw_types() {
+        let store = TypeStore::with_minimal_jdk();
+        let list = store
+            .class_id("java.util.List")
+            .expect("minimal JDK should define java.util.List");
+
+        let array_list_named = Type::Named("java.util.ArrayList".to_string());
+        let instantiated =
+            instantiate_as_supertype(&store, &array_list_named, list).expect("should map supertypes");
+        assert_eq!(instantiated, Type::class(list, vec![]));
     }
 }
