@@ -362,11 +362,23 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             return items;
         }
 
-        // Fallback path for hosts that cannot enumerate `db.all_files(project)` (the framework
-        // capture API treats that as optional). We can still offer best-effort completions by
-        // parsing the current file and resolving DTO property sets by scanning the filesystem.
+        // Graceful fallback when `db.all_files(project)` isn't available (or doesn't expose the
+        // rest of the workspace sources). This path only relies on:
+        // - the active buffer (`file_text`)
+        // - stable paths (`file_path`)
+        // - best-effort `file_id` resolution for related types.
+        //
+        // It intentionally does *not* require `db.all_files(project)` to be populated.
+        let fallback = completions_for_file_best_effort(db, path, text, ctx.offset);
+        if !fallback.is_empty() {
+            return fallback;
+        }
+
+        // Final fallback: if we can discover a workspace root on disk, use the filesystem-based
+        // completion helper (which can brute-force scan source roots when package layouts are
+        // irregular).
         let Some(root) = nova_project::workspace_root(path) else {
-            return items;
+            return Vec::new();
         };
         completions_for_file(&root, path, text, ctx.offset).unwrap_or_default()
     }
@@ -1485,6 +1497,249 @@ fn find_matching_paren(haystack: &str, open_idx: usize) -> Option<usize> {
     }
 
     None
+}
+
+fn completions_for_file_best_effort(
+    db: &dyn Database,
+    file: &Path,
+    source: &str,
+    offset: usize,
+) -> Vec<CompletionItem> {
+    if offset > source.len() {
+        return Vec::new();
+    }
+    if !looks_like_mapstruct_source(source) {
+        return Vec::new();
+    }
+
+    let mappers = match discover_mappers_in_source(file, source) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    if mappers.is_empty() {
+        return Vec::new();
+    }
+
+    // Infer the source root directory based on the current file's package and its path.
+    // This works even when the file doesn't exist on disk (e.g., in-memory test DBs).
+    let package = mappers
+        .first()
+        .and_then(|m| m.package.as_deref())
+        .filter(|pkg| !pkg.trim().is_empty());
+    let source_root = infer_source_root_for_file(file, package);
+
+    let mut type_cache: HashMap<String, Option<HashMap<String, JavaType>>> = HashMap::new();
+
+    for mapper in &mappers {
+        for method in &mapper.methods {
+            for mapping in &method.mappings {
+                if span_contains_inclusive(mapping.target_span, offset) {
+                    return mapping_property_completions_best_effort(
+                        db,
+                        &source_root,
+                        source,
+                        offset,
+                        mapping.target_span,
+                        &method.target_type,
+                        &mut type_cache,
+                    );
+                }
+
+                if let Some(span) = mapping.source_span {
+                    if span_contains_inclusive(span, offset) {
+                        return mapping_property_completions_best_effort(
+                            db,
+                            &source_root,
+                            source,
+                            offset,
+                            span,
+                            &method.source_type,
+                            &mut type_cache,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+fn infer_source_root_for_file(file: &Path, package: Option<&str>) -> PathBuf {
+    let Some(dir) = file.parent() else {
+        return PathBuf::new();
+    };
+
+    let Some(package) = package else {
+        return dir.to_path_buf();
+    };
+    let parts: Vec<&str> = package.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return dir.to_path_buf();
+    }
+
+    if !path_ends_with_components(dir, &parts) {
+        return dir.to_path_buf();
+    }
+
+    dir.ancestors()
+        .nth(parts.len())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+fn path_ends_with_components(path: &Path, suffix: &[&str]) -> bool {
+    let mut comps = path.iter().rev();
+    for part in suffix.iter().rev() {
+        let Some(comp) = comps.next() else {
+            return false;
+        };
+        if comp != std::ffi::OsStr::new(part) {
+            return false;
+        }
+    }
+    true
+}
+
+fn mapping_property_completions_best_effort(
+    db: &dyn Database,
+    source_root: &Path,
+    file_text: &str,
+    offset: usize,
+    value_span: Span,
+    ty: &JavaType,
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
+) -> Vec<CompletionItem> {
+    let cursor = offset.min(value_span.end).min(file_text.len());
+    if cursor < value_span.start || value_span.start > file_text.len() {
+        return Vec::new();
+    }
+
+    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
+    let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
+    let segment_start = value_span.start + segment_start_rel;
+    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+
+    // Resolve the type for nested property paths (`foo.bar.<cursor>`).
+    let resolved_ty = if segment_start_rel > 0 {
+        let path = before_cursor
+            .get(..segment_start_rel.saturating_sub(1))
+            .unwrap_or_default();
+        resolve_property_path_type_best_effort(cache, db, source_root, ty, path)
+            .unwrap_or_else(|| ty.clone())
+    } else {
+        ty.clone()
+    };
+
+    let Some(prop_types) =
+        property_types_for_type_best_effort_cached(cache, db, source_root, &resolved_ty)
+    else {
+        return Vec::new();
+    };
+
+    let replace_span = Span::new(segment_start, cursor);
+    let mut items: Vec<CompletionItem> = prop_types
+        .keys()
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            detail: None,
+            replace_span: Some(replace_span),
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
+}
+
+fn resolve_property_path_type_best_effort(
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
+    db: &dyn Database,
+    source_root: &Path,
+    root: &JavaType,
+    path: &str,
+) -> Option<JavaType> {
+    let mut current = root.clone();
+    if path.trim().is_empty() {
+        return Some(current);
+    }
+
+    for seg in path.split('.') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            return None;
+        }
+        let map = property_types_for_type_best_effort_cached(cache, db, source_root, &current)?;
+        let next = map.get(seg)?.clone();
+        current = next;
+    }
+
+    Some(current)
+}
+
+fn property_types_for_type_best_effort_cached(
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
+    db: &dyn Database,
+    source_root: &Path,
+    ty: &JavaType,
+) -> Option<HashMap<String, JavaType>> {
+    let key = ty.qualified_name();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+
+    let value = property_types_for_type_best_effort(db, source_root, ty);
+    cache.insert(key, value.clone());
+    value
+}
+
+fn property_types_for_type_best_effort(
+    db: &dyn Database,
+    source_root: &Path,
+    ty: &JavaType,
+) -> Option<HashMap<String, JavaType>> {
+    if ty.name.trim().is_empty() {
+        return None;
+    }
+
+    let mut candidate = source_root.to_path_buf();
+    if let Some(pkg) = &ty.package {
+        for part in pkg.split('.').filter(|p| !p.trim().is_empty()) {
+            candidate.push(part);
+        }
+    }
+    candidate.push(format!("{}.java", ty.name));
+
+    // Prefer reading from the database (which may have unsaved edits or in-memory fixtures).
+    if let Some(file_id) = db.file_id(&candidate) {
+        if let Some(text) = db.file_text(file_id) {
+            return property_types_from_source_text(text, ty);
+        }
+    }
+
+    // Fall back to reading from disk if the DB doesn't have the file contents.
+    if let Ok(text) = std::fs::read_to_string(&candidate) {
+        return property_types_from_source_text(&text, ty);
+    }
+
+    None
+}
+
+fn property_types_from_source_text(source: &str, ty: &JavaType) -> Option<HashMap<String, JavaType>> {
+    let tree = parse_java(source).ok()?;
+    let root = tree.root_node();
+    let package = package_of_source(root, source);
+    let imports = imports_of_source(root, source);
+
+    Some(collect_property_types_in_class(
+        root,
+        source,
+        &ty.name,
+        package.as_deref(),
+        &imports,
+    ))
 }
 
 /// Completion support for MapStruct `@Mapping(source="...")` / `@Mapping(target="...")`.

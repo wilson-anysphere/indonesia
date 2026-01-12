@@ -9,6 +9,56 @@ fn write_file(path: &Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
+struct NoAllFilesDb {
+    inner: MemoryDatabase,
+}
+
+impl nova_framework::Database for NoAllFilesDb {
+    fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
+        nova_framework::Database::class(&self.inner, class)
+    }
+
+    fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
+        nova_framework::Database::project_of_class(&self.inner, class)
+    }
+
+    fn project_of_file(&self, file: nova_vfs::FileId) -> nova_core::ProjectId {
+        nova_framework::Database::project_of_file(&self.inner, file)
+    }
+
+    fn file_text(&self, file: nova_vfs::FileId) -> Option<&str> {
+        nova_framework::Database::file_text(&self.inner, file)
+    }
+
+    fn file_path(&self, file: nova_vfs::FileId) -> Option<&std::path::Path> {
+        nova_framework::Database::file_path(&self.inner, file)
+    }
+
+    fn file_id(&self, path: &std::path::Path) -> Option<nova_vfs::FileId> {
+        nova_framework::Database::file_id(&self.inner, path)
+    }
+
+    fn all_files(&self, _project: nova_core::ProjectId) -> Vec<nova_vfs::FileId> {
+        Vec::new()
+    }
+
+    fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
+    }
+
+    fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+        nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
+    }
+
+    fn has_class_on_classpath_prefix(
+        &self,
+        project: nova_core::ProjectId,
+        prefix: &str,
+    ) -> bool {
+        nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
+    }
+}
+
 #[test]
 fn missing_dependency_diagnostic_when_mapper_present() {
     let temp = TempDir::new().unwrap();
@@ -98,61 +148,6 @@ public interface FooMapper {}
 
 #[test]
 fn diagnostics_do_not_require_db_file_enumeration() {
-    struct NoAllFilesDb {
-        inner: MemoryDatabase,
-    }
-
-    impl nova_framework::Database for NoAllFilesDb {
-        fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
-            nova_framework::Database::class(&self.inner, class)
-        }
-
-        fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
-            nova_framework::Database::project_of_class(&self.inner, class)
-        }
-
-        fn project_of_file(&self, file: nova_vfs::FileId) -> nova_core::ProjectId {
-            nova_framework::Database::project_of_file(&self.inner, file)
-        }
-
-        fn file_text(&self, file: nova_vfs::FileId) -> Option<&str> {
-            nova_framework::Database::file_text(&self.inner, file)
-        }
-
-        fn file_path(&self, file: nova_vfs::FileId) -> Option<&std::path::Path> {
-            nova_framework::Database::file_path(&self.inner, file)
-        }
-
-        fn file_id(&self, path: &std::path::Path) -> Option<nova_vfs::FileId> {
-            nova_framework::Database::file_id(&self.inner, path)
-        }
-
-        fn all_files(&self, _project: nova_core::ProjectId) -> Vec<nova_vfs::FileId> {
-            Vec::new()
-        }
-
-        fn has_dependency(
-            &self,
-            project: nova_core::ProjectId,
-            group: &str,
-            artifact: &str,
-        ) -> bool {
-            nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
-        }
-
-        fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
-            nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
-        }
-
-        fn has_class_on_classpath_prefix(
-            &self,
-            project: nova_core::ProjectId,
-            prefix: &str,
-        ) -> bool {
-            nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
-        }
-    }
-
     let temp = TempDir::new().unwrap();
     let root = temp.path();
 
@@ -479,6 +474,81 @@ public class Car {
     assert!(
         items.iter().any(|i| i.label == "seatCount"),
         "expected `seatCount` completion, got: {items:?}"
+    );
+
+    let seat = items.iter().find(|i| i.label == "seatCount").unwrap();
+    let span = seat.replace_span.expect("replace_span");
+    assert_eq!(&mapper[span.start..span.end], "se");
+    assert_eq!(span, Span::new(cursor_offset - 2, cursor_offset));
+}
+
+#[test]
+fn completion_does_not_require_db_file_enumeration() {
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_classpath_class(project, "org.mapstruct.Mapper");
+
+    let mapper_with_cursor = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+  @Mapping(target="se<cursor>", source="name")
+  CarDto carToCarDto(Car car);
+}
+"#;
+
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
+    let mapper = mapper_with_cursor.replace("<cursor>", "");
+
+    let mapper_file = inner.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarMapper.java",
+        mapper.clone(),
+    );
+
+    inner.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarDto.java",
+        r#"
+package com.example;
+
+public class CarDto {
+  public int seatCount;
+}
+"#,
+    );
+
+    inner.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/Car.java",
+        r#"
+package com.example;
+
+public class Car {
+  public String name;
+}
+"#,
+    );
+
+    let db = NoAllFilesDb { inner };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file: mapper_file,
+        offset: cursor_offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+
+    assert!(
+        items.iter().any(|i| i.label == "seatCount"),
+        "expected `seatCount` completion even without db.all_files(), got: {items:?}"
     );
 
     let seat = items.iter().find(|i| i.label == "seatCount").unwrap();
