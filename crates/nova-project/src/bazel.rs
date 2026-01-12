@@ -23,7 +23,7 @@ pub(crate) fn load_bazel_project(
     if options.bazel.enable_target_loading {
         #[cfg(feature = "bazel")]
         {
-            let runner = DefaultCommandRunner::default();
+            let runner = DefaultCommandRunner;
             let model = load_bazel_workspace_model_with_runner(root, options, runner)?;
             if !model.modules.is_empty() {
                 return Ok(project_config_from_workspace_model(root, options, model));
@@ -48,7 +48,7 @@ pub(crate) fn load_bazel_workspace_model(
     if options.bazel.enable_target_loading {
         #[cfg(feature = "bazel")]
         {
-            let runner = DefaultCommandRunner::default();
+            let runner = DefaultCommandRunner;
             let model = load_bazel_workspace_project_model_with_runner(root, options, runner)?;
             if !model.modules.is_empty() {
                 return Ok(model);

@@ -156,7 +156,8 @@ fn reload_project_reloads_when_apt_generated_roots_snapshot_changes() {
         .join("apt-cache")
         .join("generated-roots.json");
     let config2 =
-        reload_project(&config, &mut options, &[snapshot_rel.clone()]).expect("reload project");
+        reload_project(&config, &mut options, std::slice::from_ref(&snapshot_rel))
+            .expect("reload project");
     assert!(
         has_generated_root(&config2, &gen_b),
         "expected updated generated roots snapshot entry to be present after reload, got: {:?}",

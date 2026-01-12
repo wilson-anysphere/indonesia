@@ -44,7 +44,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
     root_rs_files.sort();
     assert_eq!(
         root_rs_files,
-        [expected.clone()],
+        std::slice::from_ref(&expected),
         "expected a single root integration test harness file (tests/{expected}); found: {root_rs_files:?}"
     );
 

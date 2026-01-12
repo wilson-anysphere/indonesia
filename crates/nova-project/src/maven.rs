@@ -102,13 +102,13 @@ pub(crate) fn load_maven_project(
         // Maven standard source layout.
         let main_standard = push_source_root(
             &mut source_roots,
-            &module_root,
+            module_root,
             SourceRootKind::Main,
             "src/main/java",
         );
         let test_standard = push_source_root(
             &mut source_roots,
-            &module_root,
+            module_root,
             SourceRootKind::Test,
             "src/test/java",
         );
@@ -119,7 +119,7 @@ pub(crate) fn load_maven_project(
         if !main_standard {
             push_source_root_if_has_java(
                 &mut source_roots,
-                &module_root,
+                module_root,
                 SourceRootKind::Main,
                 "src",
             );
@@ -127,7 +127,7 @@ pub(crate) fn load_maven_project(
         if !test_standard {
             push_source_root_if_has_java(
                 &mut source_roots,
-                &module_root,
+                module_root,
                 SourceRootKind::Test,
                 "test",
             );
@@ -136,7 +136,7 @@ pub(crate) fn load_maven_project(
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             root,
-            &module_root,
+            module_root,
             BuildSystem::Maven,
             &options.nova_config,
         );
@@ -419,7 +419,6 @@ pub(crate) fn load_maven_workspace_model(
         let mut queue: VecDeque<(PomDependency, BTreeSet<(String, String)>)> = effective
             .dependencies
             .iter()
-            .cloned()
             .map(|dep| (dep.clone(), dep.exclusions.clone()))
             .collect();
 
@@ -876,24 +875,18 @@ fn exclusion_intersection(
         let (g1, a1) = left;
         let (g2, a2) = right;
 
-        let group = if g1 == "*" {
-            g2
-        } else if g2 == "*" {
-            g1
-        } else if g1 == g2 {
-            g1
-        } else {
-            return None;
+        let group = match (g1, g2) {
+            ("*", group) => group,
+            (group, "*") => group,
+            (g1, g2) if g1 == g2 => g1,
+            _ => return None,
         };
 
-        let artifact = if a1 == "*" {
-            a2
-        } else if a2 == "*" {
-            a1
-        } else if a1 == a2 {
-            a1
-        } else {
-            return None;
+        let artifact = match (a1, a2) {
+            ("*", artifact) => artifact,
+            (artifact, "*") => artifact,
+            (a1, a2) if a1 == a2 => a1,
+            _ => return None,
         };
 
         Some((group.to_string(), artifact.to_string()))
@@ -1594,11 +1587,13 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
 
     let project = doc.root_element();
 
-    let mut pom = RawPom::default();
-    pom.group_id = child_text(&project, "groupId");
-    pom.artifact_id = child_text(&project, "artifactId");
-    pom.version = child_text(&project, "version");
-    pom.packaging = child_text(&project, "packaging");
+    let mut pom = RawPom {
+        group_id: child_text(&project, "groupId"),
+        artifact_id: child_text(&project, "artifactId"),
+        version: child_text(&project, "version"),
+        packaging: child_text(&project, "packaging"),
+        ..RawPom::default()
+    };
 
     if let Some(parent_node) = child_element(&project, "parent") {
         pom.parent = Some(PomParent {
@@ -1817,10 +1812,12 @@ fn parse_maven_compiler_plugin_config_from_plugins(
             continue;
         };
 
-        let mut cfg = RawMavenCompilerPluginConfig::default();
-        cfg.release = child_text(&configuration, "release");
-        cfg.source = child_text(&configuration, "source");
-        cfg.target = child_text(&configuration, "target");
+        let mut cfg = RawMavenCompilerPluginConfig {
+            release: child_text(&configuration, "release"),
+            source: child_text(&configuration, "source"),
+            target: child_text(&configuration, "target"),
+            ..RawMavenCompilerPluginConfig::default()
+        };
 
         if let Some(compiler_args) = child_element(&configuration, "compilerArgs") {
             for arg in compiler_args

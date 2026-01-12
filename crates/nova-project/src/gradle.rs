@@ -208,7 +208,7 @@ pub(crate) fn load_gradle_project(
 
     let (mut module_refs, include_builds) = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
-            std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
+            std::fs::read_to_string(settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
                 source,
             })?;
@@ -514,7 +514,7 @@ pub(crate) fn load_gradle_project(
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
     let (mut extra_module_path, classpath_deps) =
         crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
-    module_path.extend(extra_module_path.drain(..));
+    module_path.append(&mut extra_module_path);
     classpath.extend(classpath_deps);
     sort_dedup_classpath(&mut module_path);
     sort_dedup_classpath(&mut classpath);
@@ -547,7 +547,7 @@ pub(crate) fn load_gradle_workspace_model(
 
     let (mut module_refs, include_builds) = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
-            std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
+            std::fs::read_to_string(settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
                 source,
             })?;
@@ -1072,8 +1072,7 @@ fn composite_build_root_project_path(project_path: &str) -> Option<&str> {
     // Gradle's `buildSrc` is a separate build. We model it via a stable synthetic project path
     // `:__buildSrc` and may also synthesize nested project paths like `:__buildSrc:subproject` when
     // `buildSrc/settings.gradle(.kts)` is present.
-    if project_path.starts_with(GRADLE_BUILDSRC_PROJECT_PATH) {
-        let rest = &project_path[GRADLE_BUILDSRC_PROJECT_PATH.len()..];
+    if let Some(rest) = project_path.strip_prefix(GRADLE_BUILDSRC_PROJECT_PATH) {
         if rest.is_empty() || rest.starts_with(':') {
             return Some(GRADLE_BUILDSRC_PROJECT_PATH);
         }
@@ -1747,8 +1746,7 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
             let name = raw
                 .trim()
                 .trim_start_matches(':')
-                .replace(':', "/")
-                .replace('\\', "/");
+                .replace([':', '\\'], "/");
             let name = name.trim();
             if name.is_empty() {
                 continue;
@@ -3998,7 +3996,7 @@ dependencies {
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
-        let expected_scopes: [((String, String, Option<String>), &str); 26] = [
+        let expected_scopes = [
             (
                 (String::from("g1"), String::from("a1"), Some("1".into())),
                 "compile",

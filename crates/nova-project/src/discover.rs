@@ -675,12 +675,12 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
 
     // Nova internal config/snapshots live under `.nova/`, which is otherwise treated as a noisy
     // directory. Keep these files as reload triggers.
-    if name == "config.toml" && path.ends_with(&Path::new(".nova").join("config.toml")) {
+    if name == "config.toml" && path.ends_with(Path::new(".nova").join("config.toml")) {
         return true;
     }
     if name == "generated-roots.json"
         && path.ends_with(
-            &Path::new(".nova")
+            Path::new(".nova")
                 .join("apt-cache")
                 .join("generated-roots.json"),
         )
@@ -1014,7 +1014,7 @@ mod tests {
         .expect("write gradle snapshot");
 
         let mut options_reload = options.clone();
-        let cfg = reload_project(&cfg, &mut options_reload, &[snapshot_path.clone()])
+        let cfg = reload_project(&cfg, &mut options_reload, std::slice::from_ref(&snapshot_path))
             .expect("reload with gradle snapshot change");
 
         assert!(
@@ -1084,7 +1084,7 @@ mod tests {
         std::fs::write(&lockfile_path, "locked=2\n").expect("update gradle.lockfile");
 
         let mut options_reload = options.clone();
-        let cfg2 = reload_project(&cfg, &mut options_reload, &[lockfile_path.clone()])
+        let cfg2 = reload_project(&cfg, &mut options_reload, std::slice::from_ref(&lockfile_path))
             .expect("reload with gradle.lockfile change");
         assert_eq!(cfg2.build_system, BuildSystem::Gradle);
         assert!(
@@ -1165,7 +1165,7 @@ mod tests {
         std::fs::write(&lockfile_path, "locked=2\n").expect("update included gradle.lockfile");
 
         let mut options_reload = options.clone();
-        let cfg2 = reload_project(&cfg, &mut options_reload, &[lockfile_path.clone()])
+        let cfg2 = reload_project(&cfg, &mut options_reload, std::slice::from_ref(&lockfile_path))
             .expect("reload with included gradle.lockfile change");
         assert!(
             cfg2.source_roots
@@ -1243,7 +1243,8 @@ mod tests {
             .expect("write module-info.java");
 
         let mut options_reload = options.clone();
-        let cfg = reload_project(&cfg, &mut options_reload, &[module_info_path.clone()])
+        let cfg =
+            reload_project(&cfg, &mut options_reload, std::slice::from_ref(&module_info_path))
             .expect("reload with module-info.java added");
 
         assert!(
@@ -1278,7 +1279,7 @@ mod tests {
 
         // Remove `module-info.java` to disable JPMS and reload again.
         std::fs::remove_file(&module_info_path).expect("delete module-info.java");
-        let cfg = reload_project(&cfg, &mut options_reload, &[module_info_path.clone()])
+        let cfg = reload_project(&cfg, &mut options_reload, std::slice::from_ref(&module_info_path))
             .expect("reload with module-info.java removed");
 
         assert!(

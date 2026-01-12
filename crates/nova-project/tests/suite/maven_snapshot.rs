@@ -55,8 +55,10 @@ fn resolves_timestamped_snapshot_jars_from_metadata() {
     "#;
     std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(repo_root.to_path_buf());
+    let options = LoadOptions {
+        maven_repo: Some(repo_root.to_path_buf()),
+        ..LoadOptions::default()
+    };
 
     let config = load_project_with_options(root, &options).expect("load project");
     let jar_entries = config
@@ -132,8 +134,10 @@ fn omits_timestamped_snapshot_jars_when_artifact_is_missing() {
     "#;
     std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(repo_root.to_path_buf());
+    let options = LoadOptions {
+        maven_repo: Some(repo_root.to_path_buf()),
+        ..LoadOptions::default()
+    };
 
     let config = load_project_with_options(root, &options).expect("load project");
     let jar_entries = config
@@ -217,8 +221,10 @@ fn prefers_newest_existing_timestamped_snapshot_jar_from_metadata() {
     "#;
     std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(repo_root.to_path_buf());
+    let options = LoadOptions {
+        maven_repo: Some(repo_root.to_path_buf()),
+        ..LoadOptions::default()
+    };
 
     let config = load_project_with_options(root, &options).expect("load project");
     let jar_entries = config
@@ -307,8 +313,10 @@ fn falls_back_to_conventional_snapshot_jar_when_timestamped_artifact_is_missing(
     "#;
     std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(repo_root.to_path_buf());
+    let options = LoadOptions {
+        maven_repo: Some(repo_root.to_path_buf()),
+        ..LoadOptions::default()
+    };
 
     let config = load_project_with_options(root, &options).expect("load project");
     let jar_entries = config
@@ -396,8 +404,10 @@ fn maven_workspace_model_falls_back_to_conventional_snapshot_jar_when_timestampe
     )
     .expect("write Main.java");
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(repo_root.to_path_buf());
+    let options = LoadOptions {
+        maven_repo: Some(repo_root.to_path_buf()),
+        ..LoadOptions::default()
+    };
 
     let model =
         load_workspace_model_with_options(root, &options).expect("load maven workspace model");

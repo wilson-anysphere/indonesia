@@ -175,8 +175,10 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
         "Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.dep\r\n\r\n",
     );
 
-    let mut options = LoadOptions::default();
-    options.maven_repo = Some(maven_repo);
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
 
     let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
