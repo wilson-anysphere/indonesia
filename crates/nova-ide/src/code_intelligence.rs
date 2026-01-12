@@ -8282,6 +8282,206 @@ fn is_boolean_condition_context(tokens: &[Token], offset: usize) -> bool {
     false
 }
 
+fn offset_in_ternary_condition(tokens: &[Token], offset: usize) -> bool {
+    // Best-effort detection for `cond ? a : b` when the cursor is in `cond`.
+    //
+    // The goal is not to parse Java precisely, but to be accurate enough to avoid applying a
+    // `boolean` expected-type far away from the ternary expression (which would over-filter
+    // completions).
+    for (q_idx, tok) in tokens.iter().enumerate() {
+        if tok.kind != TokenKind::Symbol('?') {
+            continue;
+        }
+
+        // Skip generic wildcards (`List<?>`, `Map<? extends K, ? super V>`, ...).
+        if tokens
+            .get(q_idx.wrapping_sub(1))
+            .is_some_and(|prev| matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol(',')))
+        {
+            continue;
+        }
+
+        if offset > tok.span.start {
+            continue;
+        }
+
+        if find_matching_ternary_colon(tokens, q_idx).is_none() {
+            continue;
+        }
+
+        let cond_start = ternary_condition_start_offset(tokens, q_idx);
+        if cond_start <= offset && offset <= tok.span.start {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn find_matching_ternary_colon(tokens: &[Token], q_idx: usize) -> Option<usize> {
+    // Match `cond ? a : b` colons, accounting for nested ternaries at the same nesting depth.
+    //
+    // We intentionally ignore `?`/`:` that appear inside nested parens/brackets/braces.
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut nested_ternaries = 0i32;
+
+    for (idx, tok) in tokens.iter().enumerate().skip(q_idx + 1) {
+        match tok.kind {
+            TokenKind::Symbol('(') => paren_depth += 1,
+            TokenKind::Symbol(')') => {
+                if paren_depth == 0 {
+                    break;
+                }
+                paren_depth -= 1;
+            }
+            TokenKind::Symbol('[') => bracket_depth += 1,
+            TokenKind::Symbol(']') => {
+                if bracket_depth == 0 {
+                    break;
+                }
+                bracket_depth -= 1;
+            }
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => {
+                if brace_depth == 0 {
+                    break;
+                }
+                brace_depth -= 1;
+            }
+            TokenKind::Symbol('?')
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
+            {
+                nested_ternaries += 1;
+            }
+            TokenKind::Symbol(':')
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
+            {
+                if nested_ternaries == 0 {
+                    return Some(idx);
+                }
+                nested_ternaries = nested_ternaries.saturating_sub(1);
+            }
+
+            // Stop if we hit an expression boundary before finding a matching `:`.
+            TokenKind::Symbol(';') | TokenKind::Symbol(',')
+                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
+            {
+                break;
+            }
+
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn ternary_condition_start_offset(tokens: &[Token], q_idx: usize) -> usize {
+    // Walk backwards from `?` to find a best-effort "start of condition expression" boundary.
+    let adjacent = |a: &Token, b: &Token| a.span.end == b.span.start;
+
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut brace_depth = 0i32;
+
+    for idx in (0..q_idx).rev() {
+        let tok = &tokens[idx];
+
+        match tok.kind {
+            TokenKind::Symbol(')') => {
+                paren_depth += 1;
+                continue;
+            }
+            TokenKind::Symbol('(') => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                    continue;
+                }
+                return tok.span.end;
+            }
+            TokenKind::Symbol(']') => {
+                bracket_depth += 1;
+                continue;
+            }
+            TokenKind::Symbol('[') => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                    continue;
+                }
+                return tok.span.end;
+            }
+            TokenKind::Symbol('}') => {
+                brace_depth += 1;
+                continue;
+            }
+            TokenKind::Symbol('{') => {
+                if brace_depth > 0 {
+                    brace_depth -= 1;
+                    continue;
+                }
+                return tok.span.end;
+            }
+            _ => {}
+        }
+
+        if paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 {
+            continue;
+        }
+
+        match tok.kind {
+            TokenKind::Symbol(';')
+            | TokenKind::Symbol(',')
+            | TokenKind::Symbol('?')
+            | TokenKind::Symbol(':') => return tok.span.end,
+            TokenKind::Ident if tok.text == "return" => return tok.span.end,
+            TokenKind::Symbol('=')
+                if is_assignment_eq_token(tokens, idx, &adjacent) =>
+            {
+                return tok.span.end;
+            }
+            _ => {}
+        }
+    }
+
+    0
+}
+
+fn is_assignment_eq_token(
+    tokens: &[Token],
+    idx: usize,
+    adjacent: &dyn Fn(&Token, &Token) -> bool,
+) -> bool {
+    let Some(tok) = tokens.get(idx) else {
+        return false;
+    };
+    if tok.kind != TokenKind::Symbol('=') {
+        return false;
+    }
+
+    let Some(prev) = tokens.get(idx.wrapping_sub(1)) else {
+        return true;
+    };
+    if !adjacent(prev, tok) {
+        // Whitespace-separated `=`.
+        return true;
+    }
+
+    match prev.kind {
+        // `==` / `!=`
+        TokenKind::Symbol('=') | TokenKind::Symbol('!') => false,
+
+        // `<=` / `>=` vs shift assignments (`<<=` / `>>=` / `>>>=`)
+        TokenKind::Symbol('<') | TokenKind::Symbol('>') => tokens
+            .get(idx.wrapping_sub(2))
+            .is_some_and(|prev2| prev2.kind == prev.kind && adjacent(prev2, prev)),
+
+        // `+=`, `-=`, `*=`, ...
+        _ => true,
+    }
+}
+
 fn offset_in_for_condition(
     tokens: &[Token],
     open_idx: usize,
@@ -8323,6 +8523,12 @@ fn infer_expected_type(
     prefix_start: usize,
     in_scope_types: &HashMap<String, String>,
 ) -> Option<String> {
+    // 0) `cond ? a : b` ternary condition expects boolean, regardless of any outer expected type.
+    // (e.g. `int x = <cursor> ? 1 : 2` should still expect `boolean` at `<cursor>`).
+    if offset_in_ternary_condition(&analysis.tokens, offset) {
+        return Some("boolean".to_string());
+    }
+
     // 1) Best-effort: inside same-file call argument list, use the callee's parameter type.
     if let Some(call) = analysis
         .calls
