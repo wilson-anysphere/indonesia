@@ -10,5 +10,6 @@ use unicode_normalization::UnicodeNormalization;
 /// with `unicode-casefold`'s `case_fold()` adaptor.
 pub(crate) fn fold_nfkc_casefold(input: &str, out: &mut String) {
     out.clear();
+    out.reserve(input.len());
     out.extend(input.nfkc().case_fold());
 }
