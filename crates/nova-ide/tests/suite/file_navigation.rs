@@ -662,7 +662,7 @@ class Main {
     Bar bar = new Bar();
 
     void test() {
-        consume((Foo a, @Ann Foo b) -> {}, bar);
+        consume((Foo a, Foo @Ann [] b) -> {}, bar);
         bar.$0baz();
     }
 

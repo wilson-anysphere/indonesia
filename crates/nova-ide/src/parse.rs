@@ -443,6 +443,48 @@ fn skip_annotation(tokens: &[Token], at_idx: usize, end: usize) -> Option<usize>
     Some(i)
 }
 
+fn skip_type_annotations_and_array_suffix(tokens: &[Token], mut i: usize, end: usize) -> usize {
+    // Skip type-use annotations and array/varargs suffixes in best-effort type references.
+    //
+    // This is primarily used for heuristics that need to detect patterns like typed lambda
+    // parameters, where the type can include annotations on array dimensions:
+    // - `Foo @Ann [] b`
+    // - `Foo @A [] @B [] b`
+    // - `Foo @Ann ... b` (varargs; treated as array)
+    loop {
+        // Type-use annotations.
+        if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('@') {
+            if let Some(next) = skip_annotation(tokens, i, end) {
+                i = next;
+                continue;
+            }
+        }
+
+        // Array suffix: `[]`
+        if i + 1 < end
+            && tokens.get(i).and_then(|t| t.symbol()) == Some('[')
+            && tokens.get(i + 1).and_then(|t| t.symbol()) == Some(']')
+        {
+            i += 2;
+            continue;
+        }
+
+        // Varargs suffix: `...`
+        if i + 2 < end
+            && tokens.get(i).and_then(|t| t.symbol()) == Some('.')
+            && tokens.get(i + 1).and_then(|t| t.symbol()) == Some('.')
+            && tokens.get(i + 2).and_then(|t| t.symbol()) == Some('.')
+        {
+            i += 3;
+            continue;
+        }
+
+        break;
+    }
+
+    i
+}
+
 fn skip_modifiers_and_annotations(tokens: &[Token], mut i: usize, end: usize) -> usize {
     // Skip a best-effort sequence of modifiers and annotations in any order.
     //
@@ -910,7 +952,10 @@ fn parse_method_body(
                 let next_param_start =
                     skip_modifiers_and_annotations(tokens, after_name + 1, body_end);
                 parse_type_ref(tokens, next_param_start, body_end)
-                    .and_then(|(_, _, next)| tokens.get(next).and_then(|t| t.ident()))
+                    .and_then(|(_, _, next)| {
+                        let next = skip_type_annotations_and_array_suffix(tokens, next, body_end);
+                        tokens.get(next).and_then(|t| t.ident())
+                    })
                     .is_some()
             };
 
