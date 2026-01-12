@@ -2911,13 +2911,15 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
         "package com.example;\n\npublic class Example {\n    public int answer() { return 1; }\n}\n";
     std::fs::write(&file_path, text).expect("write file");
 
-    // Selection range over the method name is enough for the AI prompt (the patch can still create
-    // a separate test file).
-    let method_offset = text.find("answer").expect("method present");
+    // Select the full method line so the prompt contains a meaningful source snippet (including
+    // `return 1;`). The patch can still create a separate test file.
+    let method_offset = text
+        .find("public int answer() { return 1; }")
+        .expect("method present");
     let pos = TextPos::new(text);
     let start = pos.lsp_position(method_offset).expect("start pos");
     let end = pos
-        .lsp_position(method_offset + "answer".len())
+        .lsp_position(method_offset + "public int answer() { return 1; }".len())
         .expect("end pos");
     let range = Range::new(start, end);
 
@@ -2931,7 +2933,18 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
       ]
     })
     .to_string();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let mock_server = MockServer::start();
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("File: src/test/java/com/example/ExampleTest.java")
+            .body_contains("Test target:")
+            .body_contains("public int answer()")
+            .body_contains("Source file under test: src/main/java/com/example/Example.java")
+            .body_contains("Selected source snippet:")
+            .body_contains("return 1;");
+        then.status(200).json_body(json!({ "completion": patch }));
+    });
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -2940,7 +2953,7 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
-            format!("{}/complete", ai_server.base_url()),
+            format!("{}/complete", mock_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
         .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
@@ -3108,7 +3121,7 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
         }),
     );
 
-    ai_server.assert_hits(1);
+    mock.assert_hits(1);
 
     write_jsonrpc_message(
         &mut stdin,
