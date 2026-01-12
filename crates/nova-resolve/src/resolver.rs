@@ -352,13 +352,20 @@ impl<'a> Resolver<'a> {
         let mut single_type_by_name: HashMap<Name, Vec<String>> = HashMap::new();
         let mut single_type_span: HashMap<Name, nova_types::Span> = HashMap::new();
         for import in &imports.type_single {
-            single_type_by_name
-                .entry(import.imported.clone())
-                .or_default()
-                .push(import.path.to_dotted());
             single_type_span
                 .entry(import.imported.clone())
                 .or_insert(import.range);
+
+            let Some(ty) = self.resolve_type_in_index(&import.path) else {
+                continue;
+            };
+            let target = ty.as_str().to_string();
+            let targets = single_type_by_name
+                .entry(import.imported.clone())
+                .or_default();
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
         }
         for (name, paths) in single_type_by_name {
             if paths.len() <= 1 {
@@ -393,13 +400,23 @@ impl<'a> Resolver<'a> {
         let mut static_single_by_name: HashMap<Name, Vec<String>> = HashMap::new();
         let mut static_single_span: HashMap<Name, nova_types::Span> = HashMap::new();
         for import in &imports.static_single {
-            static_single_by_name
-                .entry(import.imported.clone())
-                .or_default()
-                .push(format!("{}.{}", import.ty.to_dotted(), import.member));
             static_single_span
                 .entry(import.imported.clone())
                 .or_insert(import.range);
+
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                continue;
+            };
+            let Some(_) = self.resolve_static_member_in_index(&owner, &import.member) else {
+                continue;
+            };
+            let target = format!("{}.{}", owner.as_str(), import.member.as_str());
+            let targets = static_single_by_name
+                .entry(import.imported.clone())
+                .or_default();
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
         }
         for (name, paths) in static_single_by_name {
             if paths.len() <= 1 {

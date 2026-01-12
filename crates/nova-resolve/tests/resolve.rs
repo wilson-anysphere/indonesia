@@ -9,7 +9,8 @@ use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::{self, HirDatabase};
 use nova_jdk::JdkIndex;
 use nova_resolve::{
-    build_scopes, BodyOwner, LocalRef, NameResolution, Resolution, Resolver, TypeResolution,
+    build_scopes, BodyOwner, ImportMap, LocalRef, NameResolution, Resolution, Resolver,
+    TypeResolution,
 };
 
 fn test_dep_jar() -> PathBuf {
@@ -671,6 +672,88 @@ class C {}
             Resolution::Type(TypeResolution::External(a)),
             Resolution::Type(TypeResolution::External(b)),
         ])
+    );
+}
+
+#[test]
+fn duplicate_identical_single_type_import_is_not_ambiguous() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.List;
+import java.util.List;
+class C {}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+    let diags = resolver.diagnose_imports(&imports);
+
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected no ambiguous-import, got {diags:?}"
+    );
+}
+
+#[test]
+fn distinct_single_type_imports_report_ambiguity() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import a.Foo;
+import b.Foo;
+class C {}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+
+    let mut index = TestIndex::default();
+    index.add_type("a", "Foo");
+    index.add_type("b", "Foo");
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let diags = resolver.diagnose_imports(&imports);
+
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected ambiguous-import, got {diags:?}"
+    );
+}
+
+#[test]
+fn duplicate_identical_static_single_import_is_not_ambiguous() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static java.lang.Math.max;
+import static java.lang.Math.max;
+class C {}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+    let diags = resolver.diagnose_imports(&imports);
+
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected no ambiguous-import, got {diags:?}"
     );
 }
 
