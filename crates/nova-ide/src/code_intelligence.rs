@@ -3793,6 +3793,26 @@ fn new_expression_type_completions(
     let mut items = Vec::new();
     let mut seen_labels: HashSet<String> = HashSet::new();
 
+    // Primitive array construction (`new int[] { ... }`, `new int[10]`) is a valid `new`-type
+    // position, even though primitives don't have constructors.
+    //
+    // Only include these when the user has started typing to avoid making `new <|>` completion
+    // lists noisier (and to avoid pushing them out of the bounded result set).
+    if !prefix.is_empty() {
+        for ty in JAVA_PRIMITIVE_TYPES {
+            if !ty.starts_with(prefix) {
+                continue;
+            }
+            if seen_labels.insert((*ty).to_string()) {
+                items.push(CompletionItem {
+                    label: (*ty).to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     // 1) Classes declared in this file.
     for class in &analysis.classes {
         if seen_labels.insert(class.name.clone()) {

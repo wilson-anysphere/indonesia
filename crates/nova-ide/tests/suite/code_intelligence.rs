@@ -3452,6 +3452,18 @@ class A {
 }
 
 #[test]
+fn completion_new_expression_type_position_includes_int_primitive() {
+    let (db, file, pos) = fixture("class A { void m(){ new in<|>[]; } }");
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"int"),
+        "expected `new` expression type completion to include primitive int; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
