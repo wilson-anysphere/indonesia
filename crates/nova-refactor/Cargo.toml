@@ -7,7 +7,7 @@ edition = "2021"
 nova-core = { path = "../nova-core" }
 nova-format = { path = "../nova-format" }
 nova-index = { path = "../nova-index" }
-nova-project = { path = "../nova-project" }
+nova-build-model = { path = "../nova-build-model" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 lsp-types = "0.97"

@@ -157,7 +157,7 @@ pub fn move_class(
     files: &BTreeMap<PathBuf, String>,
     params: MoveClassParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
-    nova_project::validate_package_name(&params.target_package).map_err(|e| {
+    nova_build_model::validate_package_name(&params.target_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.target_package.clone(),
             reason: e.to_string(),
@@ -194,7 +194,7 @@ pub fn move_class(
 
     // Conflict detection: destination already contains a type with the same name.
     let source_root =
-        nova_project::infer_source_root(&params.source_path, &pkg.name).ok_or_else(|| {
+        nova_build_model::infer_source_root(&params.source_path, &pkg.name).ok_or_else(|| {
             RefactorError::CannotInferSourceRoot {
                 path: params.source_path.clone(),
                 package: pkg.name.clone(),
@@ -202,8 +202,8 @@ pub fn move_class(
         })?;
 
     let dest_path = source_root
-        .join(nova_project::package_to_path(&params.target_package))
-        .join(nova_project::class_to_file_name(&params.class_name));
+        .join(nova_build_model::package_to_path(&params.target_package))
+        .join(nova_build_model::class_to_file_name(&params.class_name));
 
     if files.contains_key(&dest_path) {
         return Err(RefactorError::DestinationAlreadyExists { path: dest_path });
@@ -288,14 +288,14 @@ pub fn move_package(
     files: &BTreeMap<PathBuf, String>,
     params: MovePackageParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
-    nova_project::validate_package_name(&params.old_package).map_err(|e| {
+    nova_build_model::validate_package_name(&params.old_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.old_package.clone(),
             reason: e.to_string(),
         }
     })?;
 
-    nova_project::validate_package_name(&params.new_package).map_err(|e| {
+    nova_build_model::validate_package_name(&params.new_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.new_package.clone(),
             reason: e.to_string(),
@@ -319,7 +319,7 @@ pub fn move_package(
             format!("{}.{}", params.new_package, suffix)
         };
 
-        let source_root = nova_project::infer_source_root(path, &pkg).ok_or_else(|| {
+        let source_root = nova_build_model::infer_source_root(path, &pkg).ok_or_else(|| {
             RefactorError::CannotInferSourceRoot {
                 path: path.clone(),
                 package: pkg.clone(),
@@ -330,7 +330,7 @@ pub fn move_package(
             .file_name()
             .ok_or_else(|| RefactorError::Parse(format!("invalid path `{}`", path.display())))?;
         let new_path = source_root
-            .join(nova_project::package_to_path(&new_pkg))
+            .join(nova_build_model::package_to_path(&new_pkg))
             .join(file_name);
 
         moves.push((path.clone(), new_path));

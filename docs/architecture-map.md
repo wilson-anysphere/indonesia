@@ -100,7 +100,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-build-model`
 - **Purpose:** build-system-agnostic “project model” types shared across build integrations (`nova-project`, `nova-build`, Bazel tooling), plus the object-safe build-system backend trait used for detection/loading.
-- **Key entry points:** `crates/nova-build-model/src/lib.rs` (`ProjectModel`, `ProjectConfig`, `Classpath`, `BuildSystemBackend`, `BuildSystemError`), `crates/nova-build-model/src/model.rs` (core model definitions, `WorkspaceProjectModel`, module/source root metadata).
+- **Key entry points:** `crates/nova-build-model/src/lib.rs` (`ProjectModel`, `ProjectConfig`, `Classpath`, `BuildSystemBackend`, `BuildSystemError`), `crates/nova-build-model/src/model.rs` (core model definitions, `WorkspaceProjectModel`, module/source root metadata), `crates/nova-build-model/src/package.rs` (`validate_package_name`, `infer_source_root`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - The model is still evolving and some consumers still use the older aggregated `ProjectConfig` surface rather than the normalized `ProjectModel` / per-module metadata.

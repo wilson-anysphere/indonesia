@@ -4157,6 +4157,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "lsp-types",
+ "nova-build-model",
  "nova-core",
  "nova-db",
  "nova-flow",
@@ -4164,7 +4165,6 @@ dependencies = [
  "nova-hir",
  "nova-index",
  "nova-jdk",
- "nova-project",
  "nova-resolve",
  "nova-syntax",
  "nova-test-utils",

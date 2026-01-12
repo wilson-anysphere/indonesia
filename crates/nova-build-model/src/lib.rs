@@ -1,8 +1,13 @@
 //! Shared project/build model types used across Nova build system integrations.
 
 mod model;
+pub mod package;
 
 pub use model::*;
+pub use package::{
+    class_to_file_name, infer_source_root, is_valid_package_name, package_to_path, path_ends_with,
+    validate_package_name, PackageNameError,
+};
 
 use std::path::{Path, PathBuf};
 
