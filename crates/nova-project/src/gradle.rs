@@ -2717,18 +2717,26 @@ fn resolve_gradle_dependency_version(
 }
 
 fn is_dynamic_gradle_version(version: &str) -> bool {
+    let version = version.trim();
     if version.contains('$') {
         return true;
     }
 
-    // Gradle dynamic version patterns like `1.+`.
-    if version.contains('+') {
+    // Gradle dynamic version patterns like:
+    // - `+`
+    // - `1.+`
+    // - `1.2.+`
+    //
+    // Note: some ecosystems (e.g. SemVer build metadata) can include `+` in a *static* version like
+    // `1.0.0+build.1`. Gradle's dynamic selector uses `+` as a wildcard suffix, so we only treat
+    // it as dynamic when it appears at the end.
+    if version.ends_with('+') {
         return true;
     }
 
     // Gradle dynamic version selector (see `DynamicVersion` in Gradle).
     matches!(
-        version.trim().to_ascii_lowercase().as_str(),
+        version.to_ascii_lowercase().as_str(),
         "latest.release" | "latest.integration"
     )
 }
@@ -3827,6 +3835,35 @@ dependencies {
             )),
             "expected non-commented dependency to be extracted"
         );
+    }
+
+    #[test]
+    fn gradle_dependency_versions_drop_dynamic_plus_selectors_but_keep_literal_plus_versions() {
+        let script = r#"
+dependencies {
+  implementation("com.example:dynamic:1.+")
+  implementation("com.example:literal:1.0.0+build.1")
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "dynamic".to_string(),
+            None
+        )));
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "literal".to_string(),
+            Some("1.0.0+build.1".to_string())
+        )));
     }
 
     #[test]
