@@ -3292,6 +3292,7 @@ dependencies = [
  "nova-fuzzy",
  "nova-syntax",
  "once_cell",
+ "rayon",
  "regex",
  "reqwest",
  "serde",

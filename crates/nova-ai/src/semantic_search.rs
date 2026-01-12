@@ -300,9 +300,23 @@ mod embeddings {
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
 
     use hnsw_rs::prelude::*;
+
+    fn ensure_rayon_global_pool() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // `hnsw_rs` uses rayon internally. Rayon's default global pool size is based on the
+            // host CPU count, which can exceed thread and memory budgets in constrained
+            // environments (CI sandboxes, editor/LSP test harnesses, etc.). Initialize the
+            // global pool with a conservative thread count so embedding-backed semantic search
+            // remains usable everywhere.
+            let _ = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build_global();
+        });
+    }
 
     pub trait Embedder: Send + Sync {
         fn embed(&self, text: &str) -> Vec<f32>;
@@ -384,6 +398,7 @@ mod embeddings {
 
     impl<E: Embedder> EmbeddingSemanticSearch<E> {
         pub fn new(embedder: E) -> Self {
+            ensure_rayon_global_pool();
             Self {
                 embedder,
                 docs_by_path: BTreeMap::new(),

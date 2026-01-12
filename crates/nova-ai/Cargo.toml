@@ -9,6 +9,7 @@ async-trait = "0.1"
 futures = "0.3"
 futures-timer = "3"
 hnsw_rs = { version = "0.3", optional = true }
+rayon = { version = "1", optional = true }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-syntax = { path = "../nova-syntax" }
@@ -30,7 +31,7 @@ llama-cpp-2 = { version = "0.1.131", optional = true, features = ["sampler"] }
 [features]
 # Enables in-process local inference using GGUF models via llama.cpp.
 local-llm = ["dep:llama-cpp-2"]
-embeddings = ["dep:hnsw_rs"]
+embeddings = ["dep:hnsw_rs", "dep:rayon"]
 
 [dev-dependencies]
 httpmock = "0.7"
