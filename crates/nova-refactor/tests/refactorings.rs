@@ -4113,6 +4113,65 @@ fn extract_variable_replace_all_does_not_cross_switch_case_groups() {
 }
 
 #[test]
+fn extract_variable_replace_all_does_not_cross_switch_expression_case_groups() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int m(int x) {
+    int y = switch (x) {
+      case 1:
+        System.out.println(1 + 2);
+        System.out.println(1 + 2);
+        yield 0;
+      case 2:
+        System.out.println(1 + 2);
+        yield 1;
+      default:
+        yield 2;
+    };
+    return y;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int m(int x) {
+    int y = switch (x) {
+      case 1:
+        var sum = 1 + 2;
+        System.out.println(sum);
+        System.out.println(sum);
+        yield 0;
+      case 2:
+        System.out.println(1 + 2);
+        yield 1;
+      default:
+        yield 2;
+    };
+    return y;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejected_in_try_with_resources_resource_initializer() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
