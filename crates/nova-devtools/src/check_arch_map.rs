@@ -330,7 +330,7 @@ fn validate_quick_links(
                 }
 
                 if !span.contains('*') {
-                    if let Some(krate) = crate_name_from_crates_path(&span) {
+                    if let Some(krate) = workspace_crate_name_from_path(&span) {
                         if !workspace_crates.contains(krate) {
                             diagnostics.push(
                                 Diagnostic::error(
@@ -421,9 +421,11 @@ fn looks_like_crate_ref(span: &str) -> bool {
     span == "xtask" || span.starts_with("nova-")
 }
 
-fn crate_name_from_crates_path(span: &str) -> Option<&str> {
+fn workspace_crate_name_from_path(span: &str) -> Option<&str> {
     let span = span.trim_end_matches('/');
-    let rest = span.strip_prefix("crates/")?;
+    let rest = span
+        .strip_prefix("crates/")
+        .or_else(|| span.strip_prefix("examples/"))?;
     let (krate, _) = rest.split_once('/').unwrap_or((rest, ""));
     if krate.is_empty() {
         return None;
@@ -714,6 +716,47 @@ mod tests {
         // Make the path exist, so we specifically test the workspace membership check.
         fs::create_dir_all(tmp.path().join("crates/crate-missing/src")).unwrap();
         fs::write(tmp.path().join("crates/crate-missing/src/lib.rs"), "").unwrap();
+
+        let workspace = BTreeSet::from(["crate-a".to_string()]);
+        let diags = validate_architecture_map(
+            doc,
+            tmp.path(),
+            Path::new("docs/architecture-map.md"),
+            &workspace,
+            false,
+        );
+
+        assert!(
+            diags.iter().any(|d| d.code == "stale-quick-link-crate"),
+            "expected stale-quick-link-crate, got: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn quick_links_validate_examples_paths_against_workspace() {
+        let doc = r#"
+# Architecture map
+
+## If you're looking for...
+- Missing example: `examples/crate-missing/` (`src/lib.rs`)
+
+## Crate-by-crate map (alphabetical)
+
+### `crate-a`
+- **Purpose:** example
+- **Key entry points:** `crates/crate-a/src/lib.rs`
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - none
+"#;
+
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("crates/crate-a/src")).unwrap();
+        fs::write(tmp.path().join("crates/crate-a/src/lib.rs"), "").unwrap();
+
+        // Make the example path exist, so we specifically test the workspace membership check.
+        fs::create_dir_all(tmp.path().join("examples/crate-missing/src")).unwrap();
+        fs::write(tmp.path().join("examples/crate-missing/src/lib.rs"), "").unwrap();
 
         let workspace = BTreeSet::from(["crate-a".to_string()]);
         let diags = validate_architecture_map(
