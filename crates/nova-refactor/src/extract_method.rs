@@ -446,7 +446,8 @@ impl ExtractMethod {
             let mut seen: HashSet<Span> = HashSet::new();
             read_candidates.retain(|(decl_span, _, _, _)| seen.insert(*decl_span));
 
-            let live_after_selection = live_locals_after_selection(&flow_body, flow_selection);
+            let live_after_selection =
+                live_locals_after_selection(&flow_body, flow_selection, &selection_info);
             let capture_reads_after_selection =
                 collect_capture_reads_after_offset(&method_body, flow_selection.end, &flow_body);
 
@@ -1161,7 +1162,6 @@ fn find_enclosing_method(
 
 #[derive(Debug, Clone)]
 struct StatementSelection {
-    #[allow(dead_code)]
     block: ast::Block,
     statements: Vec<ast::Statement>,
 }
@@ -2888,19 +2888,138 @@ enum StmtLocation {
     },
 }
 
-fn live_locals_after_selection(body: &Body, selection: TextRange) -> HashSet<LocalId> {
+#[derive(Debug, Clone)]
+enum SelectionExitPoint {
+    /// Control flow proceeds to the start of this statement after the selection.
+    NextStatement(ast::Statement),
+    /// Control flow returns to a loop condition/update (e.g. `while`, `for`, `do-while`), which is
+    /// best modeled using the CFG location immediately after the last selected flow statement.
+    LoopContinuation,
+    /// The selection is not a direct child statement of the recorded `block` (e.g. the selection is
+    /// a `while`/`if` body statement without braces). In this case, syntax-based sibling climbing
+    /// cannot reliably identify the successor program point, so fall back to CFG liveness after the
+    /// last selected flow statement.
+    CfgFallback,
+    /// Control flow reaches the end of the enclosing body (method/constructor/initializer).
+    EndOfBody,
+}
+
+fn live_locals_after_selection(
+    body: &Body,
+    selection: TextRange,
+    selection_info: &StatementSelection,
+) -> HashSet<LocalId> {
     let cfg = build_cfg_with(body, &mut || {});
     let (_live_in, live_out) = compute_cfg_liveness(body, &cfg);
     let stmt_locations = collect_stmt_locations(&cfg);
 
-    let Some(last_stmt) = last_stmt_in_selection(body, selection, &stmt_locations) else {
+    let fallback =
+        || live_locals_after_last_selected_stmt(body, selection, &cfg, &live_out, &stmt_locations);
+
+    match selection_exit_point(selection_info) {
+        SelectionExitPoint::EndOfBody => HashSet::new(),
+        SelectionExitPoint::LoopContinuation | SelectionExitPoint::CfgFallback => fallback(),
+        SelectionExitPoint::NextStatement(stmt) => {
+            let Some(stmt_range) = non_trivia_range(stmt.syntax()) else {
+                return fallback();
+            };
+            let Some(first_flow_stmt) = first_stmt_in_range(body, stmt_range, &stmt_locations) else {
+                return fallback();
+            };
+            let Some(location) = stmt_locations.get(&first_flow_stmt).copied() else {
+                return fallback();
+            };
+
+            match live_at_stmt_start(body, &cfg, &live_out, location) {
+                Some(live) => live,
+                None => fallback(),
+            }
+        }
+    }
+}
+
+fn selection_exit_point(selection_info: &StatementSelection) -> SelectionExitPoint {
+    let Some(last_selected) = selection_info.statements.last() else {
+        return SelectionExitPoint::EndOfBody;
+    };
+    if !block_contains_statement(&selection_info.block, last_selected) {
+        return SelectionExitPoint::CfgFallback;
+    }
+    if let Some(next) = next_sibling_statement(&selection_info.block, last_selected) {
+        return SelectionExitPoint::NextStatement(next);
+    }
+    selection_exit_after_block_end(&selection_info.block)
+}
+
+fn selection_exit_after_block_end(block: &ast::Block) -> SelectionExitPoint {
+    let mut current_block = block.clone();
+    loop {
+        let Some((enclosing_stmt, parent_block)) =
+            enclosing_stmt_and_parent_block(&current_block)
+        else {
+            return SelectionExitPoint::EndOfBody;
+        };
+
+        if is_loop_statement(&enclosing_stmt) {
+            return SelectionExitPoint::LoopContinuation;
+        }
+
+        if let Some(next) = next_sibling_statement(&parent_block, &enclosing_stmt) {
+            return SelectionExitPoint::NextStatement(next);
+        }
+
+        current_block = parent_block;
+    }
+}
+
+fn enclosing_stmt_and_parent_block(block: &ast::Block) -> Option<(ast::Statement, ast::Block)> {
+    block
+        .syntax()
+        .ancestors()
+        .filter_map(ast::Statement::cast)
+        .find_map(|stmt| stmt.syntax().parent().and_then(ast::Block::cast).map(|b| (stmt, b)))
+}
+
+fn next_sibling_statement(block: &ast::Block, stmt: &ast::Statement) -> Option<ast::Statement> {
+    let mut iter = block.statements();
+    while let Some(candidate) = iter.next() {
+        if candidate.syntax() == stmt.syntax() {
+            return iter.next();
+        }
+    }
+    None
+}
+
+fn block_contains_statement(block: &ast::Block, stmt: &ast::Statement) -> bool {
+    block
+        .statements()
+        .any(|candidate| candidate.syntax() == stmt.syntax())
+}
+
+fn is_loop_statement(stmt: &ast::Statement) -> bool {
+    matches!(
+        stmt,
+        ast::Statement::WhileStatement(_)
+            | ast::Statement::ForStatement(_)
+            | ast::Statement::DoWhileStatement(_)
+    )
+}
+
+fn live_locals_after_last_selected_stmt(
+    body: &Body,
+    selection: TextRange,
+    cfg: &nova_flow::ControlFlowGraph,
+    live_out: &[HashSet<LocalId>],
+    stmt_locations: &HashMap<StmtId, StmtLocation>,
+) -> HashSet<LocalId> {
+    let Some(last_stmt) = last_stmt_in_selection(body, selection, stmt_locations) else {
         return HashSet::new();
     };
     let Some(location) = stmt_locations.get(&last_stmt).copied() else {
         return HashSet::new();
     };
 
-    live_after_stmt(body, &cfg, &live_out, location).unwrap_or_else(HashSet::new)
+    live_after_stmt(body, cfg, live_out, location).unwrap_or_else(HashSet::new)
 }
 
 fn collect_stmt_locations(cfg: &nova_flow::ControlFlowGraph) -> HashMap<StmtId, StmtLocation> {
@@ -2969,6 +3088,30 @@ fn first_stmt_in_selection(
     best.map(|(_, _, _, id)| id)
 }
 
+fn first_stmt_in_range(
+    body: &Body,
+    range: TextRange,
+    locations: &HashMap<StmtId, StmtLocation>,
+) -> Option<StmtId> {
+    let mut best: Option<(usize, std::cmp::Reverse<usize>, usize, StmtId)> = None;
+    for stmt_id in locations.keys().copied() {
+        let span = body.stmt(stmt_id).span;
+        if !span_within_range(span, range) {
+            continue;
+        }
+
+        let key = (span.start, std::cmp::Reverse(span.end), stmt_id.index());
+        if best
+            .as_ref()
+            .is_none_or(|(start, end, idx, _)| key < (*start, *end, *idx))
+        {
+            best = Some((key.0, key.1, key.2, stmt_id));
+        }
+    }
+
+    best.map(|(_, _, _, stmt)| stmt)
+}
+
 fn compute_cfg_liveness(
     body: &Body,
     cfg: &nova_flow::ControlFlowGraph,
@@ -3014,6 +3157,35 @@ fn compute_cfg_liveness(
     }
 
     (live_in, live_out)
+}
+
+fn live_at_stmt_start(
+    body: &Body,
+    cfg: &nova_flow::ControlFlowGraph,
+    live_out: &[HashSet<LocalId>],
+    location: StmtLocation,
+) -> Option<HashSet<LocalId>> {
+    match location {
+        StmtLocation::InBlock { block, index } => {
+            let bb = cfg.block(block);
+            let mut live = live_out.get(block.index())?.clone();
+            add_terminator_uses(body, &bb.terminator, &mut live);
+
+            // Walk statements from the end of the block back to (and including) the target
+            // statement. This yields the liveness at the start of `bb.stmts[index]`.
+            for stmt in bb.stmts.iter().skip(index).rev() {
+                transfer_stmt_liveness(body, *stmt, &mut live);
+            }
+
+            Some(live)
+        }
+        StmtLocation::Terminator { block } => {
+            let bb = cfg.block(block);
+            let mut live = live_out.get(block.index())?.clone();
+            add_terminator_uses(body, &bb.terminator, &mut live);
+            Some(live)
+        }
+    }
 }
 
 fn live_after_stmt(

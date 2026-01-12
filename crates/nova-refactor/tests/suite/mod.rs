@@ -22,7 +22,6 @@ mod preview_file_ops;
 mod rename_constructor_symbol_at;
 mod rename_members;
 mod rename_method_overload_conflicts;
-mod rename_method_overload_conflicts;
 mod rename_method_overrides;
 mod rename_package;
 mod rename_type;

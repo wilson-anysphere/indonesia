@@ -7323,7 +7323,6 @@ fn record_lightweight_expr(
         | Expr::Missing(_) => {}
     }
 }
-
 fn record_type_names_in_range(
     file: &FileId,
     text: &str,

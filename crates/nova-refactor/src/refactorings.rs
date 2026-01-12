@@ -1677,6 +1677,12 @@ pub fn inline_variable(
             return Err(RefactorError::InlineSideEffects);
         }
 
+        // Even if the declaration is adjacent to the usage statement, deleting it can reorder the
+        // initializer relative to other side-effectful expressions in the usage statement (e.g.
+        // `int a = foo(); bar() + a` -> `bar() + foo()` changes evaluation order). Enforce a
+        // conservative ordering check before proceeding.
+        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+
         let usage = targets
             .first()
             .expect("targets.len() == 1 checked above")
@@ -4301,8 +4307,9 @@ fn best_type_at_range_display(
             continue;
         };
         let ty = ty.trim();
-        // Filter out Nova-specific placeholders and non-denotable types.
-        // These are not valid Java types for variable declarations.
+        // `type_at_offset_display` can return values that are not valid Java source types (e.g.
+        // Nova placeholders like `<?>`/`<error>`, or `null`/`void` for literals). Filter those out
+        // so we don't emit uncompilable declarations like `null value = null;`.
         if ty.is_empty()
             || ty == "<?>"
             || ty == "<?>" // Legacy placeholder.

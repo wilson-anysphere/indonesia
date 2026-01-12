@@ -888,6 +888,93 @@ class C {
 }
 
 #[test]
+fn extract_method_returns_value_when_selection_is_last_in_if_block() {
+    let fixture = r#"
+class C {
+    void m(boolean cond) {
+        int x = 0;
+        if (cond) {
+            /*start*/x = 1;/*end*/
+        }
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(boolean cond) {
+        int x = 0;
+        if (cond) {
+            x = extracted(x);
+        }
+        System.out.println(x);
+    }
+
+    private int extracted(int x) {
+        x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_at_end_of_body_does_not_invent_return_value() {
+    let fixture = r#"
+class C {
+    void m() {
+        int x = 0;
+        /*start*/x = x + 1;/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int x = 0;
+        extracted(x);
+    }
+
+    private void extracted(int x) {
+        x = x + 1;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_return_value_used_via_lambda_capture_after_selection() {
     let fixture = r#"
 class C {

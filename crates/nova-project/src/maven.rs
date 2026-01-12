@@ -2069,7 +2069,6 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
 }
-
 fn exists_as_jar(path: &Path) -> bool {
     let is_jar = path
         .extension()
