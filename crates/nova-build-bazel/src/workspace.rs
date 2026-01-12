@@ -644,10 +644,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             })
             .collect::<Vec<_>>();
 
-        // Owning-target results are derived from BUILD/BUILD.bazel state and are therefore cheap to
-        // invalidate wholesale. This keeps the cache simple and avoids subtle staleness if build
-        // definitions change.
-        self.java_owning_targets_cache.clear();
+        // Owning-target results are derived from BUILD/BUILD.bazel/.bzl state. Avoid clearing the
+        // cache for plain source edits (hot swap calls this frequently) but still invalidate on
+        // build definition changes for correctness.
+        if changed.iter().any(|path| is_bazel_build_definition_file(path)) {
+            self.java_owning_targets_cache.clear();
+        }
         self.cache.invalidate_changed_files(&changed);
         self.persist_cache()
     }
@@ -978,4 +980,12 @@ fn is_java_rule_kind(kind: &str) -> bool {
 
 fn is_source_aggregation_rule_kind(kind: &str) -> bool {
     matches!(kind, "filegroup rule" | "alias rule")
+}
+
+fn is_bazel_build_definition_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+
+    name == "BUILD" || name == "BUILD.bazel" || name.ends_with(".bzl")
 }
