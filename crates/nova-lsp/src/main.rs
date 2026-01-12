@@ -23,14 +23,16 @@ use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
 use nova_ai::workspace::VirtualWorkspace;
-use nova_ai::ExcludedPathMatcher;
-use nova_ai::NovaAi;
+use nova_ai::{ExcludedPathMatcher, NovaAi};
+use nova_ai_codegen::{
+    CodeGenerationConfig, CodegenProgressEvent, CodegenProgressReporter, CodegenProgressStage,
+    PromptCompletionProvider,
+};
 #[cfg(feature = "ai")]
 use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
     MultiTokenCompletionProvider,
 };
-use nova_ai_codegen::{CodeGenerationConfig, PromptCompletionProvider};
 use nova_core::WasmHostDb;
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
 use nova_decompile::DecompiledDocumentStore;
@@ -6871,11 +6873,17 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_method_body_apply(
+                args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_tests_apply(args, params.work_done_token, state, client, cancel.clone())
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -7777,7 +7785,7 @@ fn handle_ai_custom_request(
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
             let params: AiRequestParams<GenerateMethodBodyArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_method_body(
+            run_ai_generate_method_body_legacy(
                 params.args,
                 params.work_done_token,
                 state,
@@ -7788,7 +7796,7 @@ fn handle_ai_custom_request(
         nova_lsp::AI_GENERATE_TESTS_METHOD => {
             let params: AiRequestParams<GenerateTestsArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_tests(
+            run_ai_generate_tests_legacy(
                 params.args,
                 params.work_done_token,
                 state,
@@ -8135,6 +8143,527 @@ fn run_ai_explain_error(
     send_ai_output(rpc_out, "AI explainError", &output)?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(output))
+}
+
+fn run_ai_generate_method_body_legacy(
+    args: GenerateMethodBodyArgs,
+    work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &impl RpcOut,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    if let Some(uri) = args.uri.as_deref() {
+        if let Some(path) = path_from_uri(uri) {
+            if is_ai_excluded_path(state, &path) {
+                return Err((
+                    -32600,
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+                ));
+            }
+        }
+    }
+
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+    send_log_message(rpc_out, "AI: generating method body…")?;
+
+    let ctx = build_context_request_from_args(
+        state,
+        args.uri.as_deref(),
+        args.range,
+        args.method_signature.clone(),
+        args.context.clone(),
+        /*include_doc_comments=*/ true,
+    );
+    let output = runtime
+        .block_on(ai.generate_method_body(
+            &args.method_signature,
+            ctx,
+            cancel.clone(),
+        ))
+        .map_err(|e| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            (-32603, e.to_string())
+        })?;
+
+    send_log_message(rpc_out, "AI: method body ready")?;
+    send_ai_output(rpc_out, "AI generateMethodBody", &output)?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(serde_json::Value::String(output))
+}
+
+fn run_ai_generate_tests_legacy(
+    args: GenerateTestsArgs,
+    work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &impl RpcOut,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    if let Some(uri) = args.uri.as_deref() {
+        if let Some(path) = path_from_uri(uri) {
+            if is_ai_excluded_path(state, &path) {
+                return Err((
+                    -32600,
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+                ));
+            }
+        }
+    }
+
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+    send_log_message(rpc_out, "AI: generating tests…")?;
+
+    let ctx = build_context_request_from_args(
+        state,
+        args.uri.as_deref(),
+        args.range,
+        args.target.clone(),
+        args.context.clone(),
+        /*include_doc_comments=*/ false,
+    );
+    let output = runtime
+        .block_on(ai.generate_tests(&args.target, ctx, cancel.clone()))
+        .map_err(|e| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            (-32603, e.to_string())
+        })?;
+
+    send_log_message(rpc_out, "AI: tests ready")?;
+    send_ai_output(rpc_out, "AI generateTests", &output)?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(serde_json::Value::String(output))
+}
+
+/// ExecuteCommand implementation for AI code actions that *apply* edits via the
+/// patch-based codegen pipeline (`nova-ai-codegen`).
+///
+/// Note: the custom request endpoints (`nova/ai/generateMethodBody`,
+/// `nova/ai/generateTests`) intentionally keep their legacy behavior of returning
+/// plain strings (see `docs/protocol-extensions.md`). Only `workspace/executeCommand`
+/// applies edits.
+struct LspCodegenProgress<'a, O: RpcOut + Sync> {
+    out: &'a O,
+    token: Option<&'a serde_json::Value>,
+}
+
+impl<'a, O: RpcOut + Sync> CodegenProgressReporter for LspCodegenProgress<'a, O> {
+    fn report(&self, event: CodegenProgressEvent) {
+        let message = match event.stage {
+            CodegenProgressStage::RepairAttempt => format!("Attempt {}", event.attempt + 1),
+            CodegenProgressStage::BuildingPrompt => "Building prompt…".to_string(),
+            CodegenProgressStage::ModelCall => "Calling model…".to_string(),
+            CodegenProgressStage::ParsingPatch => "Parsing AI patch…".to_string(),
+            CodegenProgressStage::ApplyingPatch => "Applying patch…".to_string(),
+            CodegenProgressStage::Formatting => "Formatting…".to_string(),
+            CodegenProgressStage::Validating => "Validating…".to_string(),
+        };
+        // Best-effort: ignore transport failures during progress updates.
+        let _ = send_progress_report(self.out, self.token, &message, None);
+    }
+}
+
+fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
+    args: GenerateMethodBodyArgs,
+    work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &O,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    let uri_string = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    let uri = uri_string
+        .parse::<LspUri>()
+        .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
+
+    let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state)?;
+
+    // Enforce excluded_paths *before* building prompts or calling the model.
+    if ai.is_excluded_path(&abs_path) {
+        return Err((
+            -32603,
+            format!(
+                "refusing to generate AI edits for excluded path `{}` (matches ai.privacy.excluded_paths)",
+                abs_path.display()
+            ),
+        ));
+    }
+
+    let Some(source) =
+        load_document_text(state, uri_string).or_else(|| load_document_text(state, uri.as_str()))
+    else {
+        return Err((
+            -32603,
+            format!("missing document text for `{}`", uri.as_str()),
+        ));
+    };
+
+    let selection = args
+        .range
+        .ok_or_else(|| (-32602, "missing range".to_string()))?;
+    let insert_range = insert_range_for_method_body(&source, selection)
+        .map_err(|message| (-32602, message))?;
+
+    let workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
+
+    let llm = ai.llm();
+    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
+    let mut config = CodeGenerationConfig::default();
+    config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
+
+    let executor = AiCodeActionExecutor::new(
+        &provider,
+        config,
+        state.ai_config.privacy.clone(),
+    );
+
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    let progress = LspCodegenProgress {
+        out: rpc_out,
+        token: work_done_token.as_ref(),
+    };
+    let progress = work_done_token.as_ref().map(|_| &progress as &dyn CodegenProgressReporter);
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            AiCodeAction::GenerateMethodBody {
+                file: file_rel,
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            progress,
+        ))
+        .map_err(|err| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            (-32603, err.to_string())
+        })?;
+
+    let result = apply_code_action_outcome(outcome, "Generate method body with AI", state, rpc_out)
+        .map_err(|err| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            err
+        })?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(result)
+}
+
+fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
+    args: GenerateTestsArgs,
+    work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &O,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    let uri_string = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    let uri = uri_string
+        .parse::<LspUri>()
+        .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
+
+    let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state)?;
+
+    // Enforce excluded_paths *before* building prompts or calling the model.
+    if ai.is_excluded_path(&abs_path) {
+        return Err((
+            -32603,
+            format!(
+                "refusing to generate AI edits for excluded path `{}` (matches ai.privacy.excluded_paths)",
+                abs_path.display()
+            ),
+        ));
+    }
+
+    let Some(source) =
+        load_document_text(state, uri_string).or_else(|| load_document_text(state, uri.as_str()))
+    else {
+        return Err((
+            -32603,
+            format!("missing document text for `{}`", uri.as_str()),
+        ));
+    };
+
+    let selection = args
+        .range
+        .ok_or_else(|| (-32602, "missing range".to_string()))?;
+    let insert_range =
+        insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
+
+    let workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
+
+    let llm = ai.llm();
+    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
+    let mut config = CodeGenerationConfig::default();
+    config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
+
+    let executor = AiCodeActionExecutor::new(
+        &provider,
+        config,
+        state.ai_config.privacy.clone(),
+    );
+
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
+    let progress = LspCodegenProgress {
+        out: rpc_out,
+        token: work_done_token.as_ref(),
+    };
+    let progress = work_done_token.as_ref().map(|_| &progress as &dyn CodegenProgressReporter);
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            AiCodeAction::GenerateTest {
+                file: file_rel,
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            progress,
+        ))
+        .map_err(|err| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            (-32603, err.to_string())
+        })?;
+
+    let result = apply_code_action_outcome(outcome, "Generate tests with AI", state, rpc_out)
+        .map_err(|err| {
+            let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+            err
+        })?;
+    send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+    Ok(result)
+}
+
+fn apply_code_action_outcome<O: RpcOut>(
+    outcome: CodeActionOutcome,
+    label: &str,
+    state: &mut ServerState,
+    rpc_out: &O,
+) -> Result<serde_json::Value, (i32, String)> {
+    match outcome {
+        CodeActionOutcome::WorkspaceEdit(edit) => {
+            let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+                .map_err(|e| (-32603, e.to_string()))?;
+            rpc_out
+                .send_request(
+                    id,
+                    "workspace/applyEdit",
+                    json!({
+                        "label": label,
+                        "edit": edit.clone(),
+                    }),
+                )
+                .map_err(|e| (-32603, e.to_string()))?;
+
+            Ok(json!({ "applied": true, "edit": edit }))
+        }
+        CodeActionOutcome::Explanation(text) => Ok(serde_json::Value::String(text)),
+    }
+}
+
+fn insert_range_for_method_body(source: &str, selection: nova_ide::LspRange) -> Result<LspTypesRange, String> {
+    let selection_range = insert_range_from_ide_range(source, selection)?;
+    let pos = nova_lsp::text_pos::TextPos::new(source);
+    let selection_bytes = pos
+        .byte_range(selection_range)
+        .ok_or_else(|| "invalid selection range (UTF-16 positions may be out of bounds)".to_string())?;
+
+    let selection_text = source
+        .get(selection_bytes.clone())
+        .ok_or_else(|| "invalid selection range (not on UTF-8 boundaries)".to_string())?;
+
+    let open_rel = selection_text
+        .find('{')
+        .ok_or_else(|| "selection does not contain an opening `{` for the method body".to_string())?;
+    let open_abs = selection_bytes.start.saturating_add(open_rel);
+
+    let tail = source
+        .get(open_abs..selection_bytes.end)
+        .ok_or_else(|| "invalid method selection bounds".to_string())?;
+    let mut depth: i32 = 0;
+    let mut close_abs: Option<usize> = None;
+    for (idx, ch) in tail.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_abs = Some(open_abs + idx);
+                    break;
+                }
+                if depth < 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let close_abs = close_abs.ok_or_else(|| {
+        "selection does not contain a matching `}` for the method body".to_string()
+    })?;
+
+    let start = pos
+        .lsp_position(open_abs + 1)
+        .ok_or_else(|| "failed to convert method body start position".to_string())?;
+    let end = pos
+        .lsp_position(close_abs)
+        .ok_or_else(|| "failed to convert method body end position".to_string())?;
+
+    Ok(LspTypesRange { start, end })
+}
+
+fn insert_range_from_ide_range(source: &str, range: nova_ide::LspRange) -> Result<LspTypesRange, String> {
+    let lsp_range = LspTypesRange {
+        start: LspTypesPosition {
+            line: range.start.line,
+            character: range.start.character,
+        },
+        end: LspTypesPosition {
+            line: range.end.line,
+            character: range.end.character,
+        },
+    };
+
+    // Validate that the incoming range is usable (UTF-16 correctness, in-bounds).
+    if nova_lsp::text_pos::byte_range(source, lsp_range).is_none() {
+        return Err("invalid selection range (UTF-16 positions may be out of bounds)".to_string());
+    }
+
+    Ok(lsp_range)
+}
+
+fn resolve_ai_patch_target(
+    uri: &LspUri,
+    state: &ServerState,
+) -> Result<(LspUri, String, PathBuf), (i32, String)> {
+    let abs_path = path_from_uri(uri.as_str()).ok_or_else(|| {
+        (
+            -32602,
+            format!("unsupported uri (expected file://): {}", uri.as_str()),
+        )
+    })?;
+
+    if let Some(root) = state.project_root.as_deref() {
+        if abs_path.starts_with(root) {
+            if let Ok(rel) = abs_path.strip_prefix(root) {
+                if let Ok(file_rel) = path_to_forward_slash(rel) {
+                    if let Ok(root_uri) = uri_from_path(root) {
+                        validate_patch_rel_path(&file_rel)?;
+                        return Ok((root_uri, file_rel, abs_path));
+                    }
+                }
+            }
+        }
+    }
+
+    let parent = abs_path.parent().ok_or_else(|| {
+        (
+            -32603,
+            format!("failed to determine parent directory for `{}`", abs_path.display()),
+        )
+    })?;
+    let file_name = abs_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            (
+                -32603,
+                format!("failed to determine file name for `{}`", abs_path.display()),
+            )
+        })?;
+
+    validate_patch_rel_path(&file_name)?;
+    let root_uri = uri_from_path(parent)?;
+    Ok((root_uri, file_name, abs_path))
+}
+
+fn uri_from_path(path: &Path) -> Result<LspUri, (i32, String)> {
+    let abs = nova_core::AbsPathBuf::try_from(path.to_path_buf()).map_err(|e| (-32603, e.to_string()))?;
+    let uri = nova_core::path_to_file_uri(&abs).map_err(|e| (-32603, e.to_string()))?;
+    uri.parse::<LspUri>()
+        .map_err(|e| (-32603, format!("invalid uri: {e}")))
+}
+
+fn path_to_forward_slash(path: &Path) -> Result<String, ()> {
+    use std::path::Component;
+
+    let mut out = String::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => {
+                if !out.is_empty() {
+                    out.push('/');
+                }
+                out.push_str(&segment.to_string_lossy());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => return Err(()),
+            Component::Prefix(_) | Component::RootDir => return Err(()),
+        }
+    }
+
+    if out.is_empty() {
+        return Err(());
+    }
+    Ok(out)
+}
+
+fn validate_patch_rel_path(path: &str) -> Result<(), (i32, String)> {
+    if path.contains('\\') || path.contains(':') {
+        return Err((
+            -32603,
+            format!("invalid patch path (must be workspace-relative, forward slashes only): {path}"),
+        ));
+    }
+    if path.starts_with('/') || path.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+        return Err((
+            -32603,
+            format!("invalid patch path (must be workspace-relative): {path}"),
+        ));
+    }
+    Ok(())
 }
 
 fn run_ai_generate_method_body(
