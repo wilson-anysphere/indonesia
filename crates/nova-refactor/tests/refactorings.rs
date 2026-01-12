@@ -4602,6 +4602,78 @@ fn inline_variable_multi_declarator_statement_removes_first_declarator() {
 }
 
 #[test]
+fn inline_variable_multi_declarator_statement_removes_middle_declarator() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1, b = 2, c = 3;
+    System.out.println(a + b + c);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("b =").unwrap();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at b");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 1, c = 3;
+    System.out.println(a + 2 + c);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_multi_declarator_statement_removes_last_declarator() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1, b = 2;
+    System.out.println(a + b);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("b =").unwrap();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at b");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 1;
+    System.out.println(a + 2);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_multi_declarator_inline_one_keeps_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

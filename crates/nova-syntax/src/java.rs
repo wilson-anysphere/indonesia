@@ -1432,10 +1432,16 @@ impl Lowerer {
     }
 
     fn lower_block(&self, node: &SyntaxNode) -> ast::Block {
-        let statements = node
-            .children()
-            .filter_map(|child| self.lower_stmt(&child))
-            .collect();
+        let mut statements = Vec::new();
+        for child in node.children() {
+            if child.kind() == SyntaxKind::LocalVariableDeclarationStatement {
+                statements.extend(self.lower_local_var_stmts(&child));
+                continue;
+            }
+            if let Some(stmt) = self.lower_stmt(&child) {
+                statements.push(stmt);
+            }
+        }
 
         ast::Block {
             statements,
@@ -1529,6 +1535,64 @@ impl Lowerer {
             SyntaxKind::EmptyStatement => Some(ast::Stmt::Empty(self.spans.map_node(node))),
             _ => None,
         }
+    }
+
+    fn lower_local_var_stmts(&self, node: &SyntaxNode) -> Vec<ast::Stmt> {
+        let declarator_list = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::VariableDeclaratorList);
+        let Some(declarator_list) = declarator_list else {
+            return vec![ast::Stmt::LocalVar(self.lower_local_var_stmt(node))];
+        };
+
+        let declarators: Vec<_> = declarator_list
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::VariableDeclarator)
+            .collect();
+        if declarators.len() <= 1 {
+            return vec![ast::Stmt::LocalVar(self.lower_local_var_stmt(node))];
+        }
+
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
+        let range = self.spans.map_node(node);
+
+        let mut out = Vec::with_capacity(declarators.len());
+        for decl in declarators {
+            let name_token = self.first_ident_like_token(&decl);
+            let name = name_token
+                .as_ref()
+                .map(|tok| tok.text().to_string())
+                .unwrap_or_default();
+            let name_range = name_token
+                .as_ref()
+                .map(|tok| self.spans.map_token(tok))
+                .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+            let initializer = decl
+                .children()
+                .find(|c| is_expression_kind(c.kind()))
+                .map(|expr| self.lower_expr(&expr));
+
+            out.push(ast::Stmt::LocalVar(ast::LocalVarStmt {
+                modifiers,
+                annotations: annotations.clone(),
+                ty: ty.clone(),
+                name,
+                name_range,
+                initializer,
+                range,
+            }));
+        }
+
+        out
     }
 
     fn lower_local_var_stmt(&self, node: &SyntaxNode) -> ast::LocalVarStmt {
@@ -1943,7 +2007,9 @@ impl Lowerer {
                 continue;
             }
 
-            if let Some(stmt) = self.lower_stmt(&child) {
+            if child.kind() == SyntaxKind::LocalVariableDeclarationStatement {
+                statements.extend(self.lower_local_var_stmts(&child));
+            } else if let Some(stmt) = self.lower_stmt(&child) {
                 statements.push(stmt);
             }
         }
