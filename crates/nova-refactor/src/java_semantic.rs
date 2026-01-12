@@ -762,10 +762,17 @@ impl RefactorDatabase for RefactorJavaDatabase {
                 Resolution::Local(local) => ResolutionKey::Local(*local),
                 Resolution::Parameter(param) => ResolutionKey::Param(*param),
                 Resolution::Field(field) => ResolutionKey::Field(*field),
-                Resolution::Methods(methods) => ResolutionKey::Method(*methods.first()?),
                 _ => return None,
             };
             return self.resolution_to_symbol.get(&key).copied();
+        }
+
+        if let Some(methods) = data.methods().get(&name) {
+            let first = methods.first().copied()?;
+            return self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Method(first))
+                .copied();
         }
 
         if let Some(ty) = data.types().get(&name) {
@@ -795,7 +802,6 @@ impl RefactorDatabase for RefactorJavaDatabase {
                     Resolution::Local(local) => ResolutionKey::Local(*local),
                     Resolution::Parameter(param) => ResolutionKey::Param(*param),
                     Resolution::Field(field) => ResolutionKey::Field(*field),
-                    Resolution::Methods(methods) => ResolutionKey::Method(*methods.first()?),
                     _ => {
                         current = data.parent();
                         continue;
@@ -804,6 +810,18 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
                 if let Some(symbol) = self.resolution_to_symbol.get(&key).copied() {
                     return Some(symbol);
+                }
+            }
+
+            if let Some(methods) = data.methods().get(&name) {
+                if let Some(&first) = methods.first() {
+                    if let Some(symbol) = self
+                        .resolution_to_symbol
+                        .get(&ResolutionKey::Method(first))
+                        .copied()
+                    {
+                        return Some(symbol);
+                    }
                 }
             }
 

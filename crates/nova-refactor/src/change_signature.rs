@@ -881,7 +881,6 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
     while let Some(pos) = before[..search_pos].rfind(&needle) {
         let prefix = before[..pos].trim_end();
         let bytes = prefix.as_bytes();
-
         // Scan backwards to extract the `<Type>` in `<Type> <var_name>`. Type tokens can include
         // generics (`Map<String, Integer>`) where whitespace may legitimately appear inside the
         // angle brackets.
