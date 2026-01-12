@@ -4287,6 +4287,63 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
     false
 }
 
+fn java_string_escape_completions(
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+    prefix: &str,
+) -> Option<(usize, Vec<CompletionItem>)> {
+    let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
+    let prefix_start = prefix_start.min(offset);
+
+    // Only offer escape completions when the cursor is immediately after (or after a short
+    // identifier prefix following) an unescaped `\` inside the string/char literal.
+    //
+    // This ensures we keep suppression behavior for ordinary string contents like `"hel<|>lo"`,
+    // while still providing a minimal "string-context" completion experience for users typing
+    // escape sequences.
+    let backslash = prefix_start.checked_sub(1)?;
+    if bytes.get(backslash) != Some(&b'\\') {
+        return None;
+    }
+    if is_escaped_quote(bytes, backslash) {
+        return None;
+    }
+
+    // Filter escape candidates by the typed prefix immediately following the backslash.
+    // Note: `\"` is not an identifier prefix, so it is only offered when `prefix` is empty.
+    let mut items = Vec::new();
+
+    let add = |items: &mut Vec<CompletionItem>, label: &str, prefix: &str, trigger: &str| {
+        if prefix.is_empty() || trigger.starts_with(prefix) {
+            items.push(CompletionItem {
+                label: label.to_string(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                insert_text: Some(label.to_string()),
+                ..Default::default()
+            });
+        }
+    };
+
+    add(&mut items, r#"\n"#, prefix, "n");
+    add(&mut items, r#"\t"#, prefix, "t");
+    if prefix.is_empty() {
+        items.push(CompletionItem {
+            label: r#"\""#.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some(r#"\""#.to_string()),
+            ..Default::default()
+        });
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    Some((backslash, items))
+}
+
 fn completion_in_switch_case_label(text: &str, offset: usize, prefix_start: usize) -> bool {
     // Avoid offering enum constant completions inside comments/strings.
     if offset_in_java_comment(text, offset) || offset_in_java_string_or_char_literal(text, offset) {
@@ -5335,6 +5392,13 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
         && offset_in_java_string_or_char_literal(text, offset)
     {
+        // Optional: provide minimal string-context completions for common escape sequences, while
+        // still suppressing all "normal" Java completions inside strings.
+        if let Some((replace_start, items)) =
+            java_string_escape_completions(text, offset, prefix_start, &prefix)
+        {
+            return decorate_completions(&text_index, replace_start, offset, items);
+        }
         return Vec::new();
     }
 

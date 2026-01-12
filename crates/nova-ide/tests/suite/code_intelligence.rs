@@ -2932,6 +2932,21 @@ class A {
 }
 
 #[test]
+fn completion_inside_string_literal_escape_sequence_suggests_escapes() {
+    let (db, file, pos) = fixture(r#"class A { void m(){ String s = "\n<|>"; } }"#);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&r#"\n"#),
+        "expected escape completions (e.g. `\\\\n`) inside string literal; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"if"),
+        "expected completion list to not contain Java keywords like `if`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_inside_char_literal_is_empty() {
     let (db, file, pos) = fixture("class A { void m(){ char c = 'a<|>'; } }");
     let items = completions(&db, file, pos);
