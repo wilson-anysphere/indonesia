@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError } from './novaCapabilities';
 import { formatError } from './safeMode';
+import { ProjectModelCache } from './projectModelCache';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -49,15 +50,10 @@ interface ProjectModelResult {
   units: ProjectModelUnit[];
 }
 
-type ProjectModelLoadResult =
-  | { status: 'ok'; model: ProjectModelResult }
-  | { status: 'unsupported' }
-  | { status: 'error'; message: string };
-
 type ListKind = 'sourceRoots' | 'classpath' | 'modulePath';
 
 type NovaProjectExplorerNode =
-  | { type: 'message'; id: string; label: string; description?: string }
+  | { type: 'message'; id: string; label: string; description?: string; icon?: vscode.ThemeIcon; command?: vscode.Command }
   | { type: 'workspace'; id: string; workspace: vscode.WorkspaceFolder }
   | { type: 'workspaceInfo'; id: string; label: string; description?: string }
   | { type: 'unit'; id: string; workspace: vscode.WorkspaceFolder; projectRoot: string; unit: ProjectModelUnit }
@@ -106,8 +102,13 @@ const COMMAND_REVEAL_PATH = 'nova.projectExplorer.revealPath';
 
 const CLASS_PATH_PAGE_SIZE = 200;
 
-export function registerNovaProjectExplorer(context: vscode.ExtensionContext, request: NovaRequest): void {
-  const provider = new NovaProjectExplorerProvider(request);
+export function registerNovaProjectExplorer(
+  context: vscode.ExtensionContext,
+  request: NovaRequest,
+  cache?: ProjectModelCache,
+): void {
+  const projectModelCache = cache ?? new ProjectModelCache(request);
+  const provider = new NovaProjectExplorerProvider(projectModelCache);
 
   const view = vscode.window.createTreeView(VIEW_ID, {
     treeDataProvider: provider,
@@ -117,20 +118,20 @@ export function registerNovaProjectExplorer(context: vscode.ExtensionContext, re
   context.subscriptions.push(view);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_REFRESH, () => {
-      provider.refresh({ clearCache: true });
+    vscode.commands.registerCommand(COMMAND_REFRESH, (workspace?: vscode.WorkspaceFolder) => {
+      provider.refresh({ forceRefresh: true, workspace });
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_MODEL, async () => {
-      await showProjectModel(request);
+      await showProjectModel(projectModelCache);
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_CONFIG, async () => {
-      await showProjectConfiguration(request);
+      await showProjectConfiguration(projectModelCache);
     }),
   );
 
@@ -148,25 +149,31 @@ export function registerNovaProjectExplorer(context: vscode.ExtensionContext, re
 }
 
 class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProjectExplorerNode> {
-  private readonly request: NovaRequest;
   private readonly emitter = new vscode.EventEmitter<NovaProjectExplorerNode | undefined | null>();
-
-  private readonly modelByWorkspace = new Map<string, ProjectModelLoadResult>();
-  private readonly modelInFlightByWorkspace = new Map<string, Promise<ProjectModelLoadResult>>();
-
-  constructor(request: NovaRequest) {
-    this.request = request;
-  }
+  constructor(private readonly cache: ProjectModelCache) {}
 
   get onDidChangeTreeData(): vscode.Event<NovaProjectExplorerNode | undefined | null> {
     return this.emitter.event;
   }
 
-  refresh(opts?: { clearCache?: boolean }): void {
+  refresh(opts?: { clearCache?: boolean; forceRefresh?: boolean; workspace?: vscode.WorkspaceFolder }): void {
     if (opts?.clearCache) {
-      this.modelByWorkspace.clear();
-      this.modelInFlightByWorkspace.clear();
+      this.cache.clear(opts.workspace);
     }
+
+    const folders = opts?.workspace ? [opts.workspace] : (vscode.workspace.workspaceFolders ?? []);
+    if (opts?.forceRefresh) {
+      for (const folder of folders) {
+        const promise = this.cache.getProjectModel(folder, { forceRefresh: true });
+        void promise
+          .catch(() => {})
+          .finally(() => {
+            this.emitter.fire(undefined);
+          });
+      }
+    }
+
+    // Fire after registering in-flight promises so getChildren can render loading placeholders.
     this.emitter.fire(undefined);
   }
 
@@ -192,31 +199,99 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
     switch (element.type) {
       case 'workspace': {
         const workspace = element.workspace;
-        const modelResult = await this.loadProjectModel(workspace);
-        if (modelResult.status === 'unsupported') {
+        if (this.cache.isProjectModelUnsupported()) {
           return [
             {
               type: 'message',
               id: `${element.id}:unsupported`,
               label: 'Project model not supported by this server.',
               description: 'Update nova-lsp to a build that supports nova/projectModel.',
-            },
-          ];
-        }
-        if (modelResult.status === 'error') {
-          return [
-            {
-              type: 'message',
-              id: `${element.id}:error`,
-              label: 'Failed to load project model.',
-              description: modelResult.message,
+              icon: new vscode.ThemeIcon('info'),
             },
           ];
         }
 
-        const model = modelResult.model;
+        const snapshot = this.cache.peekProjectModel(workspace);
+        const model = snapshot.value as unknown as ProjectModelResult | undefined;
+
+        if (!model) {
+          if (snapshot.inFlight) {
+            return [
+              {
+                type: 'message',
+                id: `${element.id}:loading`,
+                label: 'Loading project model…',
+                icon: new vscode.ThemeIcon('loading'),
+              },
+            ];
+          }
+
+          if (snapshot.lastError) {
+            return [
+              {
+                type: 'message',
+                id: `${element.id}:error`,
+                label: 'Failed to load project model.',
+                description: formatError(snapshot.lastError),
+                icon: new vscode.ThemeIcon('error'),
+                command: { title: 'Refresh', command: COMMAND_REFRESH, arguments: [workspace] },
+              },
+            ];
+          }
+
+          const promise = this.cache.getProjectModel(workspace);
+          void promise
+            .catch(() => {})
+            .finally(() => {
+              this.emitter.fire(element);
+            });
+
+          return [
+            {
+              type: 'message',
+              id: `${element.id}:loading`,
+              label: 'Loading project model…',
+              icon: new vscode.ThemeIcon('loading'),
+            },
+          ];
+        }
+
+        // If the cached model is stale, refresh in the background but keep showing the previous model.
+        let inFlight = snapshot.inFlight;
+        if (!inFlight && snapshot.stale) {
+          const promise = this.cache.getProjectModel(workspace);
+          inFlight = promise;
+          void promise
+            .catch(() => {})
+            .finally(() => {
+              this.emitter.fire(element);
+            });
+        }
+
         const buildSystem = summarizeBuildSystemLabel(model.units);
         const javaLanguageLevel = summarizeJavaLanguageLevelLabel(model.units);
+
+        const nodes: NovaProjectExplorerNode[] = [];
+
+        if (inFlight) {
+          nodes.push({
+            type: 'message',
+            id: `${element.id}:loading`,
+            label: 'Loading project model…',
+            icon: new vscode.ThemeIcon('loading'),
+          });
+        }
+
+        if (snapshot.lastError && !inFlight) {
+          nodes.push({
+            type: 'message',
+            id: `${element.id}:last-error`,
+            label: 'Last refresh failed.',
+            description: formatError(snapshot.lastError),
+            icon: new vscode.ThemeIcon('error'),
+            command: { title: 'Refresh', command: COMMAND_REFRESH, arguments: [workspace] },
+          });
+        }
 
         const infoNodes: NovaProjectExplorerNode[] = [];
         if (buildSystem) {
@@ -244,17 +319,17 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         }));
 
         if (unitNodes.length === 0) {
-          return [
-            ...infoNodes,
-            {
-              type: 'message',
-              id: `${element.id}:no-units`,
-              label: 'No project units reported.',
-            },
-          ];
+          nodes.push(...infoNodes);
+          nodes.push({
+            type: 'message',
+            id: `${element.id}:no-units`,
+            label: 'No project units reported.',
+          });
+          return nodes;
         }
 
-        return [...infoNodes, ...unitNodes];
+        nodes.push(...infoNodes, ...unitNodes);
+        return nodes;
       }
 
       case 'unit': {
@@ -438,50 +513,13 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
         item.id = element.id;
         item.description = element.description;
-        item.iconPath = new vscode.ThemeIcon('warning');
+        item.iconPath = element.icon ?? new vscode.ThemeIcon('warning');
+        if (element.command) {
+          item.command = element.command;
+        }
         return item;
       }
     }
-  }
-
-  private async loadProjectModel(workspace: vscode.WorkspaceFolder): Promise<ProjectModelLoadResult> {
-    const key = workspace.uri.toString();
-    const cached = this.modelByWorkspace.get(key);
-    if (cached) {
-      return cached;
-    }
-
-    const inFlight = this.modelInFlightByWorkspace.get(key);
-    if (inFlight) {
-      return inFlight;
-    }
-
-    const promise = (async (): Promise<ProjectModelLoadResult> => {
-      try {
-        const model = (await this.request<ProjectModelResult>('nova/projectModel', {
-          projectRoot: workspace.uri.fsPath,
-        })) as ProjectModelResult | undefined;
-        if (!model) {
-          const result: ProjectModelLoadResult = { status: 'unsupported' };
-          this.modelByWorkspace.set(key, result);
-          return result;
-        }
-        const result: ProjectModelLoadResult = { status: 'ok', model };
-        this.modelByWorkspace.set(key, result);
-        return result;
-      } catch (err) {
-        const result: ProjectModelLoadResult = isNovaMethodNotFoundError(err)
-          ? { status: 'unsupported' }
-          : { status: 'error', message: formatError(err) };
-        this.modelByWorkspace.set(key, result);
-        return result;
-      } finally {
-        this.modelInFlightByWorkspace.delete(key);
-      }
-    })();
-
-    this.modelInFlightByWorkspace.set(key, promise);
-    return promise;
   }
 }
 
@@ -621,21 +659,22 @@ async function revealPath(uri: vscode.Uri): Promise<void> {
   }
 }
 
-async function showProjectModel(request: NovaRequest): Promise<void> {
+async function showProjectModel(cache: ProjectModelCache): Promise<void> {
   const workspace = await pickWorkspaceFolder('Select workspace folder for project model');
   if (!workspace) {
     return;
   }
 
   try {
-    const method = 'nova/projectModel';
-    const model = await request(method, { projectRoot: workspace.uri.fsPath });
-    if (!model) {
+    if (cache.isProjectModelUnsupported()) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
+
+    const model = await cache.getProjectModel(workspace);
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
-    if (isNovaMethodNotFoundError(err)) {
+    if (cache.isProjectModelUnsupported() || isNovaMethodNotFoundError(err)) {
       void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
@@ -643,21 +682,22 @@ async function showProjectModel(request: NovaRequest): Promise<void> {
   }
 }
 
-async function showProjectConfiguration(request: NovaRequest): Promise<void> {
+async function showProjectConfiguration(cache: ProjectModelCache): Promise<void> {
   const workspace = await pickWorkspaceFolder('Select workspace folder for project configuration');
   if (!workspace) {
     return;
   }
 
   try {
-    const method = 'nova/projectConfiguration';
-    const config = await request(method, { projectRoot: workspace.uri.fsPath });
-    if (!config) {
+    if (cache.isProjectConfigurationUnsupported()) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }
+
+    const config = await cache.getProjectConfiguration(workspace);
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
-    if (isNovaMethodNotFoundError(err)) {
+    if (cache.isProjectConfigurationUnsupported() || isNovaMethodNotFoundError(err)) {
       void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }

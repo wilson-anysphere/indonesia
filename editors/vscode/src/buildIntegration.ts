@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { combineBuildStatuses, groupByFilePath, isBazelTargetRequiredMessage, type NovaBuildStatus } from './buildIntegrationUtils';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage } from './novaCapabilities';
+import type { ProjectModelCache } from './projectModelCache';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -72,9 +73,14 @@ const BUILD_POLL_TIMEOUT_MS = 15 * 60_000;
 
 export function registerNovaBuildIntegration(
   context: vscode.ExtensionContext,
-  deps: { request: NovaRequest; formatError: FormatError; isMethodNotFoundError: IsMethodNotFoundError },
+  deps: {
+    request: NovaRequest;
+    formatError: FormatError;
+    isMethodNotFoundError: IsMethodNotFoundError;
+    projectModelCache?: ProjectModelCache;
+  },
 ): void {
-  const { request, formatError, isMethodNotFoundError } = deps;
+  const { request, formatError, isMethodNotFoundError, projectModelCache } = deps;
 
   const buildDiagnostics = vscode.languages.createDiagnosticCollection('Nova Build');
   context.subscriptions.push(buildDiagnostics);
@@ -539,7 +545,9 @@ export function registerNovaBuildIntegration(
   const promptForBazelTarget = async (folder: vscode.WorkspaceFolder): Promise<string | undefined> => {
     const projectRoot = folder.uri.fsPath;
     try {
-      const model = await request<ProjectModelResult>('nova/projectModel', { projectRoot });
+      const model = projectModelCache
+        ? ((await projectModelCache.getProjectModel(folder)) as unknown as ProjectModelResult)
+        : await request<ProjectModelResult>('nova/projectModel', { projectRoot });
       if (!model) {
         throw new Error('projectModel unavailable');
       }

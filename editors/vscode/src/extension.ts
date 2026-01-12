@@ -14,12 +14,14 @@ import { registerNovaFrameworkSearch } from './frameworkSearch';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
+import { ProjectModelCache } from './projectModelCache';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { registerNovaServerCommands } from './serverCommands';
 import { toDidRenameFilesParams } from './fileOperations';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
   formatUnsupportedNovaMethodMessage,
+  isNovaMethodNotFoundError,
   isNovaRequestSupported,
   resetNovaExperimentalCapabilities,
   setNovaExperimentalCapabilities,
@@ -247,9 +249,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
+  const requestWithFallback = <R>(method: string, params?: unknown): Promise<R | undefined> => {
+    return sendNovaRequest<R>(method, params, { allowMethodFallback: true });
+  };
+  const projectModelCache = new ProjectModelCache(requestWithFallback);
+
   registerNovaDebugAdapter(context, { serverManager, output: serverOutput });
   registerNovaDebugConfigurations(context, sendNovaRequest);
-  registerNovaFrameworkSearch(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }));
+  registerNovaFrameworkSearch(context, requestWithFallback);
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   registerFrameworkDashboardCommands(context);
@@ -267,7 +274,7 @@ export async function activate(context: vscode.ExtensionContext) {
       frameworksView.refresh();
     }),
   );
-  registerNovaProjectExplorer(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }));
+  registerNovaProjectExplorer(context, requestWithFallback, projectModelCache);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
@@ -2024,15 +2031,16 @@ export async function activate(context: vscode.ExtensionContext) {
   ensureClientStarted = ensureLanguageClientStarted;
   stopClient = stopLanguageClient;
 
-  registerNovaBuildFileWatchers(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }), {
+  registerNovaBuildFileWatchers(context, requestWithFallback, {
     output: serverOutput,
     formatError,
     isMethodNotFoundError,
   });
   registerNovaBuildIntegration(context, {
-    request: (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }),
+    request: requestWithFallback,
     formatError,
     isMethodNotFoundError,
+    projectModelCache,
   });
 
   let restartPromptInFlight: Promise<void> | undefined;
