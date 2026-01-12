@@ -8,12 +8,12 @@
 //! - building a best-effort workspace index of classes using `nova-syntax`
 //! - feeding those classes into a `nova_framework::MemoryDatabase`
 //! - running `nova_resolve::complete_member_names` to include virtual members
-//! - caching the result per (guessed) project root to avoid reparsing on every
+//! - caching the result per project root to avoid reparsing on every
 //!   completion request.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
@@ -65,7 +65,7 @@ pub(crate) fn complete_members(
     let Some(path) = db.file_path(file) else {
         return Vec::new();
     };
-    let root = guess_project_root(path);
+    let root = crate::framework_cache::project_root_for_path(path);
 
     let Some(intel) = workspace_intel(db, &root) else {
         return Vec::new();
@@ -154,7 +154,7 @@ pub(crate) fn goto_virtual_member_definition(
     member_name: &str,
 ) -> Option<(FileId, Span)> {
     let path = db.file_path(file)?;
-    let root = guess_project_root(path);
+    let root = crate::framework_cache::project_root_for_path(path);
 
     let intel = workspace_intel(db, &root)?;
     let receiver_ty = resolve_receiver_type(&intel, receiver_type)?;
@@ -703,29 +703,4 @@ fn normalize_type_name(raw: &str) -> String {
     let raw = raw.split('<').next().unwrap_or(raw).trim();
     let raw = raw.trim_end_matches("[]").trim();
     raw.to_string()
-}
-
-fn guess_project_root(file_path: &Path) -> PathBuf {
-    // Best-effort heuristic that works well for Maven/Gradle layouts:
-    // `<root>/src/...` -> `<root>`.
-    //
-    // If the path doesn't contain `src`, fall back to the file's parent directory.
-    let dir = file_path.parent().unwrap_or(file_path);
-
-    let mut out = PathBuf::new();
-    for comp in dir.components() {
-        match comp {
-            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
-            Component::RootDir => out.push(comp.as_os_str()),
-            Component::Normal(name) if name == "src" => break,
-            Component::Normal(name) => out.push(name),
-            Component::CurDir | Component::ParentDir => {}
-        }
-    }
-
-    if out.as_os_str().is_empty() {
-        dir.to_path_buf()
-    } else {
-        out
-    }
 }

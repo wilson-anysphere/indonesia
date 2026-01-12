@@ -8,6 +8,12 @@ use zip::write::FileOptions;
 use nova_ide::framework_cache::{project_config, project_root_for_path, spring_metadata_index};
 
 #[test]
+fn discovers_project_root_for_in_memory_fixture_path() {
+    let java_file = PathBuf::from("/workspace/src/main/java/A.java");
+    assert_eq!(project_root_for_path(&java_file), PathBuf::from("/workspace"));
+}
+
+#[test]
 fn discovers_project_root_for_maven_layout() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("pom.xml"), "<project></project>").unwrap();
