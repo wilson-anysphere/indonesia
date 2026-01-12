@@ -283,6 +283,74 @@ fn extract_variable_rejects_while_condition_extraction() {
 }
 
 #[test]
+fn extract_variable_rejects_method_call_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = foo();
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("foo()").unwrap();
+    let expr_end = expr_start + "foo()".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "call".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "expression has side effects and cannot be extracted safely"
+        ),
+        "expected side-effect ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_new_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    Object x = new Object();
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("new Object()").unwrap();
+    let expr_end = expr_start + "new Object()".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "obj".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "expression has side effects and cannot be extracted safely"
+        ),
+        "expected side-effect ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn rename_local_variable_does_not_touch_shadowed_field() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

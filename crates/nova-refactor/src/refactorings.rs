@@ -161,6 +161,14 @@ pub fn extract_variable(
         .ok_or(RefactorError::InvalidSelection)?
         .to_string();
 
+    // Extracting a side-effectful expression into a new statement can change evaluation order or
+    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
+    if has_side_effects(expr.syntax()) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "expression has side effects and cannot be extracted safely",
+        });
+    }
+
     let stmt = expr
         .syntax()
         .ancestors()
@@ -584,21 +592,23 @@ fn syntax_token_range(tok: &nova_syntax::SyntaxToken) -> TextRange {
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
-    if expr.descendants().any(|node| {
-        matches!(
-            node.kind(),
+    fn node_has_side_effects(node: &nova_syntax::SyntaxNode) -> bool {
+        match node.kind() {
             SyntaxKind::MethodCallExpression
-                | SyntaxKind::NewExpression
-                | SyntaxKind::AssignmentExpression
-        )
-    }) {
+            | SyntaxKind::NewExpression
+            | SyntaxKind::AssignmentExpression
+            | SyntaxKind::LambdaExpression => true,
+            _ => false,
+        }
+    }
+
+    if node_has_side_effects(expr) || expr.descendants().any(|node| node_has_side_effects(&node)) {
         return true;
     }
 
     // Include ++/-- (both prefix and postfix) as side effects.
     expr.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+        .any(|el| matches!(el.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
 }
 
 fn parenthesize_initializer(text: &str, expr: &ast::Expression) -> String {
