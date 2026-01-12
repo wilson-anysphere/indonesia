@@ -688,7 +688,9 @@ thread_local! {
 
 fn parse_java(source: &str) -> Result<Tree, String> {
     JAVA_PARSER.with(|parser_cell| {
-        let mut parser = parser_cell.borrow_mut();
+        let mut parser = parser_cell
+            .try_borrow_mut()
+            .map_err(|_| "tree-sitter parser is already in use".to_string())?;
         let parser = match parser.as_mut() {
             Ok(parser) => parser,
             Err(err) => return Err(err.clone()),
