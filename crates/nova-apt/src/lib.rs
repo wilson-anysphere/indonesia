@@ -60,9 +60,11 @@ pub fn discover_generated_sources_status(
     let (config, config_path) = nova_config::load_for_workspace(&workspace_root)
         .unwrap_or_else(|_| (NovaConfig::default(), None));
 
-    let mut options = LoadOptions::default();
-    options.nova_config = config.clone();
-    options.nova_config_path = config_path;
+    let options = LoadOptions {
+        nova_config: config.clone(),
+        nova_config_path: config_path,
+        ..Default::default()
+    };
 
     let project = match load_project_with_options(&workspace_root, &options) {
         Ok(project) => project,
@@ -864,7 +866,7 @@ impl AptRunCache {
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, std::fs::File)> {
     let file_name = dest
         .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "destination path has no file name"))?;
+        .ok_or_else(|| io::Error::other("destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {
@@ -1495,11 +1497,9 @@ impl AptManager {
 
             let result = match (&self.project.build_system, &plan.action) {
                 (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => build
-                    .build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal)
-                    .map_err(|err| err),
+                    .build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal),
                 (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
-                    .build_gradle_task(&self.project.workspace_root, project_path.as_deref(), *task)
-                    .map_err(|err| err),
+                    .build_gradle_task(&self.project.workspace_root, project_path.as_deref(), *task),
                 _ => Ok(BuildResult::default()),
             };
 
@@ -1939,7 +1939,7 @@ impl AptManager {
                     .root
                     .strip_prefix(&self.project.workspace_root)
                     .ok()
-                    .and_then(|rel| rel_to_gradle_project_path(rel));
+                    .and_then(rel_to_gradle_project_path);
                 if test_stale {
                     (
                         SourceRootKind::Test,

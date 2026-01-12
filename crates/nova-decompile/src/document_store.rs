@@ -533,10 +533,10 @@ fn companion_path(path: &Path) -> Option<PathBuf> {
     let file_name = path.file_name()?.to_str()?;
     if let Some(stem) = file_name.strip_suffix(".java") {
         Some(path.with_file_name(format!("{stem}.meta.json")))
-    } else if let Some(stem) = file_name.strip_suffix(".meta.json") {
-        Some(path.with_file_name(format!("{stem}.java")))
     } else {
-        None
+        file_name
+            .strip_suffix(".meta.json")
+            .map(|stem| path.with_file_name(format!("{stem}.java")))
     }
 }
 
@@ -801,8 +801,6 @@ fn remove_corrupt_store_leaf_best_effort(path: &Path) {
                 libc::unlinkat(parent_dir.as_raw_fd(), file_c.as_ptr(), libc::AT_REMOVEDIR)
             };
         }
-
-        return;
     }
 
     #[cfg(not(unix))]
@@ -1036,7 +1034,7 @@ fn atomic_write_store_file(path: &Path, bytes: &[u8]) -> Result<(), CacheError> 
             return Ok(());
         }
 
-        return Err(io::Error::other("failed to allocate unique temp file").into());
+        Err(io::Error::other("failed to allocate unique temp file").into())
     }
 
     #[cfg(not(unix))]

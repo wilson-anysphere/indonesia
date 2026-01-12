@@ -926,7 +926,7 @@ fn parse_supertypes_from_header(header: &str) -> (Option<String>, HashSet<String
         let after = header[idx + "implements".len()..].trim();
         let after = after.split('{').next().unwrap_or(after);
         for part in after.split(',') {
-            let ty = part.trim().split_whitespace().next().unwrap_or("");
+            let ty = part.split_whitespace().next().unwrap_or("");
             if !ty.is_empty() {
                 interfaces.insert(simplify_type(ty));
             }

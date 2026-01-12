@@ -112,7 +112,7 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
 
         let fallback_root = db
             .file_path(ctx.file)
-            .and_then(|path| nova_project::workspace_root(path));
+            .and_then(nova_project::workspace_root);
         let config_keys = self.project_config_keys(db, ctx.project, fallback_root.as_deref());
 
         // Avoid rescanning all Java sources on every completion request by reusing the cached
@@ -465,7 +465,7 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
     hasher.finish()
 }
 
-fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a str, Span)> {
+fn config_property_prefix_at(source: &str, offset: usize) -> Option<(&str, Span)> {
     let bytes = source.as_bytes();
     if offset > bytes.len() {
         return None;
@@ -593,14 +593,14 @@ fn collect_project_config_files(db: &dyn Database, project: ProjectId) -> Vec<Co
                     kind: ConfigFileKind::Properties,
                 });
             }
-        } else if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
-            if file_name.starts_with("application") {
-                files.push(ConfigFile {
-                    path: path.to_string_lossy().to_string(),
-                    id: file,
-                    kind: ConfigFileKind::Yaml,
-                });
-            }
+        } else if (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+            && file_name.starts_with("application")
+        {
+            files.push(ConfigFile {
+                path: path.to_string_lossy().to_string(),
+                id: file,
+                kind: ConfigFileKind::Yaml,
+            });
         }
     }
 

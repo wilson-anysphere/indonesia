@@ -574,7 +574,7 @@ fn format_return_type(ty: &nova_classfile::ReturnType, package_dot: &str) -> Str
 }
 
 fn format_type_name(internal: &str, package_dot: &str) -> String {
-    let dot = internal.replace('/', ".").replace('$', ".");
+    let dot = internal.replace(['/', '$'], ".");
     if let Some(rest) = dot.strip_prefix("java.lang.") {
         rest.to_string()
     } else if !package_dot.is_empty() {
