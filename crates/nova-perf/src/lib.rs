@@ -783,7 +783,7 @@ fn format_runtime_delta(metric_id: &str, delta: i128) -> String {
         return "0".to_string();
     }
     let sign = if delta > 0 { "+" } else { "-" };
-    let abs = delta.abs() as u64;
+    let abs = u64::try_from(delta.unsigned_abs()).unwrap_or(u64::MAX);
     format!("{}{}", sign, format_runtime_value(metric_id, abs))
 }
 

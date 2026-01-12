@@ -312,8 +312,6 @@ impl MemoryManager {
         target: MemoryBreakdown,
         entries: &[EvictorEntry],
     ) {
-        let target = target;
-
         for category in MemoryBreakdown::categories() {
             let category_usage = usage.get(category);
             let category_target = target.get(category);
