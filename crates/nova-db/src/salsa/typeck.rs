@@ -7030,27 +7030,42 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     // interface.
                     self.ensure_type_loaded(loader, target);
                     let env_ro: &dyn TypeEnv = &*loader.store;
-                    if let Some(sig) = nova_types::infer_lambda_sam_signature(env_ro, target) {
-                        sam_return = sig.return_type;
-                        if sig.params.len() != params.len() {
-                            self.diagnostics.push(Diagnostic::error(
-                                "lambda-arity-mismatch",
-                                format!(
-                                    "lambda arity mismatch: expected {}, found {}",
-                                    sig.params.len(),
-                                    params.len()
-                                ),
-                                Some(self.body.exprs[expr].range()),
-                            ));
+                    match nova_types::infer_lambda_sam_signature(env_ro, target) {
+                        Some(sig) => {
+                            sam_return = sig.return_type;
+                            if sig.params.len() != params.len() {
+                                self.diagnostics.push(Diagnostic::error(
+                                    "lambda-arity-mismatch",
+                                    format!(
+                                        "lambda arity mismatch: expected {}, found {}",
+                                        sig.params.len(),
+                                        params.len()
+                                    ),
+                                    Some(self.body.exprs[expr].range()),
+                                ));
+                            }
+                            for (param, ty) in params.iter().zip(sig.params.into_iter()) {
+                                self.local_types[param.local.idx()] = ty;
+                                // In demand-driven mode, locals are lazily inferred via
+                                // `infer_local_type` unless marked computed.
+                                self.local_ty_states[param.local.idx()] = LocalTyState::Computed;
+                            }
+                            target.clone()
                         }
-                        for (param, ty) in params.iter().zip(sig.params.into_iter()) {
-                            self.local_types[param.local.idx()] = ty;
-                            // In demand-driven mode, locals are lazily inferred via
-                            // `infer_local_type` unless marked computed.
-                            self.local_ty_states[param.local.idx()] = LocalTyState::Computed;
+                        None => {
+                            if !target.is_errorish() {
+                                let found = format_type(env_ro, target);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "lambda-without-target",
+                                    format!(
+                                        "lambda expression requires a target functional interface type, found {found}"
+                                    ),
+                                    Some(self.body.exprs[expr].range()),
+                                ));
+                            }
+                            Type::Unknown
                         }
                     }
-                    target.clone()
                 } else {
                     Type::Unknown
                 };

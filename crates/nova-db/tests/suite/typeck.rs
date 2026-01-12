@@ -10479,9 +10479,9 @@ class C {
 #[test]
 fn lambda_expr_body_void_is_error_for_nonvoid_sam() {
     let src = r#"
-import java.util.function.Function;
-class C {
-    void m() {
+ import java.util.function.Function;
+ class C {
+     void m() {
         Function<String, Integer> f = s -> System.out.println(s);
     }
 }
@@ -10496,10 +10496,29 @@ class C {
 }
 
 #[test]
-fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
+fn lambda_requires_functional_interface_target_type() {
     let src = r#"
 class C {
-    int m() { return 1; }
+    void m() {
+        int x = () -> 1;
+        Object o = () -> {};
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "lambda-without-target"),
+        "expected lambda-without-target diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
+    let src = r#"
+ class C {
+     int m() { return 1; }
 }
 "#;
 
