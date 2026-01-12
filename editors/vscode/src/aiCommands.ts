@@ -129,6 +129,13 @@ export function localCommandForNovaAiAction(action: {
       return NOVA_AI_SHOW_GENERATE_TESTS_COMMAND;
   }
 
+  // If we have an unknown `nova.ai.*` command, don't guess which UI to use based on
+  // code action kind (future commands might share kinds). Only fall back to kind
+  // mapping when no command id is available.
+  if (typeof action.lspCommandId === 'string') {
+    return undefined;
+  }
+
   switch (action.kind) {
     case 'nova.explain':
       return NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND;
@@ -136,29 +143,6 @@ export function localCommandForNovaAiAction(action: {
       return NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND;
     case 'nova.ai.tests':
       return NOVA_AI_SHOW_GENERATE_TESTS_COMMAND;
-  }
-
-  return undefined;
-}
-
-export function lspCommandForNovaAiAction(action: {
-  lspCommandId?: string | undefined;
-  kind?: string | undefined;
-}): NovaAiLspCommandId | undefined {
-  switch (action.lspCommandId) {
-    case NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR:
-    case NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY:
-    case NOVA_AI_LSP_COMMAND_GENERATE_TESTS:
-      return action.lspCommandId;
-  }
-
-  switch (action.kind) {
-    case 'nova.explain':
-      return NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR;
-    case 'nova.ai.generate':
-      return NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY;
-    case 'nova.ai.tests':
-      return NOVA_AI_LSP_COMMAND_GENERATE_TESTS;
   }
 
   return undefined;
@@ -188,9 +172,12 @@ export function rewriteNovaAiCodeActionOrCommand(
   }
 
   const localCommand = localCommandForNovaAiAction({ lspCommandId, kind });
-  const resolvedLspCommand = lspCommandForNovaAiAction({ lspCommandId, kind });
+  const resolvedLspCommand = typeof lspCommandId === 'string' ? lspCommandId : undefined;
 
-  if (!localCommand || !resolvedLspCommand) {
+  // We can only execute server-side AI operations if the underlying `nova.ai.*`
+  // command name is present. When it is missing, surface nothing (VS Code will
+  // still render the code action, but invoking it won't do anything useful).
+  if (!localCommand || !resolvedLspCommand || !isNovaAiCommandId(resolvedLspCommand)) {
     return undefined;
   }
 

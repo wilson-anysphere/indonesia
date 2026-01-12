@@ -111,15 +111,13 @@ test('rewriteNovaAiCodeActionOrCommand maps generateTests to the VS Code-side co
   });
 });
 
-test('rewriteNovaAiCodeActionOrCommand can infer the LSP command from kind when missing', () => {
+test('rewriteNovaAiCodeActionOrCommand returns undefined when a command id is missing (cannot execute)', () => {
   const rewritten = rewriteNovaAiCodeActionOrCommand({
     kind: { value: 'nova.ai.tests' },
     title: 'Generate tests with AI',
   });
 
-  assert.deepEqual(rewritten?.command, NOVA_AI_SHOW_GENERATE_TESTS_COMMAND);
-  assert.deepEqual(rewritten?.args[0].lspCommand, NOVA_AI_LSP_COMMAND_GENERATE_TESTS);
-  assert.deepEqual(rewritten?.args[0].lspArguments, []);
+  assert.equal(rewritten, undefined);
 });
 
 test('rewriteNovaAiCodeActionOrCommand returns undefined for non-AI actions', () => {
@@ -131,4 +129,3 @@ test('rewriteNovaAiCodeActionOrCommand returns undefined for non-AI actions', ()
 
   assert.equal(rewritten, undefined);
 });
-
