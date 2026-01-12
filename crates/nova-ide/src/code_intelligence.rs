@@ -13747,7 +13747,11 @@ fn type_hierarchy_item(
         detail_parts.push(format!("extends {super_class}"));
     }
     if !ty.interfaces.is_empty() {
-        detail_parts.push(format!("implements {}", ty.interfaces.join(", ")));
+        let keyword = match ty.kind {
+            crate::parse::TypeKind::Class => "implements",
+            crate::parse::TypeKind::Interface => "extends",
+        };
+        detail_parts.push(format!("{keyword} {}", ty.interfaces.join(", ")));
     }
     let detail = if detail_parts.is_empty() {
         None

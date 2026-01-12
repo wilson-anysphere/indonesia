@@ -148,6 +148,7 @@ interface $0I1 extends I0 {}
         .expect("expected type hierarchy items");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].name, "I1");
+    assert_eq!(items[0].detail.as_deref(), Some("extends I0"));
 
     let supers = type_hierarchy_supertypes(&fixture.db, file_i1, "I1");
     assert!(
