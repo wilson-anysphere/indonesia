@@ -221,6 +221,28 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    // Gradle dependency locking can change resolved classpaths without modifying build scripts,
+    // so treat dependency lockfiles as build triggers.
+    //
+    // Patterns:
+    // - `gradle.lockfile` at any depth.
+    // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
+    //   `gradle/dependency-locks/` location).
+    if !in_ignored_dir && name == "gradle.lockfile" {
+        return true;
+    }
+    if !in_ignored_dir
+        && name.ends_with(".lockfile")
+        && path.parent().is_some_and(|parent| {
+            parent.ancestors().any(|dir| {
+                dir.file_name()
+                    .is_some_and(|name| name == "dependency-locks")
+            })
+        })
+    {
+        return true;
+    }
+
     // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
     if path
         .parent()
@@ -346,6 +368,11 @@ mod tests {
             root.join("gradle").join("deps.versions.toml"),
             root.join("gradle").join("dependencies.gradle"),
             root.join("gradle").join("dependencies.gradle.kts"),
+            root.join("gradle.lockfile"),
+            root.join("gradle")
+                .join("dependency-locks")
+                .join("compileClasspath.lockfile"),
+            root.join("dependency-locks").join("custom.lockfile"),
         ];
 
         for path in build_files {
@@ -376,6 +403,10 @@ mod tests {
             root.join("build").join("deps.versions.toml"),
             root.join("target").join("dependencies.gradle"),
             root.join("target").join("deps.versions.toml"),
+            root.join(".gradle").join("gradle.lockfile"),
+            root.join("build")
+                .join("dependency-locks")
+                .join("compileClasspath.lockfile"),
         ];
 
         for path in non_build_files {
