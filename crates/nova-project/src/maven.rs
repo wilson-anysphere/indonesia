@@ -2017,11 +2017,13 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     };
 
     if version.ends_with("-SNAPSHOT") {
+        let base_version = version.trim_end_matches("-SNAPSHOT");
+
         // Prefer using Maven metadata to resolve the timestamped SNAPSHOT jar filename (when the
         // timestamped jar exists on disk). Otherwise, fall back to the conventional
         // `<artifactId>-<version>(-classifier).jar` path.
         if let Some(resolved) =
-            resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
+            resolve_snapshot_jar_file_name(&version_dir, base_version, &dep.artifact_id, classifier)
         {
             let resolved_path = version_dir.join(resolved);
             if exists_as_jar(&resolved_path) {
@@ -2042,6 +2044,7 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
 
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
+    base_version: &str,
     artifact_id: &str,
     classifier: Option<&str>,
 ) -> Option<String> {
@@ -2081,6 +2084,8 @@ fn resolve_snapshot_jar_file_name(
             continue;
         };
 
+        let mut saw_snapshot_versions = false;
+
         for node in doc
             .descendants()
             .filter(|n| n.is_element() && n.tag_name().name() == "snapshotVersion")
@@ -2115,6 +2120,47 @@ fn resolve_snapshot_jar_file_name(
             }
 
             // Prefer the latest snapshot by `(timestamp, buildNumber)`.
+            let replace = best_value
+                .as_ref()
+                .is_none_or(|best| snapshot_value_is_newer(&value, best));
+            saw_snapshot_versions = true;
+            if replace {
+                best_value = Some(value);
+            }
+        }
+
+        // Older metadata formats store the timestamp/build number under `<snapshot>` instead of
+        // enumerating `<snapshotVersions>`.
+        if !saw_snapshot_versions {
+            let Some(snapshot) = doc
+                .descendants()
+                .find(|n| n.is_element() && n.tag_name().name() == "snapshot")
+            else {
+                continue;
+            };
+
+            let Some(timestamp) = child_text(&snapshot, "timestamp") else {
+                continue;
+            };
+
+            let Some(build_number) = child_text(&snapshot, "buildNumber") else {
+                continue;
+            };
+
+            let Ok(build_number) = build_number.parse::<u32>() else {
+                continue;
+            };
+
+            let value = format!("{base_version}-{timestamp}-{build_number}");
+            let candidate_file_name = if let Some(classifier) = classifier {
+                format!("{artifact_id}-{value}-{classifier}.jar")
+            } else {
+                format!("{artifact_id}-{value}.jar")
+            };
+            if !exists_as_jar(&version_dir.join(candidate_file_name)) {
+                continue;
+            }
+
             let replace = best_value
                 .as_ref()
                 .is_none_or(|best| snapshot_value_is_newer(&value, best));
@@ -2522,6 +2568,76 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_dependency_jar_prefers_higher_build_number_in_metadata() {
+        let repo = tempfile::tempdir().expect("tempdir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        let version_dir = repo
+            .path()
+            .join("com")
+            .join("example")
+            .join("dep")
+            .join("1.0-SNAPSHOT");
+        std::fs::create_dir_all(&version_dir).expect("create version dir");
+
+        std::fs::write(
+            version_dir.join("maven-metadata-local.xml"),
+            r#"<metadata><versioning><snapshotVersions><snapshotVersion><extension>jar</extension><value>1.0-20260112.123456-2</value></snapshotVersion><snapshotVersion><extension>jar</extension><value>1.0-20260112.123456-10</value></snapshotVersion></snapshotVersions></versioning></metadata>"#,
+        )
+        .expect("write metadata");
+
+        let jar_2 = version_dir.join("dep-1.0-20260112.123456-2.jar");
+        let jar_10 = version_dir.join("dep-1.0-20260112.123456-10.jar");
+        std::fs::write(&jar_2, "").expect("write jar 2");
+        std::fs::write(&jar_10, "").expect("write jar 10");
+
+        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        assert_eq!(resolved, jar_10);
+    }
+
+    #[test]
+    fn snapshot_dependency_jar_uses_snapshot_timestamp_and_build_number_when_versions_missing() {
+        let repo = tempfile::tempdir().expect("tempdir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        let version_dir = repo
+            .path()
+            .join("com")
+            .join("example")
+            .join("dep")
+            .join("1.0-SNAPSHOT");
+        std::fs::create_dir_all(&version_dir).expect("create version dir");
+
+        std::fs::write(
+            version_dir.join("maven-metadata-local.xml"),
+            r#"<metadata><versioning><snapshot><timestamp>20260112.123456</timestamp><buildNumber>10</buildNumber></snapshot></versioning></metadata>"#,
+        )
+        .expect("write metadata");
+
+        let jar_path = version_dir.join("dep-1.0-20260112.123456-10.jar");
+        std::fs::write(&jar_path, "").expect("write jar");
+
+        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        assert_eq!(resolved, jar_path);
+    }
+
+    #[test]
     fn resolve_snapshot_jar_file_name_prefers_highest_build_number() {
         let version_dir = tempfile::tempdir().expect("tempdir snapshot dir");
         std::fs::write(
@@ -2557,7 +2673,7 @@ mod tests {
         .expect("write snapshot jar 10");
 
         assert_eq!(
-            resolve_snapshot_jar_file_name(version_dir.path(), "dep", None),
+            resolve_snapshot_jar_file_name(version_dir.path(), "1.0", "dep", None),
             Some("dep-1.0-20260112.123456-10.jar".to_string()),
         );
     }
@@ -2594,7 +2710,7 @@ mod tests {
         .expect("write snapshot jar 10");
 
         assert_eq!(
-            resolve_snapshot_jar_file_name(version_dir.path(), "dep", None),
+            resolve_snapshot_jar_file_name(version_dir.path(), "1.0", "dep", None),
             Some("dep-1.0-20260112.123456-10.jar".to_string()),
         );
     }
