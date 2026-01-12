@@ -352,7 +352,14 @@ fn selected_module_root(
             }
         }
         nova_project::BuildSystem::Gradle => {
-            let path = params.project_path.as_deref().map(str::trim)?;
+            // `module` is a legacy alias for Gradle `projectPath` (similar to how
+            // `resolve_target` accepts it). Prefer the dedicated `projectPath` field but
+            // fall back to `module` for backwards compatibility with older clients.
+            let path = params
+                .project_path
+                .as_deref()
+                .or(params.module.as_deref())
+                .map(str::trim)?;
             super::gradle::resolve_gradle_module_root(&project.workspace_root, path)
         }
         nova_project::BuildSystem::Bazel | nova_project::BuildSystem::Simple => None,
@@ -602,6 +609,32 @@ mod tests {
         assert_eq!(
             selected_module_root(&project, &params),
             Some(dir.path().join("app").canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn selected_module_root_accepts_module_alias_for_gradle_project_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.gradle"),
+            "include ':app'\nproject(':app').projectDir = file('modules/application')\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("modules/application")).unwrap();
+
+        let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: dir.path().to_string_lossy().to_string(),
+            // Legacy clients may send `module` instead of `projectPath` for Gradle.
+            module: Some(":app".into()),
+            project_path: None,
+            target: None,
+        };
+
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(dir.path().join("modules/application").canonicalize().unwrap())
         );
     }
 
