@@ -341,7 +341,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found.')];
+      return [messageNode('No endpoints found')];
     }
 
     const normalized = endpoints
@@ -389,7 +389,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found.')];
+      return [messageNode('No endpoints found')];
     }
 
     const normalized = endpoints
@@ -423,7 +423,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const beans = Array.isArray(response.beans) ? response.beans : [];
     if (beans.length === 0) {
-      return [messageNode('No beans found.')];
+      return [messageNode('No beans found')];
     }
 
     const normalized = beans
@@ -517,8 +517,8 @@ function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
     return pathCmp;
   }
 
-  const aMethod = a.methods.length ? a.methods.join(', ') : 'ANY';
-  const bMethod = b.methods.length ? b.methods.join(', ') : 'ANY';
+  const aMethod = a.methods[0] ?? 'ANY';
+  const bMethod = b.methods[0] ?? 'ANY';
   const methodCmp = aMethod.localeCompare(bMethod);
   if (methodCmp !== 0) {
     return methodCmp;
@@ -533,7 +533,13 @@ function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
 
   const aLine = typeof a.line === 'number' && Number.isFinite(a.line) ? a.line : 0;
   const bLine = typeof b.line === 'number' && Number.isFinite(b.line) ? b.line : 0;
-  return aLine - bLine;
+  const lineCmp = aLine - bLine;
+  if (lineCmp !== 0) {
+    return lineCmp;
+  }
+
+  // Deterministic tie-breaker.
+  return a.methods.join(',').localeCompare(b.methods.join(','));
 }
 
 function compareMicronautEndpoint(a: MicronautEndpoint, b: MicronautEndpoint): number {
