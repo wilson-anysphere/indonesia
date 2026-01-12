@@ -148,6 +148,19 @@ fn canonicalize_decompiled_uri_leaves_canonical_uris_untouched() {
 }
 
 #[test]
+fn canonicalize_decompiled_uri_normalizes_canonical_form() {
+    let expected_hash = content_hash_for(DECOMPILER_SCHEMA_VERSION).to_string();
+    let upper_hash = expected_hash.to_ascii_uppercase();
+    let uri = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{upper_hash}/com\\example\\Foo.java");
+
+    let canonical = canonicalize_decompiled_uri(&uri, FOO_CLASS).expect("canonicalize");
+    assert_eq!(
+        canonical,
+        format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{expected_hash}/com.example.Foo.java")
+    );
+}
+
+#[test]
 fn parse_decompiled_uri_normalizes_uppercase_hash_to_lowercase() {
     let expected = content_hash_for(DECOMPILER_SCHEMA_VERSION).to_string();
     let upper = expected.to_ascii_uppercase();
