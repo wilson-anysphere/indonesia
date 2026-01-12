@@ -2771,12 +2771,27 @@ fn import_completions(
         .or_else(|_| fallback_jdk.all_binary_class_names())
         .unwrap_or(&[]);
 
+    // If the already-complete portion of the import path resolves to a type, treat this import as
+    // completing nested types (source syntax uses `.`, but binary names use `$`).
+    //
+    // Example: `import java.util.Map.E<cursor>;` should suggest `Entry`.
+    let nested_type_owner = ctx.base_prefix.strip_suffix('.').and_then(|owner| {
+        resolve_workspace_import_owner(&workspace, owner)
+            .or_else(|| resolve_static_import_owner(jdk.as_ref(), owner))
+            .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
+    });
+
     let mut workspace_packages: Vec<String> = workspace
         .packages()
         .filter(|pkg| pkg.starts_with(&ctx.prefix))
         .cloned()
         .collect();
     workspace_packages.sort();
+
+    let workspace_type_prefix = nested_type_owner
+        .as_deref()
+        .map(|owner_binary| format!("{owner_binary}${}", ctx.segment_prefix))
+        .unwrap_or_else(|| ctx.prefix.clone());
 
     let mut workspace_classes: Vec<String> = workspace
         .all_types()
@@ -2786,20 +2801,11 @@ fn import_completions(
             } else {
                 format!("{pkg}.{ty}")
             };
-            name.starts_with(&ctx.prefix).then_some(name)
+            name.starts_with(&workspace_type_prefix).then_some(name)
         })
         .collect();
     workspace_classes.sort();
     workspace_classes.dedup();
-
-    // If the already-complete portion of the import path resolves to a type, treat this import as
-    // completing nested types (source syntax uses `.`, but binary names use `$`).
-    //
-    // Example: `import java.util.Map.E<cursor>;` should suggest `Entry`.
-    let nested_type_owner = ctx.base_prefix.strip_suffix('.').and_then(|owner| {
-        resolve_static_import_owner(jdk.as_ref(), owner)
-            .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
-    });
 
     let mut items = Vec::new();
 
@@ -2865,14 +2871,14 @@ fn import_completions(
         if items.len() >= MAX_ITEMS {
             break;
         }
-        if !name.starts_with(&ctx.base_prefix) {
+        let source_name = name.replace('$', ".");
+        if !source_name.starts_with(&ctx.base_prefix) {
             continue;
         }
-        let mut remainder = name[ctx.base_prefix.len()..].to_string();
+        let remainder = source_name[ctx.base_prefix.len()..].to_string();
         if remainder.is_empty() {
             continue;
         }
-        remainder = remainder.replace('$', ".");
 
         if !seen_types.insert(remainder.clone()) {
             continue;
@@ -4648,6 +4654,21 @@ fn resolve_static_import_owner(jdk: &JdkIndex, owner: &str) -> Option<String> {
             .resolve_type(&QualifiedName::from_dotted(&candidate))
             .is_some()
         {
+            return Some(candidate);
+        }
+
+        let (prefix, last) = candidate.rsplit_once('.')?;
+        candidate = format!("{prefix}${last}");
+    }
+}
+
+fn resolve_workspace_import_owner(workspace: &WorkspaceJavaIndex, owner: &str) -> Option<String> {
+    // Import syntax uses `.` for nested types (e.g. `Outer.Inner`), but workspace indexing stores
+    // nested types in binary `$` form (`Outer$Inner`). Try progressively `$`-ifying suffixes until
+    // we find a type.
+    let mut candidate = owner.to_string();
+    loop {
+        if workspace.contains_fqn(&candidate) {
             return Some(candidate);
         }
 

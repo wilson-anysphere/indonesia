@@ -7,7 +7,7 @@ use nova_db::Database;
 /// This is intentionally lightweight:
 /// - It does not depend on the filesystem.
 /// - It does not build full syntax trees; parsing is token/line based.
-/// - It only indexes package declarations and top-level type names.
+/// - It indexes package declarations and importable type names (top-level + member types).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct WorkspaceJavaIndex {
     packages: HashSet<String>,
@@ -30,7 +30,7 @@ impl WorkspaceJavaIndex {
             let package = parse_package_name(text).unwrap_or_default();
             index.add_package_hierarchy(&package);
 
-            for type_name in parse_top_level_type_names(text) {
+            for type_name in parse_importable_type_names(text) {
                 index
                     .package_to_types
                     .entry(package.clone())
@@ -126,17 +126,32 @@ pub(crate) fn parse_package_name(text: &str) -> Option<String> {
     None
 }
 
-/// Parse top-level `class`/`interface`/`enum`/`record` type names.
+/// Parse importable type names (`class`/`interface`/`enum`/`record`).
 ///
-/// This is a best-effort parser that tracks brace depth and skips comments and
-/// string literals.
-pub(crate) fn parse_top_level_type_names(text: &str) -> Vec<String> {
+/// Returned names use the binary nested separator `$` (e.g. `Outer$Inner`).
+///
+/// This is a best-effort parser that:
+/// - tracks brace depth
+/// - tracks the current type nesting (by associating braces with type bodies)
+/// - ignores types declared inside method bodies / initializer blocks (non-importable local types)
+/// - skips comments and string/char literals
+pub(crate) fn parse_importable_type_names(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut names = Vec::new();
 
     let mut depth: i32 = 0;
     let mut current = String::new();
     let mut expecting_name = false;
+    let mut pending_type: Option<(String, i32)> = None;
+
+    #[derive(Debug, Clone)]
+    struct TypeFrame {
+        /// Binary nested name (`Outer$Inner`).
+        binary: String,
+        /// Brace depth immediately after the `{` that begins this type body.
+        body_depth: i32,
+    }
+    let mut type_stack: Vec<TypeFrame> = Vec::new();
 
     #[derive(Clone, Copy, Debug)]
     enum State {
@@ -162,11 +177,20 @@ pub(crate) fn parse_top_level_type_names(text: &str) -> Vec<String> {
 
                 if !current.is_empty() {
                     let tok = std::mem::take(&mut current);
-                    if expecting_name && depth == 0 && is_java_identifier(&tok) {
-                        names.push(tok);
+                    if expecting_name && is_java_identifier(&tok) {
+                        let binary = if let Some(parent) = type_stack.last() {
+                            format!("{}${tok}", parent.binary)
+                        } else {
+                            tok.clone()
+                        };
+                        names.push(binary.clone());
+                        pending_type = Some((binary, depth));
                         expecting_name = false;
                     } else {
-                        expecting_name = depth == 0
+                        let is_type_body_scope = type_stack
+                            .last()
+                            .is_some_and(|frame| depth == frame.body_depth);
+                        expecting_name = (depth == 0 || is_type_body_scope)
                             && matches!(tok.as_str(), "class" | "interface" | "enum" | "record");
                     }
                 }
@@ -174,11 +198,27 @@ pub(crate) fn parse_top_level_type_names(text: &str) -> Vec<String> {
                 match ch {
                     '{' => {
                         depth += 1;
+                        if let Some((binary, decl_depth)) = pending_type.take() {
+                            // Only treat this brace as a type body if it appears at the same brace
+                            // depth as where the type name was declared (best-effort).
+                            if decl_depth == depth - 1 {
+                                type_stack.push(TypeFrame {
+                                    binary,
+                                    body_depth: depth,
+                                });
+                            }
+                        }
                         expecting_name = false;
                         i += 1;
                     }
                     '}' => {
                         depth = depth.saturating_sub(1);
+                        while type_stack
+                            .last()
+                            .is_some_and(|frame| depth < frame.body_depth)
+                        {
+                            type_stack.pop();
+                        }
                         expecting_name = false;
                         i += 1;
                     }
@@ -264,8 +304,13 @@ pub(crate) fn parse_top_level_type_names(text: &str) -> Vec<String> {
         }
     }
 
-    if !current.is_empty() && expecting_name && depth == 0 && is_java_identifier(&current) {
-        names.push(current);
+    if !current.is_empty() && expecting_name && is_java_identifier(&current) {
+        let binary = if let Some(parent) = type_stack.last() {
+            format!("{}${}", parent.binary, current)
+        } else {
+            current.clone()
+        };
+        names.push(binary);
     }
 
     names

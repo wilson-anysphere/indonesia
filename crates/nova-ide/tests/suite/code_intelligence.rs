@@ -1760,9 +1760,9 @@ class A {}
 fn completion_type_position_nested_type_includes_entry() {
     let (db, file, pos) = fixture(
         r#"
-import java.util.Map;
-class A { Map.En<|> e; }
-"#,
+ import java.util.Map;
+ class A { Map.En<|> e; }
+ "#,
     );
 
     let items = completions(&db, file, pos);
@@ -1771,6 +1771,41 @@ class A { Map.En<|> e; }
         labels.contains(&"Entry"),
         "expected type-position completion list to contain Map.Entry; got {labels:?}"
     );
+}
+
+#[test]
+fn completion_in_import_workspace_nested_type_segment_includes_inner() {
+    let outer_path = PathBuf::from("/workspace/src/main/java/p/Outer.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let outer_text = "package p; public class Outer { public static class Inner {} }".to_string();
+    let text_with_caret = r#"
+package q;
+import p.Outer.I<|>;
+class A {}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, text_with_caret, vec![(outer_path, outer_text)]);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "Inner")
+        .expect("expected p.Outer.Inner nested type completion");
+
+    let text = text_with_caret.replace("<|>", "");
+    let segment_start = text
+        .find("Outer.I")
+        .expect("expected Outer.I in fixture")
+        + "Outer.".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, segment_start));
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]
