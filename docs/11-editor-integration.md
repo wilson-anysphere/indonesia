@@ -435,6 +435,14 @@ impl NovaServer {
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+Templates shipped with this repo:
+
+- VS Code: [`editors/vscode/README.md`](../editors/vscode/README.md)
+- Neovim: [`editors/neovim/README.md`](../editors/neovim/README.md)
+- Emacs: [`editors/emacs/README.md`](../editors/emacs/README.md)
+- Sublime Text: [`editors/sublime/README.md`](../editors/sublime/README.md)
+- Helix: [`editors/helix/README.md`](../editors/helix/README.md)
+
 ### VS Code Extension
 
 ```typescript
