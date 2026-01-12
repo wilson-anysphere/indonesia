@@ -7459,8 +7459,8 @@ fn record_lightweight_expr(
                 );
             }
         }
-        Expr::ArrayInitializer(initializer) => {
-            for item in &initializer.items {
+        Expr::ArrayInitializer(init) => {
+            for item in &init.items {
                 record_lightweight_expr(
                     file,
                     text,

@@ -3634,8 +3634,8 @@ fn instanceof_type_completions(
     let jdk = jdk_index();
     let classpath = classpath_index_for_file(db, file);
 
-    let mut add_binary_type = |binary: String| {
-        let simple = simple_name_from_binary(&binary);
+    let mut add_binary_type = |binary: &str| {
+        let simple = simple_name_from_binary(binary);
         if !prefix.is_empty() && !simple.starts_with(prefix) {
             return;
         }
@@ -3646,14 +3646,14 @@ fn instanceof_type_completions(
         let mut item = CompletionItem {
             label: simple.clone(),
             kind: Some(CompletionItemKind::CLASS),
-            detail: Some(binary.clone()),
+            detail: Some(binary.to_string()),
             insert_text: Some(simple),
             ..Default::default()
         };
 
-        if java_type_needs_import(&imports, &binary) {
+        if java_type_needs_import(&imports, binary) {
             item.additional_text_edits =
-                Some(vec![java_import_text_edit(text, text_index, &binary)]);
+                Some(vec![java_import_text_edit(text, text_index, binary)]);
         }
 
         items.push(item);
@@ -3671,22 +3671,29 @@ fn instanceof_type_completions(
     };
 
     // 3) JDK types.
+    let fallback_jdk = JdkIndex::new();
+    let jdk_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
     for pkg in &search_packages {
         let pkg_prefix = format!("{pkg}.");
         let query_prefix = format!("{pkg_prefix}{prefix}");
-        let Ok(names) = jdk.class_names_with_prefix(&query_prefix) else {
-            continue;
-        };
+        let query_prefix = normalize_binary_prefix(&query_prefix);
+        let start = jdk_names.partition_point(|name| name.as_str() < query_prefix.as_ref());
 
         let mut added_for_pkg = 0usize;
-        for name in names {
+        for name in &jdk_names[start..] {
             if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
                 break;
             }
-            if !name.starts_with(&pkg_prefix) {
-                continue;
+            if !name.starts_with(query_prefix.as_ref()) {
+                break;
             }
-            let rest = &name[pkg_prefix.len()..];
+
+            let Some(rest) = name.strip_prefix(pkg_prefix.as_str()) else {
+                continue;
+            };
             if rest.contains('.') || rest.contains('$') {
                 continue;
             }
@@ -3697,20 +3704,25 @@ fn instanceof_type_completions(
 
     // 4) Classpath types.
     if let Some(classpath) = classpath.as_ref() {
+        let classpath_names = classpath.binary_class_names();
         for pkg in &search_packages {
             let pkg_prefix = format!("{pkg}.");
             let query_prefix = format!("{pkg_prefix}{prefix}");
-            let names = classpath.class_names_with_prefix(&query_prefix);
+            let query_prefix = normalize_binary_prefix(&query_prefix);
+            let start =
+                classpath_names.partition_point(|name| name.as_str() < query_prefix.as_ref());
 
             let mut added_for_pkg = 0usize;
-            for name in names {
+            for name in &classpath_names[start..] {
                 if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
                     break;
                 }
-                if !name.starts_with(&pkg_prefix) {
-                    continue;
+                if !name.starts_with(query_prefix.as_ref()) {
+                    break;
                 }
-                let rest = &name[pkg_prefix.len()..];
+                let Some(rest) = name.strip_prefix(pkg_prefix.as_str()) else {
+                    continue;
+                };
                 if rest.contains('.') || rest.contains('$') {
                     continue;
                 }
@@ -4223,6 +4235,10 @@ fn qualified_type_name_completions(
 
     let jdk = jdk_index();
     let fallback_jdk = JdkIndex::new();
+    let jdk_class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
 
     let env = completion_cache::completion_env_for_file(db, file);
     let env_types = env.as_deref().map(|env| env.types());
@@ -4361,20 +4377,21 @@ fn qualified_type_name_completions(
             }
 
             // 2) JDK index types (includes nested types via `$` binary names).
-            let names = jdk
-                .class_names_with_prefix(&query_prefix)
-                .or_else(|_| fallback_jdk.class_names_with_prefix(&query_prefix))
-                .unwrap_or_default();
-
-            for binary in names {
+            let query_prefix = normalize_binary_prefix(query_prefix.as_str());
+            let start =
+                jdk_class_names.partition_point(|name| name.as_str() < query_prefix.as_ref());
+            for binary in &jdk_class_names[start..] {
                 if out.len() >= MAX_ITEMS {
+                    break;
+                }
+                if !binary.starts_with(query_prefix.as_ref()) {
                     break;
                 }
                 if !seen_binary.insert(binary.clone()) {
                     continue;
                 }
 
-                let source_full = binary_name_to_source_name(&binary);
+                let source_full = binary_name_to_source_name(binary.as_str());
                 let rendered = match head_mapping.as_ref() {
                     Some(map) if source_full.starts_with(map.qualified_head.as_str()) => {
                         format!(
@@ -7017,6 +7034,11 @@ fn type_completions(
 
     // JDK types.
     let jdk = jdk_index();
+    let fallback_jdk = JdkIndex::new();
+    let class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
 
     let mut prefixes = Vec::new();
     if query.qualifier_prefix.is_empty()
@@ -7029,12 +7051,21 @@ fn type_completions(
     }
 
     for prefix in prefixes {
-        let Ok(names) = jdk.class_names_with_prefix(&prefix) else {
-            continue;
-        };
+        let prefix = normalize_binary_prefix(&prefix);
+        let start = class_names.partition_point(|name| name.as_str() < prefix.as_ref());
+        let mut visited = 0usize;
+        let remaining = LIMIT.saturating_sub(items.len());
+        for name in &class_names[start..] {
+            if visited >= remaining {
+                break;
+            }
+            if !name.starts_with(prefix.as_ref()) {
+                break;
+            }
+            visited += 1;
 
-        for name in names.into_iter().take(LIMIT.saturating_sub(items.len())) {
-            let simple = name.rsplit('.').next().unwrap_or(name.as_str());
+            let name = name.as_str();
+            let simple = name.rsplit('.').next().unwrap_or(name);
             // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
             if simple.contains('$') {
                 continue;
@@ -7048,7 +7079,7 @@ fn type_completions(
             items.push(CompletionItem {
                 label: simple,
                 kind: Some(CompletionItemKind::CLASS),
-                detail: Some(name),
+                detail: Some(name.to_string()),
                 ..Default::default()
             });
 
