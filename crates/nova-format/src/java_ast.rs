@@ -345,21 +345,25 @@ struct TokenFormatState<'a> {
 #[derive(Debug, Clone)]
 enum SigToken {
     Token { kind: SyntaxKind, text: String },
-    GenericClose { after_dot: bool },
+    GenericClose { kind: SyntaxKind, after_dot: bool },
 }
 
 impl SigToken {
     fn kind(&self) -> Option<SyntaxKind> {
         match self {
             SigToken::Token { kind, .. } => Some(*kind),
-            SigToken::GenericClose { .. } => None,
+            SigToken::GenericClose { kind, .. } => Some(*kind),
         }
     }
 
     fn text(&self) -> &str {
         match self {
             SigToken::Token { text, .. } => text,
-            SigToken::GenericClose { .. } => ">",
+            SigToken::GenericClose { kind, .. } => match kind {
+                SyntaxKind::RightShift => ">>",
+                SyntaxKind::UnsignedRightShift => ">>>",
+                _ => ">",
+            },
         }
     }
 }
@@ -535,6 +539,21 @@ impl<'a> TokenFormatState<'a> {
                 if self.generic_depth() > 0 =>
             {
                 self.write_indent(out);
+                if let Some(last) = self.last_sig.as_ref() {
+                    // Some `>`-family tokens are split/retokenized by the rowan Java parser in
+                    // generic contexts (e.g. a `>>` close may surface as two `>` tokens). Only
+                    // insert a separator when the *source* contained trivia between the tokens;
+                    // otherwise we'd turn an existing `>>` into `> >` and break idempotence.
+                    if needs_space_to_avoid_token_merge(last, kind)
+                        && idx > 0
+                        && matches!(
+                            tokens.get(idx - 1).map(|t| t.kind()),
+                            Some(SyntaxKind::Whitespace)
+                        )
+                    {
+                        self.ensure_space(out);
+                    }
+                }
                 out.push_str(text);
                 let after_dot = match kind {
                     SyntaxKind::Greater => self.pop_generic(1),
@@ -542,7 +561,7 @@ impl<'a> TokenFormatState<'a> {
                     SyntaxKind::UnsignedRightShift => self.pop_generic(3),
                     _ => false,
                 };
-                let sig = SigToken::GenericClose { after_dot };
+                let sig = SigToken::GenericClose { kind, after_dot };
                 self.last_sig = Some(sig.clone());
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
@@ -866,7 +885,7 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     }
 
     match last {
-        SigToken::GenericClose { after_dot } => {
+        SigToken::GenericClose { after_dot, .. } => {
             if *after_dot {
                 return false;
             }
@@ -890,28 +909,24 @@ fn is_control_keyword(text: &str) -> bool {
 }
 
 fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> bool {
-    let SigToken::Token {
-        kind: last_kind,
-        text: last_text,
-    } = last
-    else {
-        return false;
+    let (last_kind, last_text) = match last {
+        SigToken::Token { kind, text } => (*kind, text.as_str()),
+        SigToken::GenericClose { kind, .. } => (*kind, last.text()),
     };
 
-    if is_numeric_literal_kind(*last_kind) && next_kind == SyntaxKind::Dot {
+    if is_numeric_literal_kind(last_kind) && next_kind == SyntaxKind::Dot {
         return true;
     }
-    if *last_kind == SyntaxKind::Dot && is_numeric_literal_kind(next_kind) {
+    if last_kind == SyntaxKind::Dot && is_numeric_literal_kind(next_kind) {
         return true;
     }
 
     // Avoid synthesizing the `non-sealed` restricted keyword from spaced `non - sealed` tokens.
-    if *last_kind == SyntaxKind::Identifier && last_text == "non" && next_kind == SyntaxKind::Minus
-    {
+    if last_kind == SyntaxKind::Identifier && last_text == "non" && next_kind == SyntaxKind::Minus {
         return true;
     }
 
-    match (*last_kind, next_kind) {
+    match (last_kind, next_kind) {
         // Keep `:` tokens separated so we don't accidentally create a `::` method reference token
         // when the input contains `: :`.
         (SyntaxKind::Colon, SyntaxKind::Colon) => true,

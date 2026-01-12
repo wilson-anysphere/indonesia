@@ -336,6 +336,33 @@ class Foo {
 }
 
 #[test]
+fn ast_formatting_does_not_merge_spaced_generic_closes() {
+    // Some older Java code bases still use `> >` to close nested generics. The AST formatter should
+    // not collapse those tokens into `>>`, which would change lexing across passes.
+    let input = "class Foo{java.util.Map<String,java.util.List<Integer> > map;}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert!(
+        formatted.contains("> > map"),
+        "expected spaced generic closes: {formatted}"
+    );
+    assert!(
+        !formatted.contains(">> map"),
+        "did not expect merged shift token: {formatted}"
+    );
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    java.util.Map<String, java.util.List<Integer> > map;
+}
+"###
+    );
+}
+
+#[test]
 fn formats_instanceof_pattern_with_generic_type() {
     let input = "class Foo{void m(Object x){if(x instanceof java.util.List<String>xs){}}}\n";
     let parse = parse_java(input);
