@@ -63,7 +63,7 @@ pub use crate::bsp::target_compile_info_via_bsp;
 ///
 /// This is `pub` so it can be used from integration tests (which compile `nova-build-bazel` as a
 /// normal dependency, without `cfg(test)`).
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 #[doc(hidden)]
 pub mod test_support {
     pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

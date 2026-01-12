@@ -336,14 +336,10 @@ fn read_truncated_to_string_and_drain<R: Read>(reader: R, limit: u64) -> io::Res
 mod tests {
     use super::{default_bazel_query_timeout, read_truncated_to_string_and_drain};
     use std::io::{Cursor, Read};
-    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
     fn with_query_timeout_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
+        let _guard = crate::test_support::ENV_LOCK
             .lock()
             .expect("env lock poisoned");
 
