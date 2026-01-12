@@ -130,7 +130,10 @@ fn load_document_is_miss_and_deletes_invalid_json_metadata() {
 
     let loaded = store.load_document(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
-    assert!(!meta_path.exists(), "invalid JSON metadata should be deleted");
+    assert!(
+        !meta_path.exists(),
+        "invalid JSON metadata should be deleted"
+    );
     assert_eq!(
         store
             .load_text(content_hash, binary_name)
@@ -490,7 +493,10 @@ fn invalid_utf8_text_is_treated_as_cache_miss_and_deleted() {
 
     let loaded = store.load_text(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
-    assert!(!path.exists(), "invalid UTF-8 cache entry should be deleted");
+    assert!(
+        !path.exists(),
+        "invalid UTF-8 cache entry should be deleted"
+    );
 }
 
 #[cfg(unix)]

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod codec;
-mod rpc_out;
 mod rename_lsp;
+mod rpc_out;
 
 use crossbeam_channel::{Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};

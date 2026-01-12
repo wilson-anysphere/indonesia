@@ -4277,9 +4277,8 @@ fn incremental_edit_preserves_outer_block_errors_at_eof() {
     // incremental reparsing must preserve *all* outer "close block" diagnostics so they match a
     // full parse.
     let prefix = "class Bar {}\n";
-    let old_text = format!(
-        "{prefix}class Foo {{\n  void m() {{\n    if (true) {{\n      int x = 1;\n"
-    );
+    let old_text =
+        format!("{prefix}class Foo {{\n  void m() {{\n    if (true) {{\n      int x = 1;\n");
     let old = parse_java(&old_text);
 
     let one_offset = old_text.find("1").unwrap() as u32;

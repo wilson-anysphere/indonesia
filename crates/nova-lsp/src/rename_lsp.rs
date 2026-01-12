@@ -30,10 +30,7 @@ mod tests {
         let old_file = nova_refactor::FileId::new("file:///Old.java");
         let new_file = nova_refactor::FileId::new("file:///New.java");
 
-        let db = nova_refactor::TextDatabase::new([(
-            old_file.clone(),
-            "class Old {}".to_string(),
-        )]);
+        let db = nova_refactor::TextDatabase::new([(old_file.clone(), "class Old {}".to_string())]);
 
         let edit = nova_refactor::WorkspaceEdit {
             file_ops: vec![nova_refactor::FileOp::Rename {
@@ -59,4 +56,3 @@ mod tests {
         );
     }
 }
-

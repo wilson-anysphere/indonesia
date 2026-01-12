@@ -797,7 +797,8 @@ fn shift_preserved_errors(
 
     for e in errors {
         let is_before = e.range.end < reparsed_old_range.start
-            || (e.range.end == reparsed_old_range.start && e.range.start < reparsed_old_range.start);
+            || (e.range.end == reparsed_old_range.start
+                && e.range.start < reparsed_old_range.start);
         if is_before {
             preserved.push(e.clone());
             continue;
