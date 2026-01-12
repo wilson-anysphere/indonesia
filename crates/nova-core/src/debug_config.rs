@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchConfig {
-    /// Host to connect the JDWP client to. Defaults to `127.0.0.1`.
+    /// Host to connect the JDWP client to (IP address or hostname). Defaults to `127.0.0.1`.
     pub host: Option<String>,
     /// JDWP port.
     pub port: Option<u16>,
@@ -17,7 +17,7 @@ pub struct LaunchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachConfig {
-    /// Host to connect the JDWP client to. Defaults to `127.0.0.1`.
+    /// Host to connect the JDWP client to (IP address or hostname). Defaults to `127.0.0.1`.
     pub host: Option<String>,
     /// JDWP port.
     pub port: u16,
