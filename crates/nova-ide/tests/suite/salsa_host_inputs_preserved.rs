@@ -102,29 +102,29 @@ class A {
     salsa.with_snapshot(|snap| {
         assert!(
             snap.classpath_index(project).is_some(),
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided classpath index"
+            "expected `core_file_diagnostics` to preserve the host-provided classpath index when reusing a caller-provided Salsa database"
         );
         assert!(
             Arc::ptr_eq(&snap.jdk_index(project).0, &custom_jdk),
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided jdk index"
+            "expected `core_file_diagnostics` to preserve the host-provided jdk index when reusing a caller-provided Salsa database"
         );
         assert_eq!(
             snap.file_project(file),
             file_project,
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided file project"
+            "expected `core_file_diagnostics` to preserve the host-provided file project when reusing a caller-provided Salsa database"
         );
         assert_eq!(
             snap.source_root(file),
             source_root,
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided source root"
+            "expected `core_file_diagnostics` to preserve the host-provided source root when reusing a caller-provided Salsa database"
         );
         assert!(
             Arc::ptr_eq(&snap.file_rel_path(file), &file_rel_path),
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided file_rel_path"
+            "expected `core_file_diagnostics` to preserve the host-provided file_rel_path when reusing a caller-provided Salsa database"
         );
         assert!(
             Arc::ptr_eq(&snap.project_files(project), &project_files),
-            "expected `ensure_salsa_inputs_for_single_file` to preserve the host-provided project_files ordering"
+            "expected `core_file_diagnostics` to preserve the host-provided project_files ordering when reusing a caller-provided Salsa database"
         );
     });
 }
