@@ -32,7 +32,9 @@ fn runner() -> &'static Runner {
                 let tree = nova_syntax::parse(text);
                 let line_index = nova_core::LineIndex::new(text);
 
-                let offset = clamp_to_char_boundary(text, read_u64_le(bytes, 0) as usize);
+                let len_plus_one = text.len().saturating_add(1);
+                let offset =
+                    clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
                 let offset = nova_core::TextSize::from(offset as u32);
                 let position = line_index.position(text, offset);
 
@@ -103,4 +105,3 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
-

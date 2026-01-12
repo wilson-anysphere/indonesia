@@ -32,8 +32,11 @@ fn runner() -> &'static Runner {
                 let tree = nova_syntax::parse(text);
                 let line_index = nova_core::LineIndex::new(text);
 
-                let start = clamp_to_char_boundary(text, read_u64_le(bytes, 0) as usize);
-                let end = clamp_to_char_boundary(text, read_u64_le(bytes, 8) as usize);
+                let len_plus_one = text.len().saturating_add(1);
+                let start =
+                    clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
+                let end =
+                    clamp_to_char_boundary(text, (read_u64_le(bytes, 8) as usize) % len_plus_one);
                 let (start, end) = if start <= end { (start, end) } else { (end, start) };
 
                 let start = nova_core::TextSize::from(start as u32);
@@ -113,4 +116,3 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
-
