@@ -5364,30 +5364,42 @@ fn java_string_escape_completions(
 
     // Unicode escape snippet. We show a concrete label but insert a snippet so users can type the
     // 4 hex digits quickly.
-    if prefix.is_empty()
-        || prefix.starts_with('u')
-            && prefix
-                .strip_prefix('u')
-                .is_some_and(|digits| digits.len() <= 4 && digits.chars().all(|c| c.is_ascii_hexdigit()))
-    {
-        let digits = prefix.strip_prefix('u').unwrap_or("");
-        let missing = 4usize.saturating_sub(digits.len());
-        let label = format!(r#"\u{}{}"#, digits, "0".repeat(missing));
-        let (insert_text, insert_text_format) = if missing == 0 {
-            (label.clone(), None)
-        } else {
-            (
-                format!(r#"\u{}${{1:{}}}"#, digits, "0".repeat(missing)),
-                Some(InsertTextFormat::SNIPPET),
-            )
-        };
+    //
+    // Java also allows multiple `u`s in unicode escapes (e.g. `\\uuuu0041`), so we keep suggesting
+    // unicode completions when the user has typed `u+` followed by up to 4 hex digits.
+    if prefix.is_empty() {
         items.push(CompletionItem {
-            label,
+            label: r#"\u0000"#.to_string(),
             kind: Some(CompletionItemKind::SNIPPET),
-            insert_text: Some(insert_text),
-            insert_text_format,
+            insert_text: Some(r#"\u${1:0000}"#.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
             ..Default::default()
         });
+    } else {
+        let u_run = prefix.chars().take_while(|c| *c == 'u').count();
+        if u_run > 0 {
+            let digits = prefix.get(u_run..).unwrap_or("");
+            if digits.len() <= 4 && digits.chars().all(|c| c.is_ascii_hexdigit()) {
+                let missing = 4usize.saturating_sub(digits.len());
+                let u_prefix = "u".repeat(u_run);
+                let label = format!(r#"\{u_prefix}{digits}{}"#, "0".repeat(missing));
+                let (insert_text, insert_text_format) = if missing == 0 {
+                    (label.clone(), None)
+                } else {
+                    (
+                        format!(r#"\{u_prefix}{digits}${{1:{}}}"#, "0".repeat(missing)),
+                        Some(InsertTextFormat::SNIPPET),
+                    )
+                };
+                items.push(CompletionItem {
+                    label,
+                    kind: Some(CompletionItemKind::SNIPPET),
+                    insert_text: Some(insert_text),
+                    insert_text_format,
+                    ..Default::default()
+                });
+            }
+        }
     }
 
     // Non-identifier escapes (`\\`, `\"`, `\'`) are only useful when the user hasn't started
