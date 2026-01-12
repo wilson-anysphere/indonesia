@@ -240,7 +240,9 @@ class A {
         .collect();
     assert_eq!(foo_methods.len(), 1);
 
-    let method = index.find_method("A", "foo").expect("method symbol missing");
+    let method = index
+        .find_method("A", "foo")
+        .expect("method symbol missing");
     let file_text = index.file_text(&method.file).unwrap();
     let decl_text = &file_text[method.decl_range.start..method.decl_range.end];
 
@@ -318,9 +320,15 @@ class A {
         .find_method_by_signature("A", "foo", &["int"])
         .expect("int overload exists");
 
-    assert_ne!(no_args.id, int_arg.id, "overloads should be distinct symbols");
+    assert_ne!(
+        no_args.id, int_arg.id,
+        "overloads should be distinct symbols"
+    );
     assert_eq!(no_args.param_types.as_deref(), Some(&[][..]));
-    assert_eq!(int_arg.param_types.as_deref(), Some(&["int".to_string()][..]));
+    assert_eq!(
+        int_arg.param_types.as_deref(),
+        Some(&["int".to_string()][..])
+    );
 }
 
 #[test]
@@ -402,4 +410,24 @@ class B {
             .unwrap_or_else(|| panic!("missing symbol id: {:?}", sym.id));
         assert!(std::ptr::eq(sym, found));
     }
+}
+
+#[test]
+fn field_initializer_with_uppercase_comparison_does_not_break_declarator_splitting() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        "class A { boolean lt = A < B, ge = true; }\n".to_string(),
+    );
+    let index = Index::new(files);
+
+    let fields: Vec<_> = index
+        .symbols()
+        .iter()
+        .filter(|sym| sym.kind == SymbolKind::Field && sym.container.as_deref() == Some("A"))
+        .collect();
+    assert_eq!(
+        fields.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        vec!["lt", "ge"]
+    );
 }

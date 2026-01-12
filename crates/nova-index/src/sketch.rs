@@ -1341,6 +1341,7 @@ fn looks_like_generic_angle_open(text: &str, lt_pos: usize) -> bool {
     while end > 0 && bytes[end - 1].is_ascii_whitespace() {
         end -= 1;
     }
+    let had_whitespace = end != lt_pos;
     if end == 0 {
         return false;
     }
@@ -1367,7 +1368,19 @@ fn looks_like_generic_angle_open(text: &str, lt_pos: usize) -> bool {
     if !first.is_ascii_uppercase() {
         return false;
     }
-    token.len() == 1 || token.chars().any(|c| c.is_ascii_lowercase())
+    let has_lowercase = token.chars().any(|c| c.is_ascii_lowercase());
+    if has_lowercase {
+        return true;
+    }
+
+    // Single-letter tokens are frequently used as generic type parameters (`T`, `K`, ...). Require
+    // them to be adjacent to `<` to avoid misclassifying comparisons like `A < B`.
+    if token.len() == 1 {
+        return !had_whitespace;
+    }
+
+    // Allow ALLCAPS identifiers like `URL<String>` when adjacent to `<`.
+    !had_whitespace
 }
 
 fn split_top_level_ranges(text: &str, sep: u8) -> Vec<(usize, usize)> {
