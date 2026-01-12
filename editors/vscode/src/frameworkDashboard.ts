@@ -85,7 +85,7 @@ export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; p
       return vscode.Uri.file(path.join(projectRoot, raw));
     }
 
-    // Avoid guessing in multi-root workspaces: resolving against the "first" workspace folder can
+    // Avoid guessing in multi-root workspaces: resolving against an arbitrary workspace folder can
     // open unrelated paths. Prefer returning `undefined` unless we have a strong hint.
     const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
     if (workspaceFolders.length === 1) {
