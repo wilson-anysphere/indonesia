@@ -858,8 +858,10 @@ async fn handle_request_inner(
                 let mut sess = session.lock().await;
                 sess.lifecycle = LifecycleState::LaunchedOrAttached;
                 sess.kind = Some(SessionKind::Launch);
-                let needs_config_done_resume =
-                    matches!(mode, LaunchMode::Java) && args.stop_on_entry;
+                // DAP clients typically send `configurationDone` after breakpoint configuration.
+                // When `stopOnEntry` is enabled (or defaulted), keep the debuggee suspended until
+                // configuration is complete, then resume via JDWP `VirtualMachine.Resume`.
+                let needs_config_done_resume = args.stop_on_entry;
                 let resume_after_launch =
                     needs_config_done_resume && sess.configuration_done_received;
                 sess.awaiting_configuration_done_resume =

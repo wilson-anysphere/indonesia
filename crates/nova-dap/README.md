@@ -23,10 +23,17 @@ If breakpoint/exception configuration arrives before the debugger is attached,
 `nova-dap` caches it and applies it automatically once `attach`/`launch`
 completes.
 
-If `stopOnEntry=true` is used with a direct Java `launch`, the debuggee is started
-with JDWP `suspend=y` and will remain suspended until the client sends
-`configurationDone`. (If a client sends `configurationDone` early, before
-`launch`, `nova-dap` will resume automatically once `launch` completes.)
+If `stopOnEntry=true` is used (or defaulted) with `launch`, `nova-dap` keeps the
+debuggee suspended until the client sends `configurationDone`, then resumes via
+JDWP `VirtualMachine.Resume`.
+
+- For a direct Java `launch`, `nova-dap` starts the debuggee with JDWP `suspend=y`.
+- For a command-based `launch`, build tools like Maven Surefire debug /
+  Gradle `--debug-jvm` typically start the JVM suspended; `nova-dap` will resume
+  it once configuration is complete.
+
+(If a client sends `configurationDone` early, before `launch`, `nova-dap` will
+resume automatically once `launch` completes.)
 
 ## Debugging a simple Java program (manual)
 
@@ -119,7 +126,11 @@ Schema (DAP `launch` arguments):
   // Optional (defaults shown)
   "host": "127.0.0.1",
   "port": 5005,
-  "attachTimeoutMs": 30000
+  "attachTimeoutMs": 30000,
+
+  // Optional (default shown): when true, wait for `configurationDone` and then
+  // resume the VM via JDWP `VirtualMachine.Resume`.
+  "stopOnEntry": true
 }
 ```
 
@@ -145,11 +156,14 @@ Schema (DAP `launch` arguments):
   "cwd": "/path/to/project",           // optional
   "env": { "KEY": "VALUE" },           // optional
 
+  "stopOnEntry": true,                 // optional (default shown)
+
   "attachTimeoutMs": 30000             // optional
 }
 ```
 
-The adapter picks a free TCP port, injects a JDWP agent with `suspend=y`, then attaches.
+The adapter picks a free TCP port, injects a JDWP agent with
+`suspend={y|n}` (based on `stopOnEntry`), then attaches.
 
 ## Termination semantics
 
