@@ -1291,14 +1291,17 @@ impl ServerState {
                 memory_events.lock().unwrap().push(event);
             })
         });
-        // File texts are *inputs* (not caches) and are effectively non-evictable
-        // while a document is open. We still want their footprint to contribute
-        // to overall memory pressure and drive eviction of caches/memos.
+        // Overlay document texts are *inputs* (not caches) and are effectively
+        // non-evictable while a document is open. We still want their footprint
+        // to contribute to overall memory pressure and drive eviction of
+        // caches/memos.
         //
-        // We track them under `Other` to reflect their "input" nature; the
-        // memory manager is responsible for compensating across categories when
-        // large non-evictable consumers dominate.
-        let documents_memory = memory.register_tracker("open_documents", MemoryCategory::Other);
+        // We track them under `Other` to reflect their "input" nature; the memory manager is
+        // responsible for compensating across categories when large non-evictable consumers dominate.
+        //
+        // NOTE: We track the entire VFS in-memory text footprint (overlay documents + cached virtual
+        // documents) so decompiled JDK sources also contribute to memory pressure.
+        let documents_memory = memory.register_tracker("vfs_documents", MemoryCategory::Other);
 
         #[cfg(feature = "ai")]
         let completion_service = {
@@ -2040,12 +2043,7 @@ impl ServerState {
     }
 
     fn refresh_document_memory(&mut self) {
-        let open = self.analysis.vfs.open_documents().snapshot();
-        let total: u64 = open
-            .iter()
-            .filter_map(|id| self.analysis.file_contents.get(id))
-            .map(|text| text.len() as u64)
-            .sum();
+        let total = self.analysis.vfs.estimated_bytes() as u64;
         self.documents_memory.tracker().set_bytes(total);
         self.memory.enforce();
     }
@@ -4640,6 +4638,9 @@ fn goto_definition_jdk(
         .analysis
         .vfs
         .store_virtual_document(vfs_path, decompiled.text);
+    // Virtual documents are cached outside the "open documents" set; refresh our coarse memory
+    // accounting so they still contribute to memory pressure and can trigger eviction elsewhere.
+    state.refresh_document_memory();
 
     Some(lsp_types::Location {
         uri,

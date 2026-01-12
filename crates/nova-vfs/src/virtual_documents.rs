@@ -93,6 +93,18 @@ impl VirtualDocumentStore {
         inner.lru.get(path).cloned()
     }
 
+    /// Best-effort estimate of the total number of UTF-8 bytes stored in the cache.
+    ///
+    /// This tracks `text.len()` for each cached virtual document (not capacity) and is intended
+    /// for coarse memory accounting and telemetry.
+    pub fn estimated_bytes(&self) -> usize {
+        let inner = self
+            .inner
+            .lock()
+            .expect("virtual document store mutex poisoned");
+        inner.total_bytes
+    }
+
     /// Returns whether the store contains an entry for `path`.
     ///
     /// Non-decompiled paths always return `false`.

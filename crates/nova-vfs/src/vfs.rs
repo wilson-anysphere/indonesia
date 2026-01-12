@@ -54,6 +54,20 @@ impl<F: FileSystem> Vfs<F> {
         &self.fs
     }
 
+    /// Best-effort estimate of the total number of UTF-8 bytes held in memory by this VFS.
+    ///
+    /// This includes:
+    /// - editor overlay documents (open buffers)
+    /// - cached virtual documents (decompiled sources, etc.)
+    ///
+    /// Values are tracked using `text.len()` (not `String` capacity) and are intended for coarse
+    /// memory accounting (`nova-memory`) and diagnostics.
+    pub fn estimated_bytes(&self) -> usize {
+        self.fs
+            .estimated_bytes()
+            .saturating_add(self.virtual_documents.estimated_bytes())
+    }
+
     /// Returns a shared handle to the set of open document ids.
     pub fn open_documents(&self) -> Arc<OpenDocuments> {
         self.open_docs.clone()

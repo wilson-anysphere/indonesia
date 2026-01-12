@@ -349,10 +349,10 @@ impl WorkspaceEngine {
         query_db.set_syntax_tree_store(syntax_trees);
 
         let overlay_docs_memory_registration =
-            memory.register_tracker("vfs_overlay_documents", MemoryCategory::Other);
+            memory.register_tracker("vfs_documents", MemoryCategory::Other);
         overlay_docs_memory_registration
             .tracker()
-            .set_bytes(vfs.overlay().estimated_bytes() as u64);
+            .set_bytes(vfs.estimated_bytes() as u64);
         let default_project = ProjectId::from_raw(0);
         // Ensure fundamental project inputs are always initialized so callers can safely
         // start with an empty/in-memory workspace.
@@ -1141,24 +1141,28 @@ impl WorkspaceEngine {
 
                 // Periodically enforce memory budgets while indexing runs. If we hit critical
                 // pressure, request Salsa cancellation and mark the run as aborted.
+                //
+                // Use the scheduler's IO runtime instead of spawning a dedicated OS thread.
+                // This keeps indexing robust in constrained environments (tests/CI) where thread
+                // creation can fail (`EAGAIN`).
                 let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let aborted_due_to_memory = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let stop_for_thread = Arc::clone(&stop_flag);
-                let aborted_for_thread = Arc::clone(&aborted_due_to_memory);
-                let memory_for_thread = memory.clone();
-                let query_db_for_thread = query_db.clone();
-                let enforcer = thread::spawn(move || {
-                    while !stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
-                        thread::sleep(ENFORCE_INTERVAL);
-                        if stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                let stop_for_task = Arc::clone(&stop_flag);
+                let aborted_for_task = Arc::clone(&aborted_due_to_memory);
+                let memory_for_task = memory.clone();
+                let query_db_for_task = query_db.clone();
+                let enforcer_handle = scheduler.io_handle().spawn(async move {
+                    loop {
+                        tokio::time::sleep(ENFORCE_INTERVAL).await;
+                        if stop_for_task.load(std::sync::atomic::Ordering::Relaxed) {
                             break;
                         }
-                        let report = memory_for_thread.enforce();
+                        let report = memory_for_task.enforce();
                         if report.pressure == MemoryPressure::Critical
                             || report.degraded.background_indexing == BackgroundIndexingMode::Paused
                         {
-                            aborted_for_thread.store(true, std::sync::atomic::Ordering::Relaxed);
-                            query_db_for_thread.request_cancellation();
+                            aborted_for_task.store(true, std::sync::atomic::Ordering::Relaxed);
+                            query_db_for_task.request_cancellation();
                             break;
                         }
                     }
@@ -1219,7 +1223,7 @@ impl WorkspaceEngine {
                 };
 
                 stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                let _ = enforcer.join();
+                enforcer_handle.abort();
                 // Always abort the cancellation watcher (even when Salsa cancels).
                 cancel_handle.abort();
 
@@ -1510,7 +1514,7 @@ impl WorkspaceEngine {
     fn sync_overlay_documents_memory(&self) {
         self.overlay_docs_memory_registration
             .tracker()
-            .set_bytes(self.vfs.overlay().estimated_bytes() as u64);
+            .set_bytes(self.vfs.estimated_bytes() as u64);
     }
 
     pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {
@@ -2687,7 +2691,7 @@ mod tests {
             let (_report, components) = memory.report_detailed();
             components
                 .iter()
-                .find(|c| c.name == "vfs_overlay_documents")
+                .find(|c| c.name == "vfs_documents")
                 .map(|c| c.bytes)
                 .unwrap_or(0)
         }

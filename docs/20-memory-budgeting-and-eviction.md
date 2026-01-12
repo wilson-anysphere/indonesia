@@ -76,11 +76,11 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 
 | Component | Crate | Category | Tracked? | Notes |
 |---|---|---:|---:|---|
-| Open document text (editor buffers) | `nova-lsp` | Other | yes | Tracked via `documents_memory` registration (`crates/nova-lsp/src/main.rs`) |
+| VFS in-memory documents (overlay + virtual) | `nova-lsp` | Other | yes | Tracked via `Vfs::estimated_bytes()` (`crates/nova-lsp/src/main.rs`) |
 | Salsa inputs (file contents) | `nova-db` | Other | yes | `SalsaInputFootprint` tracks per-file `file_content` sizes (registered via `register_salsa_memo_evictor`). Although these inputs are not evictable, they still drive cache eviction via `MemoryManager` cross-category compensation. |
 | Classpath index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `ClasspathIndex::estimated_bytes()` |
 | JDK index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `JdkIndex::estimated_bytes()` |
-| VFS overlay documents | `nova-workspace` | Other | yes | Tracked via `OverlayFs::estimated_bytes()` |
+| VFS in-memory documents (overlay + virtual) | `nova-workspace` | Other | yes | Tracked via `Vfs::estimated_bytes()` |
 
 ### Major gaps (high impact)
 
@@ -95,13 +95,13 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
    - Classpath/JDK indexes (arguably “type info”) are currently tracked under `Indexes`.
    - No component registers under `TypeInfo`, so the budget split is not meaningful for real-world
      sessions.
-4. **Multiple memory managers per process (partially addressed)**
-   - `nova-workspace::Workspace::open_with_memory_manager(...)` allows a host process to share a
-     single `MemoryManager` across components (workspace, symbol search, query caches, etc.).
-   - `nova-lsp` should prefer `open_with_memory_manager` whenever it constructs a workspace.
-5. **LSP overlay-only documents may be untracked**
-   - LSP tracks editor-open document text sizes, but virtual/decompiled overlay documents opened
-     without updating the open-doc set can escape that accounting.
+4. **Ensure hosts reuse a single `MemoryManager`**
+   - `nova-workspace` provides `Workspace::open_with_memory_manager(...)` for host processes that
+     want one shared pressure view across components.
+   - `nova-lsp` should (and does) reuse its server-level memory manager when instantiating a
+     workspace (so query cache + symbol search + Salsa memo eviction all cooperate).
+   - Other entry points (CLIs, tests) should follow this pattern when multiple components are used
+     in the same process.
 
 These gaps matter because `MemoryManager` uses RSS as an upper bound for *pressure*, but it can
 only evict *tracked + evictable* components. If RSS is dominated by untracked memory, Nova will
