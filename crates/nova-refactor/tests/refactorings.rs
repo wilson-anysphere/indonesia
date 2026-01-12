@@ -3730,6 +3730,49 @@ class Test {
 }
 
 #[test]
+fn rename_type_does_not_touch_comments_inside_explicit_type_arguments() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {}
+
+class Test {
+  <T> void m() {}
+
+  void use() {
+    this.</*Foo*/Foo>m();
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
+    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("this.</*Foo*/Bar>m();"),
+        "expected type argument to be renamed but comment preserved: {after}"
+    );
+    assert!(
+        after.contains("/*Foo*/"),
+        "expected comment contents to remain unchanged: {after}"
+    );
+    assert!(
+        !after.contains("/*Bar*/"),
+        "expected rename to not update comment contents: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
