@@ -10,5 +10,3 @@
 # `stale-test-layout-allowlist-entry` warnings.
 #
 # One crate name per line. `#` comments and blank lines are ignored.
-
-nova-refactor

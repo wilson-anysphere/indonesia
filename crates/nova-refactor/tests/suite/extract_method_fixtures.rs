@@ -4,6 +4,10 @@ use nova_test_utils::{assert_fixture_transformed, extract_range};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+fn fixture_dir(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
+}
+
 fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
     let by_id: BTreeMap<FileId, String> = files
         .iter()
@@ -49,39 +53,39 @@ fn assert_extract_method_fixture(before: &Path, after: &Path) {
 #[test]
 fn extract_method_multi_statement_selection() {
     assert_extract_method_fixture(
-        Path::new("tests/fixtures/extract_method_multi_statement/before"),
-        Path::new("tests/fixtures/extract_method_multi_statement/after"),
+        &fixture_dir("tests/fixtures/extract_method_multi_statement/before"),
+        &fixture_dir("tests/fixtures/extract_method_multi_statement/after"),
     );
 }
 
 #[test]
 fn extract_method_expression() {
     assert_extract_method_fixture(
-        Path::new("tests/fixtures/extract_method_expression/before"),
-        Path::new("tests/fixtures/extract_method_expression/after"),
+        &fixture_dir("tests/fixtures/extract_method_expression/before"),
+        &fixture_dir("tests/fixtures/extract_method_expression/after"),
     );
 }
 
 #[test]
 fn extract_method_static_method() {
     assert_extract_method_fixture(
-        Path::new("tests/fixtures/extract_method_static_method/before"),
-        Path::new("tests/fixtures/extract_method_static_method/after"),
+        &fixture_dir("tests/fixtures/extract_method_static_method/before"),
+        &fixture_dir("tests/fixtures/extract_method_static_method/after"),
     );
 }
 
 #[test]
 fn extract_method_try_with_resources_parameter() {
     assert_extract_method_fixture(
-        Path::new("tests/fixtures/extract_method_try_with_resources_parameter/before"),
-        Path::new("tests/fixtures/extract_method_try_with_resources_parameter/after"),
+        &fixture_dir("tests/fixtures/extract_method_try_with_resources_parameter/before"),
+        &fixture_dir("tests/fixtures/extract_method_try_with_resources_parameter/after"),
     );
 }
 
 #[test]
 fn extract_method_record_compact_constructor() {
     assert_extract_method_fixture(
-        Path::new("tests/fixtures/extract_method_record_compact_constructor/before"),
-        Path::new("tests/fixtures/extract_method_record_compact_constructor/after"),
+        &fixture_dir("tests/fixtures/extract_method_record_compact_constructor/before"),
+        &fixture_dir("tests/fixtures/extract_method_record_compact_constructor/after"),
     );
 }

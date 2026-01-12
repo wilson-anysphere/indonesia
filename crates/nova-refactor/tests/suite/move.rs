@@ -7,6 +7,10 @@ use nova_test_utils::assert_fixture_transformed;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+fn fixture_dir(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
+}
+
 fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
     let by_id: BTreeMap<FileId, String> = files
         .iter()
@@ -27,9 +31,9 @@ fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
 
 #[test]
 fn move_static_method_updates_call_sites() {
-    let before = Path::new("tests/fixtures/move_static_method/before");
-    let after = Path::new("tests/fixtures/move_static_method/after");
-    assert_fixture_transformed(before, after, |files| {
+    let before = fixture_dir("tests/fixtures/move_static_method/before");
+    let after = fixture_dir("tests/fixtures/move_static_method/after");
+    assert_fixture_transformed(&before, &after, |files| {
         let edit = move_static_member(
             &*files,
             MoveStaticMemberParams {
@@ -45,9 +49,9 @@ fn move_static_method_updates_call_sites() {
 
 #[test]
 fn move_instance_method_adds_receiver_param_and_updates_calls() {
-    let before = Path::new("tests/fixtures/move_instance_method/before");
-    let after = Path::new("tests/fixtures/move_instance_method/after");
-    assert_fixture_transformed(before, after, |files| {
+    let before = fixture_dir("tests/fixtures/move_instance_method/before");
+    let after = fixture_dir("tests/fixtures/move_instance_method/after");
+    assert_fixture_transformed(&before, &after, |files| {
         let edit = move_method(
             &*files,
             MoveMethodParams {
@@ -63,8 +67,8 @@ fn move_instance_method_adds_receiver_param_and_updates_calls() {
 
 #[test]
 fn move_static_member_detects_collision() {
-    let before = Path::new("tests/fixtures/move_static_collision/before");
-    let files = nova_test_utils::load_fixture_dir(before);
+    let before = fixture_dir("tests/fixtures/move_static_collision/before");
+    let files = nova_test_utils::load_fixture_dir(&before);
 
     let err = move_static_member(
         &files,
