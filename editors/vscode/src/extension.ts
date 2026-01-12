@@ -2363,7 +2363,32 @@ export async function activate(context: vscode.ExtensionContext) {
   ): Promise<string> => {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     const activeUri = vscode.window.activeTextEditor?.document.uri;
-    const targetFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : workspaces.length === 1 ? workspaces[0] : undefined;
+    const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
+    const uriFromArgs = (() => {
+      for (const entry of lspArgs) {
+        if (!entry || typeof entry !== 'object') {
+          continue;
+        }
+        const uri = (entry as { uri?: unknown }).uri;
+        if (typeof uri === 'string' && uri.trim()) {
+          return uri;
+        }
+        const textDocument = (entry as { textDocument?: unknown }).textDocument;
+        if (textDocument && typeof textDocument === 'object') {
+          const tdUri = (textDocument as { uri?: unknown }).uri;
+          if (typeof tdUri === 'string' && tdUri.trim()) {
+            return tdUri;
+          }
+        }
+      }
+      return undefined;
+    })();
+    const hintedUri = uriFromArgs ? vscode.Uri.parse(uriFromArgs) : undefined;
+
+    const targetFolder =
+      (hintedUri ? vscode.workspace.getWorkspaceFolder(hintedUri) : undefined) ??
+      (activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined) ??
+      (workspaces.length === 1 ? workspaces[0] : workspaces.length > 1 ? await promptWorkspaceFolder(workspaces, 'Select workspace folder to run Nova AI') : undefined);
     if (!targetFolder) {
       throw new Error('Nova AI: Open a workspace folder to run this command.');
     }
@@ -2376,7 +2401,6 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     const c = entry.client;
-    const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
 
     aiWorkDoneTokenCounter += 1;
     const workDoneToken = `nova-ai:${Date.now()}:${aiWorkDoneTokenCounter}`;
@@ -2390,23 +2414,23 @@ export async function activate(context: vscode.ExtensionContext) {
           }
         });
         try {
-        if (token.isCancellationRequested) {
-          throw new Error('RequestCancelled');
-        }
-        // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
-        const resp = await c.sendRequest(
-          'workspace/executeCommand',
-          {
-            command: args.lspCommand,
-            arguments: lspArgs,
-            workDoneToken,
-          },
-          token,
-        );
-        if (token.isCancellationRequested) {
-          throw new Error('RequestCancelled');
-        }
-        return resp;
+          if (token.isCancellationRequested) {
+            throw new Error('RequestCancelled');
+          }
+          // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
+          const resp = await c.sendRequest(
+            'workspace/executeCommand',
+            {
+              command: args.lspCommand,
+              arguments: lspArgs,
+              workDoneToken,
+            },
+            token,
+          );
+          if (token.isCancellationRequested) {
+            throw new Error('RequestCancelled');
+          }
+          return resp;
         } finally {
           disposable.dispose();
         }
