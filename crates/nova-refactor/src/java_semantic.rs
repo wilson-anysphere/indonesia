@@ -422,9 +422,9 @@ impl RefactorJavaDatabase {
                         method_signature: None,
                     });
                 }
-                let is_compact = ast_id_map
-                    .ptr(ctor.ast_id)
-                    .is_some_and(|ptr| ptr.kind == nova_syntax::SyntaxKind::CompactConstructorDeclaration);
+                let is_compact = ast_id_map.ptr(ctor.ast_id).is_some_and(|ptr| {
+                    ptr.kind == nova_syntax::SyntaxKind::CompactConstructorDeclaration
+                });
                 for (idx, param) in ctor_data.params.iter().enumerate() {
                     let key = ResolutionKey::Param(ParamRef {
                         owner: ParamOwner::Constructor(ctor),
@@ -5561,7 +5561,15 @@ fn collect_switch_contexts(
             hir::Stmt::Assert {
                 condition, message, ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 if let Some(expr) = message {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
@@ -5777,6 +5785,11 @@ fn collect_switch_contexts(
                 }
                 if let Some(init) = initializer {
                     walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::ArrayInitializer { items, .. } => {
