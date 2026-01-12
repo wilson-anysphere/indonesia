@@ -1,7 +1,8 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     affected_shards, load_sharded_index_archives, load_sharded_index_archives_fast,
-    load_sharded_index_view, load_sharded_index_view_lazy, save_sharded_indexes,
+    load_sharded_index_view, load_sharded_index_view_lazy, load_sharded_index_view_lazy_fast,
+    save_sharded_indexes,
     save_sharded_indexes_incremental, shard_id_for_path, AnnotationLocation, InheritanceEdge,
     ProjectIndexes, ReferenceLocation, ShardedIndexOverlay, SymbolLocation,
 };
@@ -760,6 +761,55 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
     assert!(std::fs::read(&a).is_err());
 
     let loaded = load_sharded_index_archives_fast(
+        &cache_dir,
+        &project_root,
+        vec![PathBuf::from("A.java")],
+        shard_count,
+    )
+    .unwrap();
+
+    assert!(loaded.is_some());
+}
+
+#[test]
+fn lazy_sharded_fast_load_does_not_read_project_file_contents() {
+    let shard_count = 16;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    let shard_a = shard_id_for_path("A.java", shard_count) as usize;
+    shards[shard_a].symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
+
+    // Replace the file with a directory. Reading contents would now fail, but metadata access
+    // should still work.
+    std::fs::remove_file(&a).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    assert!(std::fs::read(&a).is_err());
+
+    let loaded = load_sharded_index_view_lazy_fast(
         &cache_dir,
         &project_root,
         vec![PathBuf::from("A.java")],

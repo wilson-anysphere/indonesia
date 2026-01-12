@@ -3449,6 +3449,88 @@ pub fn load_sharded_index_view_lazy(
     }))
 }
 
+/// Loads sharded indexes as a lazy, zero-copy view backed by validated `rkyv` archives, using a
+/// precomputed "fast" snapshot where each file fingerprint is derived from file metadata
+/// (size + mtime).
+///
+/// This mirrors [`load_sharded_index_view_lazy`] but avoids hashing file contents. It is
+/// best-effort: modifications that preserve both file size and mtime may be missed.
+pub fn load_sharded_index_view_lazy_from_fast_snapshot(
+    cache_dir: &CacheDir,
+    fast_snapshot: &ProjectSnapshot,
+    shard_count: u32,
+) -> Result<Option<LoadedLazyShardedIndexView>, IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
+        return Ok(None);
+    }
+    let metadata = match CacheMetadataArchive::open(&metadata_path)? {
+        Some(metadata) => MetadataSource::Archived(metadata),
+        None => match CacheMetadata::load(&metadata_path) {
+            Ok(metadata) => MetadataSource::Owned(metadata),
+            Err(_) => return Ok(None),
+        },
+    };
+    if !metadata.is_compatible() {
+        return Ok(None);
+    }
+    if !metadata.project_hash_matches(fast_snapshot) {
+        return Ok(None);
+    }
+
+    let shards_root = cache_dir.indexes_dir().join(SHARDS_DIR_NAME);
+    match read_shard_manifest(&shards_root) {
+        Some(value) if value == shard_count => {}
+        _ => return Ok(None),
+    }
+
+    let invalidated_files_set: BTreeSet<String> = metadata
+        .diff_files_fast(fast_snapshot)
+        .into_iter()
+        .collect();
+    let invalidated_files = invalidated_files_set.iter().cloned().collect();
+
+    let shards = (0..shard_count).map(|_| OnceLock::new()).collect();
+
+    Ok(Some(LoadedLazyShardedIndexView {
+        view: LazyShardedIndexView {
+            shard_count,
+            shards_root,
+            invalidated_files: invalidated_files_set,
+            shards,
+            overlay: ShardedIndexOverlay::new(shard_count)?,
+        },
+        invalidated_files,
+    }))
+}
+
+/// Fast variant of [`load_sharded_index_view_lazy`] that uses per-file metadata fingerprints
+/// (size + mtime) instead of hashing file contents.
+pub fn load_sharded_index_view_lazy_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+    shard_count: u32,
+) -> Result<Option<LoadedLazyShardedIndexView>, IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
+        return Ok(None);
+    }
+    let fast_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    load_sharded_index_view_lazy_from_fast_snapshot(cache_dir, &fast_snapshot, shard_count)
+}
+
 pub fn load_sharded_index_view(
     cache_dir: &CacheDir,
     current_snapshot: &ProjectSnapshot,
