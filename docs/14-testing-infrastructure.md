@@ -535,7 +535,7 @@ The workflow also supports an optional, **warn-only** minimum line coverage thre
 cargo install cargo-llvm-cov --locked
 rustup component add llvm-tools-preview
 
-cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html
+cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html
 ```
 
 HTML is written under `target/llvm-cov/html/`.
@@ -594,7 +594,7 @@ In practice, Nova’s CI splits into:
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |
-| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
+| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html` |
 | `.github/workflows/test-all-features.yml` | in repo | Workspace tests with `--all-features` (main + schedule + manual; not a PR gate) | `RUST_BACKTRACE=1 cargo nextest run --workspace --profile ci --all-features` (or `cargo test --workspace --all-features`) |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.

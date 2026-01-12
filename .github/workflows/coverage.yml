@@ -32,6 +32,8 @@ jobs:
     env:
       # Optional soft gate. Set via workflow_dispatch input or change the default here.
       MIN_LINE_COVERAGE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.min_line_coverage) || '0' }}
+      RUST_BACKTRACE: 1
+      COVERAGE_PACKAGES: "nova-core nova-syntax nova-ide nova-testing nova-test-utils"
 
     steps:
       - uses: actions/checkout@v4
@@ -53,33 +55,60 @@ jobs:
       - name: Generate HTML report
         run: |
           set -euxo pipefail
-          cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html
+          coverage_args=()
+          for crate in $COVERAGE_PACKAGES; do
+            coverage_args+=("-p" "$crate")
+          done
+          cargo llvm-cov "${coverage_args[@]}" --html
 
       - name: Generate lcov.info
         run: |
           set -euxo pipefail
-          cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide \
+          coverage_args=()
+          for crate in $COVERAGE_PACKAGES; do
+            coverage_args+=("-p" "$crate")
+          done
+          cargo llvm-cov report "${coverage_args[@]}" \
             --lcov --output-path lcov.info
 
       - name: Coverage summary
         run: |
           set -euxo pipefail
-          cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide --color never \
-            > coverage-report.txt
+          coverage_args=()
+          for crate in $COVERAGE_PACKAGES; do
+            coverage_args+=("-p" "$crate")
+          done
+
+          overall_summary="$(
+            cargo llvm-cov report "${coverage_args[@]}" --color never | awk 'NR==1 || $1=="TOTAL"'
+          )"
+
+          {
+            echo "### Overall"
+            printf '%s\n' "$overall_summary"
+          } > coverage-report.txt
           {
             echo "## Test coverage"
             echo
             echo '```text'
-            awk 'NR==1 || $1=="TOTAL"' coverage-report.txt
+            printf '%s\n' "$overall_summary"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          for crate in nova-core nova-syntax nova-ide; do
+          for crate in $COVERAGE_PACKAGES; do
+            crate_summary="$(
+              cargo llvm-cov report -p "${crate}" --color never | awk 'NR==1 || $1=="TOTAL"'
+            )"
+            {
+              echo
+              echo "### ${crate}"
+              printf '%s\n' "$crate_summary"
+            } >> coverage-report.txt
             {
               echo
               echo "### ${crate}"
               echo
               echo '```text'
-              cargo llvm-cov report -p "${crate}" --color never | awk 'NR==1 || $1=="TOTAL"'
+              printf '%s\n' "$crate_summary"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
