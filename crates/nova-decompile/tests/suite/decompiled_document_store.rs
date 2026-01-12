@@ -259,6 +259,52 @@ fn oversized_files_are_treated_as_cache_miss_and_deleted() {
 }
 
 #[test]
+fn exists_rejects_oversized_entries_and_deletes_them() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64 + 1)
+        .unwrap();
+    drop(file);
+
+    assert!(!store.exists(content_hash, binary_name));
+    assert!(!path.exists(), "oversize cache file should be deleted by exists()");
+}
+
+#[test]
+fn exists_rejects_non_file_entries_and_deletes_them() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&path).unwrap();
+
+    assert!(path.is_dir());
+    assert!(!store.exists(content_hash, binary_name));
+    assert!(!path.exists(), "directory cache entry should be deleted by exists()");
+}
+
+#[test]
 fn non_file_entries_are_treated_as_cache_miss_and_deleted() {
     let temp = TempDir::new().unwrap();
     let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
