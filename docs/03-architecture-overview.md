@@ -590,19 +590,13 @@ async fn handle_request(&self, request: LspRequest) -> LspResponse {
 ### Extension Interface
 
 ```rust
-/// Extension point for framework analyzers
+/// Extension point for framework analyzers (see `crates/nova-framework/src/lib.rs`).
 pub trait FrameworkAnalyzer: Send + Sync {
-    /// Identify if this analyzer applies to a project
-    fn applies_to(&self, project: &ProjectConfig) -> bool;
-    
-    /// Provide additional diagnostics
-    fn diagnostics(&self, db: &dyn NovaDatabase, file: FileId) -> Vec<Diagnostic>;
-    
-    /// Provide additional completions
-    fn completions(&self, db: &dyn NovaDatabase, ctx: &CompletionContext) -> Vec<CompletionItem>;
-    
-    /// Provide additional navigation targets
-    fn navigation(&self, db: &dyn NovaDatabase, symbol: &Symbol) -> Vec<NavigationTarget>;
+    /// Required: identify if this analyzer applies to a project.
+    fn applies_to(&self, db: &dyn nova_framework::Database, project: nova_core::ProjectId) -> bool;
+
+    /// Optional hooks (default no-ops): analyze_file, diagnostics, completions,
+    /// navigation, virtual_members, inlay_hints.
 }
 ```
 
