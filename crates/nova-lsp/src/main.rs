@@ -8733,20 +8733,16 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out)
-        .map_err(|err| {
+    let _ = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out).map_err(
+        |err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
-        })?;
+        },
+    )?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    if work_done_token.is_some() {
-        Ok(result)
-    } else {
-        // `workspace/executeCommand` invoked via a standard LSP code action does not include a
-        // `workDoneToken`. Preserve legacy behavior for those callers by returning `null` while
-        // still applying the edit via `workspace/applyEdit`.
-        Ok(serde_json::Value::Null)
-    }
+    // The `nova/ai/*` patch-based endpoints return `null` on success and apply edits via
+    // `workspace/applyEdit`.
+    Ok(serde_json::Value::Null)
 }
 
 fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
@@ -8885,19 +8881,16 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(
+    let _ = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(
         |err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
         },
     )?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    if work_done_token.is_some() {
-        Ok(result)
-    } else {
-        // Preserve legacy `workspace/executeCommand` return value for LSP code actions.
-        Ok(serde_json::Value::Null)
-    }
+    // The `nova/ai/*` patch-based endpoints return `null` on success and apply edits via
+    // `workspace/applyEdit`.
+    Ok(serde_json::Value::Null)
 }
 
 fn apply_code_action_outcome<O: RpcOut>(
