@@ -2776,7 +2776,7 @@ fn reload_project_and_sync(
         cfg.nova_config_path = nova_config_path.clone();
     }
 
-    // If the watcher is running, schedule a refresh so it reconciles watched roots with the
+    // If the watcher is running, schedule a refresh so it reconciles watched paths/roots with the
     // latest `watch_config` (adds new external roots, removes stale ones, and picks up changes to
     // the config-path watch).
     if let Some(tx) = watcher_command_store
