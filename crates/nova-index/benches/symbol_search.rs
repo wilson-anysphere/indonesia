@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use nova_index::{CandidateStrategy, SearchSymbol, SymbolSearchIndex};
+use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;
@@ -67,9 +67,14 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
         out.push(SearchSymbol {
             qualified_name,
             name,
+            kind: IndexSymbolKind::Class,
             container_name: None,
-            location: None,
-            ast_id: None,
+            location: SymbolLocation {
+                file: "A.java".into(),
+                line: 0,
+                column: 0,
+            },
+            ast_id: i as u32,
         });
     }
 
@@ -99,9 +104,14 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
         out.push(SearchSymbol {
             qualified_name,
             name,
+            kind: IndexSymbolKind::Class,
             container_name: None,
-            location: None,
-            ast_id: None,
+            location: SymbolLocation {
+                file: "A.java".into(),
+                line: 0,
+                column: 0,
+            },
+            ast_id: i as u32,
         });
     }
 
