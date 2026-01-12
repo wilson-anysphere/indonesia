@@ -211,14 +211,16 @@ impl<'a> JavaPrettyFormatter<'a> {
             .collect();
         let inner = self.print_module_directives(&directives);
 
+        let body = match inner {
+            Some(inner) => Doc::concat([Doc::hardline(), inner]).indent(),
+            None => Doc::nil(),
+        };
+
         Doc::concat([
             header,
             print::space(),
             l_brace_doc,
-            match inner {
-                Some(inner) => Doc::concat([Doc::hardline(), inner]).indent(),
-                None => Doc::hardline(),
-            },
+            body,
             Doc::hardline(),
             r_brace_doc,
         ])

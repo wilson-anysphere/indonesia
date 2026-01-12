@@ -981,6 +981,19 @@ module foo.bar {
 }
 
 #[test]
+fn pretty_formats_empty_module_declaration() {
+    let input = "module foo.bar{}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(formatted, "module foo.bar {\n}\n");
+}
+
+#[test]
 fn pretty_formats_top_level_types() {
     let input = r#"class  Foo{}
 interface  Bar{}
