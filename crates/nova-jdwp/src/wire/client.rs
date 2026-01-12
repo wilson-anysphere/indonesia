@@ -1960,7 +1960,6 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
     // non-stop events) before stop events, even if the VM sends them in the opposite
     // order.
     let mut stop_events = Vec::new();
-    let mut non_stop_events = Vec::new();
 
     fn is_stop_event(event: &JdwpEvent) -> bool {
         matches!(
@@ -2129,17 +2128,14 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
         if is_stop_event(&event) {
             stop_events.push(event);
         } else {
-            non_stop_events.push(event);
+            let _ = inner.events.send(event.clone());
+            let _ = inner.event_envelopes.send(JdwpEventEnvelope {
+                suspend_policy,
+                event,
+            });
         }
     }
 
-    for event in non_stop_events {
-        let _ = inner.events.send(event.clone());
-        let _ = inner.event_envelopes.send(JdwpEventEnvelope {
-            suspend_policy,
-            event,
-        });
-    }
     for event in stop_events {
         let _ = inner.events.send(event.clone());
         let _ = inner.event_envelopes.send(JdwpEventEnvelope {
