@@ -90,7 +90,8 @@ impl Drop for KillOnDrop {
         #[cfg(target_os = "windows")]
         {
             let _ = StdCommand::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
