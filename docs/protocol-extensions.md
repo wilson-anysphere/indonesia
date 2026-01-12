@@ -1033,6 +1033,8 @@ Notes:
 - `uri` and `range` are required for patch-based edits.
 - Field names inside args are currently **snake_case** (`method_signature`) because the Rust type
   does not use `rename_all = "camelCase"`.
+- The server expects `range` to include both `{` and `}` of the target method, and the selected
+  method body must be empty.
 
 #### Response
 
@@ -1076,6 +1078,9 @@ Notes:
 - `uri` and `range` are required for patch-based edits.
 - Field names inside args are currently **snake_case** because the Rust type does not use
   `rename_all = "camelCase"`.
+- The server attempts (best-effort) to generate/update a test file under `src/test/java/` based on
+  the selected source file’s package and class name. If that derivation fails, it falls back to
+  inserting the generated tests into the current file at `range`.
 
 #### Response
 
@@ -1868,6 +1873,12 @@ type does not use `rename_all = "camelCase"`.
   UTF-16 `character` offsets), matching LSP conventions:
   `{ start: { line, character }, end: { line, character } }`.
 
+Range semantics (server-enforced):
+
+- The server expects `range` to include both `{` and `}` of the target method.
+- The selected method body must be empty; otherwise the server rejects the request with `-32602`
+  (message: “selected method body is not empty; select an empty method”).
+
 ##### Response
 
 `null` (JSON-RPC result `null`). The server applies the edit via `workspace/applyEdit` as a side
@@ -1932,6 +1943,13 @@ The first (and only) entry in `arguments` is a `GenerateTestsArgs` object:
 - `range` (object, required) — best-effort range covering the selected snippet (0-based line and
   UTF-16 `character` offsets), matching LSP conventions:
   `{ start: { line, character }, end: { line, character } }`.
+
+Notes:
+
+- The server attempts (best-effort) to generate/update a test file under `src/test/java/` based on
+  the selected source file’s package and class name.
+- If the server cannot derive a test file path, it falls back to inserting the generated tests into
+  the current file at `range`.
 
 ##### Response
 
