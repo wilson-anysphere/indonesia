@@ -515,6 +515,7 @@ fn initialize_result_json() -> serde_json::Value {
         nova_lsp::AI_EXPLAIN_ERROR_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
+        nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
         // Extensions
         nova_lsp::EXTENSIONS_STATUS_METHOD,
         nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
@@ -531,6 +532,7 @@ fn initialize_result_json() -> serde_json::Value {
             "notifications": [
                 nova_lsp::MEMORY_STATUS_NOTIFICATION,
                 nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION,
+                nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION,
             ]
         }
     });
@@ -1848,7 +1850,7 @@ fn handle_request_json(
             state.cancel_semantic_search_workspace_indexing();
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
         }
-        "nova/semanticSearch/indexStatus" => Ok(json!({
+        nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD => Ok(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": state.semantic_search_workspace_index_status_json(),
@@ -3150,7 +3152,7 @@ fn handle_notification(
                 }
             }
         }
-        "nova/workspace/renamePath" => {
+        nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION => {
             #[derive(Debug, Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct RenamePathParams {

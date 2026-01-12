@@ -1043,6 +1043,51 @@ JSON string (the generated tests snippet).
 
 ---
 
+## Semantic search endpoints
+
+### `nova/semanticSearch/indexStatus`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+This endpoint exposes the state of Nova’s background **workspace semantic-search indexing**.
+
+It is primarily useful for clients/tests that want to wait until indexing has completed before
+issuing AI requests that benefit from semantic search context.
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response
+
+```json
+{
+  "currentRunId": 1,
+  "completedRunId": 1,
+  "done": true,
+  "indexedFiles": 42,
+  "indexedBytes": 12345
+}
+```
+
+Field semantics:
+
+- `currentRunId` (number): the id of the most recent indexing run. `0` means no indexing run has been
+  started in this session.
+- `completedRunId` (number): the id of the most recently completed indexing run.
+- `done` (boolean): `true` when `currentRunId != 0` and `currentRunId == completedRunId`.
+- `indexedFiles` (number): number of files indexed so far in the current run.
+- `indexedBytes` (number): number of bytes indexed so far in the current run.
+
+Notes:
+
+- Workspace semantic-search indexing is best-effort and is only started when semantic search is
+  enabled in the Nova config and a valid workspace root is known.
+
+---
+
 ## Performance / observability endpoints
 
 ### `nova/memoryStatus`
@@ -1152,6 +1197,38 @@ No params are required; clients should send `{}` or omit params.
 ```json
 { "ok": true }
 ```
+
+---
+
+## Workspace / file operation notifications
+
+### `nova/workspace/renamePath`
+
+- **Kind:** notification
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+Fallback notification for clients that cannot (or do not) send the standard LSP
+`workspace/didRenameFiles` notification.
+
+Clients should prefer `workspace/didRenameFiles` whenever possible; `nova-lsp` requests the standard
+file-operation notifications via `initializeResult.capabilities.workspace.fileOperations`.
+
+#### Notification params
+
+```json
+{
+  "from": "file:///absolute/path/to/Old.java",
+  "to": "file:///absolute/path/to/New.java"
+}
+```
+
+Semantics:
+
+- Updates Nova’s internal VFS/caches to treat `from` as renamed to `to`.
+- If `to` is not currently open in the editor, Nova refreshes the new path from disk.
+- If `to` is open, Nova treats the rename as a pure path move (the in-memory overlay remains the
+  source of truth).
 
 ---
 

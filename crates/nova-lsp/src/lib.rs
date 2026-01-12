@@ -131,6 +131,7 @@ pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
 pub const AI_EXPLAIN_ERROR_METHOD: &str = "nova/ai/explainError";
 pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
 pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
+pub const SEMANTIC_SEARCH_INDEX_STATUS_METHOD: &str = "nova/semanticSearch/indexStatus";
 pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 
 pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
@@ -144,6 +145,7 @@ pub const METRICS_METHOD: &str = "nova/metrics";
 pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
 pub const SAFE_MODE_STATUS_METHOD: &str = "nova/safeModeStatus";
 pub const SAFE_MODE_CHANGED_NOTIFICATION: &str = "nova/safeModeChanged";
+pub const WORKSPACE_RENAME_PATH_NOTIFICATION: &str = "nova/workspace/renamePath";
 pub const EXTENSIONS_STATUS_METHOD: &str = "nova/extensions/status";
 pub const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
 
