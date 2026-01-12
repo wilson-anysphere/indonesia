@@ -84,9 +84,6 @@ mod gradle_canonical_paths;
 #[path = "cases/gradle_dependencies.rs"]
 mod gradle_dependencies;
 
-#[path = "cases/gradle_buildsrc.rs"]
-mod gradle_buildsrc;
-
 #[path = "cases/gradle_jpms_workspace_model.rs"]
 mod gradle_jpms_workspace_model;
 
