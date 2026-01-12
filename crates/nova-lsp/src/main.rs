@@ -8043,42 +8043,10 @@ fn ai_workspace_root_uri_and_rel_path(
     state: &ServerState,
     file_path: &Path,
 ) -> Result<(LspUri, String), (i32, String)> {
-    let root_path = match state.project_root.as_deref() {
-        Some(root) if file_path.starts_with(root) => root.to_path_buf(),
-        _ => file_path
-            .parent()
-            .ok_or_else(|| {
-                (
-                    -32602,
-                    format!("missing parent directory for `{}`", file_path.display()),
-                )
-            })?
-            .to_path_buf(),
-    };
-
-    let file_rel = if file_path.starts_with(&root_path) {
-        file_path
-            .strip_prefix(&root_path)
-            .unwrap_or(file_path)
-            .to_path_buf()
-    } else {
-        PathBuf::from(file_path.file_name().ok_or_else(|| {
-            (
-                -32602,
-                format!("invalid file path `{}`", file_path.display()),
-            )
-        })?)
-    };
-    let file_rel = file_rel.to_string_lossy().replace('\\', "/");
-
-    let abs_root =
-        nova_core::AbsPathBuf::try_from(root_path).map_err(|e| (-32603, e.to_string()))?;
-    let root_uri = nova_core::path_to_file_uri(&abs_root)
-        .map_err(|e| (-32603, e.to_string()))?
-        .parse::<LspUri>()
-        .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
-
-    Ok((root_uri, file_rel))
+    Ok(nova_lsp::patch_paths::patch_root_uri_and_file_rel(
+        state.project_root.as_deref(),
+        file_path,
+    ))
 }
 
 fn run_ai_generate_method_body_code_action(
