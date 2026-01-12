@@ -654,27 +654,7 @@ fn discovered_profile_completions(
 }
 
 pub(crate) fn discover_project_root(path: &Path) -> PathBuf {
-    if path.exists() {
-        return framework_cache::project_root_for_path(path);
-    }
-
-    let dir = if path.is_file() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
-    };
-
-    // Best-effort fallback for in-memory test fixtures: if the path has a
-    // `src/` segment, treat its parent as the project root.
-    for ancestor in dir.ancestors() {
-        if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
-            if let Some(parent) = ancestor.parent() {
-                return parent.to_path_buf();
-            }
-        }
-    }
-
-    dir.to_path_buf()
+    framework_cache::project_root_for_path(path)
 }
 
 fn span_contains(span: Span, offset: usize) -> bool {

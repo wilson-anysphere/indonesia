@@ -10,7 +10,6 @@ use nova_db::{Database, FileId};
 use nova_framework_spring::SpringWorkspaceIndex;
 
 use crate::framework_cache;
-use crate::spring_di;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
@@ -79,7 +78,7 @@ pub(crate) fn workspace_index_for_file(db: &dyn Database, file: FileId) -> Arc<S
         return Arc::new(SpringWorkspaceIndex::new(Arc::new(MetadataIndex::new())));
     };
 
-    let root = spring_di::discover_project_root(path);
+    let root = framework_cache::project_root_for_path(path);
     workspace_index_for_root(db, root)
 }
 
