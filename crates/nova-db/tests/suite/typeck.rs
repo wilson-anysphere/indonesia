@@ -486,6 +486,67 @@ class C { void m(){ int[] a = new int[1.0]; } }
 }
 
 #[test]
+fn array_initializer_in_var_decl_typechecks() {
+    let src = r#"
+class C { void m(){ int[] a = {1,2}; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "array-initializer-type-mismatch"
+        }),
+        "expected array initializer var decl to type-check; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_initializer_element_type_mismatch_is_error() {
+    let src = r#"
+class C { void m(){ int[] a = {"x"}; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "array-initializer-type-mismatch"),
+        "expected array-initializer-type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_creation_with_initializer_typechecks() {
+    let src = r#"
+class C { void m(){ int[] a = new int[] {1,2}; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "array-initializer-type-mismatch"
+        }),
+        "expected array creation with initializer to type-check; got {diags:?}"
+    );
+
+    let offset = src
+        .find("new int[] {1,2}")
+        .expect("snippet should contain array creation")
+        + "new ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[]");
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {

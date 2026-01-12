@@ -317,6 +317,11 @@ pub enum Expr {
         elem_ty_range: Span,
         dim_exprs: Vec<ExprId>,
         extra_dims: usize,
+        initializer: Option<ExprId>,
+        range: Span,
+    },
+    ArrayInitializer {
+        items: Vec<ExprId>,
         range: Span,
     },
     Unary {
@@ -393,6 +398,7 @@ impl Expr {
             | Expr::Cast { range, .. }
             | Expr::New { range, .. }
             | Expr::ArrayCreation { range, .. }
+            | Expr::ArrayInitializer { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }
             | Expr::Instanceof { range, .. }

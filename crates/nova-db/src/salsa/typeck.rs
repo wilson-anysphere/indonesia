@@ -1412,10 +1412,24 @@ fn resolve_method_call_demand(
                         visit_expr(body, *arg, parent_expr, visited_expr);
                     }
                 }
-                HirExpr::ArrayCreation { dim_exprs, .. } => {
-                    for dim_expr in dim_exprs {
-                        set_parent(parent_expr, *dim_expr);
-                        visit_expr(body, *dim_expr, parent_expr, visited_expr);
+                HirExpr::ArrayCreation {
+                    dim_exprs,
+                    initializer,
+                    ..
+                } => {
+                    for dim in dim_exprs {
+                        set_parent(parent_expr, *dim);
+                        visit_expr(body, *dim, parent_expr, visited_expr);
+                    }
+                    if let Some(init) = initializer {
+                        set_parent(parent_expr, *init);
+                        visit_expr(body, *init, parent_expr, visited_expr);
+                    }
+                }
+                HirExpr::ArrayInitializer { items, .. } => {
+                    for item in items {
+                        set_parent(parent_expr, *item);
+                        visit_expr(body, *item, parent_expr, visited_expr);
                     }
                 }
                 HirExpr::Unary { expr: inner, .. } => {
@@ -4383,6 +4397,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     return;
                 };
 
+                // Array initializers (`{...}`) are only typeable when we have an expected array type
+                // from the declaration itself (e.g. `int[] a = {1,2};`).
+                if matches!(self.body.exprs[*init], HirExpr::ArrayInitializer { .. }) {
+                    if matches!(&decl_ty, Type::Array(_)) && !decl_ty.is_errorish() {
+                        let _ =
+                            self.infer_array_initializer_with_expected(loader, *init, &decl_ty);
+                    } else {
+                        let _ = self.infer_expr(loader, *init);
+                    }
+                    return;
+                }
+
                 let init_ty = self
                     .infer_expr_with_expected(
                         loader,
@@ -5202,6 +5228,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 elem_ty_range,
                 dim_exprs,
                 extra_dims,
+                initializer,
                 ..
             } => {
                 let elem_ty =
@@ -5247,10 +5274,36 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         ty = Type::Array(Box::new(ty));
                     }
 
+                    if let Some(init) = initializer {
+                        match &self.body.exprs[*init] {
+                            HirExpr::ArrayInitializer { .. } => {
+                                let _ = self.infer_array_initializer_with_expected(
+                                    loader,
+                                    *init,
+                                    &ty,
+                                );
+                            }
+                            _ => {
+                                let _ = self.infer_expr(loader, *init);
+                            }
+                        }
+                    }
+
                     ExprInfo {
                         ty,
                         is_type_ref: false,
                     }
+                }
+            }
+            HirExpr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    let _ = self.infer_expr(loader, *item);
+                }
+
+                self.report_invalid_array_initializer(expr);
+                ExprInfo {
+                    ty: Type::Unknown,
+                    is_type_ref: false,
                 }
             }
             HirExpr::Unary {
@@ -6009,6 +6062,111 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             ty: receiver_ty,
             is_type_ref: false,
         }
+    }
+
+    fn report_invalid_array_initializer(&mut self, expr: HirExprId) {
+        if self.expr_info[expr.idx()].is_some() {
+            return;
+        }
+
+        self.diagnostics.push(Diagnostic::error(
+            "invalid-array-initializer",
+            "array initializer can only be used as part of an array variable declaration or array creation",
+            Some(self.body.exprs[expr].range()),
+        ));
+        self.expr_info[expr.idx()] = Some(ExprInfo {
+            ty: Type::Unknown,
+            is_type_ref: false,
+        });
+    }
+
+    fn infer_array_initializer_with_expected(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        expr: HirExprId,
+        expected: &Type,
+    ) -> ExprInfo {
+        let Type::Array(elem_ty) = expected else {
+            // Walk the initializer as an invalid expression for best-effort diagnostics.
+            let _ = self.infer_expr(loader, expr);
+            return ExprInfo {
+                ty: Type::Unknown,
+                is_type_ref: false,
+            };
+        };
+
+        // Cache the type early so recursive initializers can reference each other without
+        // producing spurious `invalid-array-initializer` diagnostics.
+        let info = ExprInfo {
+            ty: expected.clone(),
+            is_type_ref: false,
+        };
+        self.expr_info[expr.idx()] = Some(info.clone());
+
+        let HirExpr::ArrayInitializer { items, .. } = &self.body.exprs[expr] else {
+            return info;
+        };
+
+        for &item in items {
+            let expected_elem = elem_ty.as_ref();
+
+            // Nested initializer: only valid when the element type is itself an array type.
+            if matches!(self.body.exprs[item], HirExpr::ArrayInitializer { .. }) {
+                if matches!(expected_elem, Type::Array(_)) {
+                    let _ =
+                        self.infer_array_initializer_with_expected(loader, item, expected_elem);
+                    continue;
+                }
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let expected = format_type(env_ro, expected_elem);
+                self.diagnostics.push(Diagnostic::error(
+                    "array-initializer-type-mismatch",
+                    format!(
+                        "array initializer element type mismatch: expected {expected}, found array initializer"
+                    ),
+                    Some(self.body.exprs[item].range()),
+                ));
+                // Avoid follow-up `invalid-array-initializer` for the nested braces.
+                self.expr_info[item.idx()] = Some(ExprInfo {
+                    ty: Type::Unknown,
+                    is_type_ref: false,
+                });
+                continue;
+            }
+
+            let item_ty = if expected_elem.is_errorish() || expected_elem == &Type::Void {
+                self.infer_expr(loader, item).ty
+            } else {
+                self.infer_expr_with_expected(loader, item, Some(expected_elem))
+                    .ty
+            };
+            if item_ty.is_errorish() || expected_elem.is_errorish() {
+                continue;
+            }
+
+            let env_ro: &dyn TypeEnv = &*loader.store;
+            if assignment_conversion_with_const(
+                env_ro,
+                &item_ty,
+                expected_elem,
+                const_value_for_expr(self.body, item),
+            )
+            .is_none()
+            {
+                let expected = format_type(env_ro, expected_elem);
+                let found = format_type(env_ro, &item_ty);
+                self.diagnostics.push(Diagnostic::error(
+                    "array-initializer-type-mismatch",
+                    format!(
+                        "array initializer element type mismatch: expected {expected}, found {found}"
+                    ),
+                    Some(self.body.exprs[item].range()),
+                ));
+            }
+        }
+
+        info
     }
 
     fn infer_name(
@@ -9130,7 +9288,19 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
         HirExpr::New { args, .. } => args
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
-        HirExpr::ArrayCreation { dim_exprs, .. } => dim_exprs
+        HirExpr::ArrayCreation {
+            dim_exprs,
+            initializer,
+            ..
+        } => {
+            dim_exprs
+                .iter()
+                .any(|expr| contains_expr_in_expr(body, *expr, target))
+                || initializer
+                    .as_ref()
+                    .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
+        }
+        HirExpr::ArrayInitializer { items, .. } => items
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
@@ -9403,9 +9573,21 @@ fn find_enclosing_call_with_arg_in_expr(
                 find_enclosing_call_with_arg_in_expr(body, *arg, target, target_range, best);
             }
         }
-        HirExpr::ArrayCreation { dim_exprs, .. } => {
+        HirExpr::ArrayCreation {
+            dim_exprs,
+            initializer,
+            ..
+        } => {
             for dim_expr in dim_exprs {
                 find_enclosing_call_with_arg_in_expr(body, *dim_expr, target, target_range, best);
+            }
+            if let Some(init) = initializer {
+                find_enclosing_call_with_arg_in_expr(body, *init, target, target_range, best);
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_call_with_arg_in_expr(body, *item, target, target_range, best);
             }
         }
         HirExpr::Unary { expr, .. } => {
@@ -9503,9 +9685,21 @@ fn find_best_expr_in_expr(
                 find_best_expr_in_expr(body, *arg, offset, owner, best);
             }
         }
-        HirExpr::ArrayCreation { dim_exprs, .. } => {
+        HirExpr::ArrayCreation {
+            dim_exprs,
+            initializer,
+            ..
+        } => {
             for dim_expr in dim_exprs {
                 find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
+            }
+            if let Some(init) = initializer {
+                find_best_expr_in_expr(body, *init, offset, owner, best);
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_best_expr_in_expr(body, *item, offset, owner, best);
             }
         }
         HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),

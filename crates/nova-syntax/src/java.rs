@@ -433,6 +433,7 @@ pub mod ast {
         ArrayAccess(ArrayAccessExpr),
         New(NewExpr),
         ArrayCreation(ArrayCreationExpr),
+        ArrayInitializer(ArrayInitializerExpr),
         Unary(UnaryExpr),
         Binary(BinaryExpr),
         Instanceof(InstanceofExpr),
@@ -473,6 +474,7 @@ pub mod ast {
                 Expr::ArrayAccess(expr) => expr.range,
                 Expr::New(expr) => expr.range,
                 Expr::ArrayCreation(expr) => expr.range,
+                Expr::ArrayInitializer(expr) => expr.range,
                 Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
                 Expr::Instanceof(expr) => expr.range,
@@ -563,6 +565,14 @@ pub mod ast {
         pub elem_ty: TypeRef,
         pub dim_exprs: Vec<Expr>,
         pub extra_dims: usize,
+        /// Optional array initializer: `new int[] { ... }`.
+        pub initializer: Option<Box<Expr>>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ArrayInitializerExpr {
+        pub items: Vec<Expr>,
         pub range: Span,
     }
 
@@ -2295,6 +2305,7 @@ impl Lowerer {
             SyntaxKind::AssignmentExpression => self.lower_assign_expr(node),
             SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
             SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
+            SyntaxKind::ArrayInitializer => self.lower_array_initializer_expr(node),
             SyntaxKind::ParenthesizedExpression => node
                 .children()
                 .find(|child| is_expression_kind(child.kind()))
@@ -2787,14 +2798,41 @@ impl Lowerer {
             })
             .unwrap_or(0);
 
+        let initializer = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ArrayInitializer)
+            .map(|init| Box::new(self.lower_expr(&init)));
+
         ast::Expr::ArrayCreation(ast::ArrayCreationExpr {
             elem_ty,
             dim_exprs,
             extra_dims,
+            initializer,
             range,
         })
     }
 
+    fn lower_array_initializer_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let range = self.spans.map_node(node);
+
+        let items = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ArrayInitializerList)
+            .map(|list| {
+                list.children()
+                    .filter(|child| child.kind() == SyntaxKind::VariableInitializer)
+                    .filter_map(|init| {
+                        init.children()
+                            .find(|child| is_expression_kind(child.kind()))
+                            .map(|expr| self.lower_expr(&expr))
+                    })
+                    .filter(|expr| !matches!(expr, ast::Expr::Missing(_)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ast::Expr::ArrayInitializer(ast::ArrayInitializerExpr { items, range })
+    }
     fn lower_unary_expr(&self, node: &SyntaxNode) -> ast::Expr {
         let first_token = node
             .children_with_tokens()
@@ -3180,6 +3218,7 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::PrefixExpression
             | SyntaxKind::ExplicitGenericInvocationExpression
             | SyntaxKind::StringTemplateExpression
+            | SyntaxKind::ArrayInitializer
             | SyntaxKind::Error
     )
 }
@@ -3685,5 +3724,20 @@ mod tests {
         assert_eq!(array.elem_ty.text, "int");
         assert_eq!(array.dim_exprs.len(), 1);
         assert_eq!(array.extra_dims, 1);
+    }
+
+    #[test]
+    fn parse_block_lowers_array_initializer_in_var_decl() {
+        let text = "{ int[] a = {1,2}; }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local variable statement");
+        };
+        assert!(
+            matches!(local.initializer, Some(ast::Expr::ArrayInitializer(_))),
+            "expected array initializer"
+        );
     }
 }

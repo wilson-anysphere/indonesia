@@ -4868,9 +4868,21 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                     walk_expr(body, *arg, f);
                 }
             }
-            hir::Expr::ArrayCreation { dim_exprs, .. } => {
+            hir::Expr::ArrayCreation {
+                dim_exprs,
+                initializer,
+                ..
+            } => {
                 for dim in dim_exprs {
                     walk_expr(body, *dim, f);
+                }
+                if let Some(init) = initializer {
+                    walk_expr(body, *init, f);
+                }
+            }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, f);
                 }
             }
             hir::Expr::Unary { expr, .. } => walk_expr(body, *expr, f),

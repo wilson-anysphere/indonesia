@@ -1323,12 +1323,29 @@ impl<'a> BodyLower<'a> {
                     dim_exprs.push(self.lower_expr(expr));
                 }
 
+                let initializer = array
+                    .initializer
+                    .as_ref()
+                    .map(|expr| self.lower_expr(expr.as_ref()));
+
                 self.alloc_expr(Expr::ArrayCreation {
                     elem_ty_text: array.elem_ty.text.clone(),
                     elem_ty_range: array.elem_ty.range,
                     dim_exprs,
                     extra_dims: array.extra_dims,
+                    initializer,
                     range: array.range,
+                })
+            }
+            syntax::Expr::ArrayInitializer(init) => {
+                let mut items = Vec::with_capacity(init.items.len());
+                for item in &init.items {
+                    self.check_cancelled();
+                    items.push(self.lower_expr(item));
+                }
+                self.alloc_expr(Expr::ArrayInitializer {
+                    items,
+                    range: init.range,
                 })
             }
             syntax::Expr::Unary(unary) => {

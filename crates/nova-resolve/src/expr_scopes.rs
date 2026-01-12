@@ -407,9 +407,21 @@ impl Builder {
                     self.visit_expr(body, arg, scope);
                 }
             }
-            Expr::ArrayCreation { dim_exprs, .. } => {
+            Expr::ArrayCreation {
+                dim_exprs,
+                initializer,
+                ..
+            } => {
                 for &dim in dim_exprs {
                     self.visit_expr(body, dim, scope);
+                }
+                if let Some(init) = initializer {
+                    self.visit_expr(body, *init, scope);
+                }
+            }
+            Expr::ArrayInitializer { items, .. } => {
+                for &item in items {
+                    self.visit_expr(body, item, scope);
                 }
             }
             Expr::Unary { expr, .. } => {

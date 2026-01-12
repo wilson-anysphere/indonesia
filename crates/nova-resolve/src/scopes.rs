@@ -752,9 +752,21 @@ impl<'a> ScopeBuilder<'a> {
                     self.record_expr_scopes(scope, owner, body, *arg);
                 }
             }
-            hir::Expr::ArrayCreation { dim_exprs, .. } => {
+            hir::Expr::ArrayCreation {
+                dim_exprs,
+                initializer,
+                ..
+            } => {
                 for dim in dim_exprs {
                     self.record_expr_scopes(scope, owner, body, *dim);
+                }
+                if let Some(init) = initializer {
+                    self.record_expr_scopes(scope, owner, body, *init);
+                }
+            }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    self.record_expr_scopes(scope, owner, body, *item);
                 }
             }
             hir::Expr::Unary { expr, .. } => {
