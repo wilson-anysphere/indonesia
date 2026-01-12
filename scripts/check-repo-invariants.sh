@@ -115,6 +115,29 @@ for check in "${framework_harness_checks[@]}"; do
   fi
 done
 
+# Enforce the single-harness integration test layout for `nova-project`.
+#
+# `nova-project` has a large test surface area and its integration tests are intentionally
+# consolidated into a single `tests/harness.rs` binary for compile-time/memory efficiency.
+nova_project_root_tests=()
+while IFS= read -r file; do
+  nova_project_root_tests+=("$file")
+done < <(find crates/nova-project/tests -maxdepth 1 -name '*.rs' -print)
+
+if [[ ${#nova_project_root_tests[@]} -ne 1 || "${nova_project_root_tests[0]}" != "crates/nova-project/tests/harness.rs" ]]; then
+  echo "repo invariant failed: nova-project integration tests must be consolidated into crates/nova-project/tests/harness.rs" >&2
+  if [[ ${#nova_project_root_tests[@]} -eq 0 ]]; then
+    echo "  found: <none>" >&2
+  else
+    echo "  found:" >&2
+    for file in "${nova_project_root_tests[@]}"; do
+      echo "    - ${file}" >&2
+    done
+  fi
+  echo "  suggestion: move additional files into crates/nova-project/tests/cases/ and add them to crates/nova-project/tests/harness.rs" >&2
+  exit 1
+fi
+
 # Enforce the `nova-types` integration test harness naming.
 #
 # CI and docs rely on the stable entrypoint:
