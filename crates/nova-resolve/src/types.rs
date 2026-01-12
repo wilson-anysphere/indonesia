@@ -63,17 +63,21 @@ impl TypeDef {
         bytes = bytes.saturating_add(name_bytes(&self.name));
         bytes = bytes.saturating_add(self.binary_name.as_str().len() as u64);
 
-        bytes = bytes.saturating_add((self.fields.capacity() as u64).saturating_mul(
-            size_of::<(Name, FieldDef)>() as u64,
-        ));
+        bytes = bytes.saturating_add((self.fields.capacity() as u64).saturating_mul(size_of::<(
+            Name,
+            FieldDef,
+        )>()
+            as u64));
         bytes = bytes.saturating_add(self.fields.capacity() as u64); // HashMap ctrl bytes (best-effort)
         for (name, _) in &self.fields {
             bytes = bytes.saturating_add(name_bytes(name));
         }
 
-        bytes = bytes.saturating_add((self.methods.capacity() as u64).saturating_mul(
-            size_of::<(Name, Vec<MethodDef>)>() as u64,
-        ));
+        bytes = bytes.saturating_add((self.methods.capacity() as u64).saturating_mul(size_of::<(
+            Name,
+            Vec<MethodDef>,
+        )>()
+            as u64));
         bytes = bytes.saturating_add(self.methods.capacity() as u64); // HashMap ctrl bytes
         for (name, methods) in &self.methods {
             bytes = bytes.saturating_add(name_bytes(name));
@@ -89,9 +93,10 @@ impl TypeDef {
             (self.initializers.capacity() as u64).saturating_mul(size_of::<InitializerId>() as u64),
         );
 
-        bytes = bytes.saturating_add((self.nested_types.capacity() as u64).saturating_mul(
-            size_of::<(Name, ItemId)>() as u64,
-        ));
+        bytes = bytes.saturating_add(
+            (self.nested_types.capacity() as u64)
+                .saturating_mul(size_of::<(Name, ItemId)>() as u64),
+        );
         bytes = bytes.saturating_add(self.nested_types.capacity() as u64); // HashMap ctrl bytes
         for (name, _) in &self.nested_types {
             bytes = bytes.saturating_add(name_bytes(name));

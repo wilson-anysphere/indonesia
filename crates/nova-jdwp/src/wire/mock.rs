@@ -1127,15 +1127,15 @@ async fn handle_packet(
                     let event_packet = encode_command(packet_id, 64, 100, &payload);
 
                     // Queue the invoke reply to be delivered after a ThreadReference.Resume.
-                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
-                     let mut reply_w = JdwpWriter::new();
-                     reply_w.write_tagged_value(&return_value, sizes);
-                     // JDWP spec: `exception` is a tagged object id.
-                     reply_w.write_u8(b'L');
-                     reply_w.write_object_id(0, sizes); // exception
-                     let pending = PendingInvokeMethodReply {
-                         packet_id: packet.id,
-                         thread: thread_id,
+                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let mut reply_w = JdwpWriter::new();
+                    reply_w.write_tagged_value(&return_value, sizes);
+                    // JDWP spec: `exception` is a tagged object id.
+                    reply_w.write_u8(b'L');
+                    reply_w.write_object_id(0, sizes); // exception
+                    let pending = PendingInvokeMethodReply {
+                        packet_id: packet.id,
+                        thread: thread_id,
                         error_code: 0,
                         payload: reply_w.into_vec(),
                     };
@@ -2370,7 +2370,8 @@ async fn handle_packet(
             if let Some(delay) = state.reply_delay(packet.command_set, packet.command) {
                 if !delay.is_zero() {
                     let breakpoint_request = { *state.breakpoint_request.lock().await };
-                    let breakpoint_suspend_policy = { *state.breakpoint_suspend_policy.lock().await };
+                    let breakpoint_suspend_policy =
+                        { *state.breakpoint_suspend_policy.lock().await };
 
                     if let Some(stop_packet) = make_stop_event_packet(
                         state,

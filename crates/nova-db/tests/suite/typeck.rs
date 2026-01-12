@@ -2357,7 +2357,9 @@ class C {
         },
     );
     assert!(
-        res.diagnostics.iter().any(|d| d.code.as_ref() == "cyclic-var"),
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "cyclic-var"),
         "expected cyclic-var diagnostic for `var x = x;`, got {:?}",
         res.diagnostics
     );

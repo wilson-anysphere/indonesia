@@ -76,9 +76,10 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
         if name.ends_with(".lockfile")
             && path.parent().is_some_and(|parent| {
-                parent
-                    .ancestors()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+                parent.ancestors().any(|dir| {
+                    dir.file_name()
+                        .is_some_and(|name| name == "dependency-locks")
+                })
             })
         {
             out.push(path);

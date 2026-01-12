@@ -2443,7 +2443,9 @@ impl Debugger {
         };
         let jdwp = self.jdwp.clone();
 
-        Ok(async move { Debugger::stream_debug_impl(jdwp, cancel, frame, expression, config).await })
+        Ok(
+            async move { Debugger::stream_debug_impl(jdwp, cancel, frame, expression, config).await },
+        )
     }
 
     async fn stream_debug_impl(
@@ -2682,11 +2684,7 @@ impl Debugger {
 
             let mut values = match cancellable_jdwp(
                 cancel,
-                jdwp.stack_frame_get_values(
-                    thread,
-                    frame_id,
-                    &[(slot, signature)],
-                ),
+                jdwp.stack_frame_get_values(thread, frame_id, &[(slot, signature)]),
             )
             .await
             {
@@ -2896,10 +2894,13 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     // the default preview helpers. Read the backing array field directly.
                     let children =
                         cancellable_jdwp(cancel, inspector.object_children(object_id)).await?;
-                    let array_id = children.iter().find_map(|child| match (&child.name[..], &child.value) {
-                        ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
-                        _ => None,
-                    });
+                    let array_id =
+                        children
+                            .iter()
+                            .find_map(|child| match (&child.name[..], &child.value) {
+                                ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
+                                _ => None,
+                            });
                     let Some(array_id) = array_id else {
                         return Err(DebuggerError::InvalidRequest(
                             "unsupported list implementation (missing backing array)".to_string(),

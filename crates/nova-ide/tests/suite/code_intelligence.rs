@@ -1851,10 +1851,7 @@ class A {}
         .expect("expected p.Outer.Inner nested type completion");
 
     let text = text_with_caret.replace("<|>", "");
-    let segment_start = text
-        .find("Outer.I")
-        .expect("expected Outer.I in fixture")
-        + "Outer.".len();
+    let segment_start = text.find("Outer.I").expect("expected Outer.I in fixture") + "Outer.".len();
 
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,

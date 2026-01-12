@@ -2541,7 +2541,12 @@ impl GlobalSymbolIndex {
             if let Some(b0) = query_first {
                 let bucket = &self.prefix1[b0 as usize];
                 if !bucket.is_empty() {
-                    self.score_candidates_top_k(bucket.iter().copied(), &mut matcher, limit, &mut scored);
+                    self.score_candidates_top_k(
+                        bucket.iter().copied(),
+                        &mut matcher,
+                        limit,
+                        &mut scored,
+                    );
                     return self.finish_top_k(scored, limit);
                 }
             }
@@ -2562,14 +2567,24 @@ impl GlobalSymbolIndex {
             .candidates_with_scratch(query, &mut candidate_scratch);
 
         if !candidates.is_empty() {
-            self.score_candidates_top_k(candidates.iter().copied(), &mut matcher, limit, &mut scored);
+            self.score_candidates_top_k(
+                candidates.iter().copied(),
+                &mut matcher,
+                limit,
+                &mut scored,
+            );
             return self.finish_top_k(scored, limit);
         }
 
         if let Some(b0) = query_first {
             let bucket = &self.prefix1[b0 as usize];
             if !bucket.is_empty() {
-                self.score_candidates_top_k(bucket.iter().copied(), &mut matcher, limit, &mut scored);
+                self.score_candidates_top_k(
+                    bucket.iter().copied(),
+                    &mut matcher,
+                    limit,
+                    &mut scored,
+                );
                 return self.finish_top_k(scored, limit);
             }
         }

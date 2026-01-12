@@ -7,9 +7,9 @@ use nova_fuzzy::{
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::cmp::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 thread_local! {

@@ -178,7 +178,9 @@ impl WorkspaceDefMap {
 
         fn package_bytes(pkg: &PackageName) -> u64 {
             let mut bytes = size_of::<PackageName>() as u64;
-            bytes = bytes.saturating_add((pkg.segments().len() as u64).saturating_mul(size_of::<Name>() as u64));
+            bytes = bytes.saturating_add(
+                (pkg.segments().len() as u64).saturating_mul(size_of::<Name>() as u64),
+            );
             for seg in pkg.segments() {
                 bytes = bytes.saturating_add(name_bytes(seg));
             }
@@ -199,7 +201,8 @@ impl WorkspaceDefMap {
 
         // type_names: HashMap<ItemId, TypeName>
         bytes = bytes.saturating_add(
-            (self.type_names.capacity() as u64).saturating_mul(size_of::<(ItemId, TypeName)>() as u64),
+            (self.type_names.capacity() as u64)
+                .saturating_mul(size_of::<(ItemId, TypeName)>() as u64),
         );
         bytes = bytes.saturating_add(self.type_names.capacity() as u64);
         for (_, name) in &self.type_names {
@@ -207,9 +210,11 @@ impl WorkspaceDefMap {
         }
 
         // types: HashMap<ItemId, TypeDef>
-        bytes = bytes.saturating_add(
-            (self.types.capacity() as u64).saturating_mul(size_of::<(ItemId, TypeDef)>() as u64),
-        );
+        bytes = bytes.saturating_add((self.types.capacity() as u64).saturating_mul(size_of::<(
+            ItemId,
+            TypeDef,
+        )>()
+            as u64));
         bytes = bytes.saturating_add(self.types.capacity() as u64);
         for (_, def) in &self.types {
             bytes = bytes.saturating_add(def.estimated_bytes());
@@ -223,15 +228,18 @@ impl WorkspaceDefMap {
         bytes = bytes.saturating_add(self.top_level_by_package.capacity() as u64);
         for (pkg, entries) in &self.top_level_by_package {
             bytes = bytes.saturating_add(package_bytes(pkg));
-            bytes = bytes.saturating_add(
-                (entries.capacity() as u64).saturating_mul(size_of::<(Name, Vec<ItemId>)>() as u64),
-            );
+            bytes = bytes.saturating_add((entries.capacity() as u64).saturating_mul(size_of::<(
+                Name,
+                Vec<ItemId>,
+            )>()
+                as u64));
             bytes = bytes.saturating_add(entries.capacity() as u64);
             for (name, items) in entries {
                 bytes = bytes.saturating_add(name_bytes(name));
-                bytes = bytes.saturating_add(
-                    (items.capacity() as u64).saturating_mul(size_of::<ItemId>() as u64),
-                );
+                bytes =
+                    bytes.saturating_add(
+                        (items.capacity() as u64).saturating_mul(size_of::<ItemId>() as u64),
+                    );
             }
         }
 

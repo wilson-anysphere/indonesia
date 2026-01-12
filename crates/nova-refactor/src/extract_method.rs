@@ -324,7 +324,10 @@ impl ExtractMethod {
                 .first()
                 .and_then(|first| {
                     selection_info.statements.last().map(|last| {
-                        TextRange::new(syntax_range(first.syntax()).start, syntax_range(last.syntax()).end)
+                        TextRange::new(
+                            syntax_range(first.syntax()).start,
+                            syntax_range(last.syntax()).end,
+                        )
                     })
                 })
                 .unwrap_or(selection);
@@ -369,8 +372,11 @@ impl ExtractMethod {
             // extracted method as the first parameter.
             if let Some((ret_local, ret)) = return_candidate.as_ref() {
                 if !ret.declared_in_selection {
-                    if definitely_assigned_at_selection_start(&flow_body, flow_selection, *ret_local)
-                        == Some(true)
+                    if definitely_assigned_at_selection_start(
+                        &flow_body,
+                        flow_selection,
+                        *ret_local,
+                    ) == Some(true)
                     {
                         if let Some(pos) = parameters.iter().position(|p| p.name == ret.name) {
                             let param = parameters.remove(pos);
