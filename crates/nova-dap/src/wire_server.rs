@@ -773,6 +773,9 @@ async fn handle_request_inner(
                     cmd.stdin(Stdio::null());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                    // killing the launched process.
+                    cmd.kill_on_drop(false);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -883,6 +886,9 @@ async fn handle_request_inner(
                     cmd.stdin(Stdio::null());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                    // killing the launched JVM.
+                    cmd.kill_on_drop(false);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
@@ -1480,6 +1486,9 @@ async fn handle_request_inner(
                     cmd.stdin(Stdio::null());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                    // killing the launched process.
+                    cmd.kill_on_drop(false);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -1588,6 +1597,9 @@ async fn handle_request_inner(
                     cmd.stdin(Stdio::null());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                    // killing the launched JVM.
+                    cmd.kill_on_drop(false);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
