@@ -6,3 +6,5 @@ mod persistence_roundtrip;
 mod segments_persistence;
 mod sharded_persistence;
 mod sketch_index;
+mod sketch_parser_hardening;
+mod symbol_at_offset;
