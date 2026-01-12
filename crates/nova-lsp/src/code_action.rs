@@ -245,8 +245,7 @@ fn build_prompt_context(
     let selection = start..end;
 
     let builder = ContextBuilder::new();
-    let mut privacy_mode = PrivacyMode::from_ai_privacy_config(privacy);
-    privacy_mode.include_file_paths = false;
+    let privacy_mode = PrivacyMode::from_ai_privacy_config(privacy);
     let req = ContextRequest::for_java_source_range(
         contents,
         selection,

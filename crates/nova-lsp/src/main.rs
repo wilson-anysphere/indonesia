@@ -1085,11 +1085,8 @@ impl ServerState {
     ) -> Self {
         let config = Arc::new(config);
         let ai_config = config.ai.clone();
-        let privacy = privacy_override.unwrap_or_else(|| {
-            let mut privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy);
-            privacy.include_file_paths = false;
-            privacy
-        });
+        let privacy =
+            privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy));
 
         let (ai, runtime) = if ai_config.enabled {
             match NovaAi::new(&ai_config) {

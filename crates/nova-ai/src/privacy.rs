@@ -37,7 +37,9 @@ impl PrivacyMode {
                 redact_numeric_literals: config.effective_redact_numeric_literals(),
                 redact_comments: config.effective_strip_or_redact_comments(),
             },
-            include_file_paths: true,
+            // Paths are excluded by default (see docs/13-ai-augmentation.md).
+            // Call sites that want to include paths must opt in explicitly.
+            include_file_paths: false,
         }
     }
 }
@@ -101,6 +103,7 @@ mod tests {
         assert!(!mode.redaction.redact_string_literals);
         assert!(!mode.redaction.redact_numeric_literals);
         assert!(!mode.redaction.redact_comments);
+        assert!(!mode.include_file_paths);
     }
 
     #[test]
@@ -114,5 +117,13 @@ mod tests {
         assert!(mode.redaction.redact_string_literals);
         assert!(mode.redaction.redact_numeric_literals);
         assert!(mode.redaction.redact_comments);
+        assert!(!mode.include_file_paths);
+    }
+
+    #[test]
+    fn privacy_mode_from_config_excludes_paths_by_default() {
+        let cfg = AiPrivacyConfig::default();
+        let mode = PrivacyMode::from_ai_privacy_config(&cfg);
+        assert!(!mode.include_file_paths);
     }
 }
