@@ -10,5 +10,4 @@
 
 nova-lsp
 nova-ide
-nova-db
 nova-refactor
