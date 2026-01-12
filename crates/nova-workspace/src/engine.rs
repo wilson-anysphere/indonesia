@@ -1470,6 +1470,10 @@ fn fallback_project_config(workspace_root: &Path) -> ProjectConfig {
 
 fn classpath_fingerprint(config: &ProjectConfig) -> Fingerprint {
     let mut bytes = Vec::new();
+    // Classpath indexing behavior depends on the effective Java target release
+    // (multi-release JAR selection), so include it in the fingerprint to ensure
+    // the cached classpath index is invalidated when the language level changes.
+    bytes.extend_from_slice(&config.java.target.0.to_le_bytes());
     for entry in config.classpath.iter().chain(config.module_path.iter()) {
         bytes.push(match entry.kind {
             nova_project::ClasspathEntryKind::Directory => b'D',
@@ -1628,9 +1632,12 @@ fn reload_project_and_sync(
             query_db.set_classpath_index(project, None);
         } else {
             let classpath_cache_dir = query_db.classpath_cache_dir();
-            match nova_classpath::ClasspathIndex::build(
+            match nova_classpath::ClasspathIndex::build_with_options(
                 &classpath_entries,
                 classpath_cache_dir.as_deref(),
+                nova_classpath::IndexOptions {
+                    target_release: requested_release,
+                },
             ) {
                 Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
                 Err(_) => query_db.set_classpath_index(project, None),
@@ -2498,6 +2505,58 @@ mod tests {
             assert_eq!(
                 snap.file_rel_path(file_id).as_str(),
                 "src/main/java/com/example/Main.java"
+            );
+        });
+    }
+
+    #[test]
+    fn project_reload_rebuilds_classpath_index_when_target_release_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        // Initial project config uses Java 17.
+        let pom = root.join("pom.xml");
+        fs::write(
+            &pom,
+            br#"<project><properties><maven.compiler.target>17</maven.compiler.target></properties></project>"#,
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let before = engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.project_config(project).java.target.0, 17);
+            snap.classpath_index(project)
+                .expect("classpath index should be set")
+        });
+
+        // Update Java target release; classpath entries are unchanged, but the index must be
+        // rebuilt because multi-release JAR selection depends on the target release.
+        fs::write(
+            &pom,
+            br#"<project><properties><maven.compiler.target>8</maven.compiler.target></properties></project>"#,
+        )
+        .unwrap();
+        engine.reload_project_now(&[pom.clone()]).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.project_config(project).java.target.0, 8);
+            let after = snap
+                .classpath_index(project)
+                .expect("classpath index should be set");
+            assert!(
+                !std::sync::Arc::ptr_eq(&before.0, &after.0),
+                "expected classpath index to be rebuilt when target release changes"
             );
         });
     }
