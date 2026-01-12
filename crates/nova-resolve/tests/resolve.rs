@@ -10,6 +10,7 @@ use nova_hir::hir;
 use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::{self, HirDatabase};
 use nova_jdk::JdkIndex;
+use nova_types::Severity;
 use nova_resolve::{
     build_scopes, BodyOwner, ImportMap, LocalRef, NameResolution, Resolution, Resolver,
     TypeResolution,
@@ -701,6 +702,11 @@ class C {}
         !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
         "expected no ambiguous-import, got {diags:?}"
     );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "duplicate-import"
+            && d.severity == Severity::Warning),
+        "expected duplicate-import warning, got {diags:?}"
+    );
 }
 
 #[test]
@@ -756,6 +762,11 @@ class C {}
     assert!(
         !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
         "expected no ambiguous-import, got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "duplicate-import"
+            && d.severity == Severity::Warning),
+        "expected duplicate-import warning, got {diags:?}"
     );
 }
 

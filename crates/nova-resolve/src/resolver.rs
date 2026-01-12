@@ -4,7 +4,9 @@ use nova_core::{Name, PackageId, PackageName, QualifiedName, StaticMemberId, Typ
 use nova_hir::hir;
 use nova_hir::ids::{ConstructorId, FieldId, InitializerId, ItemId, MethodId};
 
-use crate::diagnostics::{ambiguous_import_diagnostic, unresolved_import_diagnostic};
+use crate::diagnostics::{
+    ambiguous_import_diagnostic, duplicate_import_diagnostic, unresolved_import_diagnostic,
+};
 use crate::import_map::ImportMap;
 use crate::scopes::{ScopeGraph, ScopeId, ScopeKind};
 use crate::WorkspaceDefMap;
@@ -353,6 +355,7 @@ impl<'a> Resolver<'a> {
         // Duplicate single-type imports (`import a.Foo; import b.Foo;`).
         let mut single_type_by_name: HashMap<Name, Vec<String>> = HashMap::new();
         let mut single_type_span: HashMap<Name, nova_types::Span> = HashMap::new();
+        let mut single_type_seen: HashMap<Name, HashSet<String>> = HashMap::new();
         for import in &imports.type_single {
             single_type_span
                 .entry(import.imported.clone())
@@ -362,12 +365,18 @@ impl<'a> Resolver<'a> {
                 continue;
             };
             let target = ty.as_str().to_string();
+            if !single_type_seen
+                .entry(import.imported.clone())
+                .or_default()
+                .insert(target.clone())
+            {
+                diags.push(duplicate_import_diagnostic(import.range, &target));
+                continue;
+            }
             let targets = single_type_by_name
                 .entry(import.imported.clone())
                 .or_default();
-            if !targets.contains(&target) {
-                targets.push(target);
-            }
+            targets.push(target);
         }
         for (name, paths) in single_type_by_name {
             if paths.len() <= 1 {
@@ -401,6 +410,7 @@ impl<'a> Resolver<'a> {
         // Duplicate static single imports (`import static a.Foo.x; import static b.Bar.x;`).
         let mut static_single_by_name: HashMap<Name, Vec<String>> = HashMap::new();
         let mut static_single_span: HashMap<Name, nova_types::Span> = HashMap::new();
+        let mut static_single_seen: HashMap<Name, HashSet<String>> = HashMap::new();
         for import in &imports.static_single {
             static_single_span
                 .entry(import.imported.clone())
@@ -413,12 +423,21 @@ impl<'a> Resolver<'a> {
                 continue;
             };
             let target = format!("{}.{}", owner.as_str(), import.member.as_str());
+            if !static_single_seen
+                .entry(import.imported.clone())
+                .or_default()
+                .insert(target.clone())
+            {
+                diags.push(duplicate_import_diagnostic(
+                    import.range,
+                    &format!("static {target}"),
+                ));
+                continue;
+            }
             let targets = static_single_by_name
                 .entry(import.imported.clone())
                 .or_default();
-            if !targets.contains(&target) {
-                targets.push(target);
-            }
+            targets.push(target);
         }
         for (name, paths) in static_single_by_name {
             if paths.len() <= 1 {

@@ -20,6 +20,15 @@ pub fn ambiguous_import_diagnostic(range: Span, name: &str, candidates: &[String
 }
 
 #[must_use]
+pub fn duplicate_import_diagnostic(range: Span, path: &str) -> Diagnostic {
+    Diagnostic::warning(
+        "duplicate-import",
+        format!("duplicate import `{path}`"),
+        Some(range),
+    )
+}
+
+#[must_use]
 pub fn unresolved_identifier_diagnostic(range: Span, name: &str) -> Diagnostic {
     Diagnostic::error(
         "unresolved-identifier",
