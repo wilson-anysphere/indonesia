@@ -332,6 +332,11 @@
           "default": false,
           "description": "Start nova-dap with --legacy (useful for troubleshooting)."
         },
+        "nova.build.autoReloadOnBuildFileChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reload Nova's project model when build configuration files (pom.xml, build.gradle, WORKSPACE, etc.) change."
+        },
         "nova.tests.buildTool": {
           "type": "string",
           "enum": [

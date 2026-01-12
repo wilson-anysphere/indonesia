@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
+import { registerNovaBuildFileWatchers } from './buildFileWatch';
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
 import { registerFrameworkDashboardCommands } from './frameworkDashboard';
@@ -1802,6 +1803,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   ensureClientStarted = ensureLanguageClientStarted;
   stopClient = stopLanguageClient;
+
+  registerNovaBuildFileWatchers(context, sendNovaRequest, {
+    output: serverOutput,
+    formatError,
+    isMethodNotFoundError,
+  });
 
   let restartPromptInFlight: Promise<void> | undefined;
   const promptRestartLanguageServer = () => {
