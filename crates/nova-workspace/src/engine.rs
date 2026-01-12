@@ -5396,7 +5396,7 @@ mode = "off"
     }
 
     #[test]
-    fn external_config_path_adds_non_recursive_watch_for_parent_directory() {
+    fn external_config_path_adds_non_recursive_watch_for_config_path() {
         nova_config::with_config_env_lock(|| {
             let workspace_dir = tempfile::tempdir().unwrap();
             let workspace_root = workspace_dir.path().canonicalize().unwrap();
