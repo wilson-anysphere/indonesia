@@ -1467,9 +1467,15 @@ pub fn is_subtype(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
             true
         }
 
-        (Type::Intersection(types), other) => types.iter().any(|t| is_subtype(env, t, other)),
-
+        // `X <: (A & B)` iff `X <: A` and `X <: B`.
+        //
+        // Note: handle this before the `(A & B) <: X` case so that intersection-to-intersection
+        // subtyping works as expected:
+        //   (A & B) <: (C & D) iff (A & B) <: C and (A & B) <: D
         (other, Type::Intersection(types)) => types.iter().all(|t| is_subtype(env, other, t)),
+
+        // `(A & B) <: X` iff `A <: X` or `B <: X`.
+        (Type::Intersection(types), other) => types.iter().any(|t| is_subtype(env, t, other)),
 
         (Type::TypeVar(id), other) => env
             .type_param(*id)
