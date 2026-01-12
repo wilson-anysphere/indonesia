@@ -101,6 +101,29 @@ fn method_param_parsing_ignores_block_comments_with_parens() {
 }
 
 #[test]
+fn method_decl_range_includes_annotations() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"class A {
+    @Deprecated
+    void foo() {}
+}
+"#
+        .to_string(),
+    );
+    let index = Index::new(files);
+    let foo = index.find_method("A", "foo").expect("method exists");
+    let text = index.file_text("A.java").expect("file text");
+    let decl = &text[foo.decl_range.start..foo.decl_range.end];
+    assert!(
+        decl.contains("@Deprecated"),
+        "expected decl_range to include annotations, got: {decl:?}"
+    );
+    assert!(decl.contains("void foo()"));
+}
+
+#[test]
 fn fields_are_indexed_including_multiple_declarators() {
     let mut files = BTreeMap::new();
     files.insert(

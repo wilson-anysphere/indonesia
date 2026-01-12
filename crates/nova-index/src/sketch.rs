@@ -1121,7 +1121,6 @@ fn parse_members_in_class(
     // `int[] xs = { ... };`) as member boundaries.
     let mut in_block_member = false;
     let mut pending_override = false;
-    let mut pending_override_decl_start: Option<usize> = None;
     while i < bytes.len() {
         match bytes[i] {
             b'{' => {
@@ -1139,7 +1138,6 @@ fn parse_members_in_class(
                     // A top-level block member ended.
                     member_start = i;
                     pending_override = false;
-                    pending_override_decl_start = None;
                     in_block_member = false;
                 }
                 continue;
@@ -1177,8 +1175,6 @@ fn parse_members_in_class(
             // Track `@Override` annotations so we can attach them to the next method declaration.
             if bytes[i] == b'@' && body_text[i..].starts_with("@Override") {
                 pending_override = true;
-                pending_override_decl_start =
-                    Some(body_text[..i].rfind('\n').map(|p| p + 1).unwrap_or(0));
                 i += "@Override".len();
                 continue;
             }
@@ -1219,15 +1215,20 @@ fn parse_members_in_class(
                         if j < bytes.len() && (bytes[j] == b'{' || bytes[j] == b';') {
                             let params_src = &body_text[open_paren + 1..close_paren - 1];
                             let (param_types, param_names) = parse_param_list(params_src);
-                            // Determine start of declaration by scanning backwards to previous newline.
-                            let decl_start = if pending_override {
-                                pending_override_decl_start.unwrap_or(0)
-                            } else {
-                                body_text[..name_start]
-                                    .rfind('\n')
-                                    .map(|p| p + 1)
-                                    .unwrap_or(0)
-                            };
+                            // Determine the start of the declaration by walking back to the start
+                            // of the current member and then to the start of its line.
+                            //
+                            // This is intentionally best-effort and may include doc comments and
+                            // annotations (which is desirable for deletion refactorings).
+                            let member_slice = &body_text[member_start..name_start];
+                            let rel_first_token =
+                                member_slice.find(|c: char| !c.is_whitespace()).unwrap_or(0);
+                            let token_start = member_start + rel_first_token;
+                            let line_start = body_text[..token_start]
+                                .rfind('\n')
+                                .map(|p| p + 1)
+                                .unwrap_or(0);
+                            let decl_start = member_start.max(line_start);
 
                             let decl_end = if bytes[j] == b';' {
                                 // include `;`
@@ -1249,7 +1250,6 @@ fn parse_members_in_class(
                                 is_override: pending_override,
                             });
                             pending_override = false;
-                            pending_override_decl_start = None;
 
                             // Skip scanning inside the declaration we just recorded.
                             i = decl_end.saturating_sub(body_offset);
@@ -1283,7 +1283,6 @@ fn parse_members_in_class(
                     decl_range,
                 ));
                 pending_override = false;
-                pending_override_decl_start = None;
                 i += 1;
                 member_start = i;
                 continue;
