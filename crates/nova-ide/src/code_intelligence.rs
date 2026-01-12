@@ -1146,6 +1146,258 @@ fn import_completions(
     items
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageDeclCompletionContext {
+    /// Dotted prefix typed so far (from the start of the package name up to the cursor).
+    dotted_prefix: String,
+    /// Prefix for the current package segment (text after the last `.`).
+    segment_prefix: String,
+    /// Byte offset of the start of the current segment (replacement start).
+    segment_start: usize,
+    /// Dotted prefix of the parent package (no trailing `.`).
+    parent_prefix: String,
+}
+
+fn package_decl_completion_context(
+    java_source: &str,
+    offset: usize,
+) -> Option<PackageDeclCompletionContext> {
+    if offset > java_source.len() {
+        return None;
+    }
+
+    // Best-effort: package declarations are typically single-line.
+    // Keep this heuristic narrow to avoid matching `package` in comments/strings.
+    let bytes = java_source.as_bytes();
+    let mut line_start = offset.min(bytes.len());
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+    let mut line_end = offset.min(bytes.len());
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+    let line = java_source.get(line_start..line_end)?;
+
+    let trimmed = line.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    if !trimmed.starts_with("package") {
+        return None;
+    }
+
+    let after_kw = trimmed.get("package".len()..)?;
+    if after_kw
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_ascii_whitespace())
+    {
+        return None;
+    }
+
+    let after_kw_ws = after_kw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let name_start_in_trimmed = trimmed.len() - after_kw_ws.len();
+    let name_start = line_start + (line.len() - trimmed.len()) + name_start_in_trimmed;
+
+    let semi_rel = java_source
+        .get(name_start..line_end)
+        .and_then(|rest| rest.find(';'))
+        .map(|idx| name_start + idx)
+        .unwrap_or(line_end);
+    if offset < name_start || offset > semi_rel {
+        return None;
+    }
+
+    let dotted_prefix = java_source.get(name_start..offset)?.to_string();
+    let last_dot = dotted_prefix.rfind('.');
+    let segment_start = match last_dot {
+        Some(dot) => name_start + dot + 1,
+        None => name_start,
+    };
+    let segment_prefix = java_source.get(segment_start..offset)?.to_string();
+    let parent_prefix = match last_dot {
+        Some(dot) => dotted_prefix[..dot].to_string(),
+        None => String::new(),
+    };
+
+    Some(PackageDeclCompletionContext {
+        dotted_prefix,
+        segment_prefix,
+        segment_start,
+        parent_prefix,
+    })
+}
+
+fn parse_package_declaration(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if !trimmed.starts_with("package") {
+            continue;
+        }
+        let after_kw = trimmed.get("package".len()..)?;
+        if after_kw
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_ascii_whitespace())
+        {
+            continue;
+        }
+        let after_kw = after_kw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+
+        let mut end = 0usize;
+        for (idx, ch) in after_kw.char_indices() {
+            if ch.is_ascii_whitespace() {
+                break;
+            }
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' || ch == ';' {
+                end = idx + ch.len_utf8();
+                if ch == ';' {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if end == 0 {
+            continue;
+        }
+
+        let raw = after_kw[..end].trim_start();
+        let pkg = raw.trim_end_matches(';').trim();
+        if pkg.is_empty() {
+            continue;
+        }
+        return Some(pkg.to_string());
+    }
+    None
+}
+
+fn workspace_packages(db: &dyn Database, root: Option<&Path>) -> Vec<String> {
+    let mut out = HashSet::<String>::new();
+    for id in db.all_file_ids() {
+        let Some(path) = db.file_path(id) else {
+            continue;
+        };
+        if let Some(root) = root {
+            if !path.starts_with(root) {
+                continue;
+            }
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+        if let Some(pkg) = parse_package_declaration(db.file_content(id)) {
+            out.insert(pkg);
+        }
+    }
+    let mut out: Vec<String> = out.into_iter().collect();
+    out.sort();
+    out
+}
+
+fn add_package_segment_candidates(
+    candidates: &mut HashMap<String, bool>,
+    package: &str,
+    parent_segments: &[&str],
+    segment_prefix: &str,
+) {
+    let mut segments = package.split('.').filter(|s| !s.is_empty());
+
+    for parent in parent_segments {
+        let Some(seg) = segments.next() else {
+            return;
+        };
+        if seg != *parent {
+            return;
+        }
+    }
+
+    let Some(next) = segments.next() else {
+        return;
+    };
+    if !next.starts_with(segment_prefix) {
+        return;
+    }
+
+    let has_children = segments.next().is_some();
+    candidates
+        .entry(next.to_string())
+        .and_modify(|v| *v = *v || has_children)
+        .or_insert(has_children);
+}
+
+fn package_decl_completions(
+    db: &dyn Database,
+    file: FileId,
+    ctx: &PackageDeclCompletionContext,
+) -> Vec<CompletionItem> {
+    let parent_segments: Vec<&str> = if ctx.parent_prefix.is_empty() {
+        Vec::new()
+    } else {
+        ctx.parent_prefix.split('.').collect()
+    };
+
+    let root = db
+        .file_path(file)
+        .map(|path| framework_cache::project_root_for_path(path));
+
+    let mut candidates: HashMap<String, bool> = HashMap::new();
+
+    // 1) Workspace packages (primary).
+    for pkg in workspace_packages(db, root.as_deref()) {
+        add_package_segment_candidates(
+            &mut candidates,
+            &pkg,
+            &parent_segments,
+            &ctx.segment_prefix,
+        );
+    }
+
+    // 2) JDK packages (bounded).
+    const MAX_JDK_PACKAGES: usize = 2048;
+    if !ctx.dotted_prefix.is_empty() {
+        let jdk = JDK_INDEX
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        if let Ok(pkgs) = jdk.packages_with_prefix(&ctx.dotted_prefix) {
+            for pkg in pkgs.into_iter().take(MAX_JDK_PACKAGES) {
+                add_package_segment_candidates(
+                    &mut candidates,
+                    &pkg,
+                    &parent_segments,
+                    &ctx.segment_prefix,
+                );
+            }
+        }
+    }
+
+    let mut entries: Vec<(String, bool)> = candidates.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut items = Vec::with_capacity(entries.len());
+    for (segment, has_children) in entries {
+        let insert_text = if has_children {
+            format!("{segment}.")
+        } else {
+            segment.clone()
+        };
+        let label = if has_children {
+            format!("{segment}.")
+        } else {
+            segment.clone()
+        };
+        items.push(CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::MODULE),
+            insert_text: Some(insert_text),
+            ..Default::default()
+        });
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(&ctx.segment_prefix, &mut items, &ranking_ctx);
+    items
+}
+
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -1168,6 +1420,13 @@ pub(crate) fn core_completions(
         return Vec::new();
     };
     let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    if let Some(ctx) = package_decl_completion_context(text, offset) {
+        let items = package_decl_completions(db, file, &ctx);
+        if !items.is_empty() {
+            return decorate_completions(&text_index, ctx.segment_start, offset, items);
+        }
+    }
 
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
@@ -1230,6 +1489,13 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let items = import_completions(&text_index, offset, &ctx);
             if !items.is_empty() {
                 return decorate_completions(&text_index, ctx.replace_start, offset, items);
+            }
+        }
+
+        if let Some(ctx) = package_decl_completion_context(text, offset) {
+            let items = package_decl_completions(db, file, &ctx);
+            if !items.is_empty() {
+                return decorate_completions(&text_index, ctx.segment_start, offset, items);
             }
         }
     }

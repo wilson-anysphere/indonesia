@@ -245,6 +245,45 @@ class A {
 }
 
 #[test]
+fn completion_in_package_declaration_uses_workspace_packages_and_replaces_segment_only() {
+    let file_a_path = PathBuf::from("/workspace/src/main/java/com/foo/A.java");
+    let file_b_path = PathBuf::from("/workspace/src/main/java/com/B.java");
+
+    let file_a_text = "package com.foo; class A{}".to_string();
+    let file_b_text = "package com.f<|>; class B{}";
+
+    let (db, file, pos) =
+        fixture_multi(file_b_path, file_b_text, vec![(file_a_path, file_a_text)]);
+
+    let without_caret = file_b_text.replace("<|>", "");
+    let f_start = without_caret
+        .find("com.f")
+        .expect("expected `com.f` in fixture")
+        + "com.".len();
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "foo" || i.label == "foo."),
+        "expected workspace package segment completion; got {items:#?}"
+    );
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "foo" || i.label == "foo.")
+        .expect("expected foo completion item");
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&without_caret, f_start),
+        "expected completion to replace only the current segment"
+    );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ new Arr<|> } }");
 
