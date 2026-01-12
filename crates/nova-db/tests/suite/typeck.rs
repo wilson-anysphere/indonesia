@@ -240,6 +240,37 @@ class C {
 }
 
 #[test]
+fn explicit_type_args_influence_var_inference() {
+    let src = r#"
+import java.util.List;
+class C {
+    void m() {
+        var xs = List.<String>of();
+        xs.get(0).substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| !(d.code.as_ref() == "unresolved-method" && d.message.contains("substring"))),
+        "expected explicit type args to yield String element type, got {diags:?}"
+    );
+
+    let offset = src
+        .find("get(0)")
+        .expect("snippet should contain get call")
+        + "get".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn invalid_cast_produces_diagnostic() {
     let src = r#"
 class C {
