@@ -57,6 +57,16 @@ struct Parser<'a, 'idx> {
     base_span: Option<Span>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnnotationSkipContext {
+    /// Skipping annotations before a type (e.g. `@A String`).
+    BeforeType,
+    /// Skipping annotations before a qualified name segment (e.g. `Outer.@A Inner`).
+    BeforeQualifiedSegment,
+    /// Skipping annotations before suffixes like `[]`/`...` (e.g. `String @A []`).
+    BeforeSuffix,
+}
+
 impl<'a, 'idx> Parser<'a, 'idx> {
     fn new(
         resolver: &'a Resolver<'idx>,
@@ -142,6 +152,8 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     fn parse_single_type(&mut self) -> Type {
         self.skip_ws();
         let start = self.pos;
+        self.skip_annotations(AnnotationSkipContext::BeforeType);
+        self.skip_ws();
         if self.is_eof() {
             self.push_error("invalid-type-ref", "expected a type", start..start);
             return Type::Unknown;
@@ -266,8 +278,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             if !self.consume_char('.') {
                 break;
             }
-
-            self.skip_ws();
+            self.skip_annotations(AnnotationSkipContext::BeforeQualifiedSegment);
             let Some((seg, seg_range)) = self.parse_ident() else {
                 self.push_error(
                     "invalid-type-ref",
@@ -529,6 +540,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     fn parse_suffixes(&mut self, mut ty: Type, type_start: usize) -> Type {
         loop {
             self.skip_ws();
+            self.skip_annotations(AnnotationSkipContext::BeforeSuffix);
             if self.consume_str("[]") {
                 // `void[]` is syntactically impossible.
                 if matches!(ty, Type::Void) {
@@ -666,6 +678,326 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         matches!(self.peek_char(), Some('>') | Some(',') | Some(')'))
     }
 
+    // --- annotation skipping -------------------------------------------------
+
+    fn skip_annotations(&mut self, ctx: AnnotationSkipContext) {
+        loop {
+            self.skip_ws();
+            if self.peek_char() != Some('@') {
+                break;
+            }
+
+            let before = self.pos;
+            self.skip_annotation_use(ctx);
+            if self.pos == before {
+                // Ensure progress even on malformed inputs.
+                self.bump_char();
+            }
+        }
+    }
+
+    fn skip_annotation_use(&mut self, ctx: AnnotationSkipContext) {
+        self.skip_ws();
+        if self.peek_char() != Some('@') {
+            return;
+        }
+        self.bump_char(); // '@'
+        self.skip_ws();
+
+        let name_start = self.pos;
+        let Some(first) = self.peek_char() else {
+            return;
+        };
+        if !is_ident_start(first) {
+            // Malformed annotation; best-effort skip just the `@`.
+            return;
+        }
+
+        // Greedily consume a qualified identifier, but don't accidentally swallow
+        // varargs `...` (only accept `.` when followed by another identifier).
+        let greedy_end = self.scan_greedy_qualified_ident_end();
+
+        // Greedy path: consume the full qualified name + optional arg list.
+        self.pos = greedy_end;
+        self.skip_ws();
+        if self.peek_char() == Some('(') {
+            self.skip_paren_group();
+        }
+        self.skip_ws();
+
+        if ctx == AnnotationSkipContext::BeforeSuffix {
+            // Array/varargs suffixes provide a delimiter, so we don't need to do
+            // any heuristic splitting.
+            return;
+        }
+
+        if self.annotation_follow_is_ok(ctx) {
+            return;
+        }
+
+        // Heuristic recovery: in `TypeRef.text` whitespace is stripped, so
+        // `@A String` becomes `@AString`. The greedy parse above would treat
+        // `AString` as a single identifier, leaving nothing (or only `<...>` /
+        // `[]`) for the actual type. Try to split the identifier so the
+        // remainder parses as a type/segment.
+        let best_end = self.find_best_annotation_name_end(name_start, greedy_end, ctx);
+        self.pos = best_end;
+        self.skip_ws();
+        if self.peek_char() == Some('(') {
+            self.skip_paren_group();
+        }
+        self.skip_ws();
+    }
+
+    fn scan_greedy_qualified_ident_end(&self) -> usize {
+        let mut pos = self.pos;
+
+        // First segment.
+        let mut chars = self.text[pos..].char_indices();
+        let Some((_, first)) = chars.next() else {
+            return pos;
+        };
+        if !is_ident_start(first) {
+            return pos;
+        }
+        pos += first.len_utf8();
+        for (idx, ch) in chars {
+            if is_ident_part(ch) {
+                pos = self.pos + idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        // Additional segments (`.` + ident) as long as the dot is followed by
+        // another identifier segment.
+        loop {
+            if pos >= self.text.len() || self.text.as_bytes()[pos] != b'.' {
+                break;
+            }
+            // Look ahead one char after '.'
+            let after_dot = pos + 1;
+            let Some(next) = self.text.get(after_dot..).and_then(|s| s.chars().next()) else {
+                break;
+            };
+            if !is_ident_start(next) {
+                break;
+            }
+
+            // Consume '.' and the next segment.
+            pos += 1;
+            pos += next.len_utf8();
+            while pos < self.text.len() {
+                let ch = self.text[pos..].chars().next().unwrap();
+                if is_ident_part(ch) {
+                    pos += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        pos
+    }
+
+    fn annotation_follow_is_ok(&self, ctx: AnnotationSkipContext) -> bool {
+        let mut idx = self.pos;
+        while idx < self.text.len() {
+            let ch = self.text[idx..].chars().next().unwrap();
+            if ch.is_whitespace() {
+                idx += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        let Some(ch) = self.text.get(idx..).and_then(|s| s.chars().next()) else {
+            return false;
+        };
+
+        match ctx {
+            AnnotationSkipContext::BeforeType => ch == '@' || ch == '?' || is_ident_start(ch),
+            AnnotationSkipContext::BeforeQualifiedSegment => ch == '@' || is_ident_start(ch),
+            AnnotationSkipContext::BeforeSuffix => true,
+        }
+    }
+
+    fn find_best_annotation_name_end(
+        &self,
+        name_start: usize,
+        greedy_end: usize,
+        ctx: AnnotationSkipContext,
+    ) -> usize {
+        let mut best_end = greedy_end;
+        // Key layout documented in `consider_annotation_split_candidate`.
+        let mut best_key: Option<(usize, usize, usize, u8, bool, usize)> = None;
+
+        // Scan through the greedy qualified identifier and consider every
+        // possible boundary that produces a syntactically valid qualified name
+        // prefix. We allow splitting inside an identifier segment because
+        // whitespace stripping may have glued the next token onto it.
+        let mut idx = name_start;
+        let mut at_segment_start = true;
+        let mut seen_any_ident = false;
+
+        while idx < greedy_end {
+            let ch = self.text[idx..].chars().next().unwrap();
+            let next_idx = idx + ch.len_utf8();
+
+            if at_segment_start {
+                if !is_ident_start(ch) {
+                    break;
+                }
+                at_segment_start = false;
+                seen_any_ident = true;
+                // Candidate end after the first char of a segment.
+                let end = next_idx;
+                self.consider_annotation_split_candidate(ctx, end, &mut best_end, &mut best_key);
+                idx = next_idx;
+                continue;
+            }
+
+            if ch == '.' {
+                // Qualified names cannot have empty segments.
+                at_segment_start = true;
+                idx = next_idx;
+                continue;
+            }
+
+            if !is_ident_part(ch) {
+                break;
+            }
+
+            if seen_any_ident {
+                let end = next_idx;
+                self.consider_annotation_split_candidate(ctx, end, &mut best_end, &mut best_key);
+            }
+
+            idx = next_idx;
+        }
+
+        best_end
+    }
+
+    fn consider_annotation_split_candidate(
+        &self,
+        ctx: AnnotationSkipContext,
+        name_end: usize,
+        best_end: &mut usize,
+        best_key: &mut Option<(usize, usize, usize, u8, bool, usize)>,
+    ) {
+        // Evaluate the remainder if we stop the annotation name at `name_end`.
+        let mut look = Parser {
+            resolver: self.resolver,
+            scopes: self.scopes,
+            scope: self.scope,
+            env: self.env,
+            type_vars: self.type_vars,
+            text: self.text,
+            pos: name_end,
+            diagnostics: Vec::new(),
+            base_span: self.base_span,
+        };
+
+        look.skip_ws();
+        if look.peek_char() == Some('(') {
+            look.skip_paren_group();
+        }
+        look.skip_ws();
+        let type_start = look.pos;
+
+        let start_ch = look.peek_char();
+        let starts_upper = start_ch.is_some_and(|c| c.is_ascii_uppercase());
+
+        // In `BeforeQualifiedSegment` contexts, we must land on an identifier (or another
+        // annotation), not on `?` etc.
+        let ctx_start_penalty = match (ctx, start_ch) {
+            (AnnotationSkipContext::BeforeQualifiedSegment, Some('?')) => 1usize,
+            (AnnotationSkipContext::BeforeQualifiedSegment, Some(ch))
+                if ch != '@' && !is_ident_start(ch) =>
+            {
+                1
+            }
+            (AnnotationSkipContext::BeforeQualifiedSegment, None) => 1,
+            _ => 0,
+        };
+
+        let ty = look.parse_type();
+        let invalid = look
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_ref() == "invalid-type-ref")
+            .count();
+        let unresolved = look
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_ref() == "unresolved-type")
+            .count();
+
+        let kind_rank = type_rank(&ty);
+
+        // Key layout:
+        // - ctx_start_penalty: ensure we don't pick obviously invalid follow positions in
+        //   qualified-segment context.
+        // - invalid: prefer parses that don't produce `invalid-type-ref`.
+        // - unresolved: prefer parses that resolve (for `@AString` -> `String`).
+        // - kind_rank: prefer "real" types over unknown/named.
+        // - !starts_upper: for segment contexts, prefer starts that look like type names.
+        // - Reverse(type_start): prefer consuming as much as possible as annotation.
+        let key = match ctx {
+            AnnotationSkipContext::BeforeType => (
+                ctx_start_penalty,
+                invalid,
+                unresolved,
+                kind_rank,
+                false, // unused
+                usize::MAX - type_start,
+            ),
+            AnnotationSkipContext::BeforeQualifiedSegment => (
+                ctx_start_penalty,
+                invalid,
+                0, // unresolved is noisy here; ignore it for ranking
+                kind_rank,
+                !starts_upper,
+                usize::MAX - type_start,
+            ),
+            AnnotationSkipContext::BeforeSuffix => unreachable!("suffix mode does not split"),
+        };
+
+        if best_key.map_or(true, |best| key < best) {
+            *best_key = Some(key);
+            *best_end = name_end;
+        }
+    }
+
+    fn skip_paren_group(&mut self) {
+        self.skip_ws();
+        if self.peek_char() != Some('(') {
+            return;
+        }
+
+        self.bump_char(); // '('
+        let mut depth = 1usize;
+        while let Some(ch) = self.peek_char() {
+            match ch {
+                '(' => {
+                    depth += 1;
+                    self.bump_char();
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    self.bump_char();
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    self.bump_char();
+                }
+            }
+        }
+    }
+
     // --- error recovery helpers ---------------------------------------------
 
     fn skip_until(&mut self, mut predicate: impl FnMut(char) -> bool) {
@@ -731,6 +1063,15 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             start = end;
         }
         Some(Span::new(start, end))
+    }
+}
+
+fn type_rank(ty: &Type) -> u8 {
+    match ty {
+        Type::Array(elem) => type_rank(elem.as_ref()),
+        Type::Named(_) => 2,
+        Type::Unknown | Type::Error => 3,
+        _ => 0,
     }
 }
 

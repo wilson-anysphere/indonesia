@@ -118,3 +118,90 @@ class C {}
     let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
     assert_eq!(result.ty, Type::class(string_id, vec![]));
 }
+
+#[test]
+fn type_use_annotations_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    // Mimics `TypeRef.text` output where whitespace is stripped.
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "@DeprecatedString",
+        None,
+    );
+    assert!(
+        !result.diagnostics.iter().any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, Type::class(string_id, vec![]));
+
+    // Also accept the spaced variant for completeness.
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "@Deprecated String",
+        None,
+    );
+    assert!(
+        !result.diagnostics.iter().any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, Type::class(string_id, vec![]));
+}
+
+#[test]
+fn type_use_annotations_on_arrays_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "String@Deprecated[]",
+        None,
+    );
+    assert!(
+        !result.diagnostics.iter().any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::Array(Box::new(Type::class(string_id, vec![])))
+    );
+}
