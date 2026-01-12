@@ -1543,6 +1543,29 @@ class A {
 }
 
 #[test]
+fn completion_scope_excludes_locals_from_ended_blocks() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    if (true) {
+      int inner = 1;
+    }
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"inner"),
+        "expected block-local `inner` to be out of scope; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_recency_ranks_recent_locals_first() {
     let (db, file, pos) = fixture(
         r#"

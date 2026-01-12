@@ -1654,6 +1654,8 @@ fn general_completions(
         .find(|m| span_contains(m.body_span, offset));
 
     if let Some(method) = enclosing_method {
+        let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
+
         // Method params are always in scope within the body.
         for p in &method.params {
             items.push(CompletionItem {
@@ -1666,9 +1668,17 @@ fn general_completions(
 
         // Best-effort local variable scoping: only include locals declared in
         // this method and before the cursor.
+        //
+        // Additionally, use a simple brace-stack check to avoid suggesting
+        // variables from sibling blocks (e.g. `if { int x; } else { <cursor> }`)
+        // or from blocks that have already ended.
         for v in analysis.vars.iter().filter(|v| {
             span_within(v.name_span, method.body_span) && v.name_span.start < offset
         }) {
+            let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
+            if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
+                continue;
+            }
             items.push(CompletionItem {
                 label: v.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
@@ -1849,6 +1859,8 @@ fn in_scope_types(
     let mut out = HashMap::<String, String>::new();
 
     if let Some(method) = enclosing_method {
+        let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
+
         for p in &method.params {
             out.insert(p.name.clone(), p.ty.clone());
         }
@@ -1861,6 +1873,10 @@ fn in_scope_types(
             .collect();
         vars.sort_by_key(|v| v.name_span.start);
         for v in vars {
+            let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
+            if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
+                continue;
+            }
             out.insert(v.name.clone(), v.ty.clone());
         }
     }
@@ -1921,6 +1937,27 @@ fn infer_expected_type(
 
     let method = analysis.methods.iter().find(|m| m.name == call.name)?;
     method.params.get(arg_idx).map(|p| p.ty.clone())
+}
+
+fn brace_stack_at_offset(tokens: &[Token], offset: usize) -> Vec<usize> {
+    let mut stack = Vec::new();
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.span.start >= offset {
+            break;
+        }
+        match tok.kind {
+            TokenKind::Symbol('{') => stack.push(idx),
+            TokenKind::Symbol('}') => {
+                let _ = stack.pop();
+            }
+            _ => {}
+        }
+    }
+    stack
+}
+
+fn brace_stack_is_prefix(prefix: &[usize], full: &[usize]) -> bool {
+    prefix.len() <= full.len() && prefix.iter().zip(full.iter()).all(|(a, b)| a == b)
 }
 
 // -----------------------------------------------------------------------------
