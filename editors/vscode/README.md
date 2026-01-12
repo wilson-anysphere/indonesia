@@ -137,12 +137,6 @@ npm run compile
     - copies the bundle **archive path** (if available) or folder path to your clipboard
     - prints both paths to the **Nova Bug Report** output channel
 
-- **Nova: Build Project** (`nova.buildProject`)
-  - Runs `nova/buildProject` for the selected workspace folder.
-
-- **Nova: Reload Project** (`nova.reloadProject`)
-  - Runs `nova/reloadProject` for the selected workspace folder.
-
 - **Nova: Show Request Metrics** (`nova.showRequestMetrics`)
   - Fetches request metrics via `nova/metrics` (available in safe mode).
   - Pretty-prints the JSON payload to the **Nova Metrics** output channel, with an action to copy the JSON to your clipboard.
@@ -151,7 +145,7 @@ npm run compile
   - Resets request metrics via `nova/resetMetrics` (available in safe mode).
 
 - **Nova: Search Framework Items…** (`nova.frameworks.search`)
-  - Search framework-derived navigation targets (web endpoints, Micronaut endpoints, Micronaut beans) and jump to the source location.
+  - Prompts for a workspace folder and framework kind, then searches endpoints/beans and navigates to the selected result.
 
 - **Nova: Refresh Frameworks** (`nova.frameworks.refresh`)
   - Refreshes the **Nova Frameworks** Explorer view.
@@ -184,9 +178,6 @@ npm run compile
 
 - **Nova: Hot Swap Changed Files** (`nova.hotSwapChangedFiles`)
   - Runs `nova/debug/hotSwap` for recently saved Java files (requires an active Nova debug session).
-
-- **Nova: Search Framework Items…** (`nova.frameworks.search`)
-  - Prompts for a workspace folder and framework kind, then searches endpoints/beans and navigates to the selected result.
 
 ## Bug report bundles
 
