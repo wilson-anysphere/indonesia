@@ -475,3 +475,39 @@ class C {
         "expected expr_scopes to be memoized per body"
     );
 }
+
+#[test]
+fn generic_method_type_params_do_not_trigger_unresolved_type() {
+    let src = r#"
+class C {
+    <T> T id(T t) { return t; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("`T`")),
+        "expected `T` to resolve as a method type parameter, got {diags:?}"
+    );
+}
+
+#[test]
+fn generic_constructor_type_params_do_not_trigger_unresolved_type() {
+    let src = r#"
+class Foo {
+    <T> Foo(T t) { }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("`T`")),
+        "expected `T` to resolve as a constructor type parameter, got {diags:?}"
+    );
+}

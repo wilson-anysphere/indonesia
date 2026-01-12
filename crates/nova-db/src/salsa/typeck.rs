@@ -16,8 +16,8 @@ use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_types::{
     assignment_conversion, binary_numeric_promotion, format_resolved_method, format_type, CallKind,
     ClassDef, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
-    MethodDef, MethodNotFound, MethodResolution, PrimitiveType,
-    ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeProvider, TypeStore, TypeVarId,
+    MethodDef, MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext,
+    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -329,7 +329,17 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types in this file so `Type::Class` ids are stable within this body.
-    let (field_types, method_types) = define_source_types(&resolver, &scopes, &tree, &mut loader);
+    let (field_types, method_types, source_type_vars) =
+        define_source_types(&resolver, &scopes, &tree, &mut loader);
+
+    let type_vars = type_vars_for_owner(
+        owner,
+        body_scope,
+        &scopes.scopes,
+        &tree,
+        &mut loader,
+        &source_type_vars,
+    );
 
     let (expected_return, signature_diags) = resolve_expected_return_type(
         &resolver,
@@ -337,6 +347,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         body_scope,
         &tree,
         owner,
+        &type_vars,
         &mut loader,
     );
     let (param_types, param_diags) = resolve_param_types(
@@ -345,6 +356,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         body_scope,
         &tree,
         owner,
+        &type_vars,
         &mut loader,
     );
 
@@ -357,6 +369,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         &tree,
         &body,
         expr_scopes,
+        type_vars,
         expected_return.clone(),
         param_types,
         field_types,
@@ -568,6 +581,7 @@ struct BodyChecker<'a, 'idx> {
     tree: &'a nova_hir::item_tree::ItemTree,
     body: &'a HirBody,
     expr_scopes: ArcEq<ExprScopes>,
+    type_vars: HashMap<String, TypeVarId>,
     expected_return: Type,
     local_types: Vec<Type>,
     param_types: Vec<Type>,
@@ -590,6 +604,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         tree: &'a nova_hir::item_tree::ItemTree,
         body: &'a HirBody,
         expr_scopes: ArcEq<ExprScopes>,
+        type_vars: HashMap<String, TypeVarId>,
         expected_return: Type,
         param_types: Vec<Type>,
         field_types: HashMap<FieldId, Type>,
@@ -608,6 +623,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             tree,
             body,
             expr_scopes,
+            type_vars,
             expected_return,
             local_types,
             param_types,
@@ -2046,13 +2062,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         base_span: Option<Span>,
     ) -> Type {
         preload_type_names(self.resolver, self.scopes, self.scope_id, loader, text);
-        let vars: HashMap<String, TypeVarId> = HashMap::new();
         let resolved = nova_resolve::type_ref::resolve_type_ref_text(
             self.resolver,
             self.scopes,
             self.scope_id,
             &*loader.store,
-            &vars,
+            &self.type_vars,
             text,
             base_span,
         );
@@ -2094,6 +2109,7 @@ fn resolve_expected_return_type<'idx>(
     scope_id: nova_resolve::ScopeId,
     tree: &nova_hir::item_tree::ItemTree,
     owner: DefWithBodyId,
+    type_vars: &HashMap<String, TypeVarId>,
     loader: &mut ExternalTypeLoader<'_>,
 ) -> (Type, Vec<Diagnostic>) {
     match owner {
@@ -2104,6 +2120,7 @@ fn resolve_expected_return_type<'idx>(
                 scopes,
                 scope_id,
                 loader,
+                type_vars,
                 &method.return_ty,
                 Some(method.return_ty_range),
             );
@@ -2119,6 +2136,7 @@ fn resolve_param_types<'idx>(
     scope_id: nova_resolve::ScopeId,
     tree: &nova_hir::item_tree::ItemTree,
     owner: DefWithBodyId,
+    type_vars: &HashMap<String, TypeVarId>,
     loader: &mut ExternalTypeLoader<'_>,
 ) -> (Vec<Type>, Vec<Diagnostic>) {
     let mut out = Vec::new();
@@ -2136,6 +2154,7 @@ fn resolve_param_types<'idx>(
             scopes,
             scope_id,
             loader,
+            type_vars,
             &param.ty,
             Some(param.ty_range),
         );
@@ -2151,17 +2170,17 @@ fn resolve_type_ref_text<'idx>(
     scopes: &nova_resolve::ScopeGraph,
     scope_id: nova_resolve::ScopeId,
     loader: &mut ExternalTypeLoader<'_>,
+    type_vars: &HashMap<String, TypeVarId>,
     text: &str,
     base_span: Option<Span>,
 ) -> nova_resolve::type_ref::ResolvedType {
     preload_type_names(resolver, scopes, scope_id, loader, text);
-    let vars: HashMap<String, TypeVarId> = HashMap::new();
     nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
         scopes,
         scope_id,
         &*loader.store,
-        &vars,
+        type_vars,
         text,
         base_span,
     )
@@ -2185,12 +2204,152 @@ fn param_name_lookup(tree: &nova_hir::item_tree::ItemTree, id: ParamId) -> Name 
     }
 }
 
+#[derive(Debug, Default)]
+struct SourceTypeVars {
+    classes: HashMap<nova_hir::ids::ItemId, Vec<(String, TypeVarId)>>,
+    methods: HashMap<MethodId, Vec<(String, TypeVarId)>>,
+}
+
+fn enclosing_class_item(
+    scopes: &nova_resolve::ScopeGraph,
+    mut scope_id: nova_resolve::ScopeId,
+) -> Option<nova_hir::ids::ItemId> {
+    loop {
+        match scopes.scope(scope_id).kind() {
+            ScopeKind::Class { item } => return Some(*item),
+            _ => scope_id = scopes.scope(scope_id).parent()?,
+        }
+    }
+}
+
+fn type_vars_for_owner(
+    owner: DefWithBodyId,
+    body_scope: nova_resolve::ScopeId,
+    scopes: &nova_resolve::ScopeGraph,
+    tree: &nova_hir::item_tree::ItemTree,
+    loader: &mut ExternalTypeLoader<'_>,
+    source_type_vars: &SourceTypeVars,
+) -> HashMap<String, TypeVarId> {
+    let mut vars = HashMap::new();
+
+    if let Some(class_item) = enclosing_class_item(scopes, body_scope) {
+        if let Some(type_params) = source_type_vars.classes.get(&class_item) {
+            for (name, id) in type_params {
+                vars.insert(name.clone(), *id);
+            }
+        }
+    }
+
+    match owner {
+        DefWithBodyId::Method(m) => {
+            if let Some(type_params) = source_type_vars.methods.get(&m) {
+                for (name, id) in type_params {
+                    vars.insert(name.clone(), *id);
+                }
+            }
+        }
+        DefWithBodyId::Constructor(c) => {
+            let object_ty = Type::class(loader.store.well_known().object, vec![]);
+            for tp in &tree.constructor(c).type_params {
+                let id = loader
+                    .store
+                    .add_type_param(tp.name.clone(), vec![object_ty.clone()]);
+                vars.insert(tp.name.clone(), id);
+            }
+        }
+        DefWithBodyId::Initializer(_) => {}
+    }
+
+    vars
+}
+
+fn item_type_params<'a>(
+    tree: &'a nova_hir::item_tree::ItemTree,
+    item: nova_hir::ids::ItemId,
+) -> &'a [nova_hir::item_tree::TypeParam] {
+    match item {
+        nova_hir::ids::ItemId::Class(id) => tree.class(id).type_params.as_slice(),
+        nova_hir::ids::ItemId::Interface(id) => tree.interface(id).type_params.as_slice(),
+        nova_hir::ids::ItemId::Record(id) => tree.record(id).type_params.as_slice(),
+        _ => &[],
+    }
+}
+
+fn allocate_type_params<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    loader: &mut ExternalTypeLoader<'_>,
+    default_bound: &Type,
+    type_params: &[nova_hir::item_tree::TypeParam],
+    vars: &mut HashMap<String, TypeVarId>,
+) -> Vec<(String, TypeVarId)> {
+    let mut allocated = Vec::new();
+
+    // First pass: allocate ids so bounds can refer to any type param in the list (including
+    // self-referential ones like `E extends Enum<E>`).
+    for tp in type_params {
+        let id = loader
+            .store
+            .add_type_param(tp.name.clone(), vec![default_bound.clone()]);
+        vars.insert(tp.name.clone(), id);
+        allocated.push((tp.name.clone(), id));
+    }
+
+    // Second pass: resolve bounds and overwrite the placeholder definitions.
+    for tp in type_params {
+        let id = match vars.get(&tp.name) {
+            Some(id) => *id,
+            None => continue,
+        };
+
+        let mut upper_bounds = Vec::new();
+        if tp.bounds.is_empty() {
+            upper_bounds.push(default_bound.clone());
+        } else {
+            for bound in &tp.bounds {
+                preload_type_names(resolver, scopes, scope_id, loader, bound);
+                let ty = nova_resolve::type_ref::resolve_type_ref_text(
+                    resolver,
+                    scopes,
+                    scope_id,
+                    &*loader.store,
+                    vars,
+                    bound,
+                    None,
+                )
+                .ty;
+                upper_bounds.push(ty);
+            }
+        }
+
+        if upper_bounds.is_empty() {
+            upper_bounds.push(default_bound.clone());
+        }
+
+        loader.store.define_type_param(
+            id,
+            TypeParamDef {
+                name: tp.name.clone(),
+                upper_bounds,
+                lower_bound: None,
+            },
+        );
+    }
+
+    allocated
+}
+
 fn define_source_types<'idx>(
     resolver: &nova_resolve::Resolver<'idx>,
     scopes: &nova_resolve::ItemTreeScopeBuildResult,
     tree: &nova_hir::item_tree::ItemTree,
     loader: &mut ExternalTypeLoader<'_>,
-) -> (HashMap<FieldId, Type>, HashMap<MethodId, (Vec<Type>, Type)>) {
+) -> (
+    HashMap<FieldId, Type>,
+    HashMap<MethodId, (Vec<Type>, Type)>,
+    SourceTypeVars,
+) {
     let mut items = Vec::new();
     for item in &tree.items {
         collect_item_ids(tree, *item, &mut items);
@@ -2205,6 +2364,7 @@ fn define_source_types<'idx>(
 
     let mut field_types = HashMap::new();
     let mut method_types = HashMap::new();
+    let mut source_type_vars = SourceTypeVars::default();
 
     // Second pass: define skeleton class defs.
     for item in items {
@@ -2235,6 +2395,19 @@ fn define_source_types<'idx>(
             .copied()
             .unwrap_or(scopes.file_scope);
 
+        let mut class_vars = HashMap::new();
+        let class_type_params = item_type_params(tree, item);
+        let class_type_params = allocate_type_params(
+            resolver,
+            &scopes.scopes,
+            class_scope,
+            loader,
+            &object_ty,
+            class_type_params,
+            &mut class_vars,
+        );
+        source_type_vars.classes.insert(item, class_type_params.clone());
+
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         for member in item_members(tree, item) {
@@ -2242,13 +2415,12 @@ fn define_source_types<'idx>(
                 nova_hir::item_tree::Member::Field(fid) => {
                     let field = tree.field(*fid);
                     preload_type_names(resolver, &scopes.scopes, class_scope, loader, &field.ty);
-                    let vars: HashMap<String, TypeVarId> = HashMap::new();
                     let ty = nova_resolve::type_ref::resolve_type_ref_text(
                         resolver,
                         &scopes.scopes,
                         class_scope,
                         &*loader.store,
-                        &vars,
+                        &class_vars,
                         &field.ty,
                         Some(field.ty_range),
                     )
@@ -2271,7 +2443,19 @@ fn define_source_types<'idx>(
                         .get(mid)
                         .copied()
                         .unwrap_or(class_scope);
-                    let vars: HashMap<String, TypeVarId> = HashMap::new();
+                    let mut vars = class_vars.clone();
+                    let type_params = allocate_type_params(
+                        resolver,
+                        &scopes.scopes,
+                        scope,
+                        loader,
+                        &object_ty,
+                        &method.type_params,
+                        &mut vars,
+                    );
+                    source_type_vars.methods.insert(*mid, type_params.clone());
+                    let method_type_param_ids: Vec<TypeVarId> =
+                        type_params.iter().map(|(_, id)| *id).collect();
 
                     let params = method
                         .params
@@ -2308,7 +2492,7 @@ fn define_source_types<'idx>(
 
                     methods.push(MethodDef {
                         name: method.name.clone(),
-                        type_params: Vec::new(),
+                        type_params: method_type_param_ids,
                         params,
                         return_type,
                         is_static,
@@ -2325,7 +2509,7 @@ fn define_source_types<'idx>(
             ClassDef {
                 name,
                 kind,
-                type_params: Vec::new(),
+                type_params: class_type_params.iter().map(|(_, id)| *id).collect(),
                 super_class,
                 interfaces: Vec::new(),
                 fields,
@@ -2335,7 +2519,7 @@ fn define_source_types<'idx>(
         );
     }
 
-    (field_types, method_types)
+    (field_types, method_types, source_type_vars)
 }
 
 fn item_members<'a>(
