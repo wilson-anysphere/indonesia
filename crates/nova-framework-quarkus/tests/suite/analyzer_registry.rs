@@ -688,3 +688,58 @@ fn registry_completes_config_property_names_with_line_comment_inside_annotation_
         "expected completion for quarkus.http.port, got: {items:#?}",
     );
 }
+
+#[test]
+fn registry_updates_completions_after_config_file_changes() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "io.quarkus", "quarkus-smallrye-config");
+
+    let src = r#"
+        import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+        public class MyConfig {
+          @ConfigProperty(name="ser")
+          String prop;
+        }
+    "#;
+
+    let java_file = db.add_file_with_path_and_text(project, "src/main/java/MyConfig.java", src);
+    let config_file = db.add_file_with_path_and_text(
+        project,
+        "src/main/resources/application.properties",
+        "server.port=8080",
+    );
+
+    let cursor_base = src
+        .find("name=\"")
+        .expect("expected to find ConfigProperty name string")
+        + "name=\"".len();
+    let ctx = CompletionContext {
+        project,
+        file: java_file,
+        offset: cursor_base + 3, // after `ser`
+    };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        items.iter().any(|c| c.label == "server.port"),
+        "expected completion for server.port, got: {items:#?}",
+    );
+
+    // Update the config file: cache should invalidate and completions should reflect the new key.
+    db.set_file_text(config_file, "server.ssl.enabled=true");
+
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        !items.iter().any(|c| c.label == "server.port"),
+        "did not expect server.port after config change, got: {items:#?}",
+    );
+    assert!(
+        items.iter().any(|c| c.label == "server.ssl.enabled"),
+        "expected completion for server.ssl.enabled after config change, got: {items:#?}",
+    );
+}
