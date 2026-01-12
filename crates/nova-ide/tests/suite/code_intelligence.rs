@@ -2389,6 +2389,14 @@ class A {
         .find(|i| i.label == "ArrayList")
         .expect("expected ArrayList completion item");
 
+    assert!(
+        item.additional_text_edits
+            .as_ref()
+            .map_or(true, |edits| edits.is_empty()),
+        "expected qualified type completion to avoid additional edits (imports); got: {:#?}",
+        item.additional_text_edits
+    );
+
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,
         other => panic!("unexpected text_edit variant: {other:?}"),
