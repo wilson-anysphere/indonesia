@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import {
   combineBuildStatuses,
   groupByFilePath,
@@ -410,6 +411,27 @@ export function registerNovaBuildIntegration(
     }),
   );
 
+  const workspaceFolderForFsPath = (fsPath: string): vscode.WorkspaceFolder | undefined => {
+    const folders = getWorkspaceFolders();
+    let best: vscode.WorkspaceFolder | undefined;
+    for (const folder of folders) {
+      const root = folder.uri.fsPath;
+      if (!root) {
+        continue;
+      }
+      const rel = path.relative(root, fsPath);
+      const isWithinRoot =
+        rel.length === 0 || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+      if (!isWithinRoot) {
+        continue;
+      }
+      if (!best || root.length > best.uri.fsPath.length) {
+        best = folder;
+      }
+    }
+    return best;
+  };
+
   const uriForWorkspacePath = (folder: vscode.WorkspaceFolder, fsPath: string): vscode.Uri => {
     const uri = vscode.Uri.file(fsPath);
     // Preserve the workspace scheme/authority for remote workspaces so diagnostics map to the
@@ -598,9 +620,7 @@ export function registerNovaBuildIntegration(
         return;
       }
 
-      const folder =
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectRoot)) ??
-        (vscode.workspace.workspaceFolders ?? []).find((f) => f.uri.fsPath === projectRoot);
+      const folder = workspaceFolderForFsPath(projectRoot) ?? vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectRoot));
       if (!folder) {
         if (!silent) {
           void vscode.window.showErrorMessage(`Nova: Workspace folder not found for ${projectRoot}`);
