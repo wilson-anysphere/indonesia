@@ -22,6 +22,22 @@ pub struct CommandOutput {
 pub trait CommandRunner: Send + Sync {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<CommandOutput>;
 
+    /// Run a command with explicit [`RunOptions`].
+    ///
+    /// The default implementation forwards to [`CommandRunner::run`], ignoring `opts`.
+    /// Implementations that execute real commands should override this to honor timeouts
+    /// and output limits.
+    fn run_with_options(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        opts: RunOptions,
+    ) -> Result<CommandOutput> {
+        let _ = opts;
+        self.run(cwd, program, args)
+    }
+
     fn run_with_stdout<R>(
         &self,
         cwd: &Path,
@@ -54,12 +70,22 @@ pub struct DefaultCommandRunner;
 
 impl CommandRunner for DefaultCommandRunner {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<CommandOutput> {
-        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let opts = RunOptions {
             timeout: Some(Duration::from_secs(55)),
             max_bytes: 16 * 1024 * 1024,
             ..RunOptions::default()
         };
+        self.run_with_options(cwd, program, args, opts)
+    }
+
+    fn run_with_options(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        opts: RunOptions,
+    ) -> Result<CommandOutput> {
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
 
         let result = run_command(cwd, Path::new(program), &args, opts)
             .with_context(|| format!("failed to run `{program}`"))?;

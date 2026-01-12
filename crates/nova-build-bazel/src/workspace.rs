@@ -1,7 +1,8 @@
 use crate::{
     aquery::{parse_aquery_textproto_streaming_javac_action_info, JavaCompileInfo},
+    build::{bazel_build_args, BazelBuildOptions},
     cache::{digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest},
-    command::CommandRunner,
+    command::{CommandOutput, CommandRunner},
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -295,6 +296,38 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let out: Vec<String> = owners.into_iter().collect();
         self.java_owning_targets_cache.insert(cache_key, out.clone());
         Ok(out)
+    }
+
+    /// Run `bazel build` for one or more targets.
+    ///
+    /// This is intended for interactive workflows (e.g. hot swap compilation) and uses a
+    /// longer timeout than Bazel query/aquery helpers.
+    pub fn build_targets<T: AsRef<str>>(
+        &self,
+        targets: &[T],
+        extra_args: &[&str],
+    ) -> Result<CommandOutput> {
+        self.build_targets_with_options(targets, extra_args, BazelBuildOptions::default())
+    }
+
+    /// Like [`BazelWorkspace::build_targets`], but allows custom timeout/output limits.
+    pub fn build_targets_with_options<T: AsRef<str>>(
+        &self,
+        targets: &[T],
+        extra_args: &[&str],
+        options: BazelBuildOptions,
+    ) -> Result<CommandOutput> {
+        anyhow::ensure!(!targets.is_empty(), "bazel build: no targets provided");
+
+        let args = bazel_build_args(targets, extra_args);
+        let args_ref = args.iter().map(String::as_str).collect::<Vec<_>>();
+
+        self.runner.run_with_options(
+            &self.root,
+            "bazel",
+            &args_ref,
+            options.to_run_options(),
+        )
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {

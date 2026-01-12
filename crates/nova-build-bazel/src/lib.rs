@@ -9,6 +9,7 @@
 //! - caching keyed by query/aquery expression version and Bazel build definition/config file digests
 
 mod aquery;
+mod build;
 mod cache;
 mod command;
 mod workspace;
@@ -29,6 +30,7 @@ pub use crate::{
         extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
         JavaCompileInfo, JavacAction,
     },
+    build::BazelBuildOptions,
     cache::{
         digest_file, digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest,
     },
