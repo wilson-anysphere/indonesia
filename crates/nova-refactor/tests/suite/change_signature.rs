@@ -339,6 +339,177 @@ fn generic_param_types_do_not_split_and_resolve_overloads() {
 }
 
 #[test]
+fn rename_interface_method_updates_implementations_and_calls() {
+    let (index, mut files) = build_index(vec![
+        (
+            "file:///I.java",
+            r#"interface I {
+    void m();
+}
+"#,
+        ),
+        (
+            "file:///C.java",
+            r#"class C implements I {
+    public void m() {
+    }
+
+    void f() {
+        m();
+    }
+}
+"#,
+        ),
+    ]);
+
+    let target = method_id(&index, "I", "m", &[]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("n".to_string()),
+        parameters: vec![],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::Both,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///I.java").unwrap(),
+        r#"interface I {
+    void n();
+}
+"#
+    );
+    assert_eq!(
+        files.get("file:///C.java").unwrap(),
+        r#"class C implements I {
+    public void n() {
+    }
+
+    void f() {
+        n();
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn rename_interface_method_propagates_through_interface_extends() {
+    let (index, mut files) = build_index(vec![
+        (
+            "file:///I.java",
+            r#"interface I {
+    void m();
+}
+"#,
+        ),
+        (
+            "file:///J.java",
+            r#"interface J extends I {
+}
+"#,
+        ),
+        (
+            "file:///C.java",
+            r#"class C implements J {
+    public void m() {
+    }
+
+    void f() {
+        m();
+    }
+}
+"#,
+        ),
+    ]);
+
+    let target = method_id(&index, "I", "m", &[]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("n".to_string()),
+        parameters: vec![],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::Both,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///I.java").unwrap(),
+        r#"interface I {
+    void n();
+}
+"#
+    );
+    assert_eq!(
+        files.get("file:///J.java").unwrap(),
+        r#"interface J extends I {
+}
+"#
+    );
+    assert_eq!(
+        files.get("file:///C.java").unwrap(),
+        r#"class C implements J {
+    public void n() {
+    }
+
+    void f() {
+        n();
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn rename_interface_method_reports_collision_in_implementation() {
+    let (index, _files) = build_index(vec![
+        (
+            "file:///I.java",
+            r#"interface I {
+    void m();
+}
+"#,
+        ),
+        (
+            "file:///C.java",
+            r#"class C implements I {
+    public void m() {
+    }
+
+    public void n() {
+    }
+}
+"#,
+        ),
+    ]);
+
+    let target = method_id(&index, "I", "m", &[]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("n".to_string()),
+        parameters: vec![],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::Both,
+    };
+
+    let err = change_signature(&index, &change).expect_err("should conflict");
+    assert!(
+        err.conflicts
+            .iter()
+            .any(|c| matches!(c, ChangeSignatureConflict::OverloadCollision { .. })),
+        "expected OverloadCollision, got: {:?}",
+        err.conflicts
+    );
+}
+
+#[test]
 fn conflict_removed_param_still_used_in_body() {
     let (index, _files) = build_index(vec![(
         "file:///A.java",

@@ -103,6 +103,9 @@ pub struct Index {
     /// Maps (class_name, method_name) -> method symbol ids (one per overload).
     method_symbols: HashMap<(String, String), Vec<SymbolId>>,
     class_extends: HashMap<String, String>,
+    class_implements: HashMap<String, Vec<String>>,
+    interface_extends: HashMap<String, Vec<String>>,
+    type_kinds: HashMap<String, TypeKind>,
 }
 
 impl Index {
@@ -114,6 +117,9 @@ impl Index {
             symbols_by_id: HashMap::new(),
             method_symbols: HashMap::new(),
             class_extends: HashMap::new(),
+            class_implements: HashMap::new(),
+            interface_extends: HashMap::new(),
+            type_kinds: HashMap::new(),
         };
         index.rebuild();
         index
@@ -288,14 +294,27 @@ impl Index {
         self.symbols_by_id.clear();
         self.method_symbols.clear();
         self.class_extends.clear();
+        self.class_implements.clear();
+        self.interface_extends.clear();
+        self.type_kinds.clear();
 
         let mut next_id: u32 = 1;
         for (file, text) in &self.files {
             let mut parser = JavaSketchParser::new(text);
-            for class in parser.parse_classes() {
+            for class in parser.parse_types() {
+                self.type_kinds.insert(class.name.clone(), class.kind);
                 if let Some(base) = class.extends.clone() {
                     self.class_extends.insert(class.name.clone(), base);
                 }
+                if !class.implements.is_empty() {
+                    self.class_implements
+                        .insert(class.name.clone(), class.implements.clone());
+                }
+                if !class.extends_interfaces.is_empty() {
+                    self.interface_extends
+                        .insert(class.name.clone(), class.extends_interfaces.clone());
+                }
+
                 let class_sym = Symbol {
                     id: SymbolId(next_id),
                     kind: SymbolKind::Class,
@@ -385,6 +404,22 @@ impl Index {
 
     pub fn class_extends(&self, class_name: &str) -> Option<&str> {
         self.class_extends.get(class_name).map(String::as_str)
+    }
+
+    pub fn class_implements(&self, class_name: &str) -> Option<&[String]> {
+        self.class_implements
+            .get(class_name)
+            .map(|v| v.as_slice())
+    }
+
+    pub fn interface_extends(&self, interface_name: &str) -> Option<&[String]> {
+        self.interface_extends
+            .get(interface_name)
+            .map(|v| v.as_slice())
+    }
+
+    pub fn is_interface(&self, type_name: &str) -> bool {
+        matches!(self.type_kinds.get(type_name), Some(TypeKind::Interface))
     }
 
     pub fn method_symbol_id(&self, class_name: &str, method_name: &str) -> Option<SymbolId> {
@@ -696,10 +731,13 @@ fn classify_occurrence(text: &str, range: TextRange) -> ReferenceKind {
 
 #[derive(Debug, Clone)]
 struct ParsedClass {
+    kind: TypeKind,
     name: String,
     name_range: TextRange,
     decl_range: TextRange,
     extends: Option<String>,
+    implements: Vec<String>,
+    extends_interfaces: Vec<String>,
     methods: Vec<ParsedMethod>,
     fields: Vec<ParsedField>,
 }
@@ -737,31 +775,65 @@ impl<'a> JavaSketchParser<'a> {
         }
     }
 
-    fn parse_classes(&mut self) -> Vec<ParsedClass> {
+    fn parse_types(&mut self) -> Vec<ParsedClass> {
         let mut classes = Vec::new();
         while let Some((token, token_range)) = self.scan_identifier() {
-            if token != "class" {
-                continue;
-            }
+            let kind = match token.as_str() {
+                "class" => TypeKind::Class,
+                "interface" => TypeKind::Interface,
+                _ => continue,
+            };
 
             let class_kw_range = token_range;
             if let Some((name, name_range)) = self.next_identifier() {
                 self.skip_ws_and_comments();
 
                 let mut extends = None;
-                // Parse optional `extends Foo`
-                let saved = self.cursor;
-                if let Some((kw, _)) = self.next_identifier() {
-                    if kw == "extends" {
-                        self.skip_ws_and_comments();
-                        if let Some((base, _)) = self.next_identifier() {
-                            extends = Some(base);
+                let mut implements: Vec<String> = Vec::new();
+                let mut extends_interfaces: Vec<String> = Vec::new();
+
+                match kind {
+                    TypeKind::Class => {
+                        // Parse optional `extends Foo`
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "extends" {
+                                if let Some(base) = self.next_simple_type_name() {
+                                    extends = Some(base);
+                                }
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
                         }
-                    } else {
-                        self.cursor = saved;
+
+                        // Parse optional `implements I, J`
+                        self.skip_ws_and_comments();
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "implements" {
+                                implements = self.parse_simple_type_name_list();
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
+                        }
                     }
-                } else {
-                    self.cursor = saved;
+                    TypeKind::Interface => {
+                        // Parse optional `extends I, J`
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "extends" {
+                                extends_interfaces = self.parse_simple_type_name_list();
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
+                        }
+                    }
                 }
 
                 // Find opening brace.
@@ -784,7 +856,7 @@ impl<'a> JavaSketchParser<'a> {
                 // slice and then shift ranges, so nested symbols remain positioned in the
                 // original file.
                 let mut nested_parser = JavaSketchParser::new(body_text);
-                let mut nested_classes = nested_parser.parse_classes();
+                let mut nested_classes = nested_parser.parse_types();
                 for nested in &mut nested_classes {
                     nested.name_range = nested.name_range.shift(body_offset);
                     nested.decl_range = nested.decl_range.shift(body_offset);
@@ -799,10 +871,13 @@ impl<'a> JavaSketchParser<'a> {
                 }
 
                 classes.push(ParsedClass {
+                    kind,
                     name,
                     name_range,
                     decl_range,
                     extends,
+                    implements,
+                    extends_interfaces,
                     methods,
                     fields,
                 });
@@ -891,6 +966,135 @@ impl<'a> JavaSketchParser<'a> {
             .iter()
             .position(|&b| b == needle)
             .map(|rel| self.cursor + rel)
+    }
+
+    fn next_simple_type_name(&mut self) -> Option<String> {
+        self.next_type_name()
+            .map(|name| simple_type_name(&name).to_string())
+    }
+
+    fn parse_simple_type_name_list(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            // Skip type annotations like `@Nullable`.
+            while self.bytes.get(self.cursor) == Some(&b'@') {
+                self.cursor += 1;
+                let _ = self.next_identifier();
+                self.skip_ws_and_comments();
+            }
+
+            let Some(name) = self.next_simple_type_name() else {
+                break;
+            };
+            out.push(name);
+            self.skip_ws_and_comments();
+            if self.bytes.get(self.cursor) == Some(&b',') {
+                self.cursor += 1;
+                continue;
+            }
+            break;
+        }
+        out
+    }
+
+    fn next_type_name(&mut self) -> Option<String> {
+        self.skip_ws_and_comments();
+        let (first, _) = self.next_identifier()?;
+        let mut name = first;
+
+        loop {
+            self.skip_ws_and_comments();
+            if self.bytes.get(self.cursor) != Some(&b'.') {
+                break;
+            }
+            self.cursor += 1;
+            self.skip_ws_and_comments();
+            let Some((seg, _)) = self.next_identifier() else {
+                break;
+            };
+            name.push('.');
+            name.push_str(&seg);
+        }
+
+        self.skip_ws_and_comments();
+        if self.bytes.get(self.cursor) == Some(&b'<') {
+            self.skip_angle_brackets();
+        }
+
+        self.skip_array_suffix();
+
+        Some(name)
+    }
+
+    fn skip_angle_brackets(&mut self) {
+        if self.bytes.get(self.cursor) != Some(&b'<') {
+            return;
+        }
+        let mut depth: i32 = 0;
+        while self.cursor < self.bytes.len() {
+            match self.bytes[self.cursor] {
+                b'<' => {
+                    depth += 1;
+                    self.cursor += 1;
+                }
+                b'>' => {
+                    depth -= 1;
+                    self.cursor += 1;
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+                b'"' => {
+                    // Skip strings inside type args (unlikely, but keeps us robust).
+                    self.cursor += 1;
+                    while self.cursor < self.bytes.len() {
+                        if self.bytes[self.cursor] == b'\\' {
+                            self.cursor = (self.cursor + 2).min(self.bytes.len());
+                            continue;
+                        }
+                        let b = self.bytes[self.cursor];
+                        self.cursor += 1;
+                        if b == b'"' {
+                            break;
+                        }
+                    }
+                }
+                b'\'' => {
+                    self.cursor += 1;
+                    while self.cursor < self.bytes.len() {
+                        if self.bytes[self.cursor] == b'\\' {
+                            self.cursor = (self.cursor + 2).min(self.bytes.len());
+                            continue;
+                        }
+                        let b = self.bytes[self.cursor];
+                        self.cursor += 1;
+                        if b == b'\'' {
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    self.cursor += 1;
+                }
+            }
+        }
+    }
+
+    fn skip_array_suffix(&mut self) {
+        loop {
+            self.skip_ws_and_comments();
+            if self.bytes.get(self.cursor) != Some(&b'[') {
+                break;
+            }
+            self.cursor += 1;
+            self.skip_ws_and_comments();
+            if self.bytes.get(self.cursor) == Some(&b']') {
+                self.cursor += 1;
+                continue;
+            }
+            break;
+        }
     }
 }
 
@@ -1689,4 +1893,14 @@ fn find_matching_brace_with_offset(
         i += 1;
     }
     None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeKind {
+    Class,
+    Interface,
+}
+
+fn simple_type_name(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
 }

@@ -246,53 +246,138 @@ fn collect_affected_methods(
         .method_param_types(SymbolId(target.method_id.0))
         .map(|tys| tys.to_vec())
         .unwrap_or_else(|| target.params.iter().map(|p| p.ty.clone()).collect());
+    let target_is_interface = index.is_interface(target_class);
 
     if propagation.include_overridden() {
-        let mut cur = index.class_extends(target_class);
-        while let Some(super_name) = cur {
-            out.extend(find_methods_by_signature(
-                index,
-                super_name,
-                &target.name,
-                &target_param_types,
-            ));
-            cur = index.class_extends(super_name);
+        if target_is_interface {
+            // Interface -> superinterfaces.
+            for super_iface in transitive_interface_supertypes(index, target_class) {
+                out.extend(find_methods_by_signature(
+                    index,
+                    &super_iface,
+                    &target.name,
+                    &target_param_types,
+                ));
+            }
+        } else {
+            // Class -> superclasses.
+            let mut cur = index.class_extends(target_class);
+            while let Some(super_name) = cur {
+                out.extend(find_methods_by_signature(
+                    index,
+                    super_name,
+                    &target.name,
+                    &target_param_types,
+                ));
+                cur = index.class_extends(super_name);
+            }
+
+            // Also include interface methods that the class implements (directly or via its
+            // superclasses) so API refactors stay consistent.
+            for iface in transitive_implemented_interfaces(index, target_class) {
+                out.extend(find_methods_by_signature(
+                    index,
+                    &iface,
+                    &target.name,
+                    &target_param_types,
+                ));
+            }
         }
     }
 
     if propagation.include_overrides() {
-        for sym in index.symbols() {
-            if sym.kind != SymbolKind::Method || sym.name != target.name {
-                continue;
-            }
-            let Some(class_name) = sym.container.as_deref() else {
-                continue;
-            };
-            if class_name == target_class {
-                continue;
-            }
-            if !is_subclass_of(index, class_name, target_class) {
-                continue;
-            }
-
-            let id = MethodId(sym.id.0);
-            if let Some(sig_types) = index.method_param_types(sym.id) {
-                if sig_types != target_param_types.as_slice() {
+        if target_is_interface {
+            // 1) Subinterfaces that redeclare the method.
+            for ty in index.symbols().iter().filter(|sym| {
+                sym.kind == SymbolKind::Class && sym.container.is_none() && index.is_interface(&sym.name)
+            }) {
+                if ty.name == target_class {
                     continue;
                 }
-                if let Ok(parsed) = parse_method(index, sym, id) {
-                    out.push(parsed);
+                if !is_subinterface_of(index, &ty.name, target_class) {
+                    continue;
                 }
-                continue;
+                out.extend(find_methods_by_signature(
+                    index,
+                    &ty.name,
+                    &target.name,
+                    &target_param_types,
+                ));
             }
 
-            let parsed = match parse_method(index, sym, id) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
-            if parsed_types == target_param_types {
-                out.push(parsed);
+            // 2) Classes that implement the interface (directly or transitively).
+            for ty in index.symbols().iter().filter(|sym| {
+                sym.kind == SymbolKind::Class && sym.container.is_none() && !index.is_interface(&sym.name)
+            }) {
+                if !class_implements_interface(index, &ty.name, target_class) {
+                    continue;
+                }
+
+                // Best-effort: find the concrete/abstract class method declaration that would
+                // satisfy the interface method for this class and rename it. This ensures cases
+                // like `class C extends Base implements I {}` still rename `Base.m()` if it is the
+                // inherited implementation.
+                let Some(resolved) =
+                    resolve_method_in_hierarchy(index, &ty.name, &target.name, &target_param_types)
+                else {
+                    continue;
+                };
+
+                // Avoid pulling in the interface method itself for abstract/default-only cases.
+                let Some(sym) = index.find_symbol(SymbolId(resolved.0)) else {
+                    continue;
+                };
+                let Some(container) = sym.container.as_deref() else {
+                    continue;
+                };
+                if index.is_interface(container) {
+                    continue;
+                }
+
+                let parsed = match parse_method(index, sym, resolved) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+                if parsed_types == target_param_types {
+                    out.push(parsed);
+                }
+            }
+        } else {
+            // Class -> subclasses overriding the method.
+            for sym in index.symbols() {
+                if sym.kind != SymbolKind::Method || sym.name != target.name {
+                    continue;
+                }
+                let Some(class_name) = sym.container.as_deref() else {
+                    continue;
+                };
+                if class_name == target_class {
+                    continue;
+                }
+                if !is_subclass_of(index, class_name, target_class) {
+                    continue;
+                }
+
+                let id = MethodId(sym.id.0);
+                if let Some(sig_types) = index.method_param_types(sym.id) {
+                    if sig_types != target_param_types.as_slice() {
+                        continue;
+                    }
+                    if let Ok(parsed) = parse_method(index, sym, id) {
+                        out.push(parsed);
+                    }
+                    continue;
+                }
+
+                let parsed = match parse_method(index, sym, id) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+                if parsed_types == target_param_types {
+                    out.push(parsed);
+                }
             }
         }
     }
@@ -315,6 +400,88 @@ fn is_subclass_of<'a>(index: &'a Index, mut sub: &'a str, sup: &'a str) -> bool 
             return true;
         }
         sub = next;
+    }
+    false
+}
+
+fn is_subinterface_of(index: &Index, sub: &str, sup: &str) -> bool {
+    if sub == sup {
+        return true;
+    }
+    let mut stack = vec![sub.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        if let Some(parents) = index.interface_extends(&cur) {
+            for parent in parents {
+                if parent == sup {
+                    return true;
+                }
+                stack.push(parent.clone());
+            }
+        }
+    }
+    false
+}
+
+fn transitive_interface_supertypes(index: &Index, iface: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack: Vec<String> = index
+        .interface_extends(iface)
+        .map(|v| v.to_vec())
+        .unwrap_or_default();
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        out.push(cur.clone());
+        if let Some(parents) = index.interface_extends(&cur) {
+            for parent in parents {
+                stack.push(parent.clone());
+            }
+        }
+    }
+    out
+}
+
+fn transitive_implemented_interfaces(index: &Index, class_name: &str) -> Vec<String> {
+    let mut stack: Vec<String> = Vec::new();
+    let mut cur = Some(class_name);
+    while let Some(class) = cur {
+        if let Some(ifaces) = index.class_implements(class) {
+            stack.extend(ifaces.iter().cloned());
+        }
+        cur = index.class_extends(class);
+    }
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(iface) = stack.pop() {
+        if !seen.insert(iface.clone()) {
+            continue;
+        }
+        out.push(iface.clone());
+        if let Some(parents) = index.interface_extends(&iface) {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    out
+}
+
+fn class_implements_interface(index: &Index, class_name: &str, iface: &str) -> bool {
+    let mut cur = Some(class_name);
+    while let Some(class) = cur {
+        if let Some(ifaces) = index.class_implements(class) {
+            for implemented in ifaces {
+                if is_subinterface_of(index, implemented, iface) {
+                    return true;
+                }
+            }
+        }
+        cur = index.class_extends(class);
     }
     false
 }
@@ -989,6 +1156,13 @@ fn resolve_method_in_hierarchy(
     name: &str,
     param_types: &[String],
 ) -> Option<MethodId> {
+    // Interface receiver: search the interface itself and its superinterfaces.
+    if index.is_interface(receiver_class) {
+        let mut ifaces = vec![receiver_class.to_string()];
+        ifaces.extend(transitive_interface_supertypes(index, receiver_class));
+        return resolve_method_in_interfaces(index, ifaces, name, param_types);
+    }
+
     // We intentionally use an owned string here because the starting class name
     // may come from a call-site receiver expression rather than the index's own
     // class table.
@@ -1015,17 +1189,70 @@ fn resolve_method_in_hierarchy(
                 // normalize whitespace or split generic type arguments differently.
             }
 
-            let parsed = match parse_method(index, sym, id) {
-                Ok(m) => m,
-                Err(_) => continue,
+            let Ok(parsed) = parse_method(index, sym, id) else {
+                continue;
             };
             let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
             if parsed_types == param_types {
                 return Some(id);
             }
         }
-        let next = index.class_extends(&class)?;
+
+        let Some(next) = index.class_extends(&class) else {
+            break;
+        };
         class = next.to_string();
+    }
+
+    // Best-effort: if the method isn't declared anywhere in the class hierarchy,
+    // fall back to the class's implemented interfaces. This matters for cases like:
+    //
+    // `interface I { void m(); } abstract class C implements I { void f(){ m(); } }`
+    //
+    // where `m()` is inherited from the interface contract.
+    resolve_method_in_interfaces(
+        index,
+        transitive_implemented_interfaces(index, receiver_class).into_iter(),
+        name,
+        param_types,
+    )
+}
+
+fn resolve_method_in_interfaces(
+    index: &Index,
+    interfaces: impl IntoIterator<Item = impl AsRef<str>>,
+    name: &str,
+    param_types: &[String],
+) -> Option<MethodId> {
+    let mut matches: HashSet<MethodId> = HashSet::new();
+
+    for iface in interfaces {
+        let iface = iface.as_ref();
+        for sym in index.symbols() {
+            if sym.kind != SymbolKind::Method {
+                continue;
+            }
+            if sym.container.as_deref() != Some(iface) {
+                continue;
+            }
+            if sym.name != name {
+                continue;
+            }
+            let id = MethodId(sym.id.0);
+            let Ok(parsed) = parse_method(index, sym, id) else {
+                continue;
+            };
+            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+            if parsed_types == param_types {
+                matches.insert(id);
+            }
+        }
+    }
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
     }
 }
 
@@ -1481,8 +1708,9 @@ fn format_method_header(prefix: &str, sig: &ParsedMethodSig, brace: char) -> Str
     } else {
         format!(" throws {}", sig.throws.join(", "))
     };
+    let brace_sep = if brace == ';' { "" } else { " " };
     format!(
-        "{prefix}{} {}({}){throws} {brace}",
+        "{prefix}{} {}({}){throws}{brace_sep}{brace}",
         sig.return_type, sig.name, params
     )
 }
