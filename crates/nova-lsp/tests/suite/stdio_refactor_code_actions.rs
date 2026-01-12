@@ -644,21 +644,45 @@ fn stdio_server_resolves_extract_variable_code_action() {
     let edits = changes.get(&uri).expect("edits for file");
     let updated = apply_lsp_text_edits(source, edits);
 
+    let replace_edit = edits
+        .iter()
+        .find(|e| e.range == range)
+        .expect("expression replacement edit");
+    let name = replace_edit
+        .new_text
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .to_string();
+    assert!(
+        !name.is_empty() && !name.chars().any(|ch| ch.is_whitespace()),
+        "expected replacement to be a non-empty identifier, got {:?}",
+        replace_edit.new_text
+    );
+
     let decl_edit = edits
         .iter()
-        .find(|e| e.new_text.contains("var ") && e.new_text.contains(" = 1 + 2;"))
+        .find(|e| {
+            e.range.start == e.range.end
+                && e.new_text.contains("1 + 2")
+                && e.new_text.contains(&name)
+                && e.new_text.contains('=')
+        })
         .expect("variable declaration insertion edit");
-    let name = decl_edit
-        .new_text
-        .split("var ")
-        .nth(1)
-        .and_then(|rest| rest.split('=').next())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .expect("variable name");
+
+    let decl_before_eq = decl_edit.new_text.split('=').next().unwrap_or_default();
+    let decl_name = decl_before_eq
+        .split_whitespace()
+        .last()
+        .expect("variable name in declaration");
+    assert_eq!(
+        decl_name, name,
+        "expected declaration name to match replacement edit"
+    );
+    let decl_line = decl_edit.new_text.trim_end_matches(['\r', '\n']);
 
     assert!(
-        updated.contains(&format!("var {name} = 1 + 2;")),
+        updated.contains(decl_line),
         "expected extracted variable declaration"
     );
     assert!(
@@ -671,8 +695,8 @@ fn stdio_server_resolves_extract_variable_code_action() {
     );
     assert!(
         updated
-            .find(&format!("var {name} = 1 + 2;"))
-            .expect("var declaration exists")
+            .find(decl_line)
+            .expect("declaration exists")
             < updated
                 .find(&format!("int x = /* 😀 */ {name};"))
                 .expect("replacement exists"),
