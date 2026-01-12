@@ -52,5 +52,28 @@ describe('command registrations', () => {
       expect(counts.get(id)).toBe(1);
     }
   });
-});
 
+  it('does not double-register Nova build integration commands', async () => {
+    const commandIds = ['nova.buildProject', 'nova.reloadProject'];
+
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const files = await listTypescriptFiles(srcRoot);
+
+    const counts = new Map<string, number>(commandIds.map((id) => [id, 0]));
+
+    for (const filePath of files) {
+      const contents = await fs.readFile(filePath, 'utf8');
+      for (const id of commandIds) {
+        const regex = new RegExp(`registerCommand\\(\\s*['"]${escapeRegExp(id)}['"]`, 'g');
+        const matches = contents.match(regex);
+        if (matches?.length) {
+          counts.set(id, (counts.get(id) ?? 0) + matches.length);
+        }
+      }
+    }
+
+    for (const id of commandIds) {
+      expect(counts.get(id)).toBe(1);
+    }
+  });
+});

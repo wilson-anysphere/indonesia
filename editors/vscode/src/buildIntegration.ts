@@ -47,7 +47,12 @@ interface NovaBuildDiagnosticsResult {
   error?: string | null;
 }
 
-type ProjectModelUnit = { kind: 'bazel'; target: string } | { kind: string; [key: string]: unknown };
+type ProjectModelUnit =
+  | { kind: 'maven'; module: string }
+  | { kind: 'gradle'; projectPath: string }
+  | { kind: 'bazel'; target: string }
+  | { kind: 'simple'; module: string }
+  | { kind: string; [key: string]: unknown };
 
 interface ProjectModelResult {
   projectRoot: string;
@@ -630,12 +635,11 @@ export function registerNovaBuildIntegration(
         async () => {
           const module = selector?.module;
           const projectPath = selector?.projectPath;
-          let target: string | undefined;
-          target = selector?.target;
+          let target: string | undefined = selector?.target;
 
           try {
-            const shouldPromptForTarget = await isBazelWorkspace(folder);
-            if (shouldPromptForTarget && !target) {
+            const shouldPromptForTarget = !target && !module && !projectPath && (await isBazelWorkspace(folder));
+            if (shouldPromptForTarget) {
               target = await promptForBazelTarget(folder);
               if (!target) {
                 return;
@@ -660,24 +664,24 @@ export function registerNovaBuildIntegration(
               }
 
               const message = formatError(err);
-                if (!target && isBazelTargetRequiredMessage(message)) {
-                  target = await promptForBazelTarget(folder);
-                  if (!target) {
-                    return;
-                  }
+              if (!target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
+                target = await promptForBazelTarget(folder);
+                if (!target) {
+                  return;
+                }
 
-                  const response = await request('nova/buildProject', {
-                    projectRoot,
-                    buildTool: 'auto' satisfies BuildTool,
-                    ...(module ? { module } : {}),
-                    ...(projectPath ? { projectPath } : {}),
-                    target,
-                  });
-                  if (typeof response === 'undefined') {
-                    return;
-                  }
-                } else {
-                  throw err;
+                const response = await request('nova/buildProject', {
+                  projectRoot,
+                  buildTool: 'auto' satisfies BuildTool,
+                  ...(module ? { module } : {}),
+                  ...(projectPath ? { projectPath } : {}),
+                  target,
+                });
+                if (typeof response === 'undefined') {
+                  return;
+                }
+              } else {
+                throw err;
               }
             }
 
@@ -696,7 +700,7 @@ export function registerNovaBuildIntegration(
               void vscode.window.showWarningMessage('Nova: build status polling timed out; fetching diagnostics anyway.');
             }
 
-            await refreshBuildDiagnostics(folder, { target });
+            await refreshBuildDiagnostics(folder, target ? { target } : undefined);
 
             if (finalStatus.status === 'failed') {
               void vscode.window.showErrorMessage('Nova: build failed.');
