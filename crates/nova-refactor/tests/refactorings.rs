@@ -5985,6 +5985,66 @@ class B {
 }
 
 #[test]
+fn static_import_member_is_not_indexed_when_name_is_ambiguous() {
+    // `import static p.A.foo;` imports *all* static members named `foo`.
+    // When both a field and a method share the name, the import is not a reference to a single
+    // symbol, so semantic rename should not treat it as one.
+    let a_file = FileId::new("A.java");
+    let b_file = FileId::new("B.java");
+    let a_src = r#"package p;
+
+class A {
+  static int foo;
+  static void foo() {}
+}
+"#;
+    let b_src = r#"package p;
+
+import static p.A.foo;
+
+class B {
+  void m() {
+    foo = 1;
+    foo();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (a_file.clone(), a_src.to_string()),
+        (b_file.clone(), b_src.to_string()),
+    ]);
+
+    let import_start = b_src.find("import static p.A.foo;").unwrap();
+    let member_start = import_start + "import static p.A.".len();
+    let member_range = WorkspaceTextRange::new(member_start, member_start + "foo".len());
+
+    let field_offset = a_src.find("static int foo").unwrap() + "static int ".len() + 1;
+    let field_symbol = db.symbol_at(&a_file, field_offset).expect("symbol at field foo");
+    assert_eq!(db.symbol_kind(field_symbol), Some(JavaSymbolKind::Field));
+
+    let method_offset = a_src.find("static void foo").unwrap() + "static void ".len() + 1;
+    let method_symbol = db.symbol_at(&a_file, method_offset).expect("symbol at method foo");
+    assert_eq!(db.symbol_kind(method_symbol), Some(JavaSymbolKind::Method));
+
+    let field_refs = db.find_references(field_symbol);
+    assert!(
+        !field_refs
+            .iter()
+            .any(|r| r.file == b_file && r.range == member_range),
+        "did not expect static import to be indexed as a field reference: {field_refs:?}"
+    );
+
+    let method_refs = db.find_references(method_symbol);
+    assert!(
+        !method_refs
+            .iter()
+            .any(|r| r.file == b_file && r.range == member_range),
+        "did not expect static import to be indexed as a method reference: {method_refs:?}"
+    );
+}
+
+#[test]
 fn inline_variable_rejects_crossing_lambda_execution_context() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

@@ -3722,6 +3722,47 @@ fn resolve_member_in_type(
     None
 }
 
+fn resolve_static_import_member_in_type(
+    workspace: &WorkspaceDefMap,
+    owner: ItemId,
+    member: &str,
+) -> Option<ResolutionKey> {
+    let name = Name::from(member);
+    let ty = workspace.type_def(owner)?;
+
+    // Static imports can import member types as well (`import static java.util.Map.Entry;`).
+    // If a nested type shares the same name, treat the import as ambiguous so we don't
+    // accidentally rewrite an import that must continue importing other members/types.
+    if ty.nested_types.contains_key(&name) {
+        return None;
+    }
+
+    let field = ty
+        .fields
+        .get(&name)
+        .filter(|f| f.is_static)
+        .map(|f| f.id);
+
+    let mut methods: Vec<MethodId> = ty
+        .methods
+        .get(&name)
+        .map(|methods| {
+            methods
+                .iter()
+                .filter(|m| m.is_static)
+                .map(|m| m.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    methods.sort();
+
+    match (field, methods.as_slice()) {
+        (Some(field), []) => Some(ResolutionKey::Field(field)),
+        (None, [method]) => Some(ResolutionKey::Method(*method)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NameExprContext {
     Value,
@@ -4283,7 +4324,7 @@ fn record_syntax_only_references(
                 continue;
             };
 
-            if let Some(key) = resolve_member_in_type(workspace, owner, member_name, true) {
+            if let Some(key) = resolve_static_import_member_in_type(workspace, owner, member_name) {
                 record_reference(
                     file,
                     member_range,
