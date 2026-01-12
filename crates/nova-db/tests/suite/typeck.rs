@@ -698,6 +698,31 @@ class C {
 }
 
 #[test]
+fn object_methods_are_available_via_superclass() {
+    let src = r#"
+class C {
+    void m(C other) {
+        this.toString();
+        this.equals(other);
+        this.hashCode();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+
+    for name in ["toString", "equals", "hashCode"] {
+        assert!(
+            diags.iter().all(|d| {
+                d.code.as_ref() != "unresolved-method" || !d.message.contains(name)
+            }),
+            "expected `{name}` to resolve via java.lang.Object, got {diags:?}"
+        );
+    }
+}
+
+#[test]
 fn static_method_called_via_instance_emits_warning() {
     let src = r#"
 class C {

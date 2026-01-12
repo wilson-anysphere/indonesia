@@ -680,6 +680,7 @@ impl TypeStore {
         let serializable = store.intern_class_id("java.io.Serializable");
 
         let object_ty = Type::class(object, vec![]);
+        let string_ty = Type::class(string, vec![]);
         store.define_class(
             object,
             ClassDef {
@@ -689,8 +690,40 @@ impl TypeStore {
                 super_class: None,
                 interfaces: vec![],
                 fields: vec![],
-                constructors: vec![],
-                methods: vec![],
+                constructors: vec![ConstructorDef {
+                    params: vec![],
+                    is_varargs: false,
+                    is_accessible: true,
+                }],
+                methods: vec![
+                    MethodDef {
+                        name: "toString".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: string_ty.clone(),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "equals".to_string(),
+                        type_params: vec![],
+                        params: vec![object_ty.clone()],
+                        return_type: Type::Primitive(PrimitiveType::Boolean),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "hashCode".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
             },
         );
         store.define_class(
