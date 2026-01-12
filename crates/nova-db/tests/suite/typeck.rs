@@ -652,6 +652,33 @@ class C {
 }
 
 #[test]
+fn qualified_type_receiver_resolves_for_static_call() {
+    let src = r#"
+class C {
+    String m() { return java.lang.String.valueOf(1); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-name" && d.code.as_ref() != "unresolved-field"),
+        "expected no unresolved-name/unresolved-field diagnostics, got {diags:?}"
+    );
+
+    let offset = src
+        .find("valueOf(")
+        .expect("snippet should contain valueOf call")
+        + "valueOf".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn conditional_with_null_infers_reference_type() {
     let src = r#"
 class C {
