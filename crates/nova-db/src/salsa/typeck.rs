@@ -7794,15 +7794,22 @@ fn source_item_supertypes<'idx>(
         if resolved.ty.is_errorish() {
             return None;
         }
-        if resolved
+
+        // `unresolved-type` diagnostics may originate from inside type arguments
+        // (e.g. `extends ArrayList<Missing>`). Those cases should still keep the
+        // outer supertype so inherited members can be discovered.
+        //
+        // Only reject when the *supertype itself* is unresolved (which typically
+        // yields `Type::Named` and an `unresolved-type` diagnostic).
+        let has_unresolved = resolved
             .diagnostics
             .iter()
-            .any(|d| d.code.as_ref() == "unresolved-type")
-        {
-            return None;
-        }
+            .any(|d| d.code.as_ref() == "unresolved-type");
+
         match resolved.ty {
-            Type::Class(_) | Type::Named(_) | Type::VirtualInner { .. } => Some(resolved.ty),
+            Type::Class(_) | Type::VirtualInner { .. } => Some(resolved.ty),
+            Type::Named(_) if !has_unresolved => Some(resolved.ty),
+            Type::Named(_) => None,
             _ => None,
         }
     };

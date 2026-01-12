@@ -3189,6 +3189,25 @@ class C extends Missing {
 }
 
 #[test]
+fn extends_keeps_inherited_members_when_type_arg_unresolved() {
+    let src = r#"
+import java.util.*;
+class C extends ArrayList<Missing> {
+    void m() {
+        get(0);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inherited ArrayList.get(int) (via List) to resolve even if type argument is unresolved; got {diags:?}"
+    );
+}
+
+#[test]
 fn implements_allows_interface_method_lookup() {
     let src = r#"
 interface I { int foo(); }
