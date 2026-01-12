@@ -1764,9 +1764,10 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a stable module output dir; even if it doesn't contain `module-info.class` yet,
-        // Maven module-path inference should keep it on the module-path so IDE consumers can
-        // resolve workspace outputs consistently.
+        // Simulate a stable module output dir. Even for JPMS projects, output directories should
+        // live on the compile classpath (not the inferred module-path). We only infer stable
+        // module-path entries from the resolved classpath (named modules + explicit
+        // Automatic-Module-Name jars).
         let out_dir = tmp.path().join("target/classes");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("module-info.class"), b"").unwrap();
@@ -1784,7 +1785,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(module_path, vec![out_dir, named, automatic, dep]);
+        assert_eq!(module_path, vec![named, automatic]);
     }
 
     #[test]
