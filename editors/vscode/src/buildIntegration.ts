@@ -500,7 +500,11 @@ export function registerNovaBuildIntegration(
           const msg = formatUnsupportedNovaMethodMessage('nova/build/diagnostics');
           state.diagnosticsSupported = false;
           if (silent) {
-            buildOutput.appendLine(msg);
+            if (token) {
+              buildOutput.appendLine(msg);
+            } else {
+              output.appendLine(msg);
+            }
           } else {
             void vscode.window.showErrorMessage(msg);
           }
@@ -509,7 +513,11 @@ export function registerNovaBuildIntegration(
 
         const message = formatError(err);
         if (silent) {
-          buildOutput.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
+          if (token) {
+            buildOutput.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
+          } else {
+            output.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
+          }
         } else {
           void vscode.window.showErrorMessage(`Nova: failed to fetch build diagnostics: ${message}`);
         }
@@ -559,7 +567,7 @@ export function registerNovaBuildIntegration(
         if (!silent) {
           void vscode.window.showErrorMessage('Nova: Missing projectRoot for build diagnostics refresh.');
         } else {
-          buildOutput.appendLine('Nova: missing projectRoot for build diagnostics refresh.');
+          output.appendLine('Nova: missing projectRoot for build diagnostics refresh.');
         }
         return;
       }
@@ -571,7 +579,7 @@ export function registerNovaBuildIntegration(
         if (!silent) {
           void vscode.window.showErrorMessage(`Nova: Workspace folder not found for ${projectRoot}`);
         } else {
-          buildOutput.appendLine(`Nova: workspace folder not found for build diagnostics refresh (${projectRoot})`);
+          output.appendLine(`Nova: workspace folder not found for build diagnostics refresh (${projectRoot})`);
         }
         return;
       }
