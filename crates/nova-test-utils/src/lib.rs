@@ -8,9 +8,11 @@
 //!
 //! ## Running `javac` differential tests locally
 //!
+//! Use the agent cargo wrapper (it enforces `RLIMIT_AS` and build slot throttling on shared hosts):
+//!
 //! ```bash
 //! # Run ignored tests (requires `javac` on PATH)
-//! cargo test -p nova-types --test javac_differential -- --ignored
+//! bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
 //! ```
 
 pub mod env;
