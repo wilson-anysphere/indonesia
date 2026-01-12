@@ -506,15 +506,58 @@ impl Debugger {
         &mut self,
         cancel: &CancellationToken,
         dap_thread_id: i64,
-    ) -> Result<Vec<serde_json::Value>> {
+        start_frame: Option<i64>,
+        levels: Option<i64>,
+    ) -> Result<(Vec<serde_json::Value>, Option<i64>)> {
         // Thread ids originate from JDWP `ObjectId` values, which are opaque 64-bit numbers.
         // Represent them in DAP as `i64` (required by the protocol) using a lossless bit-cast:
         // `u64 -> i64` and back via `as` preserves the underlying bits even if the sign flips.
         let thread = dap_thread_id as ThreadId;
 
+        check_cancel(cancel)?;
+
+        let start_frame = start_frame.unwrap_or(0);
+        if start_frame < 0 {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "startFrame must be >= 0 (got {start_frame})"
+            )));
+        }
+        let Ok(start) = i32::try_from(start_frame) else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "startFrame is too large: {start_frame}"
+            )));
+        };
+
+        let length = match levels {
+            Some(levels) => {
+                if levels < 0 {
+                    return Err(DebuggerError::InvalidRequest(format!(
+                        "levels must be >= 0 (got {levels})"
+                    )));
+                }
+                let Ok(levels) = i32::try_from(levels) else {
+                    return Err(DebuggerError::InvalidRequest(format!(
+                        "levels is too large: {levels}"
+                    )));
+                };
+                levels
+            }
+            None => -1,
+        };
+
+        // `ThreadReference.FrameCount` is significantly cheaper than fetching the full
+        // `ThreadReference.Frames` list and allows us to compute an accurate DAP `totalFrames`
+        // for paged stackTrace requests.
+        let total_frames = match cancellable_jdwp(cancel, self.jdwp.thread_frame_count(thread)).await
+        {
+            Ok(count) => Some(count as i64),
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(_) => None,
+        };
+
         // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
         // JDWP allows `length = -1` to request all frames starting at `start`.
-        let frames = cancellable_jdwp(cancel, self.jdwp.frames(thread, 0, -1)).await?;
+        let frames = cancellable_jdwp(cancel, self.jdwp.frames(thread, start, length)).await?;
         let mut out = Vec::with_capacity(frames.len());
         for frame in frames {
             check_cancel(cancel)?;
@@ -566,7 +609,16 @@ impl Debugger {
             }));
         }
 
-        Ok(out)
+        let total_frames = match total_frames {
+            Some(total) => Some(total),
+            None => match levels {
+                None => Some(start_frame + out.len() as i64),
+                Some(levels) if (out.len() as i64) < levels => Some(start_frame + out.len() as i64),
+                _ => None,
+            },
+        };
+
+        Ok((out, total_frames))
     }
 
     pub async fn step_in_targets(

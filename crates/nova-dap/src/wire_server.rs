@@ -1664,6 +1664,32 @@ async fn handle_request_inner(
                 return;
             };
 
+            let start_frame = request.arguments.get("startFrame").and_then(|v| v.as_i64());
+            if start_frame.is_some_and(|start| start < 0) {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("stackTrace.startFrame must be >= 0".to_string()),
+                );
+                return;
+            }
+
+            let levels = request.arguments.get("levels").and_then(|v| v.as_i64());
+            if levels.is_some_and(|levels| levels < 0) {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("stackTrace.levels must be >= 0".to_string()),
+                );
+                return;
+            }
+
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
@@ -1690,8 +1716,11 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.stack_trace(cancel, thread_id).await {
-                Ok(frames) if cancel.is_cancelled() => {
+            match dbg
+                .stack_trace(cancel, thread_id, start_frame, levels)
+                .await
+            {
+                Ok((frames, total_frames)) if cancel.is_cancelled() => {
                     send_response(
                         out_tx,
                         seq,
@@ -1701,14 +1730,21 @@ async fn handle_request_inner(
                         Some("cancelled".to_string()),
                     );
                 }
-                Ok(frames) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "stackFrames": frames, "totalFrames": frames.len() })),
-                    None,
-                ),
+                Ok((frames, total_frames)) => {
+                    let mut body = serde_json::Map::new();
+                    body.insert("stackFrames".to_string(), json!(frames));
+                    if let Some(total_frames) = total_frames {
+                        body.insert("totalFrames".to_string(), json!(total_frames));
+                    }
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(Value::Object(body)),
+                        None,
+                    )
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
