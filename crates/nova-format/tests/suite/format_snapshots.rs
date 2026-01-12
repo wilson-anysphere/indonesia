@@ -1140,6 +1140,31 @@ class Foo {
 }
 
 #[test]
+fn pretty_document_formatting_is_idempotent_on_package_and_import_comments() {
+    let input = r#"package  foo.bar; // pkg
+import java.util.List; // list
+// static group comment
+import static java.util.Collections.emptyList; // empty
+class Foo{}
+"#;
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    let edits_again = edits_for_document_formatting_with_strategy(
+        &formatted,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn pretty_collapses_extra_blank_lines_after_package() {
     let input = "package foo.bar; // pkg\n\n\nimport java.util.List;\nclass Foo{}\n";
     let edits = edits_for_document_formatting_with_strategy(

@@ -77,7 +77,7 @@ impl<'a> JavaPrettyFormatter<'a> {
             let child = &children[idx];
             match child.kind() {
                 SyntaxKind::PackageDeclaration => {
-                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, Some(child));
                     parts.push(self.print_package_declaration(child));
                     // Exactly one blank line after a package declaration.
                     pending_hardlines = 2;
@@ -92,7 +92,11 @@ impl<'a> JavaPrettyFormatter<'a> {
                     {
                         idx += 1;
                     }
-                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    self.flush_pending_hardlines(
+                        &mut parts,
+                        &mut pending_hardlines,
+                        children.get(start),
+                    );
                     parts.push(self.print_import_block(&children[start..idx]));
                     if idx < children.len() {
                         // Blank line between the imports section and the first declaration.
@@ -102,7 +106,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                     prev_was_type_decl = false;
                 }
                 SyntaxKind::ModuleDeclaration => {
-                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, Some(child));
                     parts.push(self.print_module_declaration(child));
                     pending_hardlines = 1;
                     prev_end = Some(u32::from(child.text_range().end()));
@@ -137,7 +141,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                         }
                     }
 
-                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, Some(child));
                     if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
                         parts.push(self.print_type_declaration(ty));
                         prev_was_type_decl = true;
@@ -164,12 +168,41 @@ impl<'a> JavaPrettyFormatter<'a> {
         if let Some(eof) = eof {
             let trailing = self.comments.take_leading_doc(TokenKey::from(&eof), 0);
             if !trailing.is_nil() {
-                flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, None);
                 parts.push(trailing);
             }
         }
 
         Doc::concat(parts)
+    }
+
+    fn flush_pending_hardlines(
+        &mut self,
+        out: &mut Vec<Doc<'a>>,
+        pending: &mut usize,
+        next: Option<&SyntaxNode>,
+    ) {
+        if out.is_empty() {
+            *pending = 0;
+            return;
+        }
+
+        let mut count = *pending;
+        if count >= 2 {
+            if let Some(next) = next {
+                if let Some((first, _)) = boundary_significant_tokens(next) {
+                    let key = TokenKey::from(&first);
+                    if self.comments.leading_blank_line_before(key) {
+                        count = count.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
+        for _ in 0..count {
+            out.push(Doc::hardline());
+        }
+        *pending = 0;
     }
 
     fn print_package_declaration(&mut self, node: &SyntaxNode) -> Doc<'a> {
@@ -188,8 +221,6 @@ impl<'a> JavaPrettyFormatter<'a> {
         for (idx, node) in nodes.iter().enumerate() {
             let is_static = import_is_static(node);
             if idx > 0 {
-                parts.push(Doc::hardline());
-
                 let mut needs_blank_line = false;
                 if let Some(prev_static) = last_static {
                     if prev_static != is_static {
@@ -202,7 +233,17 @@ impl<'a> JavaPrettyFormatter<'a> {
                         needs_blank_line = true;
                     }
                 }
-                if needs_blank_line {
+
+                let mut hardlines: usize = if needs_blank_line { 2 } else { 1 };
+                if hardlines >= 2 {
+                    if let Some((first, _)) = boundary_significant_tokens(node) {
+                        let key = TokenKey::from(&first);
+                        if self.comments.leading_blank_line_before(key) {
+                            hardlines = hardlines.saturating_sub(1);
+                        }
+                    }
+                }
+                for _ in 0..hardlines {
                     parts.push(Doc::hardline());
                 }
             }
@@ -487,17 +528,6 @@ fn boundary_significant_tokens(node: &SyntaxNode) -> Option<(SyntaxToken, Syntax
         last = tok;
     }
     Some((first, last))
-}
-
-fn flush_pending_hardlines<'a>(out: &mut Vec<Doc<'a>>, pending: &mut usize) {
-    if out.is_empty() {
-        *pending = 0;
-        return;
-    }
-    for _ in 0..*pending {
-        out.push(Doc::hardline());
-    }
-    *pending = 0;
 }
 
 fn significant_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {

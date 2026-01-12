@@ -50,25 +50,19 @@ fn runner() -> &'static Runner {
 
                     // Idempotence check for the edit pipeline: formatting the
                     // formatted output should yield no further changes.
-                    //
-                    // The pretty-printer strategy is experimental and does not
-                    // currently guarantee idempotence, so restrict the check
-                    // to the production + legacy pipelines.
-                    if strategy != nova_format::FormatStrategy::JavaPrettyAst {
-                        let edits2 = nova_format::edits_for_document_formatting_with_strategy(
-                            &formatted, &config, strategy,
-                        );
-                        let formatted2 = nova_core::apply_text_edits(&formatted, &edits2)
-                            .unwrap_or_else(|err| {
-                                panic!(
-                                    "failed to apply second-pass formatting edits for {strategy:?}: {err}"
-                                )
-                            });
-                        assert_eq!(
-                            formatted2, formatted,
-                            "document formatting pipeline is not idempotent for {strategy:?}"
-                        );
-                    }
+                    let edits2 = nova_format::edits_for_document_formatting_with_strategy(
+                        &formatted, &config, strategy,
+                    );
+                    let formatted2 = nova_core::apply_text_edits(&formatted, &edits2)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "failed to apply second-pass formatting edits for {strategy:?}: {err}"
+                            )
+                        });
+                    assert_eq!(
+                        formatted2, formatted,
+                        "document formatting pipeline is not idempotent for {strategy:?}"
+                    );
                 }
 
                 let _ = output_tx.send(());

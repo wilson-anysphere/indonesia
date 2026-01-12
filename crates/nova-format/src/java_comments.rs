@@ -80,6 +80,18 @@ impl<'a> JavaComments<'a> {
         self.fmt_leading_comments(&ctx, &comments)
     }
 
+    /// Returns `true` when the first leading comment attached to `token` is
+    /// preceded by a blank line relative to the previous significant token.
+    ///
+    /// This is primarily used by higher-level formatters to avoid *double*
+    /// inserting blank lines when they already emitted structural spacing.
+    pub(crate) fn leading_blank_line_before(&self, token: TokenKey) -> bool {
+        self.store
+            .peek_leading(token)
+            .first()
+            .is_some_and(|comment| comment.blank_line_before)
+    }
+
     pub fn assert_drained(&self) {
         self.store.assert_drained();
     }
