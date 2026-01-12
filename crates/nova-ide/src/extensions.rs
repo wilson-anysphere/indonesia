@@ -1142,6 +1142,102 @@ mod tests {
     }
 
     #[test]
+    fn framework_analyzer_adapter_allows_cooperative_cancellation_during_execution() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        struct CooperativeCancelAnalyzer {
+            started: mpsc::Sender<()>,
+            finished: mpsc::Sender<()>,
+            saw_cancel: Arc<AtomicBool>,
+        }
+
+        impl FrameworkAnalyzer for CooperativeCancelAnalyzer {
+            fn applies_to(&self, _db: &dyn Database, _project: ProjectId) -> bool {
+                true
+            }
+
+            fn diagnostics_with_cancel(
+                &self,
+                _db: &dyn Database,
+                _file: nova_ext::FileId,
+                cancel: &CancellationToken,
+            ) -> Vec<Diagnostic> {
+                let _ = self.started.send(());
+
+                // Simulate some work that periodically checks for cancellation.
+                for _ in 0..250 {
+                    if cancel.is_cancelled() {
+                        self.saw_cancel.store(true, Ordering::SeqCst);
+                        let _ = self.finished.send(());
+                        return Vec::new();
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+
+                // If we never see cancellation, surface a diagnostic so the test fails.
+                let _ = self.finished.send(());
+                vec![Diagnostic::warning(
+                    "FW",
+                    "framework",
+                    Some(Span::new(0, 1)),
+                )]
+            }
+        }
+
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
+        ide.registry_mut().options_mut().diagnostic_timeout = Duration::from_secs(1);
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let saw_cancel = Arc::new(AtomicBool::new(false));
+
+        let analyzer = FrameworkAnalyzerAdapter::new(
+            "framework.coop_cancel",
+            CooperativeCancelAnalyzer {
+                started: started_tx,
+                finished: finished_tx,
+                saw_cancel: Arc::clone(&saw_cancel),
+            },
+        )
+        .into_arc();
+        ide.registry_mut()
+            .register_diagnostic_provider(analyzer)
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
+
+        let cancel_thread = std::thread::spawn(move || {
+            started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("analyzer should start");
+            cancel_for_thread.cancel();
+        });
+
+        let diags = ide.diagnostics(cancel, file);
+        assert!(
+            diags.is_empty(),
+            "expected diagnostics to be empty after cancellation; got {diags:?}"
+        );
+
+        cancel_thread.join().unwrap();
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("analyzer should finish after cancellation");
+        assert!(
+            saw_cancel.load(Ordering::SeqCst),
+            "expected analyzer to observe cancellation"
+        );
+    }
+
+    #[test]
     fn combines_builtin_and_extension_diagnostics_and_completions() {
         use nova_db::InMemoryFileStore;
 
