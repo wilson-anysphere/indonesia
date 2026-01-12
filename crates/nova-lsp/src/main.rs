@@ -5515,10 +5515,10 @@ fn handle_call_hierarchy_incoming_calls(
         return Ok(json!([]));
     }
 
-    let calls = nova_ide::code_intelligence::call_hierarchy_incoming_calls(
+    let calls = nova_ide::code_intelligence::call_hierarchy_incoming_calls_for_item(
         &state.analysis,
         file_id,
-        params.item.name.as_str(),
+        &params.item,
     );
     serde_json::to_value(calls).map_err(|e| e.to_string())
 }
@@ -5535,10 +5535,10 @@ fn handle_call_hierarchy_outgoing_calls(
         return Ok(json!([]));
     }
 
-    let calls = nova_ide::code_intelligence::call_hierarchy_outgoing_calls(
+    let calls = nova_ide::code_intelligence::call_hierarchy_outgoing_calls_for_item(
         &state.analysis,
         file_id,
-        params.item.name.as_str(),
+        &params.item,
     );
     serde_json::to_value(calls).map_err(|e| e.to_string())
 }

@@ -7754,13 +7754,42 @@ pub fn call_hierarchy_outgoing_calls(
     file: FileId,
     method_name: &str,
 ) -> Vec<CallHierarchyOutgoingCall> {
+    call_hierarchy_outgoing_calls_impl(db, file, method_name, None)
+}
+
+pub fn call_hierarchy_outgoing_calls_for_item(
+    db: &dyn Database,
+    file: FileId,
+    item: &CallHierarchyItem,
+) -> Vec<CallHierarchyOutgoingCall> {
+    let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
+    let start = text_index.position_to_offset(item.selection_range.start);
+    let end = text_index.position_to_offset(item.selection_range.end);
+    let name_span = match (start, end) {
+        (Some(start), Some(end)) => Some(Span::new(start, end)),
+        _ => None,
+    };
+
+    call_hierarchy_outgoing_calls_impl(db, file, item.name.as_str(), name_span)
+}
+
+fn call_hierarchy_outgoing_calls_impl(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+    owner_name_span: Option<Span>,
+) -> Vec<CallHierarchyOutgoingCall> {
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
     let uri = file_uri(db, file);
 
     // 1) Same-file, no-receiver calls (`bar()`), preserving the original behavior.
     let analysis = analyze(text);
-    let Some(owner) = analysis.methods.iter().find(|m| m.name == method_name) else {
+    let owner = owner_name_span
+        .and_then(|span| analysis.methods.iter().find(|m| m.name_span == span))
+        .or_else(|| analysis.methods.iter().find(|m| m.name == method_name));
+    let Some(owner) = owner else {
         return Vec::new();
     };
 
@@ -7807,7 +7836,10 @@ pub fn call_hierarchy_outgoing_calls(
         return outgoing;
     };
 
-    let Some((owner_type, owner_method)) = parsed_method_by_name(parsed, method_name) else {
+    let owner_method = owner_name_span
+        .and_then(|span| parsed_method_by_name_span(parsed, span))
+        .or_else(|| parsed_method_by_name(parsed, method_name));
+    let Some((owner_type, owner_method)) = owner_method else {
         outgoing.sort_by(|a, b| {
             a.to.name
                 .cmp(&b.to.name)
@@ -7952,6 +7984,32 @@ pub fn call_hierarchy_incoming_calls(
     file: FileId,
     method_name: &str,
 ) -> Vec<CallHierarchyIncomingCall> {
+    call_hierarchy_incoming_calls_impl(db, file, method_name, None)
+}
+
+pub fn call_hierarchy_incoming_calls_for_item(
+    db: &dyn Database,
+    file: FileId,
+    item: &CallHierarchyItem,
+) -> Vec<CallHierarchyIncomingCall> {
+    let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
+    let start = text_index.position_to_offset(item.selection_range.start);
+    let end = text_index.position_to_offset(item.selection_range.end);
+    let name_span = match (start, end) {
+        (Some(start), Some(end)) => Some(Span::new(start, end)),
+        _ => None,
+    };
+
+    call_hierarchy_incoming_calls_impl(db, file, item.name.as_str(), name_span)
+}
+
+fn call_hierarchy_incoming_calls_impl(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+    target_name_span_override: Option<Span>,
+) -> Vec<CallHierarchyIncomingCall> {
     let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
 
     // Resolve the target method's definition (file + name span).
@@ -7959,11 +8017,14 @@ pub fn call_hierarchy_incoming_calls(
         return Vec::new();
     };
 
-    let target_name_span = target_parsed
-        .types
-        .iter()
-        .find_map(|ty| ty.methods.iter().find(|m| m.name == method_name))
-        .map(|m| m.name_span);
+    let has_span_override = target_name_span_override.is_some();
+    let target_name_span = target_name_span_override.or_else(|| {
+        target_parsed
+            .types
+            .iter()
+            .find_map(|ty| ty.methods.iter().find(|m| m.name == method_name))
+            .map(|m| m.name_span)
+    });
     let Some(target_name_span) = target_name_span else {
         return Vec::new();
     };
@@ -8035,36 +8096,42 @@ pub fn call_hierarchy_incoming_calls(
 
     // Best-effort support for bare calls (`bar()`) when the call site is in the
     // same file as the target method definition.
-    let analysis = analyze(&target_parsed.text);
-    for call in analysis
-        .calls
-        .iter()
-        .filter(|c| c.receiver.is_none() && c.name == method_name)
-    {
-        let Some((_caller_type, caller_method)) =
-            parsed_method_containing_span(target_parsed, call.name_span)
-        else {
-            continue;
-        };
+    //
+    // When the caller is driven by a `CallHierarchyItem` (span override), avoid
+    // this heuristic: it cannot disambiguate overloads and may attribute callers
+    // to the wrong method.
+    if !has_span_override {
+        let analysis = analyze(&target_parsed.text);
+        for call in analysis
+            .calls
+            .iter()
+            .filter(|c| c.receiver.is_none() && c.name == method_name)
+        {
+            let Some((_caller_type, caller_method)) =
+                parsed_method_containing_span(target_parsed, call.name_span)
+            else {
+                continue;
+            };
 
-        spans_by_caller
-            .entry(CallerKey {
-                file_id: file,
-                name_span: caller_method.name_span,
-            })
-            .and_modify(|(_, spans)| spans.push(call.name_span))
-            .or_insert_with(|| {
-                (
-                    CallerMethod {
-                        file_id: file,
-                        uri: target_parsed.uri.clone(),
-                        name: caller_method.name.clone(),
-                        name_span: caller_method.name_span,
-                        body_span: caller_method.body_span,
-                    },
-                    vec![call.name_span],
-                )
-            });
+            spans_by_caller
+                .entry(CallerKey {
+                    file_id: file,
+                    name_span: caller_method.name_span,
+                })
+                .and_modify(|(_, spans)| spans.push(call.name_span))
+                .or_insert_with(|| {
+                    (
+                        CallerMethod {
+                            file_id: file,
+                            uri: target_parsed.uri.clone(),
+                            name: caller_method.name.clone(),
+                            name_span: caller_method.name_span,
+                            body_span: caller_method.body_span,
+                        },
+                        vec![call.name_span],
+                    )
+                });
+        }
     }
 
     let mut callers: Vec<_> = spans_by_caller.into_values().collect();
@@ -8167,6 +8234,20 @@ fn parsed_method_by_name<'a>(
     for ty in &parsed.types {
         for method in &ty.methods {
             if method.name == method_name {
+                return Some((ty, method));
+            }
+        }
+    }
+    None
+}
+
+fn parsed_method_by_name_span<'a>(
+    parsed: &'a crate::parse::ParsedFile,
+    name_span: Span,
+) -> Option<(&'a crate::parse::TypeDef, &'a crate::parse::MethodDef)> {
+    for ty in &parsed.types {
+        for method in &ty.methods {
+            if method.name_span == name_span {
                 return Some((ty, method));
             }
         }

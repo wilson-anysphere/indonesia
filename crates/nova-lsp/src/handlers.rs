@@ -83,7 +83,7 @@ pub fn call_hierarchy_incoming_calls(
     params: CallHierarchyIncomingCallsParams,
 ) -> Option<Vec<CallHierarchyIncomingCall>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
-    let calls = nova_ide::call_hierarchy_incoming_calls(db, file, &params.item.name);
+    let calls = nova_ide::call_hierarchy_incoming_calls_for_item(db, file, &params.item);
     if calls.is_empty() { None } else { Some(calls) }
 }
 
@@ -92,7 +92,7 @@ pub fn call_hierarchy_outgoing_calls(
     params: CallHierarchyOutgoingCallsParams,
 ) -> Option<Vec<CallHierarchyOutgoingCall>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
-    let calls = nova_ide::call_hierarchy_outgoing_calls(db, file, &params.item.name);
+    let calls = nova_ide::call_hierarchy_outgoing_calls_for_item(db, file, &params.item);
     if calls.is_empty() { None } else { Some(calls) }
 }
 

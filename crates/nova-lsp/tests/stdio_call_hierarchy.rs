@@ -197,6 +197,226 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
 }
 
 #[test]
+fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
+    let _lock = stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let file_path = root.join("Foo.java");
+    let file_uri = uri_for_path(&file_path);
+    let root_uri = uri_for_path(root);
+
+    let text = r#"
+        public class Foo {
+            void bar() {}
+            void baz() {}
+
+            void foo(int x) {
+                bar();
+            }
+
+            void foo(String s) {
+                baz();
+            }
+        }
+    "#;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // didOpen
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text,
+                }
+            }
+        }),
+    );
+
+    // Prepare + outgoing for `foo(int)`: should call `bar`, not `baz`.
+    let foo_int_offset = text.find("foo(int").expect("foo(int)");
+    let pos = utf16_position(text, foo_int_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareCallHierarchy",
+            "params": {
+                "textDocument": { "uri": file_uri.as_str() },
+                "position": { "line": pos.line, "character": pos.character },
+            }
+        }),
+    );
+    let prepare_int = read_response_with_id(&mut stdout, 2);
+    let items = prepare_int
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_int:#}"));
+    assert_eq!(items.len(), 1, "expected one call hierarchy item: {prepare_int:#}");
+    let foo_int_item = items[0].clone();
+    assert!(
+        foo_int_item
+            .pointer("/detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|detail| detail.contains("foo(") && detail.contains("int")),
+        "expected foo(int) to include signature detail: {foo_int_item:#}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "callHierarchy/outgoingCalls",
+            "params": { "item": foo_int_item }
+        }),
+    );
+    let outgoing_int_resp = read_response_with_id(&mut stdout, 3);
+    let outgoing_int = outgoing_int_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| {
+            panic!("expected outgoingCalls result array: {outgoing_int_resp:#}")
+        });
+    assert!(
+        outgoing_int.iter().any(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "bar")
+        }),
+        "expected foo(int) outgoing calls to include bar: {outgoing_int_resp:#}"
+    );
+    assert!(
+        !outgoing_int.iter().any(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "baz")
+        }),
+        "expected foo(int) outgoing calls to exclude baz: {outgoing_int_resp:#}"
+    );
+
+    // Prepare + outgoing for `foo(String)`: should call `baz`, not `bar`.
+    let foo_string_offset = text.find("foo(String").expect("foo(String)");
+    let pos = utf16_position(text, foo_string_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "textDocument/prepareCallHierarchy",
+            "params": {
+                "textDocument": { "uri": file_uri.as_str() },
+                "position": { "line": pos.line, "character": pos.character },
+            }
+        }),
+    );
+    let prepare_string = read_response_with_id(&mut stdout, 4);
+    let items = prepare_string
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_string:#}"));
+    assert_eq!(
+        items.len(),
+        1,
+        "expected one call hierarchy item: {prepare_string:#}"
+    );
+    let foo_string_item = items[0].clone();
+    assert!(
+        foo_string_item
+            .pointer("/detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|detail| detail.contains("foo(") && detail.contains("String")),
+        "expected foo(String) to include signature detail: {foo_string_item:#}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "callHierarchy/outgoingCalls",
+            "params": { "item": foo_string_item }
+        }),
+    );
+    let outgoing_string_resp = read_response_with_id(&mut stdout, 5);
+    let outgoing_string = outgoing_string_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| {
+            panic!("expected outgoingCalls result array: {outgoing_string_resp:#}")
+        });
+    assert!(
+        outgoing_string.iter().any(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "baz")
+        }),
+        "expected foo(String) outgoing calls to include baz: {outgoing_string_resp:#}"
+    );
+    assert!(
+        !outgoing_string.iter().any(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "bar")
+        }),
+        "expected foo(String) outgoing calls to exclude bar: {outgoing_string_resp:#}"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_supports_call_hierarchy_across_files() {
     let _lock = stdio_server_lock();
 
