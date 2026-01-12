@@ -161,6 +161,11 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                     failure_text.push_str(&e.unescape()?.to_string());
                 }
             }
+            Event::CData(e) => {
+                if in_failure_text {
+                    failure_text.push_str(&String::from_utf8_lossy(e.as_ref()));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"failure" | b"error" => {
                     in_failure_text = false;

@@ -54,6 +54,27 @@ trace</failure>
 }
 
 #[test]
+fn parses_junit_xml_cdata_stack_traces() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="1" failures="1" errors="0" skipped="0" time="0.001">
+          <testcase classname="com.example.CalculatorTest" name="cdataFails" time="0.001">
+            <failure message="boom" type="java.lang.AssertionError"><![CDATA[stack
+trace]]></failure>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#cdataFails");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().stack_trace.as_deref(),
+        Some("stack\ntrace")
+    );
+}
+
+#[test]
 fn normalizes_parameterized_testcase_names() {
     let xml = r#"
         <testsuite name="com.example.CalculatorTest" tests="2" failures="1" errors="0" skipped="0" time="0.003">
