@@ -249,7 +249,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-framework-builtins/src/lib.rs` (`builtin_analyzers`, `register_builtin_analyzers`, `builtin_registry`).
 - **Maturity:** scaffolding
 - **Known gaps vs intended docs:**
-  - Currently registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus only; Spring/JPA are feature-gated placeholders (`spring`/`jpa`) because those crates don’t yet expose `FrameworkAnalyzer` implementations.
+  - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default; Spring/JPA analyzers are available behind the `spring`/`jpa` crate features (these analyzers can be relatively expensive and/or pull in heavier dependencies).
   - Not yet wired into `nova-ide`/`nova-lsp`; callers still build their own registries in many code paths.
 
 ### `nova-framework-dagger`
