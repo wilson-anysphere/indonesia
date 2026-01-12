@@ -59,9 +59,8 @@ From the repo root (these are the exact commands CI runs; on shared agent hosts 
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 
-# Guard against new top-level `crates/*/tests/*.rs` binaries (see AGENTS.md "Test Organization")
-# In PR CI this compares against the PR base SHA; on push CI it compares against the previous commit.
-# Locally:
+# PR-only: Guard against new top-level `crates/*/tests/*.rs` binaries (see AGENTS.md "Test Organization")
+# In CI this compares against the PR base SHA. Locally:
 BASE_SHA=$(git merge-base origin/main HEAD) ./scripts/check-test-binary-drift.sh
 
 # Test job (CI runs this on ubuntu/macos/windows; workstation-only — do not run on shared agent hosts)
@@ -680,7 +679,7 @@ In practice, Nova’s CI splits into:
 
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
-| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, test-binary drift guard (`scripts/check-test-binary-drift.sh`), `cargo clippy`, `cargo nextest run --locked --workspace --profile ci` (linux/macos/windows), `cargo test --locked --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
+| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, PR-only test-binary drift guard (`scripts/check-test-binary-drift.sh`), `cargo clippy`, `cargo nextest run --locked --workspace --profile ci` (linux/macos/windows), `cargo test --locked --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench --locked -p nova-core --bench critical_paths`, `cargo bench --locked -p nova-syntax --bench parse_java`, `cargo bench --locked -p nova-format --bench format`, `cargo bench --locked -p nova-refactor --bench refactor`, `cargo bench --locked -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test --locked -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
