@@ -52,7 +52,10 @@ pub mod wire_stream_debug;
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;
 pub mod wire_server;
-/// Compile+inject stream evaluation helpers for the wire debugger (used by stream-debug).
+/// Canonical compile+inject helpers for stream evaluation in the wire debugger.
+///
+/// All bytecode generation, `javac` invocation, and JDWP `DefineClass` plumbing for
+/// stream-debug evaluation should live in this module (vs. ad-hoc helpers elsewhere).
 pub mod wire_stream_eval;
 
 /// Crash hardening helpers (panic hook installation, safe-mode toggles).

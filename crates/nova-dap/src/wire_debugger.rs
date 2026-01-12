@@ -26,11 +26,6 @@ use crate::breakpoints::map_line_breakpoints;
 use crate::eval_context::EvalOptions;
 use crate::object_registry::{ObjectHandle, ObjectRegistry, OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 
-#[allow(dead_code)]
-mod java_eval;
-#[allow(unused_imports)]
-pub(crate) use java_eval::JavaStreamEvaluator;
-
 /// Internal representation of a DAP `SourceBreakpoint`.
 ///
 /// This is intentionally minimal and only captures the fields we need for the wire-level adapter.

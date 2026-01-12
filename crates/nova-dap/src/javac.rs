@@ -497,15 +497,6 @@ pub(crate) fn hot_swap_temp_dir() -> std::io::Result<TempDir> {
     tempfile::Builder::new().prefix("compile-").tempdir_in(base)
 }
 
-pub(crate) fn stream_eval_temp_dir() -> std::io::Result<TempDir> {
-    // Stream-eval compilation should not share the hot-swap temp directory. The nova-dap test suite
-    // asserts that hot-swap compilation directories are cleaned up, and other concurrent tests may
-    // compile stream-eval helper classes.
-    let base = std::env::temp_dir().join("nova-dap-stream-eval");
-    std::fs::create_dir_all(&base)?;
-    tempfile::Builder::new().prefix("compile-").tempdir_in(base)
-}
-
 fn collect_class_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_class_files_inner(dir, &mut out)?;

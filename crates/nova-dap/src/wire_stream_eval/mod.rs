@@ -1,3 +1,10 @@
+//! Compile+inject stream-evaluation helpers for the wire-level debugger.
+//!
+//! This module is the canonical home for Nova's "stream eval" pipeline (generate helper
+//! source → compile → inject via JDWP `DefineClass` → invoke helper methods). Keeping the
+//! implementation centralized avoids drift between multiple ad-hoc evaluator
+//! implementations.
+
 pub mod bindings;
 pub mod java_gen;
 pub mod java_types;
