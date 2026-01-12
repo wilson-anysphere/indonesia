@@ -1,7 +1,7 @@
 use nova_db::salsa::{NovaFlow, NovaHir};
 use nova_db::{FileId, SalsaRootDatabase};
 use nova_hir::body::{Body as FlowBody, ExprKind as FlowExprKind, StmtKind as FlowStmtKind};
-use nova_hir::hir::{Body, Expr, ExprId};
+use nova_hir::hir::{Body, Expr, ExprId, Stmt};
 
 fn expr_path(body: &Body, expr: ExprId) -> Option<String> {
     match &body.exprs[expr] {
@@ -120,6 +120,80 @@ class Foo {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
+}
+
+#[test]
+fn hir_method_body_lowers_synchronized_statement() {
+    let source = r#"
+class C {
+    void m() {
+        Object x = new Object();
+        synchronized (x) { int y = 0; }
+    }
+}
+"#;
+
+    let mut db = SalsaRootDatabase::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, source);
+
+    let snap = db.snapshot();
+    let tree = snap.hir_item_tree(file);
+    let (&method_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("m method");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
+    let body = snap.hir_body(method_id);
+
+    let mut saw_synchronized = false;
+    for (_, stmt) in body.stmts.iter() {
+        let Stmt::Synchronized {
+            expr: lock_expr,
+            body: sync_body,
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+
+        saw_synchronized = true;
+
+        let Expr::Name { name, .. } = &body.exprs[*lock_expr] else {
+            panic!(
+                "expected synchronized lock expression to lower to a name expression, got {:?}",
+                body.exprs[*lock_expr]
+            );
+        };
+        assert_eq!(name, "x");
+
+        let Stmt::Block { statements, .. } = &body.stmts[*sync_body] else {
+            panic!(
+                "expected synchronized body to lower to a block statement, got {:?}",
+                body.stmts[*sync_body]
+            );
+        };
+        assert!(
+            !statements.is_empty(),
+            "expected synchronized body block to contain statements"
+        );
+
+        assert!(
+            body.locals.iter().any(|(_, local)| local.name == "y"),
+            "expected synchronized body local `y` to be lowered, locals: {:?}",
+            body.locals
+                .iter()
+                .map(|(_, l)| l.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        break;
+    }
+
+    assert!(
+        saw_synchronized,
+        "expected HIR body to contain a Synchronized statement"
+    );
 }
 
 #[test]
