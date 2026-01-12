@@ -37,6 +37,8 @@ fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     // Set both to behave deterministically on Windows/Linux.
     let _home = EnvVarGuard::set("HOME", home);
     let _userprofile = EnvVarGuard::set("USERPROFILE", home);
+    let maven_user_home = home.join(".m2");
+    let _maven_user_home = EnvVarGuard::set("MAVEN_USER_HOME", &maven_user_home);
 
     f()
 }
@@ -397,5 +399,49 @@ fn maven_config_repo_local_overrides_settings_xml() {
             }),
             "expected maven.config override (no jars under settings.xml repo). settings repo={repo_from_settings:?} (canonicalized to {repo_from_settings_canon:?}). Got: {jar_entries:?}"
         );
+    });
+}
+
+#[test]
+fn settings_xml_is_discovered_via_maven_user_home_env_var() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let maven_user_home = temp.path().join("maven-user-home");
+    let repo_from_settings = temp.path().join("repo-from-settings");
+    let workspace_root = temp.path().join("workspace");
+
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&maven_user_home).expect("create maven user home");
+    std::fs::create_dir_all(&repo_from_settings).expect("create repo");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+    // When `MAVEN_USER_HOME` is set, Maven reads user-level configuration (like `settings.xml`)
+    // from that directory instead of `${user.home}/.m2`.
+    std::fs::write(
+        maven_user_home.join("settings.xml"),
+        format!(
+            r#"<settings><localRepository>{}</localRepository></settings>"#,
+            repo_from_settings.to_string_lossy()
+        ),
+    )
+    .expect("write settings.xml");
+
+    write_pom_xml(&workspace_root);
+    touch_expected_jar(&repo_from_settings);
+
+    with_home_dir(&home, || {
+        let _maven_user_home = EnvVarGuard::set("MAVEN_USER_HOME", &maven_user_home);
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+
+        let jar_entries = cfg
+            .classpath
+            .iter()
+            .filter(|e| e.kind == ClasspathEntryKind::Jar)
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>();
+
+        let expected = expected_guava_jar(&repo_from_settings);
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
     });
 }

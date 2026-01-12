@@ -2076,7 +2076,8 @@ fn split_maven_config_args(contents: &str) -> Vec<String> {
 
 fn maven_repo_from_user_settings() -> Option<PathBuf> {
     let home = home_dir()?;
-    let path = home.join(".m2").join("settings.xml");
+    let user_home = maven_user_home_dir(&home);
+    let path = user_home.join("settings.xml");
     let contents = std::fs::read_to_string(&path).ok()?;
 
     let doc = roxmltree::Document::parse(&contents).ok()?;
@@ -2202,13 +2203,30 @@ fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
 }
 
 fn default_maven_repo() -> Option<PathBuf> {
-    Some(home_dir()?.join(".m2/repository"))
+    let home = home_dir()?;
+    Some(maven_user_home_dir(&home).join("repository"))
 }
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+fn maven_user_home_dir(home: &Path) -> PathBuf {
+    // Maven uses `$MAVEN_USER_HOME` to locate user-level configuration like `settings.xml` and the
+    // default `repository/` directory. When unset, it falls back to `${user.home}/.m2`.
+    //
+    // Treat relative paths as relative to the user's home directory, mirroring typical
+    // configuration expectations.
+    if let Some(value) = std::env::var_os("MAVEN_USER_HOME") {
+        let value = value.to_string_lossy();
+        if let Some(path) = resolve_maven_repo_path(value.as_ref(), home) {
+            return path;
+        }
+    }
+
+    home.join(".m2")
 }
 
 fn exists_as_jar(path: &Path) -> bool {
