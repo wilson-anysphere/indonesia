@@ -18,6 +18,57 @@
   :type '(repeat string)
   :group 'nova)
 
+;; --- Project root detection -------------------------------------------------
+;;
+;; By default, `eglot` (and often `lsp-mode`) uses Emacs' `project.el` to decide the workspace root.
+;; If a workspace is not in VCS, `project-current` may not find a project root automatically.
+;;
+;; This helper lets users opt into treating common Java build-system marker files as project roots
+;; so `nova-lsp` starts with the correct workspace root even for non-git checkouts.
+(defcustom nova-project-root-files
+  '(
+    ;; Maven
+    "pom.xml"
+    ;; Gradle (Groovy + Kotlin DSL)
+    "build.gradle"
+    "build.gradle.kts"
+    "settings.gradle"
+    "settings.gradle.kts"
+    ;; Bazel
+    "WORKSPACE"
+    "WORKSPACE.bazel"
+    "MODULE.bazel"
+    ;; Fallback for VCS roots.
+    ".git"
+    )
+  "Marker files used to infer a project root for Nova (via `project-find-functions`)."
+  :type '(repeat string)
+  :group 'nova)
+
+(defun nova--project-root (dir)
+  "Return the nearest ancestor of DIR containing a known Nova project root marker."
+  (catch 'found
+    (dolist (marker nova-project-root-files)
+      (let ((root (locate-dominating-file dir marker)))
+        (when root
+          (throw 'found (expand-file-name root)))))
+    nil))
+
+;;;###autoload
+(defun nova-project-root-setup ()
+  "Register build-system-based project root detection for Nova.
+
+This adds a `project-find-functions` entry that treats directories containing a marker from
+`nova-project-root-files` as a `transient` project."
+  (require 'project)
+  (add-hook 'project-find-functions
+            (lambda (dir)
+              (let ((root (nova--project-root dir)))
+                (when root
+                  (cons 'transient root))))
+            ;; Append so VCS detection (if available) wins first.
+            t))
+
 ;;;###autoload
 (defun nova-eglot-setup ()
   "Configure `eglot` to use `nova-lsp` for Java."

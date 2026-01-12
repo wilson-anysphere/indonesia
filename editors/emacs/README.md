@@ -20,6 +20,19 @@ The repo includes a copy/paste-ready config file at [`editors/emacs/nova.el`](./
 (require 'nova) ;; or (load-file "/path/to/editors/emacs/nova.el")
 ```
 
+## Project root detection (optional, recommended for non-git workspaces)
+
+Emacs' built-in project system (`project.el`) is often VCS-based. If you open a Maven/Gradle/Bazel
+workspace that is not checked into git (or if you're opening a nested file), `eglot`/`lsp-mode` may
+start `nova-lsp` with the wrong workspace root.
+
+The template provides an opt-in helper that treats common build-system marker files as project
+roots (`pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
+
+```elisp
+(nova-project-root-setup)
+```
+
 ## Option A: `eglot` (built-in in Emacs 29+)
 
 ```elisp
