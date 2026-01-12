@@ -686,6 +686,7 @@ pub fn extract_variable(
     };
 
     check_extract_variable_name_conflicts(&params.file, &stmt, insert_pos, &name)?;
+    check_extract_variable_field_shadowing(&stmt, &params.file, &name, expr_range)?;
 
     let ty = if params.use_var {
         "var".to_string()
@@ -2015,6 +2016,103 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     )
 }
 
+fn check_extract_variable_field_shadowing(
+    stmt: &ast::Statement,
+    file: &FileId,
+    name: &str,
+    replacement_range: TextRange,
+) -> Result<(), RefactorError> {
+    if !enclosing_type_declares_field_named(stmt.syntax(), name) {
+        return Ok(());
+    }
+
+    let stmt_start = syntax_range(stmt.syntax()).start;
+    let scope = stmt
+        .syntax()
+        .parent()
+        .and_then(ast::Block::cast)
+        .map(|b| b.syntax().clone())
+        .or_else(|| {
+            stmt.syntax()
+                .parent()
+                .and_then(ast::SwitchBlock::cast)
+                .map(|b| b.syntax().clone())
+        });
+
+    let Some(scope) = scope else {
+        // If we can't determine the scope, fall back to allowing extraction. Other validation
+        // (including name conflicts) will reject unsupported contexts.
+        return Ok(());
+    };
+
+    for name_expr in scope.descendants().filter_map(ast::NameExpression::cast) {
+        let range = syntax_range(name_expr.syntax());
+        if range.start < stmt_start {
+            continue;
+        }
+        if ranges_overlap(range, replacement_range) {
+            continue;
+        }
+        let Some(tok) = ast::support::ident_token(name_expr.syntax()) else {
+            continue;
+        };
+        if tok.text() != name {
+            continue;
+        }
+
+        return Err(RefactorError::Conflicts(vec![Conflict::FieldShadowing {
+            file: file.clone(),
+            name: name.to_string(),
+            usage_range: range,
+        }]));
+    }
+
+    Ok(())
+}
+
+fn enclosing_type_declares_field_named(node: &nova_syntax::SyntaxNode, name: &str) -> bool {
+    for anc in node.ancestors() {
+        if let Some(body) = ast::ClassBody::cast(anc.clone()) {
+            return members_declare_field_named(body.members(), name);
+        }
+        if let Some(body) = ast::InterfaceBody::cast(anc.clone()) {
+            return members_declare_field_named(body.members(), name);
+        }
+        if let Some(body) = ast::EnumBody::cast(anc.clone()) {
+            return members_declare_field_named(body.members(), name);
+        }
+        if let Some(body) = ast::RecordBody::cast(anc.clone()) {
+            return members_declare_field_named(body.members(), name);
+        }
+        if let Some(body) = ast::AnnotationBody::cast(anc.clone()) {
+            return members_declare_field_named(body.members(), name);
+        }
+    }
+    false
+}
+
+fn members_declare_field_named(
+    members: impl Iterator<Item = ast::ClassMember>,
+    name: &str,
+) -> bool {
+    for member in members {
+        let ast::ClassMember::FieldDeclaration(field) = member else {
+            continue;
+        };
+        let Some(list) = field.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            let Some(tok) = decl.name_token() else {
+                continue;
+            };
+            if tok.text() == name {
+                return true;
+            }
+        }
+    }
+    false
+}
 fn check_extract_variable_name_conflicts(
     file: &FileId,
     stmt: &ast::Statement,

@@ -70,6 +70,13 @@ pub enum Conflict {
         name: String,
         shadowed_symbol: SymbolId,
     },
+    /// Introducing a new local would shadow an existing field with the same name,
+    /// changing later unqualified field accesses (e.g. `value` vs `this.value`).
+    FieldShadowing {
+        file: FileId,
+        name: String,
+        usage_range: TextRange,
+    },
     VisibilityLoss {
         file: FileId,
         usage_range: TextRange,

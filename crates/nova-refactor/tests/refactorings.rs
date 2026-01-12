@@ -550,6 +550,88 @@ fn extract_variable_replace_all_does_not_replace_occurrences_outside_switch_bloc
 }
 
 #[test]
+fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m() {
+    int x = /*select*/1 + 2/*end*/;
+    System.out.println(value);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FieldShadowing { name, .. } if name == "value")),
+        "expected FieldShadowing conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualified() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m() {
+    int x = /*select*/1 + 2/*end*/;
+    System.out.println(this.value);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int value = 0;
+
+  void m() {
+    var value = 1 + 2;
+    int x = value;
+    System.out.println(this.value);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_instanceof_pattern_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
