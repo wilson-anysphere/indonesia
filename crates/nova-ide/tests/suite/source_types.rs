@@ -117,3 +117,39 @@ class C {}
 
     assert!(store.class_id("p.A").is_none());
 }
+
+#[test]
+fn source_type_provider_preserves_static_field_and_method_modifiers() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Statics.java"),
+        r#"
+package p;
+class Statics {
+  static final int CONST = 1;
+  static int util() { return 1; }
+}
+"#,
+    );
+
+    let class_id = store.class_id("p.Statics").expect("class should be registered");
+    let class_def = store.class(class_id).expect("class def should exist");
+
+    let field = class_def
+        .fields
+        .iter()
+        .find(|f| f.name == "CONST")
+        .expect("field CONST should exist");
+    assert!(field.is_static);
+    assert!(field.is_final);
+
+    let method = class_def
+        .methods
+        .iter()
+        .find(|m| m.name == "util")
+        .expect("method util should exist");
+    assert!(method.is_static);
+}

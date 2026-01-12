@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use nova_core::FileId;
 use nova_hir::ast_id::AstIdMap;
-use nova_hir::item_tree::{Item, ItemTree, Member};
+use nova_hir::item_tree::{Item, ItemTree, Member, Modifiers};
 use nova_hir::lowering::lower_item_tree;
 use nova_types::{
     ClassDef, ClassKind, ConstructorDef, FieldDef, MethodDef, PrimitiveType, Type, TypeEnv,
@@ -155,15 +155,22 @@ fn collect_class_defs(
         match *member {
             Member::Field(id) => {
                 let data = tree.field(id);
+                let is_static = data.modifiers.raw & Modifiers::STATIC != 0;
+                let is_final = data.modifiers.raw & Modifiers::FINAL != 0;
                 fields.push(FieldDef {
                     name: data.name.clone(),
                     ty: parse_type_ref(ctx, store, &data.ty),
-                    is_static: false,
-                    is_final: false,
+                    is_static,
+                    is_final,
                 });
             }
             Member::Method(id) => {
                 let data = tree.method(id);
+                let is_static = data.modifiers.raw & Modifiers::STATIC != 0;
+                // Methods without bodies are usually abstract, but `native` methods are also
+                // declared without bodies.
+                let is_abstract = data.modifiers.raw & Modifiers::ABSTRACT != 0
+                    || (data.body.is_none() && data.modifiers.raw & Modifiers::NATIVE == 0);
                 let mut params = Vec::with_capacity(data.params.len());
                 let mut is_varargs = false;
                 for param in &data.params {
@@ -177,13 +184,14 @@ fn collect_class_defs(
                     type_params: vec![],
                     params,
                     return_type: parse_type_ref(ctx, store, &data.return_ty),
-                    is_static: false,
+                    is_static,
                     is_varargs,
-                    is_abstract: data.body.is_none(),
+                    is_abstract,
                 });
             }
             Member::Constructor(id) => {
                 let data = tree.constructor(id);
+                let is_accessible = data.modifiers.raw & Modifiers::PRIVATE == 0;
                 let mut params = Vec::with_capacity(data.params.len());
                 let mut is_varargs = false;
                 for param in &data.params {
@@ -195,7 +203,7 @@ fn collect_class_defs(
                 constructors.push(ConstructorDef {
                     params,
                     is_varargs,
-                    is_accessible: true,
+                    is_accessible,
                 });
             }
             Member::Initializer(_) => {}
