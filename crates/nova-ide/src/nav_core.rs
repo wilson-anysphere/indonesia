@@ -374,12 +374,22 @@ where
         return Vec::new();
     };
 
-    let method = type_info.def().methods.iter().find(|m| m.name == method_name);
-    let is_abstract = type_info.def().kind == TypeKind::Interface
-        || method.is_some_and(|m| m.is_abstract || m.body_span.is_none());
-    if !is_abstract {
+    // A final type cannot have subtypes, so it cannot have overrides.
+    if type_info.def().modifiers.is_final {
         return Vec::new();
     }
+
+    // We treat "implementations" on a method declaration as *overrides* in subtypes.
+    // This applies to abstract/interface methods as well as concrete methods (including
+    // interface `default` methods).
+    //
+    // Note: We intentionally do not include the base method itself in the results.
+    let base_span = type_info
+        .def()
+        .methods
+        .iter()
+        .find(|m| m.name == method_name)
+        .map(|m| (type_info.uri().clone(), m.name_span));
 
     let mut out = Vec::new();
     for subtype in inheritance.all_subtypes(ty_name) {
@@ -388,6 +398,12 @@ where
         else {
             continue;
         };
+        if base_span
+            .as_ref()
+            .is_some_and(|(base_uri, base_span)| *base_uri == uri && base_span.start == span.start)
+        {
+            continue;
+        }
         let Some(parsed) = file(&uri) else {
             continue;
         };

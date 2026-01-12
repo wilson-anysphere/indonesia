@@ -143,6 +143,54 @@ class C implements I1 {
 }
 
 #[test]
+fn go_to_implementation_on_concrete_method_returns_overriding_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base {
+    void $0foo() {}
+}
+//- /Sub.java
+class Sub extends Base {
+    void $1foo() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_implementation_on_interface_default_method_returns_overriding_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I {
+    default void $0bar() {}
+}
+//- /C.java
+class C implements I {
+    public void $1bar() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_receiverless_call_returns_method_definition() {
     let fixture = FileIdFixture::parse(
         r#"
