@@ -5450,22 +5450,6 @@ fn collect_switch_contexts(
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
             }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(expr) = message {
-                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-                }
-            }
             hir::Stmt::If {
                 condition,
                 then_branch,
@@ -5606,184 +5590,8 @@ fn collect_switch_contexts(
                     );
                 }
             }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(expr) = message {
-                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(expr) = message {
-                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
-            }
             hir::Stmt::Throw { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-            }
-            hir::Stmt::Assert {
-                condition, message, ..
-            } => {
-                walk_expr(
-                    body,
-                    *condition,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                if let Some(message) = message {
-                    walk_expr(
-                        body,
-                        *message,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
-                }
             }
             hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } | hir::Stmt::Empty { .. } => {}
         }
@@ -7225,32 +7033,6 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
-        Stmt::Assert(stmt) => {
-            record_lightweight_expr(
-                file,
-                text,
-                &stmt.condition,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            if let Some(message) = &stmt.message {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    message,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Empty(_) => {}
     }
 }
@@ -7345,30 +7127,6 @@ fn record_lightweight_expr(
                 );
             }
         }
-        Expr::Cast(expr) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(expr.ty.range.start, expr.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &expr.expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
         Expr::Call(call) => {
             record_lightweight_expr(
                 file,
@@ -7422,30 +7180,6 @@ fn record_lightweight_expr(
                 file,
                 text,
                 &access.index,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
-        Expr::Cast(cast) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(cast.ty.range.start, cast.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &cast.expr,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7596,30 +7330,6 @@ fn record_lightweight_expr(
                 spans,
             ),
         },
-        Expr::Cast(expr) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(expr.ty.range.start, expr.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &expr.expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
         Expr::MethodReference(expr) => record_lightweight_expr(
             file,
             text,
