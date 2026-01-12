@@ -1523,6 +1523,9 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::process::ExitStatus;
+    use std::sync::Mutex;
 
     #[test]
     fn collects_poms_for_multi_module_fixture() {
@@ -1765,5 +1768,137 @@ mod tests {
         );
 
         assert_eq!(module_path, vec![named, automatic]);
+    }
+
+    #[derive(Debug)]
+    struct StaticMavenRunner {
+        invocations: Mutex<Vec<Vec<String>>>,
+        outputs_by_expression: HashMap<String, String>,
+    }
+
+    impl StaticMavenRunner {
+        fn new(outputs_by_expression: HashMap<String, String>) -> Self {
+            Self {
+                invocations: Mutex::new(Vec::new()),
+                outputs_by_expression,
+            }
+        }
+
+        fn invocations(&self) -> Vec<Vec<String>> {
+            self.invocations
+                .lock()
+                .expect("lock poisoned")
+                .clone()
+        }
+    }
+
+    fn exit_status(code: i32) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatus::from_raw(code << 8)
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatus::from_raw(code as u32)
+        }
+    }
+
+    impl CommandRunner for StaticMavenRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &Path,
+            args: &[String],
+        ) -> std::io::Result<CommandOutput> {
+            self.invocations
+                .lock()
+                .expect("lock poisoned")
+                .push(args.to_vec());
+
+            let expression = args
+                .iter()
+                .find_map(|arg| arg.strip_prefix("-Dexpression="))
+                .unwrap_or("");
+            let stdout = self
+                .outputs_by_expression
+                .get(expression)
+                .cloned()
+                .unwrap_or_else(|| "null\n".to_string());
+
+            Ok(CommandOutput {
+                status: exit_status(0),
+                stdout,
+                stderr: String::new(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn java_compile_config_infers_module_path_when_maven_reports_module_path_elements() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        // Minimal POM so we can fingerprint and cache.
+        std::fs::write(
+            project_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        // Create conventional source roots, but do NOT create `module-info.java` so the primary
+        // JPMS heuristics don't trigger.
+        std::fs::create_dir_all(project_root.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(project_root.join("src/test/java")).unwrap();
+
+        // Create an output dir that *looks* like a named module, and ensure we still exclude it
+        // from the module-path.
+        let out_dir = project_root.join("target/classes");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join("module-info.class"), b"cafebabe").unwrap();
+
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+        );
+        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
+
+        // JPMS signal: Maven exposes `*ModulePathElements` even though we have no module-info.java
+        // and no compiler flags.
+        outputs.insert(
+            "project.compileModulePathElements".to_string(),
+            format!("[{}]\n", named.display()),
+        );
+        outputs.insert("project.testCompileModulePathElements".to_string(), "[]\n".to_string());
+
+        let runner = Arc::new(StaticMavenRunner::new(outputs));
+        let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+
+        assert_eq!(cfg.module_path, vec![named, automatic]);
+        assert!(!cfg.module_path.contains(&out_dir));
+
+        // Sanity check: we evaluated `compileModulePathElements` (since module-info and compiler
+        // args didn't indicate JPMS).
+        assert!(runner.invocations().iter().any(|args| args
+            .iter()
+            .any(|a| a == "-Dexpression=project.compileModulePathElements")));
     }
 }
