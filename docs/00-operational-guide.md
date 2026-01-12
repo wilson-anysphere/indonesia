@@ -83,11 +83,11 @@ cargo check --all-features    # Unbounded work
   - Consider further scoping with `--test <name>`, `--lib`, or `--bin <name>`
 
 ```bash
- # CORRECT:
- bash scripts/cargo_agent.sh build --release
- bash scripts/cargo_agent.sh test -p nova-core --lib
- bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
- bash scripts/cargo_agent.sh check -p nova-syntax
+# CORRECT:
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+bash scripts/cargo_agent.sh check -p nova-syntax
 
 # WRONG — WILL DESTROY HOST:
 cargo test
@@ -128,7 +128,7 @@ High-throughput cargo wrapper for multi-agent hosts.
 ```bash
 bash scripts/cargo_agent.sh build --release
 bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh check --quiet
+bash scripts/cargo_agent.sh check -p nova-syntax --quiet
 ```
 
 Features:
@@ -142,6 +142,7 @@ Environment variables:
 - `NOVA_CARGO_SLOTS`: Max concurrent cargo commands (default: auto)
 - `NOVA_CARGO_JOBS`: Force `-j` value (default: cargo's default)
 - `NOVA_RUST_TEST_THREADS`: Test thread cap (default: `min(nproc, 32)`)
+- `NOVA_CARGO_ALLOW_UNSCOPED_TEST`: Set to `1` to allow unscoped `cargo test` (not recommended; prefer `-p/--package` or `--manifest-path`)
 
 ---
 
