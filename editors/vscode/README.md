@@ -265,7 +265,7 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 
 ### Server
 
-- `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder.
+- `nova.server.path` (string | null): override the `nova-lsp` binary path for a workspace folder (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder.
 - `nova.server.args` (string[]): arguments passed to `nova-lsp` (default: `["--stdio"]`).
 
 ### Download
@@ -289,7 +289,7 @@ If you hit GitHub rate limits (or need auth for GitHub Enterprise Server), you c
 - `nova.lsp.configPath` (string | null): path to a Nova TOML config file. The extension passes this to `nova-lsp` via:
   - `--config <path>` (for future compatibility), and
   - `NOVA_CONFIG_PATH=<path>` (works with current `nova-config` behaviour).
-  The extension expands `~` and `${workspaceFolder}`, and resolves relative paths against the target workspace folder.
+  The extension expands `~` and `${workspaceFolder}`, and resolves relative paths against the target workspace folder (for that workspace folder).
 - `nova.lsp.extraArgs` (string[]): additional CLI arguments appended to `nova-lsp`.
 
 Changing these settings requires restarting the language server; the extension prompts you automatically.
@@ -343,7 +343,7 @@ the language server.
 
 ### Debugging
 
-- `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
+- `nova.dap.path` (string | null): override the `nova-dap` binary path for a workspace folder. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
 - `nova.debug.adapterPath` (string | null): deprecated alias for `nova.dap.path`.
 - `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
