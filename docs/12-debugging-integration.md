@@ -47,6 +47,8 @@ also listen on TCP with `--listen <addr>` (single incoming connection):
 - `nova-dap --listen 127.0.0.1:4711` (fixed port)
 - `nova-dap --listen 127.0.0.1:0` (port `0` = ask the OS to pick a free port)
 
+Note: `--listen` expects a full `host:port` socket address (`:0` is not supported).
+
 When `--listen` is used, `nova-dap` prints the bound address to stderr (for
 example: `listening on 127.0.0.1:4711`), which is useful for tools that bind to
 port `0` and need to discover the chosen port.
