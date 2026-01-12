@@ -1255,7 +1255,6 @@ fn fuzzy_rank_workspace_symbols_sharded(
     }
 
     let (results, stats) = searcher.search_with_stats_cached(query, limit);
-
     let mut ranked = Vec::new();
     for res in results {
         let name = res.symbol.name;
@@ -1271,6 +1270,7 @@ fn fuzzy_rank_workspace_symbols_sharded(
                 .then_with(|| a.line.cmp(&b.line))
                 .then_with(|| a.column.cmp(&b.column))
         });
+
         for loc in locations {
             ranked.push(WorkspaceSymbol {
                 name: name.clone(),

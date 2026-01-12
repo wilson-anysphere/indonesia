@@ -49,11 +49,8 @@ pub(crate) fn load_maven_project(
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
-    let workspace_modules = build_workspace_module_index(
-        root,
-        include_root_module,
-        &discovered_modules,
-    );
+    let workspace_modules =
+        build_workspace_module_index(root, include_root_module, &discovered_modules);
 
     // Workspace-level Java config: take the maximum across modules so we don't
     // under-report language features used anywhere in the workspace.
@@ -253,11 +250,8 @@ pub(crate) fn load_maven_workspace_model(
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
-    let workspace_modules = build_workspace_module_index(
-        root,
-        include_root_module,
-        &discovered_modules,
-    );
+    let workspace_modules =
+        build_workspace_module_index(root, include_root_module, &discovered_modules);
 
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
@@ -965,7 +959,12 @@ impl MavenResolver {
         self.effective_pom_from_path_inner(pom_path, &mut visiting)
     }
 
-    fn effective_pom_from_gav(&mut self, group_id: &str, artifact_id: &str, version: &str) -> Option<Arc<EffectivePom>> {
+    fn effective_pom_from_gav(
+        &mut self,
+        group_id: &str,
+        artifact_id: &str,
+        version: &str,
+    ) -> Option<Arc<EffectivePom>> {
         let mut visiting = HashSet::new();
         self.effective_pom_from_gav_inner(group_id, artifact_id, version, &mut visiting)
     }
@@ -1118,7 +1117,9 @@ impl MavenResolver {
                 continue;
             }
 
-            let Some(effective) = self.effective_pom_from_gav(&dep.group_id, &dep.artifact_id, version) else {
+            let Some(effective) =
+                self.effective_pom_from_gav(&dep.group_id, &dep.artifact_id, version)
+            else {
                 continue;
             };
 
@@ -1295,13 +1296,14 @@ fn parse_profile(profile_node: roxmltree::Node<'_, '_>) -> RawProfile {
         .map(|n| parse_dependencies(&n))
         .unwrap_or_default();
 
-    let dependency_management = if let Some(dep_mgmt) = child_element(&profile_node, "dependencyManagement") {
-        child_element(&dep_mgmt, "dependencies")
-            .map(|deps| parse_dependencies(&deps))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let dependency_management =
+        if let Some(dep_mgmt) = child_element(&profile_node, "dependencyManagement") {
+            child_element(&dep_mgmt, "dependencies")
+                .map(|deps| parse_dependencies(&deps))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
     RawProfile {
         active_by_default,

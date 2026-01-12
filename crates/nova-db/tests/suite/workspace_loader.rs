@@ -150,6 +150,62 @@ fn loads_gradle_multi_module_workspace_into_salsa_inputs() {
 }
 
 #[test]
+fn jpms_project_config_includes_module_graph_entries_from_module_path() {
+    let fixture = fixture_root("jpms-maven-transitive");
+    assert!(fixture.is_dir(), "fixture missing: {}", fixture.display());
+
+    // WorkspaceLoader uses `load_workspace_model_with_workspace_config` which does not let tests
+    // override the Maven repo path directly. Copy the fixture into a temp directory and seed a
+    // minimal local Maven repo via `.mvn/maven.config` so dependency jars exist and `module_path`
+    // is populated deterministically.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("jpms-maven-transitive");
+    copy_dir_all(&fixture, &root);
+
+    let mvn_dir = root.join(".mvn");
+    fs::create_dir_all(&mvn_dir).expect("mkdir .mvn");
+    fs::write(mvn_dir.join("maven.config"), "-Dmaven.repo.local=repo")
+        .expect("write maven.config");
+
+    let dep_jar = root.join("repo/com/example/dep/1.0/dep-1.0.jar");
+    fs::create_dir_all(dep_jar.parent().expect("jar parent")).expect("mkdir repo dirs");
+    fs::write(&dep_jar, b"").expect("write fake jar");
+
+    let db = Database::new();
+    let mut loader = WorkspaceLoader::new();
+    let mut alloc = file_id_allocator();
+    loader.load(&db, &root, &mut alloc).expect("load workspace");
+
+    let app_project = loader
+        .project_id_for_module("maven:com.example:app")
+        .expect("app project");
+
+    db.with_snapshot(|snap| {
+        let cfg = snap.project_config(app_project);
+        assert!(
+            !cfg.jpms_modules.is_empty(),
+            "expected JPMS modules to be discovered"
+        );
+        assert!(
+            !cfg.module_path.is_empty(),
+            "expected module_path entries to be populated for JPMS workspaces"
+        );
+
+        let graph = cfg.module_graph().expect("module graph");
+        assert!(
+            graph.iter().count() > cfg.jpms_modules.len(),
+            "expected module graph to include modules derived from module_path entries"
+        );
+
+        let roots = cfg.module_roots().expect("module roots");
+        assert!(
+            roots.len() > cfg.jpms_modules.len(),
+            "expected module_roots to include module-path entry roots"
+        );
+    });
+}
+
+#[test]
 fn reload_preserves_stable_ids_and_reuses_indexes_when_unchanged() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("maven-multi");

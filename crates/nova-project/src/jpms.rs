@@ -75,7 +75,7 @@ pub(crate) fn classify_dependency_entries(
 /// The resulting graph contains:
 /// - JPMS modules discovered in the workspace (from `module-info.java`)
 /// - Named or automatic modules discovered from module-path entries
-pub(crate) fn build_jpms_workspace(
+pub fn build_jpms_workspace(
     jpms_modules: &[JpmsModuleRoot],
     module_path: &[ClasspathEntry],
 ) -> Option<JpmsWorkspace> {

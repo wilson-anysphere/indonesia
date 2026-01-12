@@ -7,8 +7,8 @@ use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_core::ClassId;
 use nova_jdk::JdkIndex;
 use nova_project::{
-    JavaConfig, JavaLanguageLevel, JpmsModuleRoot, JpmsWorkspace, Module, ProjectConfig,
-    SourceRoot, WorkspaceModuleConfig, WorkspaceProjectModel,
+    JavaConfig, JavaLanguageLevel, JpmsModuleRoot, Module, ProjectConfig, SourceRoot,
+    WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -456,20 +456,10 @@ fn project_config_from_workspace_module(
         .collect();
     jpms_modules.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let jpms_workspace = if jpms_modules.is_empty() {
-        None
-    } else {
-        let mut graph = nova_modules::ModuleGraph::new();
-        let mut module_roots = BTreeMap::new();
-        for m in &jpms_modules {
-            graph.insert(m.info.clone());
-            module_roots.insert(m.name.clone(), m.root.clone());
-        }
-        Some(JpmsWorkspace {
-            graph,
-            module_roots,
-        })
-    };
+    // Build a JPMS module graph that also includes named/automatic modules derived from
+    // module-path entries. This matches legacy `load_project` behavior.
+    let jpms_workspace =
+        nova_project::jpms::build_jpms_workspace(&jpms_modules, &module.module_path);
 
     ProjectConfig {
         workspace_root: workspace.workspace_root.clone(),

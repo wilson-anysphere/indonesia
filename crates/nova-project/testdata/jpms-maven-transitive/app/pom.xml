@@ -7,5 +7,12 @@
   </parent>
 
   <artifactId>app</artifactId>
-</project>
 
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>

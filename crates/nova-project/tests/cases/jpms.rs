@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use nova_modules::ModuleName;
-use nova_project::{load_project_with_options, LoadOptions};
+use nova_project::{
+    load_project_with_options, load_workspace_model_with_options, ClasspathEntryKind, LoadOptions,
+};
 use tempfile::tempdir;
 
 fn testdata_path(rel: &str) -> PathBuf {
@@ -78,8 +80,7 @@ fn parses_module_info_and_builds_workspace_graph() {
         "app should not read extra because lib does not re-export readability"
     );
 
-    let config2 =
-        load_project_with_options(&root, &options).expect("reload jpms maven workspace");
+    let config2 = load_project_with_options(&root, &options).expect("reload jpms maven workspace");
     assert_eq!(config, config2);
 }
 
@@ -91,8 +92,8 @@ fn module_info_parse_errors_are_best_effort() {
         maven_repo: Some(repo_dir.path().to_path_buf()),
         ..LoadOptions::default()
     };
-    let config =
-        load_project_with_options(&root, &options).expect("load workspace with invalid module-info");
+    let config = load_project_with_options(&root, &options)
+        .expect("load workspace with invalid module-info");
 
     let invalid = ModuleName::new("com.example.invalid");
     let module = config
@@ -101,4 +102,51 @@ fn module_info_parse_errors_are_best_effort() {
         .find(|m| m.name == invalid)
         .expect("expected module name to be recovered from invalid module-info");
     assert_eq!(module.info.name, invalid);
+}
+
+#[test]
+fn workspace_model_populates_module_path_when_jpms_is_enabled() {
+    let root = testdata_path("jpms-maven-transitive");
+    let repo_dir = tempdir().expect("tempdir");
+    // Seed a minimal local Maven repo so the workspace model includes at least one
+    // dependency jar entry. The JPMS fixture declares `com.example:dep:1.0`.
+    let dep_jar = repo_dir
+        .path()
+        .join("com/example/dep/1.0/dep-1.0.jar");
+    std::fs::create_dir_all(dep_jar.parent().expect("jar parent"))
+        .expect("create maven repo dirs");
+    std::fs::write(&dep_jar, b"").expect("write fake jar");
+
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(&root, &options)
+        .expect("load jpms maven workspace model");
+
+    assert!(
+        !model.jpms_modules.is_empty(),
+        "fixture should be detected as JPMS-enabled"
+    );
+
+    let module_with_module_path = model
+        .modules
+        .iter()
+        .find(|m| !m.module_path.is_empty())
+        .expect("expected at least one module with non-empty module_path");
+
+    assert!(
+        module_with_module_path
+            .module_path
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar),
+        "expected at least one jar to be classified onto module_path"
+    );
+    assert!(
+        module_with_module_path
+            .classpath
+            .iter()
+            .all(|e| e.kind != ClasspathEntryKind::Jar),
+        "dependency jars should be moved off the classpath when JPMS is enabled"
+    );
 }

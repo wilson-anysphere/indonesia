@@ -11,7 +11,7 @@ mod build_systems;
 mod discover;
 mod generated;
 mod gradle;
-mod jpms;
+pub mod jpms;
 mod maven;
 mod model;
 pub mod package;

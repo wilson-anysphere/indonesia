@@ -888,7 +888,6 @@ pub(crate) fn load_gradle_workspace_model(
     }
     sort_dedup_classpath(&mut override_entries);
 
-    let mut module_configs = module_configs;
     for module in &mut module_configs {
         let output_dir_paths: BTreeSet<_> =
             module.output_dirs.iter().map(|o| o.path.clone()).collect();
