@@ -925,67 +925,6 @@ fn file_name(path: &Path) -> &str {
     name.rsplit('\\').next().unwrap_or(name)
 }
 
-fn workspace_root(start: &Path) -> Option<PathBuf> {
-    let start_dir = if start.is_file() {
-        start.parent()?
-    } else {
-        start
-    };
-
-    // If the caller explicitly provided a directory that already looks like a self-contained
-    // "simple project" root, prefer it over ancestor build markers. This prevents unrelated files
-    // in shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
-    if start_dir.join("src").is_dir()
-        && !start_dir.join("pom.xml").is_file()
-        && !has_gradle_settings(start_dir)
-        && !has_gradle_build(start_dir)
-        && !is_bazel_workspace(start_dir)
-    {
-        return Some(start_dir.to_path_buf());
-    }
-
-    let mut simple_root: Option<PathBuf> = None;
-    let mut dir = start_dir;
-    loop {
-        if is_bazel_workspace(dir)
-            || dir.join("pom.xml").is_file()
-            || has_gradle_settings(dir)
-            || has_gradle_build(dir)
-        {
-            return Some(dir.to_path_buf());
-        }
-
-        if simple_root.is_none() && dir.join("src").is_dir() {
-            simple_root = Some(dir.to_path_buf());
-        }
-
-        let Some(parent) = dir.parent() else {
-            break;
-        };
-        dir = parent;
-    }
-
-    simple_root
-}
-
-fn is_bazel_workspace(root: &Path) -> bool {
-    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
-        .iter()
-        .any(|marker| root.join(marker).is_file())
-}
-
-fn has_gradle_settings(root: &Path) -> bool {
-    ["settings.gradle", "settings.gradle.kts"]
-        .iter()
-        .any(|marker| root.join(marker).is_file())
-}
-
-fn has_gradle_build(root: &Path) -> bool {
-    ["build.gradle", "build.gradle.kts"]
-        .iter()
-        .any(|marker| root.join(marker).is_file())
-}
-
 fn add_application_config_files_from_disk(index: &mut SpringWorkspaceIndex, project_root: &Path) {
     const MAX_FILES: usize = 128;
 

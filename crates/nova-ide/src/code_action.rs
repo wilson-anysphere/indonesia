@@ -3,7 +3,6 @@ use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
     Uri, WorkspaceEdit,
 };
-use crate::quick_fixes::is_java_identifier;
 use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
 use nova_jdk::JdkIndex;
 use nova_refactor::extract_method::{
@@ -16,8 +15,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-
-use crate::quick_fixes::is_java_identifier;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractMethodCommandArgs {
