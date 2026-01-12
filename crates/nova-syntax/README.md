@@ -14,16 +14,16 @@ The Java parser is tested using a fixture-driven golden corpus under
   - `*.errors` contains canonicalized parse errors (`line:col: message`)
 
 The golden corpus test is the `#[test] fn golden_corpus()` test (defined in
-`crates/nova-syntax/tests/suite/golden_corpus.rs`) and is compiled into the `javac_corpus`
-integration test binary (`crates/nova-syntax/tests/javac_corpus.rs`).
+`crates/nova-syntax/tests/suite/golden_corpus.rs`) and is compiled into the `harness`
+integration test binary (`crates/nova-syntax/tests/harness.rs`).
 
 There is **no** standalone integration test target named `golden_corpus`, so you must run it via
-`--test javac_corpus` (optionally filtering by test name).
+`--test harness` (optionally filtering by test name).
 
-Run the full `nova-syntax` integration test suite (`javac_corpus`):
+Run the full `nova-syntax` integration test suite (`harness`):
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 ```
 
 Run just the golden corpus test (test-name filter):
