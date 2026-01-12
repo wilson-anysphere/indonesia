@@ -224,3 +224,4 @@ public interface TestMapper {
     let expected_span = Span::new(start, start + "TestMapper".len());
     assert_eq!(diag.span, Some(expected_span));
 }
+
