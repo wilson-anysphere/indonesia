@@ -16,7 +16,6 @@ import { registerNovaProjectExplorer } from './projectExplorer';
 import { ProjectModelCache } from './projectModelCache';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { registerNovaServerCommands, type NovaServerCommandHandlers } from './serverCommands';
-import { NovaLanguageClient } from './novaLanguageClient';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
   formatUnsupportedNovaMethodMessage,
@@ -774,7 +773,7 @@ export async function activate(context: vscode.ExtensionContext) {
       args: launchConfig.args,
       options: { env: launchConfig.env },
     };
-    const languageClient = new NovaLanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
+    const languageClient = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     client = languageClient;
     projectModelCache.clear();
     // vscode-languageclient v9+ starts asynchronously.
