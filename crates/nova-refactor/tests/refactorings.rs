@@ -181,6 +181,43 @@ fn rename_for_init_variable_does_not_conflict_with_later_block_local() {
 }
 
 #[test]
+fn rename_for_init_multi_declarator_variable() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    for (int a = 1, b = 2; a < b; a++) {
+      System.out.println(b);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("b =").unwrap();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at b");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "c".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    for (int a = 1, c = 2; a < c; a++) {
+      System.out.println(c);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_generates_valid_edit() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

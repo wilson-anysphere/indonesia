@@ -1729,16 +1729,19 @@ impl Lowerer {
         })
     }
 
-    fn lower_local_var_decl_in_range(
+    fn lower_local_var_decls_in_range(
         &self,
         node: &SyntaxNode,
         range_end: usize,
-    ) -> Option<ast::LocalVarStmt> {
+    ) -> Vec<ast::LocalVarStmt> {
         let (modifiers, annotations) = self.lower_decl_modifiers(node);
 
         let ty_node = node.descendants().find(|child| {
             child.kind() == SyntaxKind::Type && self.spans.map_node(child).end <= range_end
-        })?;
+        });
+        let Some(ty_node) = ty_node else {
+            return Vec::new();
+        };
         let ty = self.lower_type_ref(&ty_node);
         let ty_start = ty.range.start;
 
@@ -1746,47 +1749,56 @@ impl Lowerer {
             child.kind() == SyntaxKind::VariableDeclaratorList
                 && self.spans.map_node(child).end <= range_end
         });
-        let declarator = declarator_list
-            .as_ref()
-            .and_then(|list| {
-                list.children()
-                    .find(|child| child.kind() == SyntaxKind::VariableDeclarator)
-            })
-            .or_else(|| {
-                node.descendants().find(|child| {
+
+        let declarators: Vec<_> = if let Some(list) = declarator_list {
+            list.children()
+                .filter(|child| child.kind() == SyntaxKind::VariableDeclarator)
+                .collect()
+        } else {
+            node.descendants()
+                .filter(|child| {
                     child.kind() == SyntaxKind::VariableDeclarator
                         && self.spans.map_node(child).end <= range_end
                 })
-            })?;
+                .collect()
+        };
+        if declarators.is_empty() {
+            return Vec::new();
+        }
 
-        let name_token = declarator
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .find(|tok| tok.kind().is_identifier_like());
-        let name = name_token
-            .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
-        let name_range = name_token
-            .as_ref()
-            .map(|tok| self.spans.map_token(tok))
-            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+        let mut out = Vec::with_capacity(declarators.len());
+        for declarator in declarators {
+            let name_token = declarator
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|tok| tok.kind().is_identifier_like());
+            let name = name_token
+                .as_ref()
+                .map(|tok| tok.text().to_string())
+                .unwrap_or_default();
+            let name_range = name_token
+                .as_ref()
+                .map(|tok| self.spans.map_token(tok))
+                .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
 
-        let initializer = declarator
-            .children()
-            .find(|child| is_expression_kind(child.kind()))
-            .map(|expr| self.lower_expr(&expr));
+            let initializer = declarator
+                .children()
+                .find(|child| is_expression_kind(child.kind()))
+                .map(|expr| self.lower_expr(&expr));
 
-        let end = self.spans.map_node(&declarator).end;
-        Some(ast::LocalVarStmt {
-            modifiers,
-            annotations,
-            ty,
-            name,
-            name_range,
-            initializer,
-            range: Span::new(ty_start, end),
-        })
+            let end = self.spans.map_node(&declarator).end;
+            out.push(ast::LocalVarStmt {
+                modifiers,
+                annotations: annotations.clone(),
+                ty: ty.clone(),
+                name,
+                name_range,
+                initializer,
+                range: Span::new(ty_start, end),
+            });
+        }
+
+        out
     }
 
     fn lower_if_stmt(&self, node: &SyntaxNode) -> ast::IfStmt {
@@ -1872,7 +1884,7 @@ impl Lowerer {
             let mut var = var_node
                 .as_ref()
                 .map(|node| self.lower_local_var_stmt(node))
-                .or_else(|| self.lower_local_var_decl_in_range(&header, colon))
+                .or_else(|| self.lower_local_var_decls_in_range(&header, colon).into_iter().next())
                 .unwrap_or_else(|| ast::LocalVarStmt {
                     modifiers: ast::Modifiers::default(),
                     annotations: Vec::new(),
@@ -1913,9 +1925,9 @@ impl Lowerer {
             .map(|tok| self.spans.map_token(tok).start)
             .unwrap_or(range.end);
         let cond_end = semicolons
-            .get(1)
-            .map(|tok| self.spans.map_token(tok).start)
-            .unwrap_or(range.end);
+                .get(1)
+                .map(|tok| self.spans.map_token(tok).start)
+                .unwrap_or(range.end);
 
         let init = {
             let local_decl = header.descendants().find(|child| {
@@ -1924,30 +1936,33 @@ impl Lowerer {
             });
             if let Some(local_decl) = local_decl {
                 vec![ast::Stmt::LocalVar(self.lower_local_var_stmt(&local_decl))]
-            } else if let Some(local_decl) = self.lower_local_var_decl_in_range(&header, init_end) {
-                vec![ast::Stmt::LocalVar(local_decl)]
             } else {
-                header
-                    .descendants()
-                    .filter(|child| {
-                        is_expression_kind(child.kind())
-                            && !is_expression_kind(
-                                child
-                                    .parent()
-                                    .map(|p| p.kind())
-                                    .unwrap_or(SyntaxKind::Error),
-                            )
-                    })
-                    .filter(|expr| {
-                        let span = self.spans.map_node(expr);
-                        span.start < init_end
-                    })
-                    .map(|expr_node| {
-                        let expr = self.lower_expr(&expr_node);
-                        let range = expr.range();
-                        ast::Stmt::Expr(ast::ExprStmt { expr, range })
-                    })
-                    .collect()
+                let decls = self.lower_local_var_decls_in_range(&header, init_end);
+                if !decls.is_empty() {
+                    decls.into_iter().map(ast::Stmt::LocalVar).collect()
+                } else {
+                    header
+                        .descendants()
+                        .filter(|child| {
+                            is_expression_kind(child.kind())
+                                && !is_expression_kind(
+                                    child
+                                        .parent()
+                                        .map(|p| p.kind())
+                                        .unwrap_or(SyntaxKind::Error),
+                                )
+                        })
+                        .filter(|expr| {
+                            let span = self.spans.map_node(expr);
+                            span.start < init_end
+                        })
+                        .map(|expr_node| {
+                            let expr = self.lower_expr(&expr_node);
+                            let range = expr.range();
+                            ast::Stmt::Expr(ast::ExprStmt { expr, range })
+                        })
+                        .collect()
+                }
             }
         };
 

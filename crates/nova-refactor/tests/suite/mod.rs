@@ -25,6 +25,7 @@ mod rename_members;
 mod rename_method_overload_conflicts;
 mod rename_method_overrides;
 mod rename_package;
+mod rename_method_overrides;
 mod rename_type;
 mod rename_type_conflicts;
 mod rename_type_inheritance_and_body_types;
