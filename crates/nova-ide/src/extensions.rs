@@ -840,9 +840,12 @@ where
             if source.contains("import") {
                 let refactor_file = RefactorFileId::new(uri.to_string());
                 let db = TextDatabase::new([(refactor_file.clone(), source.to_string())]);
-                if let Ok(edit) =
-                    organize_imports(&db, OrganizeImportsParams { file: refactor_file.clone() })
-                {
+                if let Ok(edit) = organize_imports(
+                    &db,
+                    OrganizeImportsParams {
+                        file: refactor_file.clone(),
+                    },
+                ) {
                     if !edit.is_empty() {
                         if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
                             actions.push(lsp_types::CodeActionOrCommand::CodeAction(
@@ -894,6 +897,7 @@ where
 
             actions.extend(type_mismatch_quick_fixes(
                 self.db.as_ref().as_dyn_nova_db(),
+                &cancel,
                 file,
                 source,
                 &cancel,
@@ -1077,6 +1081,7 @@ where
 
 fn type_mismatch_quick_fixes(
     db: &dyn nova_db::Database,
+    cancel: &CancellationToken,
     file: nova_ext::FileId,
     source: &str,
     cancel: &CancellationToken,
@@ -1623,7 +1628,8 @@ mod tests {
         let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
 
         let analyzer =
-            FrameworkAnalyzerAdapter::new("framework.panics", PanickingAppliesToAnalyzer).into_arc();
+            FrameworkAnalyzerAdapter::new("framework.panics", PanickingAppliesToAnalyzer)
+                .into_arc();
         ide.registry_mut()
             .register_diagnostic_provider(analyzer)
             .unwrap();
