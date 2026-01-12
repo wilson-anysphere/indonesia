@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nova_core::{Name, QualifiedName};
+use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::hir::{
     AssignOp, BinaryOp, Body as HirBody, Expr as HirExpr, ExprId as HirExprId, LambdaBody,
     LiteralKind, Stmt as HirStmt, UnaryOp,
@@ -25,6 +25,42 @@ use super::cancellation as cancel;
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
 use super::ArcEq;
+
+struct WorkspaceFirstIndex<'a> {
+    workspace: &'a nova_resolve::WorkspaceDefMap,
+    classpath: Option<&'a dyn TypeIndex>,
+}
+
+impl TypeIndex for WorkspaceFirstIndex<'_> {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
+        self.workspace
+            .resolve_type(name)
+            .or_else(|| self.classpath.and_then(|cp| cp.resolve_type(name)))
+    }
+
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
+        self.workspace
+            .resolve_type_in_package(package, name)
+            .or_else(|| {
+                self.classpath
+                    .and_then(|cp| cp.resolve_type_in_package(package, name))
+            })
+    }
+
+    fn package_exists(&self, package: &PackageName) -> bool {
+        self.workspace.package_exists(package)
+            || self.classpath.is_some_and(|cp| cp.package_exists(package))
+    }
+
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+        self.workspace
+            .resolve_static_member(owner, name)
+            .or_else(|| {
+                self.classpath
+                    .and_then(|cp| cp.resolve_static_member(owner, name))
+            })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileExprId {
@@ -156,11 +192,15 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
+    let workspace = db.workspace_def_map(project);
 
-    let resolver = match classpath.as_deref() {
-        Some(cp) => nova_resolve::Resolver::new(&*jdk).with_classpath(cp),
-        None => nova_resolve::Resolver::new(&*jdk),
+    let workspace_index = WorkspaceFirstIndex {
+        workspace: &workspace,
+        classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
     };
+    let resolver = nova_resolve::Resolver::new(&*jdk)
+        .with_classpath(&workspace_index)
+        .with_workspace(&workspace);
 
     let scopes = db.scope_graph(file);
     let body_scope = match owner {
@@ -873,11 +913,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             Resolution::Type(ty) => {
                 let binary_name = match ty {
                     TypeResolution::External(name) => name.as_str().to_string(),
-                    TypeResolution::Source(item) => self
-                        .scopes
-                        .type_name(item)
-                        .map(|n| n.as_str().to_string())
-                        .unwrap_or_else(|| "<unknown>".to_string()),
+                    TypeResolution::Source(item) => {
+                        let project = self.db.file_project(def_file(self.owner));
+                        let workspace = self.db.workspace_def_map(project);
+                        if let Some(name) = workspace.type_name(item) {
+                            name.as_str().to_string()
+                        } else if let Some(name) =
+                            self.db.scope_graph(item.file()).scopes.type_name(item)
+                        {
+                            name.as_str().to_string()
+                        } else {
+                            "<unknown>".to_string()
+                        }
+                    }
                 };
 
                 if let Some(id) = loader.ensure_class(&binary_name) {

@@ -1,18 +1,61 @@
 use std::sync::Arc;
 
-use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase};
+use std::path::PathBuf;
+
+use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
 use nova_jdk::JdkIndex;
+use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use tempfile::TempDir;
+
+fn base_project_config(root: PathBuf) -> ProjectConfig {
+    ProjectConfig {
+        workspace_root: root.clone(),
+        build_system: BuildSystem::Simple,
+        java: JavaConfig::default(),
+        modules: vec![Module {
+            name: "dummy".to_string(),
+            root,
+            annotation_processing: Default::default(),
+        }],
+        jpms_modules: Vec::new(),
+        jpms_workspace: None,
+        source_roots: Vec::new(),
+        module_path: Vec::new(),
+        classpath: Vec::new(),
+        output_dirs: Vec::new(),
+        dependencies: Vec::new(),
+        workspace_model: None,
+    }
+}
+
+fn set_file(
+    db: &mut SalsaRootDatabase,
+    project: ProjectId,
+    file: FileId,
+    rel_path: &str,
+    text: &str,
+) {
+    db.set_file_project(file, project);
+    db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
+    db.set_source_root(file, SourceRootId::from_raw(0));
+    db.set_file_exists(file, true);
+    db.set_file_content(file, Arc::new(text.to_string()));
+}
 
 fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
 
     let file = FileId::from_raw(1);
-    db.set_file_project(file, project);
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    set_file(&mut db, project, file, "src/Test.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
     (db, file)
 }
 
@@ -196,6 +239,47 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "Object");
+}
+
+#[test]
+fn cross_file_type_reference_resolves_in_same_package() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; class A { static int F = 1; }",
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/p/B.java",
+        "package p; class B { int x = A.F; }",
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-name" && d.message.contains("`A`")),
+        "expected `A` to resolve via workspace, got {diags:?}"
+    );
 }
 
 #[test]
