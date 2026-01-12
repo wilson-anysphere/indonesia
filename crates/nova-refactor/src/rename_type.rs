@@ -566,32 +566,7 @@ fn expr_scope_for_offset(
         use hir::Expr;
 
         let expr = &body.exprs[expr_id];
-        let range = match expr {
-            Expr::Name { range, .. }
-            | Expr::Literal { range, .. }
-            | Expr::Null { range }
-            | Expr::This { range }
-            | Expr::Super { range }
-            | Expr::FieldAccess { range, .. }
-            | Expr::ArrayAccess { range, .. }
-            | Expr::MethodReference { range, .. }
-            | Expr::ConstructorReference { range, .. }
-            | Expr::ClassLiteral { range, .. }
-            | Expr::Cast { range, .. }
-            | Expr::Call { range, .. }
-            | Expr::New { range, .. }
-            | Expr::ArrayCreation { range, .. }
-            | Expr::ArrayInitializer { range, .. }
-            | Expr::Unary { range, .. }
-            | Expr::Binary { range, .. }
-            | Expr::Instanceof { range, .. }
-            | Expr::Assign { range, .. }
-            | Expr::Conditional { range, .. }
-            | Expr::Lambda { range, .. }
-            | Expr::Switch { range, .. }
-            | Expr::Invalid { range, .. }
-            | Expr::Missing { range } => *range,
-        };
+        let range = expr.range();
 
         if !contains(range, offset) {
             return;

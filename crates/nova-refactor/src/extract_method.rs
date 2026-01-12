@@ -103,6 +103,7 @@ fn infer_type_at_offsets(
         else {
             continue;
         };
+
         // `type_at_offset_fully_qualified` returns fully-qualified names (e.g.
         // `java.lang.RuntimeException`). Since `java.lang` is implicitly imported in Java, avoid
         // emitting the redundant qualifier when it is the *top-level* type.

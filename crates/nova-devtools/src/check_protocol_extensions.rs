@@ -628,6 +628,20 @@ mod tests {
     }
 
     #[test]
+    fn extracts_rust_methods_from_multiline_consts() {
+        let text = r#"
+pub const A: &str =
+    "nova/a";
+pub const B: &str =
+    "textDocument/formatting";
+pub const C: &str =
+    "nova/c";
+"#;
+        let methods = extract_rust_methods_from_text(text);
+        assert_eq!(methods, vec!["nova/a".to_string(), "nova/c".to_string()]);
+    }
+
+    #[test]
     fn extracts_rust_methods_from_multiline_const_assignments() {
         let text = r#"
 pub const LONG_NOTIFICATION_NAME: &str =
