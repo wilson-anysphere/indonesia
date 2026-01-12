@@ -379,9 +379,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     // generated `*MapperImpl` methods when the generated file exists on disk.
     if let Some(path) = db.file_path(file) {
         if path.extension().and_then(|e| e.to_str()) == Some("java")
-            && (parsed.text.contains("@Mapper")
-                || parsed.text.contains("@Mapping")
-                || parsed.text.contains("org.mapstruct"))
+            && parsed.text.contains("org.mapstruct")
         {
             let root = framework_cache::project_root_for_path(path);
             if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
@@ -528,7 +526,7 @@ fn mapstruct_fallback_locations(
     if path.extension().and_then(|e| e.to_str()) != Some("java") {
         return Vec::new();
     }
-    if !(text.contains("@Mapper") || text.contains("org.mapstruct")) {
+    if !text.contains("org.mapstruct") {
         return Vec::new();
     }
 

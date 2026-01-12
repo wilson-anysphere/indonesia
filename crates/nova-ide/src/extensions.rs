@@ -1720,10 +1720,7 @@ fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
         return Vec::new();
     };
     let text = db.file_content(file);
-    let maybe_mapstruct_file = text.contains("@Mapper")
-        || text.contains("@org.mapstruct.Mapper")
-        || text.contains("@Mapping")
-        || text.contains("org.mapstruct");
+    let maybe_mapstruct_file = text.contains("org.mapstruct");
     if !maybe_mapstruct_file {
         return Vec::new();
     }

@@ -1617,12 +1617,7 @@ pub fn file_diagnostics_with_semantic_db(
     }
 
     // 9) MapStruct diagnostics (best-effort, filesystem-based).
-    if is_java
-        && (text.contains("@Mapper")
-            || text.contains("@org.mapstruct.Mapper")
-            || text.contains("@Mapping")
-            || text.contains("org.mapstruct"))
-    {
+    if is_java && text.contains("org.mapstruct") {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
             let has_mapstruct_dependency = crate::framework_cache::project_config(&root)
@@ -4781,9 +4776,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     // MapStruct `@Mapping(source="...")` / `@Mapping(target="...")` completions inside Java source.
-    if is_java
-        && (text.contains("@Mapper") || text.contains("@Mapping") || text.contains("org.mapstruct"))
-    {
+    if is_java && text.contains("org.mapstruct") {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
             if let Ok(items) =
@@ -10185,10 +10178,7 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
 
 fn looks_like_mapstruct_file(text: &str) -> bool {
     // Cheap substring checks before we do any filesystem work.
-    text.contains("@Mapper")
-        || text.contains("@org.mapstruct.Mapper")
-        || text.contains("@Mapping")
-        || text.contains("org.mapstruct")
+    text.contains("org.mapstruct")
 }
 
 pub fn find_references(
