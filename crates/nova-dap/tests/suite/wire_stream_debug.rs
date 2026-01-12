@@ -1,16 +1,5 @@
-use std::process::{Command, Stdio};
-
 use crate::harness::spawn_wire_server;
 use serde_json::json;
-
-fn tool_available(name: &str) -> bool {
-    Command::new(name)
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
 
 #[tokio::test]
 async fn wire_stream_debug_requires_attached_session() {
@@ -216,11 +205,6 @@ async fn wire_stream_debug_refuses_existing_stream_values_with_parens_in_index()
 
 #[tokio::test]
 async fn wire_stream_debug_allows_arrays_stream_expressions() {
-    if !tool_available("javac") {
-        eprintln!("skipping stream debug wire integration test: javac not available");
-        return;
-    }
-
     let (client, server_task) = spawn_wire_server();
 
     client.initialize_handshake().await;
