@@ -608,92 +608,86 @@ impl InProcessRouter {
             });
         }
 
-        let mut shard_files = Vec::new();
-        while !collect_set.is_empty() {
-            let res = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    token.cancel();
-                    return Err(rpc_cancelled_error());
-                }
-                res = collect_set.join_next() => res,
-            };
-
-            let Some(res) = res else {
-                break;
-            };
-
-            let (shard_id, files) = match res {
-                Ok(Ok(res)) => res,
-                Ok(Err(err)) => return Err(err),
-                Err(err) => return Err(anyhow!("file collection task panicked: {err}")),
-            };
-            shard_files.push((shard_id, files));
-        }
-
-        if token.is_cancelled() {
-            return Ok(());
-        }
-        if cancel.is_cancelled() {
-            return Err(rpc_cancelled_error());
-        }
-
-        // Spawn all per-shard indexing tasks first so multi-shard work actually runs concurrently.
-        let mut join_set = JoinSet::new();
-        for (shard_id, files) in shard_files {
-            let task = self
-                .scheduler
-                .spawn_background_with_token(token.clone(), move |token| {
-                    Cancelled::check(&token)?;
-                    let symbols = index_for_files(shard_id, files);
-                    Cancelled::check(&token)?;
-                    Ok(symbols)
-                });
-
-            join_set.spawn(async move { (shard_id, task.join().await) });
-        }
-
         let mut indexes = HashMap::new();
-        while !join_set.is_empty() {
-            let res = tokio::select! {
+        let mut join_set = JoinSet::new();
+
+        // Pipeline file collection -> indexing so that early shards can start indexing work while
+        // later shards are still walking the filesystem.
+        while !collect_set.is_empty() || !join_set.is_empty() {
+            tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
                     token.cancel();
                     return Err(rpc_cancelled_error());
                 }
-                res = join_set.join_next() => res,
-            };
-
-            let Some(res) = res else {
-                break;
-            };
-
-            let (shard_id, symbols) = match res {
-                Ok((shard_id, res)) => (shard_id, res),
-                Err(err) => {
-                    // The join task itself should never panic, but surface it as an indexing error.
-                    return Err(anyhow!("indexing task panicked: {err}"));
+                _ = token.cancelled() => {
+                    return Ok(());
                 }
-            };
+                res = collect_set.join_next(), if !collect_set.is_empty() => {
+                    let Some(res) = res else {
+                        continue;
+                    };
 
-            let symbols = match symbols {
-                Ok(symbols) => symbols,
-                Err(TaskError::Cancelled) => return Ok(()),
-                Err(TaskError::Panicked) => return Err(anyhow!("indexing task panicked")),
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    return Err(anyhow!("indexing task exceeded deadline"))
+                    let (shard_id, files) = match res {
+                        Ok(Ok(res)) => res,
+                        Ok(Err(err)) => {
+                            token.cancel();
+                            return Err(err);
+                        }
+                        Err(err) => {
+                            token.cancel();
+                            return Err(anyhow!("file collection task panicked: {err}"));
+                        }
+                    };
+
+                    // Spawn indexing for this shard immediately.
+                    let task = self.scheduler.spawn_background_with_token(token.clone(), move |token| {
+                        Cancelled::check(&token)?;
+                        let symbols = index_for_files(shard_id, files);
+                        Cancelled::check(&token)?;
+                        Ok(symbols)
+                    });
+
+                    join_set.spawn(async move { (shard_id, task.join().await) });
                 }
-            };
+                res = join_set.join_next(), if !join_set.is_empty() => {
+                    let Some(res) = res else {
+                        continue;
+                    };
 
-            indexes.insert(
-                shard_id,
-                ShardIndex {
-                    shard_id,
-                    revision,
-                    index_generation: revision,
-                    symbols,
-                },
-            );
+                    let (shard_id, symbols) = match res {
+                        Ok((shard_id, res)) => (shard_id, res),
+                        Err(err) => {
+                            // The join task itself should never panic, but surface it as an indexing error.
+                            token.cancel();
+                            return Err(anyhow!("indexing task panicked: {err}"));
+                        }
+                    };
+
+                    let symbols = match symbols {
+                        Ok(symbols) => symbols,
+                        Err(TaskError::Cancelled) => return Ok(()),
+                        Err(TaskError::Panicked) => {
+                            token.cancel();
+                            return Err(anyhow!("indexing task panicked"));
+                        }
+                        Err(TaskError::DeadlineExceeded(_)) => {
+                            token.cancel();
+                            return Err(anyhow!("indexing task exceeded deadline"));
+                        }
+                    };
+
+                    indexes.insert(
+                        shard_id,
+                        ShardIndex {
+                            shard_id,
+                            revision,
+                            index_generation: revision,
+                            symbols,
+                        },
+                    );
+                }
+            }
         }
 
         if token.is_cancelled() {
