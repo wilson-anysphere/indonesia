@@ -247,3 +247,75 @@ fn loads_maven_repo_from_mvn_maven_config_with_space_separated_single_quoted_rep
     );
     assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
 }
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_resolves_relative_repo_local_to_workspace_root() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_path = workspace_root.join("relative-m2");
+    touch_guava_jar(&repo_path);
+
+    // Relative paths should be interpreted relative to the workspace root, since `.mvn/maven.config`
+    // behaves like command line args and Maven is typically run from the project root.
+    fs::write(workspace_root.join(".mvn/maven.config"), "-Dmaven.repo.local=relative-m2").unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
+}
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_prefers_last_repo_local_value() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_1 = tempdir().unwrap();
+    let repo_2 = tempdir().unwrap();
+    let repo_1_path = repo_1.path().to_path_buf();
+    let repo_2_path = repo_2.path().to_path_buf();
+    touch_guava_jar(&repo_2_path);
+
+    // The last valid `-Dmaven.repo.local` value should win.
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!(
+            "-Dmaven.repo.local={}\n-Dmaven.repo.local={}\n",
+            repo_1_path.display(),
+            repo_2_path.display()
+        ),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_2_path);
+}
