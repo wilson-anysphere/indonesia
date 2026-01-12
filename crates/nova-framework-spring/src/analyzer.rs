@@ -156,19 +156,19 @@ impl Default for SpringAnalyzer {
 
 impl FrameworkAnalyzer for SpringAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
+        // Prefer classpath prefix checks: these work well for transitive dependencies.
+        if db.has_class_on_classpath_prefix(project, "org.springframework.")
+            || db.has_class_on_classpath_prefix(project, "org/springframework/")
+        {
+            return true;
+        }
+
         // Maven coordinate based detection (common Spring + Spring Boot artifacts).
         if db.has_dependency(project, "org.springframework", "spring-context")
             || db.has_dependency(project, "org.springframework", "spring-beans")
             || db.has_dependency(project, "org.springframework.boot", "spring-boot")
             || db.has_dependency(project, "org.springframework.boot", "spring-boot-autoconfigure")
             || db.has_dependency(project, "org.springframework.boot", "spring-boot-starter")
-        {
-            return true;
-        }
-
-        // Fallback: any org.springframework.* class on the classpath.
-        if db.has_class_on_classpath_prefix(project, "org.springframework.")
-            || db.has_class_on_classpath_prefix(project, "org/springframework/")
         {
             return true;
         }
