@@ -3490,6 +3490,8 @@ fn build_context_request(
         file_path: None,
         focal_code,
         enclosing_context: enclosing,
+        project_context: None,
+        semantic_context: None,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
         cursor: None,

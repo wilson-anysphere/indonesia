@@ -18,7 +18,7 @@ impl Default for PrivacyMode {
         Self {
             anonymize_identifiers: false,
             redaction: RedactionConfig::default(),
-            include_file_paths: true,
+            include_file_paths: false,
         }
     }
 }

@@ -95,6 +95,8 @@ class SecretService {
         file_path: Some("/home/user/project/src/SecretService.java".to_string()),
         focal_code,
         enclosing_context: None,
+        project_context: None,
+        semantic_context: None,
         related_symbols: vec![RelatedSymbol {
             name: "SecretService".to_string(),
             kind: "class".to_string(),

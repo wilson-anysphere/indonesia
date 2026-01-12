@@ -84,6 +84,8 @@ fn context_builder_can_include_embedding_related_code() {
         file_path: None,
         focal_code: "return \"hello world\";".to_string(),
         enclosing_context: None,
+        project_context: None,
+        semantic_context: None,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
         cursor: None,

@@ -9,9 +9,11 @@ use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, Virtua
 use nova_ai::CancellationToken;
 use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
 use nova_config::AiPrivacyConfig;
-use nova_core::{LineIndex, TextRange};
-use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
-use nova_ide::format::Formatter;
+use nova_core::{LineIndex, TextRange, TextSize};
+use nova_db::Database;
+use nova_db::InMemoryFileStore;
+use nova_format::FormatConfig;
+use nova_types::{Diagnostic as NovaDiagnostic, Severity as NovaSeverity};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -75,7 +77,7 @@ pub struct ErrorReport {
 #[derive(Debug, Clone)]
 pub struct DiagnosticWithContext {
     pub file: String,
-    pub diagnostic: Diagnostic,
+    pub diagnostic: NovaDiagnostic,
     pub position: nova_core::Position,
     pub context: String,
 }
@@ -87,16 +89,16 @@ impl ErrorReport {
         out.push('\n');
         for diag in &self.new_diagnostics {
             out.push_str(&format!(
-                "{}:{}:{}: {}: {}\n",
+                "{}:{}:{}: {} [{}]: {}\n",
                 diag.file,
                 diag.position.line + 1,
                 diag.position.character + 1,
                 match diag.diagnostic.severity {
-                    DiagnosticSeverity::Error => "error",
-                    DiagnosticSeverity::Warning => "warning",
-                    DiagnosticSeverity::Information => "info",
-                    DiagnosticSeverity::Hint => "hint",
+                    NovaSeverity::Error => "error",
+                    NovaSeverity::Warning => "warning",
+                    NovaSeverity::Info => "info",
                 },
+                diag.diagnostic.code,
                 diag.diagnostic.message
             ));
             out.push_str(&diag.context);
@@ -152,7 +154,7 @@ pub trait PromptCompletionProvider: Send + Sync {
 #[async_trait]
 impl<T> PromptCompletionProvider for T
 where
-    T: nova_ai::LlmClient + Send + Sync,
+    T: nova_ai::LlmClient + Send + Sync + ?Sized,
 {
     async fn complete(
         &self,
@@ -201,9 +203,6 @@ pub async fn generate_patch(
     progress: Option<&dyn CodegenProgressReporter>,
 ) -> Result<CodeGenerationResult, CodeGenerationError> {
     enforce_code_edit_policy(privacy)?;
-
-    let engine = DiagnosticsEngine::new();
-    let formatter = Formatter::default();
 
     let mut attempt = 0usize;
     let mut feedback: Option<ErrorFeedback> = None;
@@ -309,7 +308,7 @@ pub async fn generate_patch(
             });
         }
 
-        let formatted_workspace = format_workspace(&formatter, &applied, config);
+        let formatted_workspace = format_workspace(&applied, config);
 
         if config.safety.no_new_imports {
             enforce_no_new_imports(workspace, &formatted_workspace, &applied)?;
@@ -327,7 +326,6 @@ pub async fn generate_patch(
             workspace,
             &formatted_workspace,
             &applied,
-            &engine,
             &config.validation,
         ) {
             Ok(()) => {
@@ -406,6 +404,12 @@ fn build_prompt(
             "Do not create new files; only edit files that already exist in the workspace.\n",
         );
     }
+    if !config.safety.allow_delete_files {
+        out.push_str("Do not delete files.\n");
+    }
+    if !config.safety.allow_rename_files {
+        out.push_str("Do not rename or move files.\n");
+    }
     if config.safety.no_new_imports {
         out.push_str("Do not add new import statements.\n");
     }
@@ -433,20 +437,24 @@ fn build_prompt(
     out
 }
 
-fn format_workspace(
-    formatter: &Formatter,
-    applied: &AppliedPatch,
-    config: &CodeGenerationConfig,
-) -> VirtualWorkspace {
+fn format_workspace(applied: &AppliedPatch, config: &CodeGenerationConfig) -> VirtualWorkspace {
     if !config.validation.format {
         return applied.workspace.clone();
     }
 
     let mut out = applied.workspace.clone();
     for file in applied.touched_ranges.keys() {
-        if let Some(text) = out.get(file).map(str::to_string) {
-            out.insert(file.clone(), formatter.format_java(&text));
+        let path = std::path::Path::new(file);
+        if path.extension().and_then(|ext| ext.to_str()) != Some("java") {
+            continue;
         }
+        let Some(text) = out.get(file).map(str::to_string) else {
+            continue;
+        };
+
+        let tree = nova_syntax::parse(&text);
+        let formatted = nova_format::format_java(&tree, &text, &FormatConfig::default());
+        out.insert(file.clone(), formatted);
     }
     out
 }
@@ -455,50 +463,59 @@ fn validate_patch(
     before: &VirtualWorkspace,
     after: &VirtualWorkspace,
     applied: &AppliedPatch,
-    engine: &DiagnosticsEngine,
     config: &ValidationConfig,
 ) -> Result<(), ErrorReport> {
+    let before_db = diagnostics_db_from_workspace(before);
+    let after_db = diagnostics_db_from_workspace(after);
+
     let mut new_diagnostics = Vec::new();
     let mut new_syntax_errors = 0usize;
     let mut new_type_errors = 0usize;
 
     for (file, touched) in &applied.touched_ranges {
         let before_path = resolve_before_path(file, &applied.renamed_files);
-        let before_text = before.get(&before_path).unwrap_or("");
-        let after_text = after.get(file).unwrap_or("");
+        let after_text = after.get(file).unwrap_or_default();
 
-        let before_diags = engine.diagnose(file, before_text);
-        let after_diags = engine.diagnose(file, after_text);
+        let before_diags = diagnostics_for_path(&before_db, &before_path);
+        let after_diags = diagnostics_for_path(&after_db, file);
 
         let introduced = diff_diagnostics(&before_diags, &after_diags);
         for diag in introduced {
-            if diag.severity != DiagnosticSeverity::Error {
+            if diag.severity != NovaSeverity::Error {
                 continue;
             }
 
-            match diag.kind {
-                DiagnosticKind::Syntax => {
+            match diagnostic_bucket(&diag) {
+                ValidationBucket::Syntax => {
                     new_syntax_errors += 1;
-                    let position =
-                        LineIndex::new(after_text).position(after_text, diag.range.start());
+                    let (position, range) = diagnostic_position_and_range(after_text, &diag);
                     new_diagnostics.push(DiagnosticWithContext {
                         file: file.clone(),
-                        context: render_context(after_text, diag.range, config.context_lines),
+                        context: render_context(after_text, range, config.context_lines),
                         position,
                         diagnostic: diag,
                     });
                 }
-                DiagnosticKind::Type => {
-                    if touched
-                        .iter()
-                        .any(|range| ranges_intersect(*range, diag.range))
-                    {
+                ValidationBucket::Type => {
+                    let (position, range) = diagnostic_position_and_range(after_text, &diag);
+                    let intersects = match diag.span {
+                        Some(span) => touched.iter().any(|t| {
+                            ranges_intersect(
+                                *t,
+                                TextRange::new(
+                                    TextSize::from(span.start.min(u32::MAX as usize) as u32),
+                                    TextSize::from(span.end.min(u32::MAX as usize) as u32),
+                                ),
+                            )
+                        }),
+                        None => true,
+                    };
+
+                    if intersects {
                         new_type_errors += 1;
-                        let position =
-                            LineIndex::new(after_text).position(after_text, diag.range.start());
                         new_diagnostics.push(DiagnosticWithContext {
                             file: file.clone(),
-                            context: render_context(after_text, diag.range, config.context_lines),
+                            context: render_context(after_text, range, config.context_lines),
                             position,
                             diagnostic: diag,
                         });
@@ -509,18 +526,20 @@ fn validate_patch(
     }
 
     new_diagnostics.sort_by(|a, b| {
+        let (a_start, a_end) = diagnostic_span_bounds(&a.diagnostic);
+        let (b_start, b_end) = diagnostic_span_bounds(&b.diagnostic);
         (
             a.file.as_str(),
-            u32::from(a.diagnostic.range.start()),
-            u32::from(a.diagnostic.range.end()),
-            a.diagnostic.kind as u8,
+            a_start,
+            a_end,
+            a.diagnostic.code.as_ref(),
             a.diagnostic.message.as_str(),
         )
             .cmp(&(
                 b.file.as_str(),
-                u32::from(b.diagnostic.range.start()),
-                u32::from(b.diagnostic.range.end()),
-                b.diagnostic.kind as u8,
+                b_start,
+                b_end,
+                b.diagnostic.code.as_ref(),
                 b.diagnostic.message.as_str(),
             ))
     });
@@ -539,6 +558,58 @@ fn validate_patch(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationBucket {
+    Syntax,
+    Type,
+}
+
+fn diagnostic_bucket(diag: &NovaDiagnostic) -> ValidationBucket {
+    let code = diag.code.as_ref();
+    if code == "SYNTAX" || code.starts_with("JAVA_FEATURE_") {
+        ValidationBucket::Syntax
+    } else {
+        ValidationBucket::Type
+    }
+}
+
+fn diagnostic_span_bounds(diag: &NovaDiagnostic) -> (usize, usize) {
+    diag.span.map(|span| (span.start, span.end)).unwrap_or((0, 0))
+}
+
+fn diagnostic_position_and_range(text: &str, diag: &NovaDiagnostic) -> (nova_core::Position, TextRange) {
+    let span = diag.span.unwrap_or(nova_types::Span { start: 0, end: 0 });
+    let start = span
+        .start
+        .min(text.len())
+        .min(u32::MAX as usize) as u32;
+    let end = span
+        .end
+        .min(text.len())
+        .min(u32::MAX as usize) as u32;
+    let range = TextRange::new(TextSize::from(start), TextSize::from(end.max(start)));
+
+    let index = LineIndex::new(text);
+    let position = index.position(text, TextSize::from(start));
+    (position, range)
+}
+
+fn diagnostics_db_from_workspace(workspace: &VirtualWorkspace) -> InMemoryFileStore {
+    let mut db = InMemoryFileStore::new();
+    for (path, text) in workspace.files() {
+        let file_id = db.file_id_for_path(path);
+        db.set_file_text(file_id, text.to_string());
+    }
+    db
+}
+
+fn diagnostics_for_path(db: &InMemoryFileStore, path: &str) -> Vec<NovaDiagnostic> {
+    let Some(file_id) = db.file_id(std::path::Path::new(path)) else {
+        return Vec::new();
+    };
+    nova_ide::code_intelligence::file_diagnostics(db, file_id)
+}
+
 fn resolve_before_path(path: &str, renames: &BTreeMap<String, String>) -> String {
     let mut current = path;
     let mut visited = BTreeSet::new();
@@ -553,17 +624,17 @@ fn resolve_before_path(path: &str, renames: &BTreeMap<String, String>) -> String
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 struct DiagnosticFingerprint {
-    kind: DiagnosticKind,
-    severity: DiagnosticSeverity,
+    severity: u8,
+    code: String,
     message: String,
 }
 
-fn diff_diagnostics(before: &[Diagnostic], after: &[Diagnostic]) -> Vec<Diagnostic> {
+fn diff_diagnostics(before: &[NovaDiagnostic], after: &[NovaDiagnostic]) -> Vec<NovaDiagnostic> {
     let mut counts: HashMap<DiagnosticFingerprint, usize> = HashMap::new();
     for diag in before {
         let fp = DiagnosticFingerprint {
-            kind: diag.kind,
-            severity: diag.severity,
+            severity: severity_fingerprint(diag.severity),
+            code: diag.code.to_string(),
             message: diag.message.clone(),
         };
         *counts.entry(fp).or_default() += 1;
@@ -572,8 +643,8 @@ fn diff_diagnostics(before: &[Diagnostic], after: &[Diagnostic]) -> Vec<Diagnost
     let mut introduced = Vec::new();
     for diag in after {
         let fp = DiagnosticFingerprint {
-            kind: diag.kind,
-            severity: diag.severity,
+            severity: severity_fingerprint(diag.severity),
+            code: diag.code.to_string(),
             message: diag.message.clone(),
         };
         match counts.get_mut(&fp) {
@@ -585,6 +656,14 @@ fn diff_diagnostics(before: &[Diagnostic], after: &[Diagnostic]) -> Vec<Diagnost
     }
 
     introduced
+}
+
+fn severity_fingerprint(severity: NovaSeverity) -> u8 {
+    match severity {
+        NovaSeverity::Error => 0,
+        NovaSeverity::Warning => 1,
+        NovaSeverity::Info => 2,
+    }
 }
 
 fn ranges_intersect(a: TextRange, b: TextRange) -> bool {
@@ -627,6 +706,21 @@ mod tests {
         mpsc, Arc, Mutex,
     };
     use std::time::Duration;
+
+    struct StaticProvider {
+        response: String,
+    }
+
+    #[async_trait]
+    impl PromptCompletionProvider for StaticProvider {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            Ok(self.response.clone())
+        }
+    }
 
     struct BlockingProvider {
         started_tx: Mutex<Option<mpsc::Sender<()>>>,
@@ -711,5 +805,107 @@ mod tests {
         assert_eq!(provider.calls(), 1);
 
         handle.join().expect("codegen thread panicked");
+    }
+
+    #[test]
+    fn generates_formats_and_validates_patch_against_workspace() {
+        let provider = StaticProvider {
+            response: r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "42"
+    }
+  ]
+}"#
+            .to_string(),
+        };
+
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("codegen success");
+
+        let applied = result
+            .applied
+            .workspace
+            .get("Example.java")
+            .expect("patched file");
+        assert!(applied.contains("return 42;"), "{applied}");
+
+        let expected = nova_format::format_java(
+            &nova_syntax::parse(applied),
+            applied,
+            &FormatConfig::default(),
+        );
+        let formatted = result
+            .formatted_workspace
+            .get("Example.java")
+            .expect("formatted file");
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn validation_rejects_introduced_unresolved_reference() {
+        let provider = StaticProvider {
+            response: r#"diff --git a/Example.java b/Example.java
+--- a/Example.java
++++ b/Example.java
+@@ -1,3 +1,3 @@
+ public class Example{
+-    public int answer(){return 41;}
++    public int answer(){missing();return 41;}
+ }
+"#
+            .to_string(),
+        };
+
+        let before = "public class Example{\n    public int answer(){return 41;}\n}\n";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Insert a call to missing().",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("should fail validation");
+
+        let CodeGenerationError::ValidationFailed { report } = err else {
+            panic!("expected ValidationFailed, got {err:?}");
+        };
+
+        assert!(
+            report
+                .new_diagnostics
+                .iter()
+                .any(|diag| diag.diagnostic.code.as_ref() == "UNRESOLVED_REFERENCE"),
+            "expected unresolved reference diagnostic, got: {report:?}"
+        );
     }
 }

@@ -17,7 +17,11 @@ tracing = { workspace = true }
 nova-ai = { path = "../nova-ai" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
+nova-db = { path = "../nova-db" }
+nova-format = { path = "../nova-format" }
 nova-ide = { path = "../nova-ide" }
+nova-syntax = { path = "../nova-syntax" }
+nova-types = { path = "../nova-types" }
 
 [dev-dependencies]
 futures = "0.3"

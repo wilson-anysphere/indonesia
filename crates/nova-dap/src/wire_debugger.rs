@@ -359,7 +359,6 @@ impl Debugger {
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<JdwpEvent> {
         self.jdwp.subscribe_events()
     }
-
     pub fn jdwp_client(&self) -> JdwpClient {
         self.jdwp.clone()
     }

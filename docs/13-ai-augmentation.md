@@ -27,6 +27,7 @@ AI integration is a key differentiator for Nova. Unlike retrofitting AI onto exi
 │     Local models preferred where possible.                      │
 │     Clear user control over data sent externally.               │
 │     Code snippets anonymized when sent to services.             │
+│     File paths excluded unless explicitly enabled.              │
 │                                                                  │
 │  4. PREDICTABLE LATENCY                                          │
 │     AI operations should not block interactive features.        │

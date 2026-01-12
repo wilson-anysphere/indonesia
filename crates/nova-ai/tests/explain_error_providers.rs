@@ -72,6 +72,8 @@ fn dummy_ctx() -> ContextRequest {
         file_path: None,
         focal_code: "class A { void m(){ x(); } }".to_string(),
         enclosing_context: None,
+        project_context: None,
+        semantic_context: None,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
         cursor: None,

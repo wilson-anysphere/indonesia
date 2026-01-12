@@ -248,3 +248,83 @@ fn allowlist_blocks_paths_outside_prefixes() {
     let err = enforce_patch_safety(&patch, &workspace, &cfg).unwrap_err();
     assert!(matches!(err, SafetyError::NotAllowedPath { .. }));
 }
+
+#[test]
+fn rejects_file_deletes_by_default() {
+    let workspace = VirtualWorkspace::new(vec![("Delete.java".to_string(), "class Delete {}".to_string())]);
+
+    let patch = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Delete {
+            file: "Delete.java".to_string(),
+        }],
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::DeleteNotAllowed { file } if file == "Delete.java"));
+
+    let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
+        files: vec![UnifiedDiffFile {
+            old_path: "Delete.java".to_string(),
+            new_path: "/dev/null".to_string(),
+            hunks: Vec::new(),
+        }],
+    });
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::DeleteNotAllowed { file } if file == "Delete.java"));
+}
+
+#[test]
+fn rejects_file_renames_by_default() {
+    let workspace = VirtualWorkspace::new(vec![("Old.java".to_string(), "class Old {}".to_string())]);
+
+    let patch = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Rename {
+            from: "Old.java".to_string(),
+            to: "New.java".to_string(),
+        }],
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java"));
+
+    let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
+        files: vec![UnifiedDiffFile {
+            old_path: "Old.java".to_string(),
+            new_path: "New.java".to_string(),
+            hunks: Vec::new(),
+        }],
+    });
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java"));
+}
+
+#[test]
+fn allows_file_deletes_and_renames_when_enabled() {
+    let workspace = VirtualWorkspace::new(vec![
+        ("Old.java".to_string(), "class Old {}".to_string()),
+        ("Delete.java".to_string(), "class Delete {}".to_string()),
+    ]);
+
+    let delete = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Delete {
+            file: "Delete.java".to_string(),
+        }],
+    });
+    let rename = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Rename {
+            from: "Old.java".to_string(),
+            to: "New.java".to_string(),
+        }],
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allow_delete_files = true;
+    enforce_patch_safety(&delete, &workspace, &cfg).expect("delete safety");
+
+    cfg.allow_rename_files = true;
+    enforce_patch_safety(&rename, &workspace, &cfg).expect("rename safety");
+}

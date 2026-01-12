@@ -79,6 +79,47 @@ impl ContextBuilder {
             }
         }
 
+        if let Some(project) = req.project_context.as_ref() {
+            let project_text = project.render(req.privacy.include_file_paths);
+            if !project_text.is_empty() {
+                let built = build_section(
+                    "Project context",
+                    &project_text,
+                    remaining,
+                    &mut anonymizer,
+                    /*always_include=*/ false,
+                );
+                if built.text.is_empty() && remaining == 0 {
+                    truncated = true;
+                }
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
+            }
+        }
+
+        if let Some(semantic) = req.semantic_context.as_deref() {
+            let built = build_section(
+                "Symbol/type info",
+                semantic,
+                remaining,
+                &mut anonymizer,
+                /*always_include=*/ false,
+            );
+            if built.text.is_empty() && remaining == 0 {
+                truncated = true;
+            }
+            remaining = remaining.saturating_sub(built.token_estimate);
+            truncated |= built.truncated;
+            if !built.text.is_empty() {
+                out.push_str(&built.text);
+                sections.push(built.stat);
+            }
+        }
+
         // Enclosing semantic skeleton/context.
         if let Some(enclosing) = req.enclosing_context.as_deref() {
             let built = build_section(
@@ -284,10 +325,76 @@ impl SemanticContextBuilder {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectContext {
+    pub build_system: Option<String>,
+    pub java_version: Option<String>,
+    pub frameworks: Vec<String>,
+    pub classpath: Vec<String>,
+}
+
+impl ProjectContext {
+    fn render(&self, include_file_paths: bool) -> String {
+        let mut out = String::new();
+
+        if let Some(build_system) = self.build_system.as_deref().filter(|s| !s.trim().is_empty()) {
+            out.push_str("Build system: ");
+            out.push_str(build_system.trim());
+            out.push('\n');
+        }
+
+        if let Some(java_version) = self.java_version.as_deref().filter(|s| !s.trim().is_empty()) {
+            out.push_str("Java: ");
+            out.push_str(java_version.trim());
+            out.push('\n');
+        }
+
+        if !self.frameworks.is_empty() {
+            out.push_str("Frameworks:\n");
+            for fw in &self.frameworks {
+                if fw.trim().is_empty() {
+                    continue;
+                }
+                out.push_str("- ");
+                out.push_str(fw.trim());
+                out.push('\n');
+            }
+        }
+
+        if !self.classpath.is_empty() {
+            out.push_str("Classpath:\n");
+            for entry in self.classpath.iter().filter(|e| !e.trim().is_empty()).take(32) {
+                out.push_str("- ");
+                out.push_str(&render_project_path_entry(entry, include_file_paths));
+                out.push('\n');
+            }
+            if self.classpath.len() > 32 {
+                out.push_str("- …\n");
+            }
+        }
+
+        out.trim_end().to_string()
+    }
+}
+
+fn render_project_path_entry(entry: &str, include_file_paths: bool) -> String {
+    if include_file_paths {
+        return entry.trim().to_string();
+    }
+    entry
+        .trim()
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(entry)
+        .to_string()
+}
+
+#[derive(Debug, Clone)]
 pub struct ContextRequest {
     pub file_path: Option<String>,
     pub focal_code: String,
     pub enclosing_context: Option<String>,
+    pub project_context: Option<ProjectContext>,
+    pub semantic_context: Option<String>,
     pub related_symbols: Vec<RelatedSymbol>,
     pub related_code: Vec<RelatedCode>,
     pub cursor: Option<Position>,
@@ -326,6 +433,8 @@ impl ContextRequest {
             file_path: None,
             focal_code,
             enclosing_context: extracted.enclosing_context,
+            project_context: None,
+            semantic_context: None,
             related_symbols: extracted.related_symbols,
             related_code: Vec::new(),
             cursor: Some(position_for_offset(source, selection.start)),
@@ -1246,6 +1355,8 @@ mod tests {
             focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#
                 .to_string(),
             enclosing_context: Some("package com.example;\n".to_string()),
+            project_context: None,
+            semantic_context: None,
             related_symbols: vec![RelatedSymbol {
                 name: "Secret".to_string(),
                 kind: "class".to_string(),
@@ -1432,6 +1543,8 @@ class Foo {
             file_path: None,
             focal_code: "x = y;".to_string(),
             enclosing_context: None,
+            project_context: None,
+            semantic_context: None,
             related_symbols: Vec::new(),
             related_code: Vec::new(),
             cursor: Some(Position {
@@ -1466,12 +1579,57 @@ class Foo {
     }
 
     #[test]
+    fn project_context_strips_paths_unless_opted_in() {
+        let builder = ContextBuilder::new();
+
+        let req = ContextRequest {
+            file_path: Some("/home/user/project/src/Example.java".to_string()),
+            focal_code: "class Example {}".to_string(),
+            enclosing_context: None,
+            project_context: Some(ProjectContext {
+                build_system: Some("maven".to_string()),
+                java_version: Some("17".to_string()),
+                frameworks: vec!["Spring".to_string()],
+                classpath: vec![
+                    "/home/user/.m2/repo/org/example/example-1.0.0.jar".to_string(),
+                    "build/classes/java/main".to_string(),
+                ],
+            }),
+            semantic_context: Some("Type info: Example".to_string()),
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: Vec::new(),
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 400,
+            privacy: PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                ..PrivacyMode::default()
+            },
+        };
+
+        let built = builder.build(req);
+        assert!(built.text.contains("## Project context"), "{:?}", built.text);
+        assert!(built.text.contains("Build system: maven"), "{:?}", built.text);
+        assert!(built.text.contains("Java: 17"), "{:?}", built.text);
+        assert!(built.text.contains("Spring"), "{:?}", built.text);
+        // Basename only, no absolute path.
+        assert!(built.text.contains("example-1.0.0.jar"), "{:?}", built.text);
+        assert!(!built.text.contains("/home/user"), "{:?}", built.text);
+    }
+
+    #[test]
     fn budget_enforced_with_many_sections() {
         let builder = ContextBuilder::new();
         let req = ContextRequest {
             file_path: None,
             focal_code: "class Foo { void bar() { int x = 0; int y = 1; } }".to_string(),
             enclosing_context: Some("class Foo { int a; int b; int c; }".to_string()),
+            project_context: None,
+            semantic_context: None,
             related_symbols: vec![RelatedSymbol {
                 name: "bar".to_string(),
                 kind: "method".to_string(),
@@ -1511,6 +1669,8 @@ class Foo {
             file_path: None,
             focal_code: "x".to_string(),
             enclosing_context: None,
+            project_context: None,
+            semantic_context: None,
             related_symbols: Vec::new(),
             related_code: Vec::new(),
             cursor: None,

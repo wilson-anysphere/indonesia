@@ -41,6 +41,16 @@ pub struct PatchSafetyConfig {
     /// This defaults to `false` for safety.
     pub allow_new_files: bool,
 
+    /// Whether patches are allowed to delete existing files.
+    ///
+    /// This defaults to `false` for safety.
+    pub allow_delete_files: bool,
+
+    /// Whether patches are allowed to rename existing files.
+    ///
+    /// This defaults to `false` for safety.
+    pub allow_rename_files: bool,
+
     pub no_new_imports: bool,
 }
 
@@ -67,6 +77,8 @@ impl Default for PatchSafetyConfig {
             ],
             denied_file_extensions: Vec::new(),
             allow_new_files: false,
+            allow_delete_files: false,
+            allow_rename_files: false,
             no_new_imports: false,
         }
     }
@@ -104,6 +116,10 @@ pub enum SafetyError {
     InvalidExcludedGlob { pattern: String, error: String },
     #[error("patch attempted to create a new file '{file}', but new files are not allowed")]
     NewFileNotAllowed { file: String },
+    #[error("patch attempted to delete file '{file}', but file deletions are not allowed")]
+    DeleteNotAllowed { file: String },
+    #[error("patch attempted to rename '{from}' to '{to}', but file renames are not allowed")]
+    RenameNotAllowed { from: String, to: String },
     #[error("patch introduces new imports in '{file}': {imports:?}")]
     NewImports { file: String, imports: Vec<String> },
 }
@@ -144,6 +160,9 @@ pub fn enforce_patch_safety(
                         virtual_files.insert(file.clone(), Some(text));
                     }
                     JsonPatchOp::Delete { file } => {
+                        if !config.allow_delete_files {
+                            return Err(SafetyError::DeleteNotAllowed { file: file.clone() });
+                        }
                         validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
                         files.insert(file.clone());
                         let before =
@@ -160,6 +179,12 @@ pub fn enforce_patch_safety(
                         virtual_files.insert(file.clone(), None);
                     }
                     JsonPatchOp::Rename { from, to } => {
+                        if !config.allow_rename_files {
+                            return Err(SafetyError::RenameNotAllowed {
+                                from: from.clone(),
+                                to: to.clone(),
+                            });
+                        }
                         validate_path(from, config, &excluded_globs, &allowed_exts, &denied_exts)?;
                         validate_path(to, config, &excluded_globs, &allowed_exts, &denied_exts)?;
                         files.insert(from.clone());
@@ -229,6 +254,22 @@ pub fn enforce_patch_safety(
         }
         Patch::UnifiedDiff(diff) => {
             for file in &diff.files {
+                if file.new_path == "/dev/null" && !config.allow_delete_files {
+                    return Err(SafetyError::DeleteNotAllowed {
+                        file: file.old_path.clone(),
+                    });
+                }
+                if file.old_path != "/dev/null"
+                    && file.new_path != "/dev/null"
+                    && file.old_path != file.new_path
+                    && !config.allow_rename_files
+                {
+                    return Err(SafetyError::RenameNotAllowed {
+                        from: file.old_path.clone(),
+                        to: file.new_path.clone(),
+                    });
+                }
+
                 let file_id = if file.new_path != "/dev/null" {
                     file.new_path.as_str()
                 } else {
