@@ -707,7 +707,8 @@ impl WorkspaceEngine {
         let to_vfs = VfsPath::local(to.to_path_buf());
 
         let id_from = self.vfs.get_id(&from_vfs);
-        let to_was_known = self.vfs.get_id(&to_vfs).is_some();
+        let id_to = self.vfs.get_id(&to_vfs);
+        let to_was_known = id_to.is_some();
         let open_docs = self.vfs.open_documents();
         let is_new_id = id_from.is_none() && !to_was_known;
 
@@ -728,9 +729,35 @@ impl WorkspaceEngine {
             }
         }
 
-        // Update `project_files` membership for both paths so that renames that leave the Java set
-        // (e.g. `A.java` -> `A.txt`) or move out of the workspace root correctly remove the file.
-        self.update_project_files_membership(&from_vfs, file_id, false);
+        // A move can have three effects on ids:
+        // - Typical case: preserve `id_from` at `to`.
+        // - Destination already known: keep destination id and orphan `id_from`.
+        // - Open document moved onto an existing destination: preserve `id_from` and orphan `id_to`.
+        //
+        // Keep Salsa inputs consistent by explicitly marking orphaned ids as deleted and removing
+        // them from `project_files`.
+
+        // If the destination already had an id and `rename_path` returned a different one, the
+        // previous id is no longer reachable from any path.
+        if let Some(id_to) = id_to {
+            if id_to != file_id {
+                self.query_db.set_file_exists(id_to, false);
+                self.update_project_files_membership(&to_vfs, id_to, false);
+            }
+        }
+
+        // If we renamed onto an already-known destination and `rename_path` returned the
+        // destination id, the source id has been cleared from the registry.
+        if let Some(id_from) = id_from {
+            if to_was_known && Some(file_id) == id_to && id_from != file_id {
+                self.query_db.set_file_exists(id_from, false);
+                self.update_project_files_membership(&from_vfs, id_from, false);
+            } else {
+                // Update membership for the moved id (handles leaving the Java set / root).
+                self.update_project_files_membership(&from_vfs, file_id, false);
+            }
+        }
+
         self.update_project_files_membership(&to_vfs, file_id, exists);
 
         // Surface both paths as changed so consumers can react to deletions at `from` and
@@ -1347,6 +1374,106 @@ mod tests {
             assert!(snap.file_exists(file_id));
             assert_eq!(snap.file_content(file_id).as_str(), "class A { overlay }");
             assert_eq!(snap.file_rel_path(file_id).as_str(), "src/B.java");
+        });
+    }
+
+    #[test]
+    fn move_to_known_destination_deletes_source_file_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let file_a = root.join("src/A.java");
+        let file_b = root.join("src/B.java");
+        fs::write(&file_a, "class A {}".as_bytes()).unwrap();
+        fs::write(&file_b, "class B {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Created(file_a.clone()),
+            NormalizedEvent::Created(file_b.clone()),
+        ]);
+
+        let id_a = engine.vfs.get_id(&VfsPath::local(file_a.clone())).unwrap();
+        let id_b = engine.vfs.get_id(&VfsPath::local(file_b.clone())).unwrap();
+
+        // Make the destination path "known" but removable on all platforms: delete it before the
+        // rename, without informing the workspace yet.
+        fs::remove_file(&file_b).unwrap();
+        fs::rename(&file_a, &file_b).unwrap();
+
+        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: file_a.clone(),
+            to: file_b.clone(),
+        }]);
+
+        let vfs_a = VfsPath::local(file_a.clone());
+        let vfs_b = VfsPath::local(file_b.clone());
+        assert_eq!(engine.vfs.get_id(&vfs_a), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_b));
+        assert_eq!(engine.vfs.path_for_id(id_a), None);
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(!snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+            assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
+            assert_eq!(snap.file_content(id_b).as_str(), "class A {}");
+            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
+        });
+    }
+
+    #[test]
+    fn move_open_document_to_known_destination_displaces_destination_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let file_a = root.join("src/A.java");
+        let file_b = root.join("src/B.java");
+        fs::write(&file_a, "class A { disk }".as_bytes()).unwrap();
+        fs::write(&file_b, "class B { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Created(file_a.clone()),
+            NormalizedEvent::Created(file_b.clone()),
+        ]);
+
+        let vfs_a = VfsPath::local(file_a.clone());
+        let vfs_b = VfsPath::local(file_b.clone());
+        let id_a = engine.vfs.get_id(&vfs_a).unwrap();
+        let id_b = engine.vfs.get_id(&vfs_b).unwrap();
+
+        // Open A (overlay). The rename should preserve A's id and mark B's old id as deleted.
+        let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
+        assert_eq!(opened, id_a);
+        assert!(engine.vfs.open_documents().is_open(id_a));
+
+        // Ensure the destination path still has a known id in the registry, but make the rename
+        // portable by removing the file on disk first.
+        fs::remove_file(&file_b).unwrap();
+        fs::rename(&file_a, &file_b).unwrap();
+
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: file_a.clone(),
+            to: file_b.clone(),
+        }]);
+
+        assert_eq!(engine.vfs.get_id(&vfs_a), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_a));
+        assert_eq!(engine.vfs.path_for_id(id_b), None);
+        assert!(engine.vfs.open_documents().is_open(id_a));
+        assert!(!engine.vfs.open_documents().is_open(id_b));
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(id_a));
+            assert!(!snap.file_exists(id_b));
+            assert_eq!(snap.file_rel_path(id_a).as_str(), "src/B.java");
+            assert_eq!(snap.file_content(id_a).as_str(), "class A { overlay }");
+            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
         });
     }
 
