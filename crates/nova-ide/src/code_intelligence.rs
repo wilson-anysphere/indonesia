@@ -4180,6 +4180,22 @@ pub(crate) fn core_completions(
         if cancel.is_cancelled() {
             return Vec::new();
         }
+
+        // Avoid misclassifying fully-qualified type names in code (e.g. `java.util.Arr xs;`) as
+        // member-access completions just because they contain a `.`.
+        if is_type_completion_context(text, prefix_start, offset) {
+            let query = type_completion_query(text, prefix_start, &prefix);
+            if !query.qualifier_prefix.is_empty() {
+                let items = type_completions(db, &prefix, query);
+                if cancel.is_cancelled() {
+                    return Vec::new();
+                }
+                if !items.is_empty() {
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+        }
+
         let receiver = ctx
             .receiver
             .as_ref()
@@ -4685,6 +4701,18 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
+        // Avoid misclassifying fully-qualified type names in code (e.g. `java.util.Arr xs;`) as
+        // member-access completions just because they contain a `.`.
+        if is_type_completion_context(text, prefix_start, offset) {
+            let query = type_completion_query(text, prefix_start, &prefix);
+            if !query.qualifier_prefix.is_empty() {
+                let items = type_completions(db, &prefix, query);
+                if !items.is_empty() {
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+        }
+
         let receiver = ctx
             .receiver
             .as_ref()
@@ -4944,6 +4972,315 @@ fn decorate_completions(
     }
 
     items
+}
+
+#[derive(Debug, Clone)]
+struct TypeCompletionQuery {
+    /// The dotted qualifier prefix (including the trailing `.`) preceding the
+    /// current identifier segment, e.g. `java.util.`.
+    qualifier_prefix: String,
+    /// The full dotted prefix to query against type indexes, e.g.
+    /// `java.util.Arr` or just `Str`.
+    full_prefix: String,
+}
+
+/// Compute the dotted prefix preceding the current identifier segment.
+///
+/// Example: for `java.util.Arr` (cursor within/after `Arr`), returns:
+/// - qualifier prefix: `java.util.`
+/// - segment prefix: `Arr` (provided separately by the caller via `identifier_prefix`)
+fn type_completion_query(text: &str, segment_start: usize, segment_prefix: &str) -> TypeCompletionQuery {
+    let (_qualifier_start, qualifier_prefix) = dotted_qualifier_prefix(text, segment_start);
+    let full_prefix = format!("{qualifier_prefix}{segment_prefix}");
+    TypeCompletionQuery {
+        qualifier_prefix,
+        full_prefix,
+    }
+}
+
+/// Determine whether the cursor is in a type-position completion context.
+///
+/// This intentionally uses lightweight, text-based heuristics.
+fn is_type_completion_context(text: &str, prefix_start: usize, offset: usize) -> bool {
+    let (qualifier_start, _) = dotted_qualifier_prefix(text, prefix_start);
+
+    // Generic type arguments: `List<Str|>`, `Map<Str, Arr|>`.
+    if type_context_from_prev_char(text, prefix_start)
+        || type_context_from_prev_char(text, qualifier_start)
+    {
+        return true;
+    }
+
+    // Declarations: `<type> <name>` (fields, locals, params, method returns).
+    looks_like_type_declaration_suffix(text, offset)
+}
+
+fn type_context_from_prev_char(text: &str, position: usize) -> bool {
+    let before = skip_whitespace_backwards(text, position);
+    if before == 0 {
+        return false;
+    }
+    let ch = text.as_bytes()[before - 1] as char;
+    match ch {
+        '<' | ',' => in_generic_type_arg_list(text, before - 1),
+        '(' => looks_like_cast_context(text, before - 1),
+        _ => false,
+    }
+}
+
+/// Best-effort detection for whether a delimiter character is within a generic
+/// type argument list.
+fn in_generic_type_arg_list(text: &str, delim_pos: usize) -> bool {
+    let bytes = text.as_bytes();
+    let Some(&b) = bytes.get(delim_pos) else {
+        return false;
+    };
+
+    match b as char {
+        '<' => is_generic_angle_open(text, delim_pos),
+        ',' => {
+            let Some(lt_pos) = enclosing_angle_bracket_open(text, delim_pos) else {
+                return false;
+            };
+            is_generic_angle_open(text, lt_pos)
+        }
+        _ => false,
+    }
+}
+
+fn enclosing_angle_bracket_open(text: &str, pos: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    for i in (0..pos).rev() {
+        match bytes[i] {
+            b'>' => depth += 1,
+            b'<' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_generic_angle_open(text: &str, lt_pos: usize) -> bool {
+    // Heuristic: in a type argument list, `<` is preceded by a type-like token,
+    // e.g. `List<...>` where `List` starts with an uppercase letter.
+    let before_lt = skip_whitespace_backwards(text, lt_pos);
+    let (_, ident) = identifier_prefix(text, before_lt);
+    ident.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn looks_like_cast_context(text: &str, lparen_pos: usize) -> bool {
+    let before = skip_whitespace_backwards(text, lparen_pos);
+    if before == 0 {
+        return true;
+    }
+    let ch = text.as_bytes()[before - 1] as char;
+    // If the `(` is immediately preceded by an identifier/`)`/`]`, it's more
+    // likely a call/grouping than a cast. This is a best-effort heuristic.
+    !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$' | ')' | ']'))
+}
+
+/// Heuristic detection for contexts like `TypeName <var>` / `TypeName <method>(`.
+fn looks_like_type_declaration_suffix(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+    if offset > bytes.len() {
+        return false;
+    }
+
+    // If the cursor is inside an identifier, don't treat it as a `<type> <name>`
+    // boundary (this avoids misclassifying `foo.len|gth()`).
+    if offset < bytes.len() && is_ident_continue(bytes[offset] as char) {
+        return false;
+    }
+
+    let mut i = offset;
+    let mut saw_ws = false;
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        saw_ws = true;
+        i += 1;
+    }
+    if !saw_ws {
+        return false;
+    }
+    if i >= bytes.len() || !is_ident_start(bytes[i] as char) {
+        return false;
+    }
+    i += 1;
+    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
+        i += 1;
+    }
+
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return false;
+    }
+
+    matches!(bytes[i] as char, ';' | ',' | ')' | '=' | '(' | '[')
+}
+
+/// Extract the qualifier prefix (including the trailing `.`) for a dotted name
+/// ending at `segment_start`.
+///
+/// Returns `(qualifier_start, qualifier_prefix)` where `qualifier_start` points
+/// at the start of the entire qualified name.
+fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) {
+    let bytes = text.as_bytes();
+    let mut start = segment_start;
+    let mut cursor = segment_start;
+
+    while cursor > 0 {
+        let before = skip_whitespace_backwards(text, cursor);
+        if before == 0 || bytes.get(before - 1) != Some(&b'.') {
+            break;
+        }
+        let dot_pos = before - 1;
+        let mut seg_start = dot_pos;
+        while seg_start > 0 {
+            let ch = bytes[seg_start - 1] as char;
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+                seg_start -= 1;
+            } else {
+                break;
+            }
+        }
+        if seg_start == dot_pos {
+            break;
+        }
+        start = seg_start;
+        cursor = seg_start;
+    }
+
+    let qualifier_raw = &text[start..segment_start];
+    let qualifier_prefix: String = qualifier_raw
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    (start, qualifier_prefix)
+}
+
+fn type_completions(db: &dyn Database, segment_prefix: &str, query: TypeCompletionQuery) -> Vec<CompletionItem> {
+    const LIMIT: usize = 200;
+
+    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Workspace types.
+    for (label, detail) in workspace_type_candidates(db, segment_prefix, &query, LIMIT) {
+        if seen.insert(label.clone()) {
+            items.push(CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(detail),
+                ..Default::default()
+            });
+        }
+        if items.len() >= LIMIT {
+            break;
+        }
+    }
+
+    // JDK types.
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let mut prefixes = Vec::new();
+    if query.qualifier_prefix.is_empty() && !query.full_prefix.contains('.') && !query.full_prefix.contains('/') {
+        prefixes.push(format!("java.lang.{}", query.full_prefix));
+    } else {
+        prefixes.push(query.full_prefix.clone());
+    }
+
+    for prefix in prefixes {
+        let Ok(names) = jdk.class_names_with_prefix(&prefix) else {
+            continue;
+        };
+
+        for name in names.into_iter().take(LIMIT.saturating_sub(items.len())) {
+            let simple = name.rsplit('.').next().unwrap_or(name.as_str());
+            // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
+            if simple.contains('$') {
+                continue;
+            }
+
+            let simple = simple.to_string();
+            if !seen.insert(simple.clone()) {
+                continue;
+            }
+
+            items.push(CompletionItem {
+                label: simple,
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(name),
+                ..Default::default()
+            });
+
+            if items.len() >= LIMIT {
+                break;
+            }
+        }
+    }
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(segment_prefix, &mut items, &ctx);
+    items.truncate(LIMIT);
+    items
+}
+
+fn workspace_type_candidates(
+    db: &dyn Database,
+    segment_prefix: &str,
+    query: &TypeCompletionQuery,
+    limit: usize,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let qualified = !query.qualifier_prefix.is_empty();
+
+    for file_id in db.all_file_ids() {
+        if out.len() >= limit {
+            break;
+        }
+
+        if let Some(path) = db.file_path(file_id) {
+            if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                continue;
+            }
+        }
+
+        let text = db.file_content(file_id);
+        let package = parse_java_package_name(text).unwrap_or_default();
+        for ty in parse_top_level_type_names(text) {
+            if out.len() >= limit {
+                break;
+            }
+
+            let fqn = if package.is_empty() {
+                ty.clone()
+            } else {
+                format!("{package}.{ty}")
+            };
+
+            let matches = if qualified {
+                fqn.starts_with(&query.full_prefix)
+            } else {
+                ty.starts_with(segment_prefix)
+            };
+
+            if matches {
+                out.push((ty, fqn));
+            }
+        }
+    }
+
+    out
 }
 
 fn dot_completion_context(text: &str, suffix_prefix_start: usize) -> Option<DotCompletionContext> {
@@ -6591,6 +6928,11 @@ enum TypePositionTrigger {
 fn type_position_completion_applicable(text: &str, prefix_start: usize, prefix: &str) -> bool {
     if prefix.is_empty() {
         return false;
+    }
+
+    // Generic type arguments: `List<Str|>`, `Map<Str, Arr|>`.
+    if type_context_from_prev_char(text, prefix_start) {
+        return looks_like_reference_type_prefix(prefix);
     }
 
     let tokens = tokenize(text);

@@ -1851,6 +1851,64 @@ fn static_import_completion_replaces_only_member_segment() {
 }
 
 #[test]
+fn completion_in_generic_type_argument_includes_string() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A {
+  List<Str<|>> xs;
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"String"),
+        "expected completion list to contain `String`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_for_qualified_type_replaces_only_segment() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  java.util.Arr<|> xs;
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+
+    let segment_start = text_without_caret
+        .find("java.util.Arr")
+        .expect("expected qualified name in fixture")
+        + "java.util.".len();
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, segment_start),
+        "expected completion to replace only `Arr` segment"
+    );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn completion_includes_postfix_if_for_boolean() {
     let (db, file, pos) = fixture(
         r#"
