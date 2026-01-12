@@ -177,6 +177,25 @@ fn path_to_label_returns_none_when_no_build_file_found() {
     assert_eq!(label, None);
 }
 
+#[test]
+fn path_to_label_errors_for_file_outside_workspace() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+
+    let outside = tempdir().unwrap();
+    create_file(&outside.path().join("Hello.java"));
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let err = workspace
+        .workspace_file_label(&outside.path().join("Hello.java"))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("outside the Bazel workspace root"),
+        "unexpected error: {err}"
+    );
+}
+
 fn minimal_java_package(workspace_root: &Path) -> PathBuf {
     std::fs::write(workspace_root.join("WORKSPACE"), "# test\n").unwrap();
     write_file(&workspace_root.join("java/BUILD"), "# java package\n");
@@ -279,6 +298,45 @@ fn alias_chain_file_to_alias_to_java_library() {
             vec![
                 "query".to_string(),
                 "same_pkg_direct_rdeps(//java:hello_alias)".to_string(),
+                "--output=label_kind".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
+fn does_not_expand_java_rules_to_find_higher_level_binaries() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+
+    let runner = QueryRunner::new([
+        (
+            format!("same_pkg_direct_rdeps({file_label})"),
+            MockResponse::Ok("filegroup rule //java:srcs\n".to_string()),
+        ),
+        (
+            "same_pkg_direct_rdeps(//java:srcs)".to_string(),
+            MockResponse::Ok("java_library rule //java:lib\n".to_string()),
+        ),
+        // Intentionally omit a response for `same_pkg_direct_rdeps(//java:lib)` to assert the
+        // implementation stops traversal at java rules.
+    ]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners, vec!["//java:lib".to_string()]);
+    assert_eq!(
+        runner.calls(),
+        vec![
+            vec![
+                "query".to_string(),
+                format!("same_pkg_direct_rdeps({file_label})"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                "same_pkg_direct_rdeps(//java:srcs)".to_string(),
                 "--output=label_kind".to_string()
             ],
         ]
