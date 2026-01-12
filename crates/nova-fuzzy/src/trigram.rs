@@ -16,11 +16,8 @@ fn pack_trigram(a: u8, b: u8, c: u8) -> Trigram {
     ((a as u32) << 16) | ((b as u32) << 8) | (c as u32)
 }
 
-/// Iterate all (overlapping) trigrams for `text`.
-///
-/// The returned trigrams are ASCII case-folded.
-fn trigrams(text: &str, out: &mut Vec<Trigram>) {
-    let bytes = text.as_bytes();
+#[inline]
+fn trigrams_ascii_bytes(bytes: &[u8], out: &mut Vec<Trigram>) {
     if bytes.len() < 3 {
         return;
     }
@@ -35,6 +32,98 @@ fn trigrams(text: &str, out: &mut Vec<Trigram>) {
         a = b;
         b = c;
     }
+}
+
+#[cfg(feature = "unicode")]
+#[inline]
+fn hash_trigram_units(a: char, b: char, c: char) -> Trigram {
+    // Simple stable 32-bit FNV-1a hash.
+    const OFFSET_BASIS: u32 = 0x811c9dc5;
+    const PRIME: u32 = 0x0100_0193;
+
+    let mut h = OFFSET_BASIS;
+    for cp in [a as u32, b as u32, c as u32] {
+        for byte in cp.to_le_bytes() {
+            h ^= byte as u32;
+            h = h.wrapping_mul(PRIME);
+        }
+    }
+    h
+}
+
+#[cfg(feature = "unicode")]
+#[inline]
+fn trigram_from_units(a: char, b: char, c: char) -> Trigram {
+    if a.is_ascii() && b.is_ascii() && c.is_ascii() {
+        // Keep ASCII trigrams compatible with the fast packed representation so
+        // ASCII-only queries can still match identifiers that contain Unicode
+        // elsewhere (e.g. "café" should match "caf").
+        pack_trigram(
+            fold_byte(a as u8),
+            fold_byte(b as u8),
+            fold_byte(c as u8),
+        )
+    } else {
+        hash_trigram_units(a, b, c)
+    }
+}
+
+#[cfg(feature = "unicode")]
+fn trigrams_unicode_chars(chars: impl Iterator<Item = char>, out: &mut Vec<Trigram>) {
+    let mut it = chars;
+    let Some(mut a) = it.next() else {
+        return;
+    };
+    let Some(mut b) = it.next() else {
+        return;
+    };
+
+    for c in it {
+        out.push(trigram_from_units(a, b, c));
+        a = b;
+        b = c;
+    }
+}
+
+/// Iterate all (overlapping) trigrams for `text`.
+///
+/// The returned trigrams are ASCII case-folded.
+fn trigrams(text: &str, out: &mut Vec<Trigram>) {
+    #[cfg(feature = "unicode")]
+    {
+        let mut buf = String::new();
+        trigrams_with_unicode_buf(text, out, &mut buf);
+        return;
+    }
+
+    #[cfg(not(feature = "unicode"))]
+    {
+        trigrams_ascii_bytes(text.as_bytes(), out);
+    }
+}
+
+#[cfg(feature = "unicode")]
+fn trigrams_with_unicode_buf(text: &str, out: &mut Vec<Trigram>, buf: &mut String) {
+    // Fast path: preserve the existing packed-3-byte trigram behavior for ASCII.
+    if text.is_ascii() {
+        trigrams_ascii_bytes(text.as_bytes(), out);
+        return;
+    }
+
+    use unicode_casefold::UnicodeCaseFold;
+    use unicode_normalization::UnicodeNormalization;
+
+    buf.clear();
+    buf.extend(text.nfkc().case_fold());
+
+    // If normalization+casefolding produces pure ASCII (e.g. "Straße" → "strasse"),
+    // keep the packed representation to remain compatible with ASCII-only queries.
+    if buf.is_ascii() {
+        trigrams_ascii_bytes(buf.as_bytes(), out);
+        return;
+    }
+
+    trigrams_unicode_chars(buf.chars(), out);
 }
 
 /// Compact trigram → posting-list index.
@@ -201,6 +290,8 @@ impl TrigramIndex {
 pub struct TrigramIndexBuilder {
     pairs: Vec<u64>,       // (trigram << 32) | id
     scratch: Vec<Trigram>, // reused buffer to avoid per-insert allocations
+    #[cfg(feature = "unicode")]
+    unicode_buf: String, // reused Unicode normalization+casefold buffer
 }
 
 impl TrigramIndexBuilder {
@@ -208,12 +299,17 @@ impl TrigramIndexBuilder {
         Self {
             pairs: Vec::new(),
             scratch: Vec::new(),
+            #[cfg(feature = "unicode")]
+            unicode_buf: String::new(),
         }
     }
 
     /// Insert trigrams extracted from `text` for `id`.
     pub fn insert(&mut self, id: SymbolId, text: &str) {
         self.scratch.clear();
+        #[cfg(feature = "unicode")]
+        trigrams_with_unicode_buf(text, &mut self.scratch, &mut self.unicode_buf);
+        #[cfg(not(feature = "unicode"))]
         trigrams(text, &mut self.scratch);
         if self.scratch.is_empty() {
             return;
@@ -558,5 +654,34 @@ mod tests {
             let slow = candidates_naive(&index, &query);
             assert_eq!(fast, slow, "query={query:?}");
         }
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_case_folding_makes_strasse_match_strasse() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "Straße");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("strasse"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_normalization_makes_decomposed_match_composed() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "cafe\u{0301}");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("café"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_trigrams_are_over_units_not_utf8_bytes() {
+        // "éa" is 3 UTF-8 bytes but only 2 Unicode scalar values.
+        let mut out = Vec::new();
+        trigrams("éa", &mut out);
+        assert!(out.is_empty());
     }
 }
