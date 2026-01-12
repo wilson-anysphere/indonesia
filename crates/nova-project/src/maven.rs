@@ -681,9 +681,17 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
 }
 
 fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> {
-    let release = props
-        .get("maven.compiler.release")
-        .and_then(|v| JavaVersion::parse(v));
+    // Java language level is commonly expressed via properties that reference other properties,
+    // e.g. `<maven.compiler.release>${java.version}</maven.compiler.release>`. Resolve nested
+    // placeholders before parsing the version numbers.
+    let resolved_java_version = |key: &str| {
+        props
+            .get(key)
+            .map(|raw| resolve_placeholders(raw, props))
+            .and_then(|resolved| JavaVersion::parse(&resolved))
+    };
+
+    let release = resolved_java_version("maven.compiler.release");
     if let Some(v) = release {
         return Some(JavaConfig {
             source: v,
@@ -692,12 +700,8 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
         });
     }
 
-    let source = props
-        .get("maven.compiler.source")
-        .and_then(|v| JavaVersion::parse(v));
-    let target = props
-        .get("maven.compiler.target")
-        .and_then(|v| JavaVersion::parse(v));
+    let source = resolved_java_version("maven.compiler.source");
+    let target = resolved_java_version("maven.compiler.target");
 
     match (source, target) {
         (Some(source), Some(target)) => Some(JavaConfig {

@@ -170,6 +170,16 @@ fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
 }
 
 #[test]
+fn resolves_maven_java_version_placeholders() {
+    let root = testdata_path("maven-java-placeholder");
+    let config = load_project(&root).expect("load maven project");
+
+    assert_eq!(config.build_system, BuildSystem::Maven);
+    assert_eq!(config.java.source, JavaVersion(11));
+    assert_eq!(config.java.target, JavaVersion(11));
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
     let config = load_project(&root).expect("load gradle project");
