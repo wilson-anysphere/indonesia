@@ -2972,6 +2972,29 @@ class A {
 }
 
 #[test]
+fn completion_scope_excludes_catch_parameter_after_catch() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    try {
+    } catch (RuntimeException e) {
+    }
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"e"),
+        "expected catch parameter `e` to be out of scope after catch; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_recency_ranks_recent_locals_first() {
     let (db, file, pos) = fixture(
         r#"

@@ -6661,6 +6661,7 @@ fn var_decl_scope_end_offset(tokens: &[Token], var_name_offset: usize) -> Option
     match keyword.text.as_str() {
         "for" => for_statement_end_offset(tokens, open_paren - 1),
         "try" => try_statement_end_offset(tokens, open_paren - 1),
+        "catch" => catch_statement_end_offset(tokens, open_paren - 1),
         _ => None,
     }
 }
@@ -6749,6 +6750,27 @@ fn try_statement_end_offset(tokens: &[Token], try_idx: usize) -> Option<usize> {
     }
 
     Some(end_offset)
+}
+
+fn catch_statement_end_offset(tokens: &[Token], catch_idx: usize) -> Option<usize> {
+    let mut open_paren_idx = None;
+    for i in (catch_idx + 1)..tokens.len() {
+        if tokens[i].kind == TokenKind::Symbol('(') {
+            open_paren_idx = Some(i);
+            break;
+        }
+    }
+    let open_paren_idx = open_paren_idx?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    let body_idx = close_paren_idx + 1;
+    if tokens
+        .get(body_idx)
+        .map_or(true, |t| t.kind != TokenKind::Symbol('{'))
+    {
+        return None;
+    }
+    let (_, body_span) = find_matching_brace(tokens, body_idx)?;
+    Some(body_span.end)
 }
 
 // -----------------------------------------------------------------------------
