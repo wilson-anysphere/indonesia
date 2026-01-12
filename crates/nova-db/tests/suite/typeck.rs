@@ -279,6 +279,27 @@ class C {
 }
 
 #[test]
+fn synchronized_on_reference_is_ok() {
+    let src = r#"
+class C {
+    void m() {
+        Object x = new Object();
+        synchronized (x) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
+        "did not expect invalid-synchronized-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn array_creation_has_array_type() {
     let src = r#"
 class C { void m(){ int[] a = new int[1]; } }
