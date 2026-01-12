@@ -53,10 +53,12 @@ When a single allocation is shared across layers, only one layer should account 
 
 Concrete example: Salsa parse results are shared between memo tables and the open-document syntax tree store.
 
-- Salsa memo tracking explicitly records **0 bytes** for pinned parses to avoid double-counting:
-  - See `TrackedSalsaMemo::Parse` in `crates/nova-db/src/salsa/mod.rs`.
-- There is an integration test asserting this invariant:
+- Salsa memo tracking explicitly records **0 bytes** for pinned results to avoid double-counting:
+  - See `TrackedSalsaMemo::{Parse, ParseJava, ItemTree}` in `crates/nova-db/src/salsa/mod.rs`.
+- There are integration tests asserting these invariants:
   - `crates/nova-db/src/salsa/mod.rs` — `open_doc_parse_is_not_double_counted_between_query_cache_and_syntax_trees`
+  - `crates/nova-db/src/salsa/mod.rs` — `open_doc_parse_java_is_not_double_counted_between_query_cache_and_syntax_trees`
+  - `crates/nova-db/src/salsa/mod.rs` — `open_doc_item_tree_is_not_double_counted_between_query_cache_and_syntax_trees`
 
 ---
 
@@ -218,6 +220,9 @@ This list is meant to be kept accurate as new components integrate.
       - `ProjectIndexes` (`NovaIndexing::project_indexes` in `crates/nova-db/src/salsa/indexing.rs`)
       - `WorkspaceDefMap` (`NovaResolve::workspace_def_map` in `crates/nova-db/src/salsa/resolve.rs`)
       - `ProjectBaseTypeStore` (`NovaTypeck::project_base_type_store` in `crates/nova-db/src/salsa/typeck.rs`)
+      - `JpmsCompilationEnv` (`NovaResolve::jpms_compilation_env` in `crates/nova-db/src/salsa/resolve.rs`)
+    - **Project+module-keyed** memos: `TrackedSalsaProjectModuleMemo`, notably:
+      - `ProjectBaseTypeStoreForModule` (`NovaTypeck::project_base_type_store_for_module` in `crates/nova-db/src/salsa/typeck.rs`)
     - **Body-keyed** memos: `TrackedSalsaBodyMemo` (recorded in `crates/nova-db/src/salsa/{hir,flow,typeck}.rs`)
 - `evict(request)`:
   - Best-effort rebuild: clones `SalsaInputs` and rebuilds `RootDatabase` behind a mutex, dropping memoized results.
@@ -235,6 +240,21 @@ This list is meant to be kept accurate as new components integrate.
     - Enforced by `Database::persist_project_indexes`: it returns early if `project_files(project)` contains any `file_is_dirty(file)`.
   - `flush_to_disk()` must remain best-effort and non-panicking; eviction must not be blocked on I/O.
 
+#### `workspace_closed_file_texts` (workspace-held closed file texts)
+
+- Code: `crates/nova-workspace/src/engine.rs` (`ClosedFileTextStore`)
+- Category: `MemoryCategory::QueryCache`
+- Registration: `ClosedFileTextStore::new` (`MemoryManager::register_evictor("workspace_closed_file_texts", …)`)
+- Tracked bytes: sum of in-memory `Arc<String>` allocations for *closed* file contents.
+- Double-counting: when a file is tracked by this store, its `file_content` bytes are suppressed from `salsa_inputs` via `Database::set_file_text_suppressed(file, true)` to avoid double-counting.
+- `evict(request)`:
+  - Chooses large closed-file allocations as candidates (never evicts open docs).
+  - Replaces the Salsa input `file_content(file)` with a shared empty `Arc<String>` (`empty_file_content()`) to drop the large allocation while keeping inputs well-formed.
+  - Marks `file_is_dirty(file)=true` so persistence does not overwrite on-disk caches with placeholder contents.
+  - Restores text lazily on demand from the VFS (`ClosedFileTextStore::restore_if_evicted`).
+- `flush_to_disk()`:
+  - Not implemented (default no-op).
+
 ### `SyntaxTrees` category
 
 #### `nova_syntax::SyntaxTreeStore`
@@ -251,6 +271,20 @@ This list is meant to be kept accurate as new components integrate.
   - `get_if_current` uses `Arc::ptr_eq` against the current text snapshot to prevent returning stale parses after edits.
   - When paired with Salsa, pinned parses must not be double-counted (see above).
 
+#### `nova_syntax::JavaParseStore`
+
+- Code: `crates/nova-syntax/src/java_parse_store.rs`
+- Category: `MemoryCategory::SyntaxTrees`
+- Tracked bytes: approximate (sum of pinned Java parse source text lengths)
+- `evict(request)`:
+  - `Low/Medium/High`: drops trees for closed files (keeps open docs warm).
+  - `Critical`: clears all stored trees.
+- `flush_to_disk()`:
+  - Not implemented (default no-op).
+- Correctness constraints:
+  - Designed to keep open-doc `parse_java` results alive across Salsa memo eviction (DB rebuild).
+  - When integrated with Salsa, pinned `parse_java` results should be recorded as `0` bytes in the Salsa memo footprint to avoid double-counting.
+
 #### `nova_db::salsa::ItemTreeStore`
 
 - Code: `crates/nova-db/src/salsa/item_tree_store.rs`
@@ -264,6 +298,17 @@ This list is meant to be kept accurate as new components integrate.
 - Correctness constraints:
   - Designed to keep open-doc `item_tree` results alive across Salsa memo eviction (DB rebuild).
   - Must only reuse entries when the `Arc<String>` text matches by pointer identity.
+
+#### `nova_db::salsa::JavaParseCache`
+
+- Code: `crates/nova-db/src/salsa/java_parse_cache.rs`
+- Category: `MemoryCategory::SyntaxTrees`
+- Registration: `Database::register_java_parse_cache_evictor` (called by `Database::register_salsa_memo_evictor`)
+- Tracked bytes: intentionally **0** to avoid double-counting shared `Arc<JavaParseResult>` allocations (accounted via Salsa memo footprint tracking instead).
+- `evict(request)`:
+  - Clears the cache on `target_bytes == 0` or `Critical` pressure (best-effort).
+- `flush_to_disk()`:
+  - Not implemented (default no-op).
 
 ### `Indexes` category
 
@@ -328,7 +373,10 @@ This list is meant to be kept accurate as new components integrate.
 
 - Code: `crates/nova-db/src/salsa/mod.rs` (`SalsaInputFootprint`)
 - Category: `MemoryCategory::Other`
-- Tracked bytes: sum of file content lengths (plus other small tracked inputs)
+- Tracked bytes: best-effort tracked input sizes, including:
+  - file text lengths (current + previous incremental-parse snapshot + last edit replacement bytes), unless suppressed
+  - other small inputs (e.g. file rel paths, `all_file_ids`, project configs/files/class ids)
+- Double-counting: hosts can suppress tracking for selected file texts via `Database::set_file_text_suppressed` (e.g. when a separate evictable store owns those allocations).
 - Eviction: none (trackers only)
 
 #### Tracker: `vfs_documents` (LSP)
