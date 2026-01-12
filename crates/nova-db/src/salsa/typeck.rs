@@ -2191,7 +2191,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, *op, *lhs, *rhs),
+            HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, expr, *op, *lhs, *rhs),
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
                 let rhs_expected = match op {
@@ -3396,6 +3396,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     fn infer_binary(
         &mut self,
         loader: &mut ExternalTypeLoader<'_>,
+        expr: HirExprId,
         op: BinaryOp,
         lhs: HirExprId,
         rhs: HirExprId,
@@ -3403,109 +3404,202 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let lhs_ty = self.infer_expr(loader, lhs).ty;
         let rhs_ty = self.infer_expr(loader, rhs).ty;
 
+        let env_ro: &dyn TypeEnv = &*loader.store;
+        let span = Some(self.body.exprs[expr].range());
+
         let string_ty = Type::class(loader.store.well_known().string, vec![]);
+        let lhs_prim = primitive_like(env_ro, &lhs_ty);
+        let rhs_prim = primitive_like(env_ro, &rhs_ty);
+
+        let type_mismatch = |this: &mut Self| {
+            let lhs_render = format_type(env_ro, &lhs_ty);
+            let rhs_render = format_type(env_ro, &rhs_ty);
+            this.diagnostics.push(Diagnostic::error(
+                "type-mismatch",
+                format!("type mismatch: cannot apply `{op:?}` to {lhs_render} and {rhs_render}"),
+                span,
+            ));
+        };
+
         let ty = match op {
-            // Java operators that always produce boolean results.
-            BinaryOp::EqEq
-            | BinaryOp::NotEq
-            | BinaryOp::Less
-            | BinaryOp::LessEq
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEq
-            | BinaryOp::AndAnd
-            | BinaryOp::OrOr => Type::boolean(),
+            // `==` and `!=` always produce boolean, but validate primitive operand pairs to
+            // avoid silently accepting obvious mismatches (e.g. `1 == \"x\"`).
+            BinaryOp::EqEq | BinaryOp::NotEq => {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
+                    Type::boolean()
+                } else if lhs_prim.is_some() || rhs_prim.is_some() {
+                    match (lhs_prim, rhs_prim) {
+                        (Some(a), Some(b)) => {
+                            let ok = (a.is_numeric() && b.is_numeric())
+                                || (a == PrimitiveType::Boolean && b == PrimitiveType::Boolean);
+                            if ok {
+                                Type::boolean()
+                            } else {
+                                type_mismatch(self);
+                                Type::Error
+                            }
+                        }
+                        _ => {
+                            type_mismatch(self);
+                            Type::Error
+                        }
+                    }
+                } else {
+                    // Best-effort: avoid strict reference-type castability checks in the type
+                    // checker. If neither side is a primitive/boxed primitive, assume it is a
+                    // reference comparison.
+                    Type::boolean()
+                }
+            }
+
+            // Relational operators always produce boolean.
+            BinaryOp::Less | BinaryOp::LessEq | BinaryOp::Greater | BinaryOp::GreaterEq => {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
+                    Type::boolean()
+                } else {
+                    let ok = matches!((lhs_prim, rhs_prim), (Some(a), Some(b)) if a.is_numeric() && b.is_numeric());
+                    if ok {
+                        Type::boolean()
+                    } else {
+                        type_mismatch(self);
+                        Type::Error
+                    }
+                }
+            }
+
+            // `&&` / `||` always produce boolean.
+            BinaryOp::AndAnd | BinaryOp::OrOr => {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
+                    Type::boolean()
+                } else {
+                    let ok = matches!((lhs_prim, rhs_prim), (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean)));
+                    if ok {
+                        Type::boolean()
+                    } else {
+                        type_mismatch(self);
+                        Type::Error
+                    }
+                }
+            }
 
             // `+` is special: numeric addition or string concatenation.
             BinaryOp::Add => {
                 if lhs_ty == string_ty || rhs_ty == string_ty {
                     string_ty.clone()
-                } else if let (Type::Primitive(a), Type::Primitive(b)) = (&lhs_ty, &rhs_ty) {
-                    binary_numeric_promotion(*a, *b)
-                        .map(Type::Primitive)
-                        .unwrap_or(Type::Unknown)
-                } else if lhs_ty.is_reference() || rhs_ty.is_reference() {
-                    // Best-effort fallback: if either operand is a reference type, assume string
-                    // concatenation (e.g. `"" + obj`).
-                    string_ty.clone()
-                } else {
+                } else if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
                     Type::Unknown
+                } else {
+                    match (lhs_prim, rhs_prim) {
+                        (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
+                            binary_numeric_promotion(a, b)
+                                .map(Type::Primitive)
+                                .unwrap_or(Type::Unknown)
+                        }
+                        _ => {
+                            type_mismatch(self);
+                            Type::Error
+                        }
+                    }
                 }
             }
 
             // Numeric operators.
             BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                if let (Type::Primitive(a), Type::Primitive(b)) = (&lhs_ty, &rhs_ty) {
-                    binary_numeric_promotion(*a, *b)
-                        .map(Type::Primitive)
-                        .unwrap_or(Type::Unknown)
-                } else {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
                     Type::Unknown
+                } else {
+                    match (lhs_prim, rhs_prim) {
+                        (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
+                            binary_numeric_promotion(a, b)
+                                .map(Type::Primitive)
+                                .unwrap_or(Type::Unknown)
+                        }
+                        _ => {
+                            type_mismatch(self);
+                            Type::Error
+                        }
+                    }
                 }
             }
 
             // Bitwise operators.
-            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => match (&lhs_ty, &rhs_ty) {
-                (
-                    Type::Primitive(PrimitiveType::Boolean),
-                    Type::Primitive(PrimitiveType::Boolean),
-                ) => Type::boolean(),
-                (Type::Primitive(a), Type::Primitive(b))
-                    if matches!(
-                        a,
-                        PrimitiveType::Byte
-                            | PrimitiveType::Short
-                            | PrimitiveType::Char
-                            | PrimitiveType::Int
-                            | PrimitiveType::Long
-                    ) && matches!(
-                        b,
-                        PrimitiveType::Byte
-                            | PrimitiveType::Short
-                            | PrimitiveType::Char
-                            | PrimitiveType::Int
-                            | PrimitiveType::Long
-                    ) =>
-                {
-                    binary_numeric_promotion(*a, *b)
-                        .map(Type::Primitive)
-                        .unwrap_or(Type::Unknown)
-                }
-                _ => Type::Unknown,
-            },
-
-            // Shift operators.
-            BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr => match (&lhs_ty, &rhs_ty) {
-                (Type::Primitive(a), Type::Primitive(b))
-                    if matches!(
-                        a,
-                        PrimitiveType::Byte
-                            | PrimitiveType::Short
-                            | PrimitiveType::Char
-                            | PrimitiveType::Int
-                            | PrimitiveType::Long
-                    ) && matches!(
-                        b,
-                        PrimitiveType::Byte
-                            | PrimitiveType::Short
-                            | PrimitiveType::Char
-                            | PrimitiveType::Int
-                            | PrimitiveType::Long
-                    ) =>
-                {
-                    match a {
-                        // Unary numeric promotion for shift operations.
-                        PrimitiveType::Long => Type::Primitive(PrimitiveType::Long),
-                        PrimitiveType::Byte
-                        | PrimitiveType::Short
-                        | PrimitiveType::Char
-                        | PrimitiveType::Int => Type::Primitive(PrimitiveType::Int),
-                        PrimitiveType::Float | PrimitiveType::Double | PrimitiveType::Boolean => {
-                            Type::Unknown
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
+                    Type::Unknown
+                } else {
+                    match (lhs_prim, rhs_prim) {
+                        (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean)) => Type::boolean(),
+                        (Some(a), Some(b))
+                            if matches!(
+                                a,
+                                PrimitiveType::Byte
+                                    | PrimitiveType::Short
+                                    | PrimitiveType::Char
+                                    | PrimitiveType::Int
+                                    | PrimitiveType::Long
+                            ) && matches!(
+                                b,
+                                PrimitiveType::Byte
+                                    | PrimitiveType::Short
+                                    | PrimitiveType::Char
+                                    | PrimitiveType::Int
+                                    | PrimitiveType::Long
+                            ) =>
+                        {
+                            binary_numeric_promotion(a, b)
+                                .map(Type::Primitive)
+                                .unwrap_or(Type::Unknown)
+                        }
+                        _ => {
+                            type_mismatch(self);
+                            Type::Error
                         }
                     }
                 }
-                _ => Type::Unknown,
-            },
+            }
+
+            // Shift operators.
+            BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr => {
+                if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
+                    Type::Unknown
+                } else {
+                    match (lhs_prim, rhs_prim) {
+                        (Some(a), Some(b))
+                            if matches!(
+                                a,
+                                PrimitiveType::Byte
+                                    | PrimitiveType::Short
+                                    | PrimitiveType::Char
+                                    | PrimitiveType::Int
+                                    | PrimitiveType::Long
+                            ) && matches!(
+                                b,
+                                PrimitiveType::Byte
+                                    | PrimitiveType::Short
+                                    | PrimitiveType::Char
+                                    | PrimitiveType::Int
+                                    | PrimitiveType::Long
+                            ) =>
+                        {
+                            match a {
+                                // Unary numeric promotion for shift operations.
+                                PrimitiveType::Long => Type::Primitive(PrimitiveType::Long),
+                                PrimitiveType::Byte
+                                | PrimitiveType::Short
+                                | PrimitiveType::Char
+                                | PrimitiveType::Int => Type::Primitive(PrimitiveType::Int),
+                                PrimitiveType::Float
+                                | PrimitiveType::Double
+                                | PrimitiveType::Boolean => Type::Unknown,
+                            }
+                        }
+                        _ => {
+                            type_mismatch(self);
+                            Type::Error
+                        }
+                    }
+                }
+            }
         };
 
         ExprInfo {
@@ -3540,6 +3634,49 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         cancel::checkpoint_cancelled_every(self.db, self.steps, 256);
         self.steps = self.steps.wrapping_add(1);
     }
+}
+
+fn primitive_like(env: &dyn TypeEnv, ty: &Type) -> Option<PrimitiveType> {
+    primitive_like_inner(env, ty, 8)
+}
+
+fn primitive_like_inner(env: &dyn TypeEnv, ty: &Type, depth: u8) -> Option<PrimitiveType> {
+    if depth == 0 {
+        return None;
+    }
+
+    match ty {
+        Type::Primitive(p) => Some(*p),
+        Type::Class(nova_types::ClassType { def, .. }) => env
+            .class(*def)
+            .and_then(|c| unbox_class_name(&c.name)),
+        Type::Named(name) => unbox_class_name(name),
+        Type::TypeVar(id) => env
+            .type_param(*id)
+            .and_then(|tp| {
+                tp.upper_bounds
+                    .iter()
+                    .find_map(|b| primitive_like_inner(env, b, depth.saturating_sub(1)))
+            }),
+        Type::Intersection(types) => types
+            .iter()
+            .find_map(|t| primitive_like_inner(env, t, depth.saturating_sub(1))),
+        _ => None,
+    }
+}
+
+fn unbox_class_name(name: &str) -> Option<PrimitiveType> {
+    Some(match name {
+        "java.lang.Boolean" => PrimitiveType::Boolean,
+        "java.lang.Byte" => PrimitiveType::Byte,
+        "java.lang.Short" => PrimitiveType::Short,
+        "java.lang.Character" => PrimitiveType::Char,
+        "java.lang.Integer" => PrimitiveType::Int,
+        "java.lang.Long" => PrimitiveType::Long,
+        "java.lang.Float" => PrimitiveType::Float,
+        "java.lang.Double" => PrimitiveType::Double,
+        _ => return None,
+    })
 }
 
 fn params_for_owner(tree: &nova_hir::item_tree::ItemTree, owner: DefWithBodyId) -> Vec<ParamId> {

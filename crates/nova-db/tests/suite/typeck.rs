@@ -424,9 +424,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| {
-            d.code.as_ref() != "unresolved-method" || !d.message.contains("substring")
-        }),
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            || !d.message.contains("substring")),
         "expected substring call to resolve, got {diags:?}"
     );
 
@@ -435,6 +434,24 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "String");
+}
+
+#[test]
+fn plus_unboxes_integer_operands_to_int() {
+    let src = r#"
+class C {
+    int m(Integer a, Integer b) {
+        return a + b;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('+').expect("snippet should contain +");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
 }
 
 #[test]

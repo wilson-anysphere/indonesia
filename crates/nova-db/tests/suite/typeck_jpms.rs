@@ -662,5 +662,8 @@ class UseC {
         !diags_c.iter().any(|d| d.code.as_ref() == "unresolved-type"
             && d.message.contains("com.example.b.hidden.Hidden")),
         "expected com.example.b.hidden.Hidden to resolve in workspace.c (qualified export), got {diags_c:?}"
+=======
+        "expected com.example.dep.Foo to resolve via the unnamed module, got {diags:?}"
+>>>>>>> 1429c62 (fix: validate binary ops + repair trigram scratch API)
     );
 }
