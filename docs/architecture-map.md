@@ -190,6 +190,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 ### `nova-ext`
 - **Purpose:** extension/plugin abstractions (code actions, diagnostics, completions) + registry.
 - **Key entry points:** `crates/nova-ext/src/lib.rs` (`ExtensionRegistry`, provider traits).
+- **Docs:** [`docs/extensions/README.md`](extensions/README.md)
 - **Maturity:** scaffolding
 - **Known gaps vs intended docs:**
   - Not currently the primary framework/plugin system used by `nova-lsp` or `nova-workspace`.

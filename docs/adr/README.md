@@ -55,4 +55,4 @@ If a decision changes:
 7. [0007 — Crate boundaries and dependency policy](0007-crate-boundaries-and-dependencies.md)
 8. [0008 — Distributed mode security (router↔worker)](0008-distributed-mode-security.md)
 9. [0009 — Router↔worker remote RPC protocol (v3)](0009-remote-rpc-protocol.md)
-10. [0010 — Extension system (native + WASM providers)](0010-extension-system.md)
+10. [0010 — Extension system (native + WASM providers)](0010-extension-system.md) — practical guide: [`docs/extensions/README.md`](../extensions/README.md)

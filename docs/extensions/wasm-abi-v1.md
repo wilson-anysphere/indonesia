@@ -6,7 +6,17 @@ plugin) communicate using a small ABI that is intentionally simple:
 - requests/responses are UTF-8 JSON (via `serde`)
 - buffers are exchanged via `(ptr,len)` pairs in linear memory
 
-The Rust ABI types live in the standalone `nova-ext-abi` crate.
+The Rust ABI types (and guest helpers) live in the standalone `nova-ext-abi` crate.
+
+## Target and constraints
+
+- **WASM target:** `wasm32-unknown-unknown`
+- **No WASI by default:** Nova does not provide WASI imports. A guest that imports WASI functions is
+  expected to fail to instantiate.
+- **Transport:** UTF-8 JSON payloads passed through shared linear memory.
+
+Nova enforces sandbox limits (timeouts, memory caps, request/response size limits). Guests must be
+prepared for calls to trap if they exceed budgets.
 
 ## Required exports
 
@@ -47,18 +57,17 @@ not read/free a response buffer.
   returning `(resp_ptr, resp_len)` to the host.
 - The host copies response bytes out, then calls `nova_ext_free(resp_ptr, resp_len)`.
 
-In other words: allocation happens in the guest, but ownership is symmetric — **the side that
-didn't allocate always frees**.
-
 Helper functions are available in `nova_ext_abi::v1::guest`:
 
 - `pack_ptr_len` / `unpack_ptr_len`
 - `alloc` / `free`
-- `read_bytes` / `return_bytes`
+- `read_bytes` / `write_bytes` / `return_bytes`
 
 ## JSON payloads (v1)
 
 All provider functions accept a single JSON object request and return a JSON array response.
+
+Field names use `camelCase`.
 
 Offsets/spans are **byte offsets** into the UTF-8 `text` provided in the request.
 
@@ -266,6 +275,7 @@ pub extern "C" fn nova_ext_diagnostics(req_ptr: i32, req_len: i32) -> i64 {
 ## Bundle layout (`nova-ext.toml`)
 
 Nova loads extensions from a directory containing `nova-ext.toml` and the referenced `.wasm` file.
+For more details, see [`docs/extensions/README.md`](README.md).
 
 Example:
 
@@ -284,3 +294,8 @@ entry = "plugin.wasm"
 abi_version = 1
 capabilities = ["diagnostics"]
 ```
+
+## Examples
+
+- `examples/nova-ext-wasm-example-todos/` — small Rust guest extension showing end-to-end bundle layout
+- `crates/nova-ext/examples/abi_v1_todo_diagnostics.wat` — minimal WAT guest for diagnostics
