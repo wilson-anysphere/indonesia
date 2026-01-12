@@ -95,6 +95,18 @@ Goal:
 Notes:
 
 - This plan intentionally **does not** require eagerly loading class bodies; only names are interned.
+- There is an inherent trade-off in *how much* we pre-intern:
+  - Pre-interning **all** binary names from the classpath/JDK indexes gives the strongest stability
+    guarantees, but can be very large (time + memory) on real projects.
+  - Pre-interning only the names that appear in workspace signatures/bodies is much smaller, but can
+    miss **transitively loaded** classes (e.g. supertypes discovered when `ExternalTypeLoader` loads a
+    referenced class). Missing names can reintroduce insertion-order allocation when they are first
+    encountered in a body-specific order.
+- **Implementation note (current repo):** `project_base_type_store` uses stable file ordering and a
+  best-effort scan of workspace signatures and bodies to seed a deterministic set of referenced
+  type names before any per-body loading happens. If we observe remaining `ClassId` instability due
+  to transitive external loads, we should expand the pre-intern set (e.g. enumerate classpath/JDK
+  names, or compute a transitive closure for loaded stubs).
 - Cloning a large `TypeStore` is likely too expensive long-term. The short-term implementation may use:
   - cheap cloning via structural sharing (preferred),
   - or a “base + overlay” environment where the overlay only stores body-local additions.
