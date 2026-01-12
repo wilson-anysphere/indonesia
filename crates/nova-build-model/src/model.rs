@@ -334,6 +334,12 @@ impl JpmsWorkspace {
 pub struct ProjectConfig {
     pub workspace_root: PathBuf,
     pub build_system: BuildSystem,
+    /// Workspace-level Java configuration.
+    ///
+    /// This is intended to be a conservative default for the whole workspace (not per-module),
+    /// so loaders typically populate it as:
+    /// - the maximum `source`/`target` across modules
+    /// - `enable_preview` if any module enables preview
     pub java: JavaConfig,
 
     pub modules: Vec<Module>,
