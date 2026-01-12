@@ -438,4 +438,25 @@ mod tests {
         let err = vfs.metadata(&path).expect_err("expected metadata to be unsupported");
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
+
+    #[test]
+    fn legacy_decompiled_virtual_documents_are_readable() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::legacy_decompiled("com/example/Foo");
+
+        vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "class Foo {}");
+        assert!(vfs.exists(&path));
+    }
+
+    #[test]
+    fn missing_virtual_document_read_bytes_returns_not_found() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.MissingBytes");
+
+        let err = vfs
+            .read_bytes(&path)
+            .expect_err("expected byte read to fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }
