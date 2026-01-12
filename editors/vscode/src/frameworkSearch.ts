@@ -244,6 +244,7 @@ async function fetchItemsForKind(
           description: formatWebEndpointDescription(parsed),
         });
       }
+      items.sort(compareQuickPickItems);
       return items;
     }
     case 'micronaut-endpoints': {
@@ -306,6 +307,7 @@ async function fetchItemsForKind(
           detail: file || undefined,
         });
       }
+      items.sort(compareQuickPickItems);
       return items;
     }
     case 'micronaut-beans': {
@@ -360,6 +362,7 @@ async function fetchItemsForKind(
           detail: file || undefined,
         });
       }
+      items.sort(compareQuickPickItems);
       return items;
     }
   }
@@ -453,6 +456,16 @@ function validateMicronautSchemaVersion(schemaVersion: unknown, method: string):
   if (schemaVersion !== 1) {
     throw new Error(`Unsupported schemaVersion from ${method}: expected 1, got ${schemaVersion}.`);
   }
+}
+
+function compareQuickPickItems(a: vscode.QuickPickItem, b: vscode.QuickPickItem): number {
+  const primary = a.label.localeCompare(b.label);
+  if (primary !== 0) {
+    return primary;
+  }
+  const aDesc = a.description ?? '';
+  const bDesc = b.description ?? '';
+  return aDesc.localeCompare(bDesc);
 }
 
 async function navigateToFrameworkItem(item: FrameworkPickItem, baseUri: vscode.Uri): Promise<void> {
