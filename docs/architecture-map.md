@@ -245,12 +245,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Integration into the core semantic DB is still partial; analyzers mostly run as standalone passes.
 
 ### `nova-framework-builtins`
-- **Purpose:** centralize construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE/LSP/etc.) don’t need to maintain their own lists.
+- **Purpose:** centralized construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE, LSP, etc.) don’t need to maintain their own lists.
 - **Key entry points:** `crates/nova-framework-builtins/src/lib.rs` (`builtin_analyzers`, `register_builtin_analyzers`, `builtin_registry`).
 - **Maturity:** scaffolding
 - **Known gaps vs intended docs:**
-  - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default; Spring/JPA analyzers are available behind the `spring`/`jpa` crate features (these analyzers can be relatively expensive and/or pull in heavier dependencies).
-  - Not yet wired into `nova-ide`/`nova-lsp`; callers still build their own registries in many code paths.
+  - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default.
+  - Spring/JPA analyzers are feature-gated placeholders until those crates expose `FrameworkAnalyzer` implementations.
+  - Not yet wired into `nova-ide`/`nova-lsp`; currently mostly used by crate-local tests.
 
 ### `nova-framework-dagger`
 - **Purpose:** best-effort Dagger DI graph extraction + diagnostics/navigation (text-based).
