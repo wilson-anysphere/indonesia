@@ -615,7 +615,7 @@ mod real_project_tests {
 
 Nova’s CI is implemented in GitHub Actions workflows under `.github/workflows/`:
 
-- `ci.yml` — format (`cargo fmt`), lint (`cargo clippy`), and workspace tests via `cargo nextest run --workspace --profile ci` (plus doctests).
+- `ci.yml` — format (`cargo fmt`), lint (`cargo clippy`), and workspace tests via `cargo nextest run --locked --workspace --profile ci` (plus doctests).
 - `perf.yml` — criterion-based performance regression guard.
 
 The CI surface area is intentionally documented separately from strategy; see:
