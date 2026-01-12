@@ -212,24 +212,32 @@ impl<W: AsyncWrite + Unpin> DapWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
-    async fn rejects_messages_exceeding_max_size() {
-        // Intentionally omit the payload; the size check must fire before any read/allocation.
+    async fn rejects_oversized_content_length_without_reading_message_body() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+
+        // Write only the header section. Keep the writer side open so any attempt
+        // to read the body would hang.
         let framed = format!("Content-Length: {}\r\n\r\n", MAX_DAP_MESSAGE_BYTES + 1);
+        writer.write_all(framed.as_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
 
-        let (client, mut server) = tokio::io::duplex(1024);
-        server.write_all(framed.as_bytes()).await.unwrap();
-        drop(server);
+        let mut reader = DapReader::new(reader);
+        let result = timeout(Duration::from_millis(100), reader.read_value()).await;
 
-        let mut reader = DapReader::new(client);
-        let err = reader.read_value().await.unwrap_err();
+        let err = result
+            .expect("read_value() should return immediately for oversized Content-Length")
+            .unwrap_err();
+
         match err {
             DapError::Protocol(msg) => {
-                assert!(msg.contains("Content-Length"));
-                assert!(msg.contains("exceeds maximum allowed size"));
+                assert!(msg.contains("exceeds maximum allowed size"), "{msg}");
+                assert!(msg.contains(&(MAX_DAP_MESSAGE_BYTES + 1).to_string()), "{msg}");
+                assert!(msg.contains(&MAX_DAP_MESSAGE_BYTES.to_string()), "{msg}");
             }
-            other => panic!("expected protocol error, got {other:?}"),
+            other => panic!("expected DapError::Protocol, got {other:?}"),
         }
     }
 
