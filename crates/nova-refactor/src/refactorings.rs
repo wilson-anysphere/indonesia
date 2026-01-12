@@ -1455,6 +1455,12 @@ pub fn extract_variable(
     check_extract_variable_name_conflicts(&params.file, &stmt, insert_pos, &name)?;
     check_extract_variable_field_shadowing(&stmt, &params.file, &name, &replacement_ranges)?;
 
+    if !params.use_var && expr_typeck_is_void_method_call(db, &params.file, &expr) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract expression of type void",
+        });
+    }
+
     let ty = if params.use_var {
         "var".to_string()
     } else {
@@ -1481,7 +1487,7 @@ pub fn extract_variable(
         // they are already meaningful and avoid redundant *package* qualification (`Foo` instead
         // of `pkg.Foo`). Keep enclosing-type qualifiers like `Outer.Foo` since dropping them can
         // change meaning.
-        match typeck_ty {
+        let ty = match typeck_ty {
             Some(typeck_ty) if typeck_ty != "null" => {
                 if parser_ty == "Object" {
                     if typeck_ty != "Object" {
@@ -1513,7 +1519,15 @@ pub fn extract_variable(
                 }
             }
             _ => parser_ty,
+        };
+
+        if ty == "void" {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract expression of type void",
+            });
         }
+
+        ty
     };
 
     // Special-case: when extracting the whole expression of an expression statement, the usual
@@ -5291,6 +5305,7 @@ fn best_type_at_range_display(
             || ty == "<?>"
             || ty == "<?>" // Legacy placeholder.
             || ty == "<error>"
+            || ty == "void"
             || ty.eq_ignore_ascii_case("null")
             || ty == "void"
             || ty.starts_with('<')
@@ -5304,6 +5319,39 @@ fn best_type_at_range_display(
         return Some(ty.to_string());
     }
     None
+}
+
+fn expr_typeck_is_void_method_call(
+    db: &dyn RefactorDatabase,
+    file: &FileId,
+    expr: &ast::Expression,
+) -> bool {
+    // `void`-typed expressions are not extractable into a variable initializer in Java.
+    //
+    // Note: only method calls can have `void` type. We unwrap parentheses so selections like
+    // `(foo())` are handled.
+    let mut current = expr.clone();
+    loop {
+        match current {
+            ast::Expression::ParenthesizedExpression(paren) => {
+                let Some(inner) = paren.expression() else {
+                    return false;
+                };
+                current = inner;
+            }
+            ast::Expression::MethodCallExpression(call) => {
+                let range = syntax_range(call.syntax());
+                if range.start >= range.end {
+                    return false;
+                }
+                let offset = range.end - 1;
+                return db
+                    .type_at_offset_display(file, offset)
+                    .is_some_and(|ty| ty.trim() == "void");
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn type_at_range_offset_candidates(text: &str, range: TextRange) -> Vec<usize> {

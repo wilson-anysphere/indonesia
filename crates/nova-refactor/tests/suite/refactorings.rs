@@ -4127,6 +4127,42 @@ fn extract_variable_rejects_method_call_expression() {
 }
 
 #[test]
+fn extract_variable_use_var_false_rejects_void_typed_expression() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void foo() {}
+
+  void m() {
+    /*start*/foo()/*end*/;
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract expression of type void"
+        ),
+        "expected ExtractNotSupported for void typed expression, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_new_expression() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
