@@ -841,14 +841,6 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt);
                 }
             }
-            Stmt::Assert {
-                condition, message, ..
-            } => {
-                visit_expr(body, *condition, offset, best_expr, best_stmt);
-                if let Some(message) = message {
-                    visit_expr(body, *message, offset, best_expr, best_stmt);
-                }
-            }
             Stmt::Throw { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
             Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Empty { .. } => {}
         }
