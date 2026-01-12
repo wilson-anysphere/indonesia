@@ -217,8 +217,12 @@ For more details (including running only a subset of fixtures and pinned revisio
 
 These tests are ignored by default because they scan large projects.
 
+In multi-agent / memory-constrained environments (agent swarms, CI runners, etc.), prefer the wrapper
+scripts (`./scripts/run-real-project-tests.sh` and `bash scripts/cargo_agent.sh ...`) rather than
+invoking `cargo` directly.
+
 ```bash
-# Convenience wrapper (clones fixtures + runs ignored tests)
+# Recommended: convenience wrapper (clones fixtures + runs ignored tests via the agent cargo wrapper)
 ./scripts/run-real-project-tests.sh
 
 # To reduce peak memory / match CI behavior:
@@ -229,8 +233,9 @@ RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
 # or (alias):
 NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
 
-cargo test -p nova-project --test harness -- --ignored real_projects::
-cargo test -p nova-cli --test cli -- --ignored suite::real_projects::
+# (Advanced) Run the test binaries directly (still using the agent wrapper):
+bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
+bash scripts/cargo_agent.sh test -p nova-cli --test cli -- --ignored suite::real_projects::
 ```
 
 ### (Optional) Run `javac`/build validation
