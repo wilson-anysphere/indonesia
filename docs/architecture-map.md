@@ -88,8 +88,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Build tool invocation is still opt-in (explicit `nova/*` requests) rather than a continuously running, editor-driven build/compile service.
 
 ### `nova-build-bazel`
-- **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching).
-- **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`).
+- **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching, with optional BSP-backed build/diagnostics orchestration when enabled).
+- **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`), `crates/nova-build-bazel/src/orchestrator.rs` (feature `bsp`: `BazelBuildOrchestrator`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - BSP support exists behind the `bsp` Cargo feature; `nova-lsp` can use it (when configured, e.g. via `NOVA_BSP_PROGRAM`) to run Bazel builds and collect diagnostics, but the default metadata path is still `query`/`aquery`.
