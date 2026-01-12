@@ -193,6 +193,17 @@ impl JdkSymbolIndex {
         }
     }
 
+    /// All package binary names in stable sorted order.
+    ///
+    /// Unlike [`Self::packages_with_prefix`], this does not allocate/clones a new `Vec<String>` for
+    /// the result set. It may still perform lazy container indexing the first time it is called.
+    pub fn binary_packages(&self) -> Result<&[String], JdkIndexError> {
+        match self {
+            Self::Jmods(index) => index.binary_package_names(),
+            Self::CtSym(index) => index.binary_package_names(),
+        }
+    }
+
     pub fn class_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.class_names_with_prefix(prefix),
@@ -829,6 +840,10 @@ impl JmodSymbolIndex {
     /// All packages present in the JDK module set.
     pub fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
         Ok(self.packages_sorted()?.clone())
+    }
+
+    pub(crate) fn binary_package_names(&self) -> Result<&[String], JdkIndexError> {
+        Ok(self.packages_sorted()?.as_slice())
     }
 
     pub fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {

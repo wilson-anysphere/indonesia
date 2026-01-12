@@ -3,6 +3,7 @@
 //! Nova's long-term architecture is query-driven and will use proper syntax trees
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -2369,10 +2370,20 @@ fn import_path_completions(
         format!("{parent}.{prefix}")
     };
 
-    if let Ok(pkgs) = jdk.packages_with_prefix(&pkg_prefix) {
+    let fallback_jdk = JdkIndex::new();
+    let packages: &[String] = jdk
+        .all_packages()
+        .or_else(|_| fallback_jdk.all_packages())
+        .unwrap_or(&[]);
+    let pkg_prefix = normalize_binary_prefix(&pkg_prefix);
+    let start = packages.partition_point(|pkg| pkg.as_str() < pkg_prefix.as_ref());
+    if start < packages.len() {
         let mut jdk_segments = HashSet::<String>::new();
-        for pkg in pkgs {
-            if let Some(seg) = child_package_segment(&pkg, &parent) {
+        for pkg in &packages[start..] {
+            if !pkg.starts_with(pkg_prefix.as_ref()) {
+                break;
+            }
+            if let Some(seg) = child_package_segment(pkg, &parent) {
                 jdk_segments.insert(seg);
             }
         }
@@ -2405,7 +2416,6 @@ fn import_path_completions(
         let parent_prefix = format!("{parent}.");
         // Avoid allocating a potentially large `Vec<String>` of all JDK types in `parent` just to
         // scan for direct members.
-        let fallback_jdk = JdkIndex::new();
         let class_names: &[String] = jdk
             .all_binary_class_names()
             .or_else(|_| fallback_jdk.all_binary_class_names())
@@ -2813,6 +2823,14 @@ fn binary_name_to_source_name(binary: &str) -> String {
     binary.replace('$', ".")
 }
 
+fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
+    if prefix.contains('/') {
+        Cow::Owned(prefix.replace('/', "."))
+    } else {
+        Cow::Borrowed(prefix)
+    }
+}
+
 fn import_completions(
     db: &dyn Database,
     text_index: &TextIndex<'_>,
@@ -2833,14 +2851,16 @@ fn import_completions(
         .cloned()
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
-    let packages = jdk
-        .packages_with_prefix(&ctx.prefix)
-        .or_else(|_| JdkIndex::new().packages_with_prefix(&ctx.prefix))
-        .unwrap_or_default();
+    let prefix = normalize_binary_prefix(&ctx.prefix);
+    let base_prefix = normalize_binary_prefix(&ctx.base_prefix);
 
     // `class_names_with_prefix("")` allocates/clones *every* JDK type name; avoid it by scanning
     // the pre-sorted in-memory name list and stopping once we've produced enough items.
     let fallback_jdk = JdkIndex::new();
+    let packages: &[String] = jdk
+        .all_packages()
+        .or_else(|_| fallback_jdk.all_packages())
+        .unwrap_or(&[]);
     let class_names: &[String] = jdk
         .all_binary_class_names()
         .or_else(|_| fallback_jdk.all_binary_class_names())
@@ -2850,7 +2870,7 @@ fn import_completions(
     // completing nested types (source syntax uses `.`, but binary names use `$`).
     //
     // Example: `import java.util.Map.E<cursor>;` should suggest `Entry`.
-    let nested_type_owner = ctx.base_prefix.strip_suffix('.').and_then(|owner| {
+    let nested_type_owner = base_prefix.as_ref().strip_suffix('.').and_then(|owner| {
         resolve_workspace_import_owner(&workspace, owner)
             .or_else(|| resolve_static_import_owner(jdk.as_ref(), owner))
             .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
@@ -2858,7 +2878,7 @@ fn import_completions(
 
     let mut workspace_packages: Vec<String> = workspace
         .packages()
-        .filter(|pkg| pkg.starts_with(&ctx.prefix))
+        .filter(|pkg| pkg.starts_with(prefix.as_ref()))
         .cloned()
         .collect();
     workspace_packages.sort();
@@ -2866,7 +2886,7 @@ fn import_completions(
     let workspace_type_prefix = nested_type_owner
         .as_deref()
         .map(|owner_binary| format!("{owner_binary}${}", ctx.segment_prefix))
-        .unwrap_or_else(|| ctx.prefix.clone());
+        .unwrap_or_else(|| prefix.to_string());
 
     let mut workspace_classes: Vec<String> = workspace
         .all_types()
@@ -2890,10 +2910,10 @@ fn import_completions(
         if items.len() >= MAX_ITEMS {
             break;
         }
-        if !pkg.starts_with(&ctx.base_prefix) {
+        if !pkg.starts_with(base_prefix.as_ref()) {
             continue;
         }
-        let rest = &pkg[ctx.base_prefix.len()..];
+        let rest = &pkg[base_prefix.len()..];
         let segment = rest.split('.').next().unwrap_or("");
         if segment.is_empty() {
             continue;
@@ -2913,11 +2933,18 @@ fn import_completions(
         mark_workspace_completion_item(&mut item);
         items.push(item);
     }
-    for pkg in packages {
-        if !pkg.starts_with(&ctx.base_prefix) {
+    let start = packages.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
+    for pkg in &packages[start..] {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+        if !pkg.starts_with(prefix.as_ref()) {
+            break;
+        }
+        if !pkg.starts_with(base_prefix.as_ref()) {
             continue;
         }
-        let rest = &pkg[ctx.base_prefix.len()..];
+        let rest = &pkg[base_prefix.len()..];
         let segment = rest.split('.').next().unwrap_or("");
         if segment.is_empty() {
             continue;
@@ -2934,9 +2961,6 @@ fn import_completions(
             })),
             ..Default::default()
         });
-        if items.len() >= MAX_ITEMS {
-            break;
-        }
     }
 
     // Type/class completions (as remainder completions).
@@ -2947,10 +2971,10 @@ fn import_completions(
             break;
         }
         let source_name = name.replace('$', ".");
-        if !source_name.starts_with(&ctx.base_prefix) {
+        if !source_name.starts_with(base_prefix.as_ref()) {
             continue;
         }
-        let remainder = source_name[ctx.base_prefix.len()..].to_string();
+        let remainder = source_name[base_prefix.len()..].to_string();
         if remainder.is_empty() {
             continue;
         }
@@ -2973,7 +2997,7 @@ fn import_completions(
         items.push(item);
     }
     let mut seen_binary: HashSet<String> = HashSet::new();
-    'types: for query_prefix in nested_binary_prefixes(&ctx.prefix) {
+    'types: for query_prefix in nested_binary_prefixes(prefix.as_ref()) {
         let start = class_names.partition_point(|name| name.as_str() < query_prefix.as_str());
         for binary in &class_names[start..] {
             if items.len() >= MAX_ITEMS {
@@ -2987,10 +3011,10 @@ fn import_completions(
             }
 
             let source_full = binary_name_to_source_name(binary);
-            if !source_full.starts_with(&ctx.base_prefix) {
+            if !source_full.starts_with(base_prefix.as_ref()) {
                 continue;
             }
-            let remainder = source_full[ctx.base_prefix.len()..].to_string();
+            let remainder = source_full[base_prefix.len()..].to_string();
             if remainder.is_empty() {
                 continue;
             }
@@ -3300,15 +3324,29 @@ fn package_decl_completions(
             .as_ref()
             .cloned()
             .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
-        if let Ok(pkgs) = jdk.packages_with_prefix(&ctx.dotted_prefix) {
-            for pkg in pkgs.into_iter().take(MAX_JDK_PACKAGES) {
-                add_package_segment_candidates(
-                    &mut candidates,
-                    &pkg,
-                    &parent_segments,
-                    &ctx.segment_prefix,
-                );
+
+        let fallback_jdk = JdkIndex::new();
+        let packages: &[String] = jdk
+            .all_packages()
+            .or_else(|_| fallback_jdk.all_packages())
+            .unwrap_or(&[]);
+        let prefix = normalize_binary_prefix(&ctx.dotted_prefix);
+        let start = packages.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
+        let mut added = 0usize;
+        for pkg in &packages[start..] {
+            if added >= MAX_JDK_PACKAGES {
+                break;
             }
+            if !pkg.starts_with(prefix.as_ref()) {
+                break;
+            }
+            added += 1;
+            add_package_segment_candidates(
+                &mut candidates,
+                pkg,
+                &parent_segments,
+                &ctx.segment_prefix,
+            );
         }
     }
 

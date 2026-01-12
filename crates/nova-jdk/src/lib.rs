@@ -122,6 +122,7 @@ pub struct JdkIndex {
     // Built-in, dependency-free index used for unit tests / bootstrapping.
     types: HashMap<String, TypeName>,
     builtin_binary_names_sorted: Vec<String>,
+    builtin_packages_sorted: Vec<String>,
     package_to_types: HashMap<String, HashMap<String, TypeName>>,
     packages: HashSet<String>,
     static_members: HashMap<String, HashMap<String, StaticMemberId>>,
@@ -190,6 +191,9 @@ impl JdkIndex {
 
         // Ensure deterministic ordering for callers that iterate the built-in index.
         this.builtin_binary_names_sorted.sort();
+        this.builtin_packages_sorted = this.packages.iter().cloned().collect();
+        this.builtin_packages_sorted.sort();
+        this.builtin_packages_sorted.dedup();
 
         this
     }
@@ -227,6 +231,13 @@ impl JdkIndex {
 
         bytes = bytes.saturating_add((self.packages.capacity() * size_of::<String>()) as u64);
         for pkg in &self.packages {
+            bytes = bytes.saturating_add(pkg.capacity() as u64);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.builtin_packages_sorted.capacity() * size_of::<String>()) as u64,
+        );
+        for pkg in &self.builtin_packages_sorted {
             bytes = bytes.saturating_add(pkg.capacity() as u64);
         }
 
@@ -392,7 +403,7 @@ impl JdkIndex {
     pub fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
         match &self.symbols {
             Some(symbols) => symbols.packages(),
-            None => Ok(self.packages.iter().cloned().collect()),
+            None => Ok(self.builtin_packages_sorted.clone()),
         }
     }
 
@@ -405,8 +416,7 @@ impl JdkIndex {
             Some(symbols) => symbols.packages_with_prefix(prefix),
             None => {
                 let prefix = normalize_binary_prefix(prefix);
-                let mut pkgs: Vec<String> = self.packages.iter().cloned().collect();
-                pkgs.sort();
+                let pkgs = &self.builtin_packages_sorted;
 
                 let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
                 let mut out = Vec::new();
@@ -419,6 +429,17 @@ impl JdkIndex {
                 }
                 Ok(out)
             }
+        }
+    }
+
+    /// All package binary names in this index, in stable sorted order.
+    ///
+    /// This is intended for bulk iteration without allocating/cloning a `Vec<String>`. For
+    /// symbol-backed indexes this may perform lazy container indexing the first time it is called.
+    pub fn all_packages(&self) -> Result<&[String], JdkIndexError> {
+        match &self.symbols {
+            Some(symbols) => symbols.binary_packages(),
+            None => Ok(self.builtin_packages_sorted.as_slice()),
         }
     }
 
@@ -701,10 +722,11 @@ impl TypeIndex for JdkIndex {
 
     fn package_exists(&self, package: &PackageName) -> bool {
         if let Some(symbols) = &self.symbols {
-            if let Ok(pkgs) = symbols.packages() {
-                if pkgs.contains(&package.to_dotted()) {
-                    return true;
-                }
+            let dotted = package.to_dotted();
+            if let Ok(pkgs) = symbols.binary_packages() {
+                return pkgs
+                    .binary_search_by(|pkg| pkg.as_str().cmp(dotted.as_str()))
+                    .is_ok();
             }
         }
 

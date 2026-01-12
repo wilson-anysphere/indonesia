@@ -585,6 +585,10 @@ impl CtSymReleaseIndex {
         Ok(self.packages_sorted()?.clone())
     }
 
+    pub(crate) fn binary_package_names(&self) -> Result<&[String], JdkIndexError> {
+        Ok(self.packages_sorted()?.as_slice())
+    }
+
     pub(crate) fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
         let prefix = normalize_binary_prefix(prefix);
         let pkgs = self.packages_sorted()?;
