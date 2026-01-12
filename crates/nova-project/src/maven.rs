@@ -2016,6 +2016,15 @@ fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
         return None;
     }
 
+    // Best-effort: expand `~/...` to the user's home directory.
+    //
+    // Maven repo paths are often configured via `~/.m2/...` in both `settings.xml` and
+    // `.mvn/maven.config`. Without this, we'd treat `~` as a literal relative path component and
+    // resolve to `<base>/~/.m2/...`, which is almost certainly wrong.
+    if let Some(path) = expand_maven_tilde_home(value) {
+        return Some(path);
+    }
+
     // Best-effort: support Maven's common `${user.home}` placeholder for local repository paths.
     //
     // This appears in both `~/.m2/settings.xml` and `.mvn/maven.config`. If we treat it as a normal
@@ -2036,6 +2045,23 @@ fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
     } else {
         Some(base.join(path))
     }
+}
+
+fn expand_maven_tilde_home(value: &str) -> Option<PathBuf> {
+    let rest = value.strip_prefix('~')?;
+    let home = home_dir()?;
+
+    if rest.is_empty() {
+        return Some(home);
+    }
+
+    // Only expand `~/...` (or `~\\...` on Windows). Don't guess for `~user/...`.
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\'))?;
+    if rest.contains("${") {
+        return None;
+    }
+
+    Some(home.join(rest))
 }
 
 fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
@@ -2566,6 +2592,27 @@ mod tests {
     fn placeholder_repo_local_expands_user_home() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_maven_config(dir.path(), "-Dmaven.repo.local=${user.home}/.m2/repository");
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        // Set both to behave deterministically on Windows/Linux.
+        let _home = EnvVarGuard::set("HOME", &home);
+        let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, home.join(".m2/repository"));
+    }
+
+    #[test]
+    fn tilde_repo_local_expands_user_home() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local=~/.m2/repository");
 
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).expect("create home");
