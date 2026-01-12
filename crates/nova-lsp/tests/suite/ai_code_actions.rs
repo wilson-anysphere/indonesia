@@ -470,8 +470,8 @@ fn stdio_server_generate_tests_with_ai_applies_workspace_edit() {
     let root = temp.path();
     let root_uri = uri_for_path(root);
 
-    let file_path = root.join("Test.java");
-    let file_rel = "Test.java";
+    let file_path = root.join("src/main/java/Test.java");
+    let test_rel = "src/test/java/TestTest.java";
     let file_uri = uri_for_path(&file_path);
     let source = concat!(
         "class Test {\n",
@@ -482,6 +482,7 @@ fn stdio_server_generate_tests_with_ai_applies_workspace_edit() {
         "    // TESTS_PLACEHOLDER\n",
         "}\n",
     );
+    std::fs::create_dir_all(file_path.parent().expect("parent dir")).expect("create src dirs");
     std::fs::write(&file_path, source).expect("write Test.java");
 
     let placeholder_line = "    // TESTS_PLACEHOLDER";
@@ -496,23 +497,19 @@ fn stdio_server_generate_tests_with_ai_applies_workspace_edit() {
         .lsp_position(placeholder_end_offset)
         .expect("selection end pos");
 
-    let replace_start = selection_start;
-    let replace_end = selection_end;
-
     let patch = json!({
         "edits": [{
-            "file": file_rel,
+            "file": test_rel,
             "range": {
-                "start": { "line": replace_start.line, "character": replace_start.character },
-                "end": { "line": replace_end.line, "character": replace_end.character }
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
             },
             "text": concat!(
+                "class TestTest {\n",
                 "    void testAdd() {\n",
-                "        int result = add(1, 2);\n",
-                "        if (result != 3) {\n",
-                "            throw new AssertionError(\"expected 3\");\n",
-                "        }\n",
-                "    }"
+                "        // TODO: add assertions\n",
+                "    }\n",
+                "}\n"
             )
         }]
     });
@@ -662,13 +659,32 @@ local_only = true
     let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
     let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
-    let uri = Uri::from_str(&uri_for_path(&file_path)).expect("uri");
-    let changes = edit.changes.expect("changes map");
-    let edits = changes.get(&uri).expect("edits for uri");
-    let updated = apply_lsp_edits(source, edits);
+    let document_changes = edit.document_changes.expect("documentChanges");
+    let ops = match document_changes {
+        lsp_types::DocumentChanges::Operations(ops) => ops,
+        other => panic!("expected documentChanges operations, got {other:?}"),
+    };
+    let expected_test_uri = uri_for_path(&root.join(test_rel))
+        .parse::<Uri>()
+        .expect("test uri");
     assert!(
-        updated.contains("void testAdd()"),
-        "expected test snippet to be inserted, got:\n{updated}"
+        ops.iter().any(|op| matches!(op, lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create)) if create.uri == expected_test_uri)),
+        "expected CreateFile for test uri, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| {
+            let lsp_types::DocumentChangeOperation::Edit(edit) = op else {
+                return false;
+            };
+            if edit.text_document.uri != expected_test_uri {
+                return false;
+            }
+            edit.edits.iter().any(|edit| match edit {
+                lsp_types::OneOf::Left(edit) => edit.new_text.contains("void testAdd()"),
+                lsp_types::OneOf::Right(edit) => edit.text_edit.new_text.contains("void testAdd()"),
+            })
+        }),
+        "expected TextDocumentEdit containing testAdd, got {ops:?}"
     );
 
     ai_server.assert_hits(1);
@@ -986,6 +1002,7 @@ excluded_paths = ["secret/**"]
         .iter()
         .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
         .expect("expected explain-error action to remain available");
+
     // Ensure we don't include a code snippet for excluded files.
     let explain_args = explain
         .get("command")
