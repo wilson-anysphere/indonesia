@@ -3076,7 +3076,6 @@ dependencies {
 
     #[test]
     fn parses_gradle_dependencies_from_text_version_catalog_bracket_notation() {
-        let gradle_properties = GradleProperties::new();
         let catalog_toml = r#"
 [versions]
 guava = "32.0.0"
@@ -3087,9 +3086,10 @@ foo-bar = { module = "com.example:foo-bar", version = "1.0.0" }
 guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
 junit = { module = "junit:junit", version = { ref = "junit" } }
 
- [bundles]
- test = ["junit", "guava"]
- "#;
+[bundles]
+test = ["junit", "guava"]
+"#;
+        let gradle_properties = GradleProperties::new();
         let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
             .expect("parse catalog");
 

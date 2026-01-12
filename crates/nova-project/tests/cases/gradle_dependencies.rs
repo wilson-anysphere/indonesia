@@ -118,3 +118,62 @@ dependencies {
 
     Ok(())
 }
+
+#[test]
+fn gradle_interpolates_version_catalog_versions_from_gradle_properties() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir().context("tempdir")?;
+
+    std::fs::write(
+        dir.path().join("gradle.properties"),
+        "guavaVersion=33.0.0-jre\n",
+    )
+    .context("write gradle.properties")?;
+
+    std::fs::create_dir_all(dir.path().join("gradle")).context("mkdir gradle/")?;
+    std::fs::write(
+        dir.path().join("gradle/libs.versions.toml"),
+        r#"
+[versions]
+guava = "$guavaVersion"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+"#,
+    )
+    .context("write libs.versions.toml")?;
+
+    std::fs::write(
+        dir.path().join("build.gradle"),
+        r#"
+plugins {
+  id 'java'
+}
+
+dependencies {
+  implementation(libs.guava)
+}
+"#,
+    )
+    .context("write build.gradle")?;
+
+    let gradle_home = tempfile::tempdir().context("tempdir (gradle home)")?;
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(dir.path(), &options).context("load_project")?;
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(
+        config.dependencies,
+        vec![Dependency {
+            group_id: "com.google.guava".to_string(),
+            artifact_id: "guava".to_string(),
+            version: Some("33.0.0-jre".to_string()),
+            scope: Some("compile".to_string()),
+            classifier: None,
+            type_: None,
+        }]
+    );
+
+    Ok(())
+}
