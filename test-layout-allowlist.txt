@@ -17,7 +17,6 @@ nova-build
 nova-project
 nova-decompile
 nova-classpath
-nova-index
 nova-refactor
 nova-framework-spring
 nova-framework-dagger
