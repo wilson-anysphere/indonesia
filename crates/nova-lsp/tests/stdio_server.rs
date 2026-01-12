@@ -1489,7 +1489,7 @@ exit 1
             .to_string();
 
         match status.as_str() {
-            "queued" | "running" => thread::sleep(std::time::Duration::from_millis(10)),
+            "building" => thread::sleep(std::time::Duration::from_millis(10)),
             _ => {
                 final_status = Some(status);
                 break;
@@ -1499,7 +1499,7 @@ exit 1
 
     assert_eq!(
         final_status.as_deref(),
-        Some("failure"),
+        Some("failed"),
         "expected gradle build to fail"
     );
 
@@ -1814,7 +1814,7 @@ exit 0
             .to_string();
 
         match status.as_str() {
-            "queued" | "running" => thread::sleep(std::time::Duration::from_millis(10)),
+            "building" => thread::sleep(std::time::Duration::from_millis(10)),
             _ => {
                 final_status = Some(status);
                 break;
@@ -1824,7 +1824,7 @@ exit 0
 
     assert_eq!(
         final_status.as_deref(),
-        Some("failure"),
+        Some("failed"),
         "expected gradle build to fail"
     );
 

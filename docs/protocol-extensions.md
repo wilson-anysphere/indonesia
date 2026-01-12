@@ -544,16 +544,19 @@ Notes:
 {
   "schemaVersion": 1,
   "status": "idle",
-  "buildId": null,
-  "queued": 0,
-  "message": null,
   "lastError": null
 }
 ```
 
 Status values are `snake_case`:
 
-`"idle" | "queued" | "running" | "success" | "failure" | "cancelled"`.
+`"idle" | "building" | "failed"`.
+
+Semantics:
+
+- `idle` when no build tool invocation is currently running and the last invocation succeeded (or none ran).
+- `building` while any build/classpath/build-tool command is in-flight for the workspace.
+- `failed` when the last build tool invocation for the workspace failed.
 
 ---
 

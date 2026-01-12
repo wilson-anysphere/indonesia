@@ -1,21 +1,25 @@
 use crate::{NovaLspError, Result};
 use nova_build::{
     BuildDiagnosticsSnapshot, BuildError, BuildManager, BuildOrchestrator, BuildRequest,
-    BuildStatusSnapshot, BuildTaskState, Classpath, JavaCompileConfig,
+    BuildTaskState, Classpath, CommandOutput, CommandRunner, CommandRunnerFactory,
+    DefaultCommandRunner, JavaCompileConfig,
 };
 use nova_build_bazel::{
-    BazelBspConfig, BazelBuildDiagnosticsSnapshot, BazelBuildOrchestrator, BazelBuildRequest,
-    BazelBuildStatusSnapshot, BazelBuildTaskState,
+    BazelBspConfig, BazelBuildDiagnosticsSnapshot, BazelBuildExecutor, BazelBuildOrchestrator,
+    BazelBuildRequest, BazelBuildTaskState, BspCompileOutcome, DefaultBazelBuildExecutor,
 };
 use nova_cache::{CacheConfig, CacheDir};
 use nova_project::{load_project_with_options, LoadOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::Duration,
 };
 
@@ -69,7 +73,11 @@ fn build_orchestrator_for_root(project_root: &Path) -> BuildOrchestrator {
     let cache_dir = CacheDir::new(&canonical, CacheConfig::from_env())
         .map(|dir| dir.root().join("build"))
         .unwrap_or_else(|_| canonical.join(".nova").join("build-cache"));
-    let orchestrator = BuildOrchestrator::new(canonical.clone(), cache_dir);
+    let runner_factory = Arc::new(BuildStatusCommandRunnerFactory {
+        project_root: canonical.clone(),
+        timeout: Some(Duration::from_secs(15 * 60)),
+    });
+    let orchestrator = BuildOrchestrator::with_runner_factory(canonical.clone(), cache_dir, runner_factory);
 
     let mut map = build_orchestrators()
         .lock()
@@ -92,7 +100,11 @@ fn bazel_build_orchestrator_for_root(workspace_root: &Path) -> BazelBuildOrchest
         }
     }
 
-    let orchestrator = BazelBuildOrchestrator::new(canonical.clone());
+    let executor = Arc::new(BuildStatusBazelBuildExecutor {
+        workspace_root: canonical.clone(),
+        inner: Arc::new(DefaultBazelBuildExecutor),
+    });
+    let orchestrator = BazelBuildOrchestrator::with_executor(canonical.clone(), executor);
 
     let mut map = bazel_build_orchestrators()
         .lock()
@@ -394,7 +406,6 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
     let build_id = orchestrator.enqueue(request);
     let status = orchestrator.status();
     let diagnostics = orchestrator.diagnostics();
-
     let resp = NovaBuildProjectResponse {
         schema_version: BUILD_PROJECT_SCHEMA_VERSION,
         build_id,
@@ -414,72 +425,78 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
     let metadata = load_build_metadata(&params);
 
-    let kind = detect_kind(&project_root, params.build_tool)?;
-    let compile_config = match kind {
-        BuildKind::Maven => manager.java_compile_config_maven(
-            &project_root,
-            normalize_maven_module_relative(params.module.as_deref()),
-        ),
-        BuildKind::Gradle => {
-            let project_path = normalize_gradle_project_path(params.project_path.as_deref());
-            manager.java_compile_config_gradle(&project_root, project_path.as_deref())
-        }
-    };
+    let mut status_guard = BuildStatusGuard::new(&project_root);
+    let classpath_result: Result<(Vec<String>, Vec<String>, Vec<String>, LanguageLevel, OutputDirs)> =
+        (|| {
+            let kind = detect_kind(&project_root, params.build_tool)?;
+            let compile_config = match kind {
+                BuildKind::Maven => manager.java_compile_config_maven(
+                    &project_root,
+                    normalize_maven_module_relative(params.module.as_deref()),
+                ),
+                BuildKind::Gradle => {
+                    let project_path = normalize_gradle_project_path(params.project_path.as_deref());
+                    manager.java_compile_config_gradle(&project_root, project_path.as_deref())
+                }
+            };
 
-    let (classpath, module_path, source_roots, language_level, output_dirs) = match compile_config {
-        Ok(cfg) => {
-            let classpath = paths_to_strings(cfg.compile_classpath.iter());
-            let module_path = if cfg.module_path.is_empty() {
-                metadata.module_path.clone()
-            } else {
-                paths_to_strings(cfg.module_path.iter())
-            };
-            let source_roots = {
-                let mut seen = std::collections::HashSet::new();
-                let mut roots = Vec::new();
-                for root in cfg
-                    .main_source_roots
-                    .iter()
-                    .chain(cfg.test_source_roots.iter())
-                {
-                    let s = root.to_string_lossy().to_string();
-                    if seen.insert(s.clone()) {
-                        roots.push(s);
-                    }
+            Ok(match compile_config {
+                Ok(cfg) => {
+                    let classpath = paths_to_strings(cfg.compile_classpath.iter());
+                    let module_path = if cfg.module_path.is_empty() {
+                        metadata.module_path.clone()
+                    } else {
+                        paths_to_strings(cfg.module_path.iter())
+                    };
+                    let source_roots = {
+                        let mut seen = std::collections::HashSet::new();
+                        let mut roots = Vec::new();
+                        for root in cfg
+                            .main_source_roots
+                            .iter()
+                            .chain(cfg.test_source_roots.iter())
+                        {
+                            let s = root.to_string_lossy().to_string();
+                            if seen.insert(s.clone()) {
+                                roots.push(s);
+                            }
+                        }
+                        if roots.is_empty() {
+                            metadata.source_roots.clone()
+                        } else {
+                            roots
+                        }
+                    };
+                    let language_level =
+                        language_level_from_java_compile_config(&cfg).unwrap_or(metadata.language_level);
+                    let output_dirs = output_dirs_from_java_compile_config(&cfg)
+                        .filter(|dirs| !(dirs.main.is_empty() && dirs.test.is_empty()))
+                        .unwrap_or_else(|| metadata.output_dirs.clone());
+                    (
+                        classpath,
+                        module_path,
+                        source_roots,
+                        language_level,
+                        output_dirs,
+                    )
                 }
-                if roots.is_empty() {
-                    metadata.source_roots.clone()
-                } else {
-                    roots
+                Err(_) => {
+                    // If the richer compile-config extraction fails, fall back to the legacy
+                    // classpath computation so existing clients keep working.
+                    let cp = run_classpath(&manager, &params)?;
+                    let classpath = paths_to_strings(cp.entries.iter());
+                    (
+                        classpath,
+                        metadata.module_path.clone(),
+                        metadata.source_roots.clone(),
+                        metadata.language_level,
+                        metadata.output_dirs.clone(),
+                    )
                 }
-            };
-            let language_level =
-                language_level_from_java_compile_config(&cfg).unwrap_or(metadata.language_level);
-            let output_dirs = output_dirs_from_java_compile_config(&cfg)
-                .filter(|dirs| !(dirs.main.is_empty() && dirs.test.is_empty()))
-                .unwrap_or_else(|| metadata.output_dirs.clone());
-            (
-                classpath,
-                module_path,
-                source_roots,
-                language_level,
-                output_dirs,
-            )
-        }
-        Err(_) => {
-            // If the richer compile-config extraction fails, fall back to the legacy
-            // classpath computation so existing clients keep working.
-            let cp = run_classpath(&manager, &params)?;
-            let classpath = paths_to_strings(cp.entries.iter());
-            (
-                classpath,
-                metadata.module_path.clone(),
-                metadata.source_roots.clone(),
-                metadata.language_level,
-                metadata.output_dirs.clone(),
-            )
-        }
-    };
+            })
+        })();
+    status_guard.finish_from_result(&classpath_result);
+    let (classpath, module_path, source_roots, language_level, output_dirs) = classpath_result?;
 
     let resp = NovaClasspathResponse {
         classpath,
@@ -824,32 +841,36 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 "`target` must be provided for Bazel projects".to_string(),
             ));
         };
+        let mut status_guard = BuildStatusGuard::new(&workspace_root);
+        let value_result: Result<serde_json::Value> = (|| {
+            let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
+                .map(|dir| dir.queries_dir().join("bazel.json"))
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let runner = nova_build_bazel::DefaultCommandRunner::default();
+            let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+                .and_then(|ws| ws.with_cache_path(cache_path))
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
-            .map(|dir| dir.queries_dir().join("bazel.json"))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-        let runner = nova_build_bazel::DefaultCommandRunner::default();
-        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-            .and_then(|ws| ws.with_cache_path(cache_path))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let info = workspace
+                .target_compile_info(&target)
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-        let info = workspace
-            .target_compile_info(&target)
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-
-        let result = TargetClasspathResult {
-            project_root: workspace_root.to_string_lossy().to_string(),
-            target: Some(target),
-            classpath: info.classpath,
-            module_path: info.module_path,
-            source_roots: info.source_roots,
-            source: info.source,
-            target_version: info.target,
-            release: info.release,
-            output_dir: info.output_dir,
-            enable_preview: info.preview,
-        };
-        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            let result = TargetClasspathResult {
+                project_root: workspace_root.to_string_lossy().to_string(),
+                target: Some(target),
+                classpath: info.classpath,
+                module_path: info.module_path,
+                source_roots: info.source_roots,
+                source: info.source,
+                target_version: info.target,
+                release: info.release,
+                output_dir: info.output_dir,
+                enable_preview: info.preview,
+            };
+            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        })();
+        status_guard.finish_from_result(&value_result);
+        value_result
     } else {
         let (nova_config, nova_config_path) = load_workspace_config_with_path(&requested_root);
         let mut options = LoadOptions::default();
@@ -868,190 +889,197 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
             .filter(|t| !t.is_empty())
             .map(str::to_string);
 
-        let (
-            classpath,
-            module_path,
-            source_roots,
-            source,
-            target_version,
-            release,
-            output_dir,
-            enable_preview,
-        ) = match config.build_system {
-            nova_project::BuildSystem::Maven => {
-                let module_relative = normalize_maven_module_relative(normalized_target.as_deref());
-                let cfg = manager
-                    .java_compile_config_maven(&project_root, module_relative)
-                    .map_err(map_build_error)?;
-                let selected_root = module_relative.map(|rel| project_root.join(rel));
+        let mut status_guard = BuildStatusGuard::new(&project_root);
+        let value_result: Result<serde_json::Value> = (|| {
+            let (
+                classpath,
+                module_path,
+                source_roots,
+                source,
+                target_version,
+                release,
+                output_dir,
+                enable_preview,
+            ) = match config.build_system {
+                nova_project::BuildSystem::Maven => {
+                    let module_relative =
+                        normalize_maven_module_relative(normalized_target.as_deref());
+                    let cfg = manager
+                        .java_compile_config_maven(&project_root, module_relative)
+                        .map_err(map_build_error)?;
+                    let selected_root = module_relative.map(|rel| project_root.join(rel));
 
-                let JavaCompileConfig {
-                    compile_classpath,
-                    module_path: cfg_module_path,
-                    main_source_roots,
-                    test_source_roots,
-                    main_output_dir,
-                    source: cfg_source,
-                    target: cfg_target,
-                    release: cfg_release,
-                    enable_preview,
-                    ..
-                } = cfg;
+                    let JavaCompileConfig {
+                        compile_classpath,
+                        module_path: cfg_module_path,
+                        main_source_roots,
+                        test_source_roots,
+                        main_output_dir,
+                        source: cfg_source,
+                        target: cfg_target,
+                        release: cfg_release,
+                        enable_preview,
+                        ..
+                    } = cfg;
 
-                let classpath = paths_to_strings(compile_classpath.iter());
-                let module_path = if cfg_module_path.is_empty() {
+                    let classpath = paths_to_strings(compile_classpath.iter());
+                    let module_path = if cfg_module_path.is_empty() {
+                        config
+                            .module_path
+                            .iter()
+                            .map(|entry| entry.path.to_string_lossy().to_string())
+                            .collect()
+                    } else {
+                        paths_to_strings(cfg_module_path.iter())
+                    };
+
+                    let mut source_roots: Vec<String> = main_source_roots
+                        .iter()
+                        .chain(test_source_roots.iter())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    source_roots.extend(
+                        config
+                            .source_roots
+                            .iter()
+                            .filter(|root| {
+                                selected_root
+                                    .as_ref()
+                                    .map_or(true, |selected| root.path.starts_with(selected))
+                            })
+                            .map(|root| root.path.to_string_lossy().to_string()),
+                    );
+                    source_roots.sort();
+                    source_roots.dedup();
+
+                    let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
+                    let target_version =
+                        cfg_target.or_else(|| Some(config.java.target.0.to_string()));
+
+                    Ok((
+                        classpath,
+                        module_path,
+                        source_roots,
+                        source,
+                        target_version,
+                        cfg_release,
+                        main_output_dir.map(|p| p.to_string_lossy().to_string()),
+                        enable_preview,
+                    ))
+                }
+                nova_project::BuildSystem::Gradle => {
+                    let project_path = normalize_gradle_project_path(normalized_target.as_deref());
+                    let cfg = manager
+                        .java_compile_config_gradle(&project_root, project_path.as_deref())
+                        .map_err(map_build_error)?;
+                    let selected_root = project_path
+                        .as_deref()
+                        .map(|path| project_root.join(gradle_project_path_to_dir(path)));
+
+                    let JavaCompileConfig {
+                        compile_classpath,
+                        module_path: cfg_module_path,
+                        main_source_roots,
+                        test_source_roots,
+                        main_output_dir,
+                        source: cfg_source,
+                        target: cfg_target,
+                        release: cfg_release,
+                        enable_preview,
+                        ..
+                    } = cfg;
+
+                    let classpath = paths_to_strings(compile_classpath.iter());
+                    let module_path = if cfg_module_path.is_empty() {
+                        config
+                            .module_path
+                            .iter()
+                            .map(|entry| entry.path.to_string_lossy().to_string())
+                            .collect()
+                    } else {
+                        paths_to_strings(cfg_module_path.iter())
+                    };
+
+                    let mut source_roots: Vec<String> = main_source_roots
+                        .iter()
+                        .chain(test_source_roots.iter())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    source_roots.extend(
+                        config
+                            .source_roots
+                            .iter()
+                            .filter(|root| {
+                                selected_root
+                                    .as_ref()
+                                    .map_or(true, |selected| root.path.starts_with(selected))
+                            })
+                            .map(|root| root.path.to_string_lossy().to_string()),
+                    );
+                    source_roots.sort();
+                    source_roots.dedup();
+
+                    let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
+                    let target_version =
+                        cfg_target.or_else(|| Some(config.java.target.0.to_string()));
+
+                    Ok((
+                        classpath,
+                        module_path,
+                        source_roots,
+                        source,
+                        target_version,
+                        cfg_release,
+                        main_output_dir.map(|p| p.to_string_lossy().to_string()),
+                        enable_preview,
+                    ))
+                }
+                // For simple projects, `nova-project` is already the source of truth.
+                nova_project::BuildSystem::Simple => Ok((
+                    config
+                        .classpath
+                        .iter()
+                        .map(|entry| entry.path.to_string_lossy().to_string())
+                        .collect(),
                     config
                         .module_path
                         .iter()
                         .map(|entry| entry.path.to_string_lossy().to_string())
-                        .collect()
-                } else {
-                    paths_to_strings(cfg_module_path.iter())
-                };
-
-                let mut source_roots: Vec<String> = main_source_roots
-                    .iter()
-                    .chain(test_source_roots.iter())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
-                source_roots.extend(
+                        .collect(),
                     config
                         .source_roots
                         .iter()
-                        .filter(|root| {
-                            selected_root
-                                .as_ref()
-                                .map_or(true, |selected| root.path.starts_with(selected))
-                        })
-                        .map(|root| root.path.to_string_lossy().to_string()),
-                );
-                source_roots.sort();
-                source_roots.dedup();
-
-                let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
-                let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
-
-                (
-                    classpath,
-                    module_path,
-                    source_roots,
-                    source,
-                    target_version,
-                    cfg_release,
-                    main_output_dir.map(|p| p.to_string_lossy().to_string()),
-                    enable_preview,
-                )
-            }
-            nova_project::BuildSystem::Gradle => {
-                let project_path = normalize_gradle_project_path(normalized_target.as_deref());
-                let cfg = manager
-                    .java_compile_config_gradle(&project_root, project_path.as_deref())
-                    .map_err(map_build_error)?;
-                let selected_root = project_path
-                    .as_deref()
-                    .map(|path| project_root.join(gradle_project_path_to_dir(path)));
-
-                let JavaCompileConfig {
-                    compile_classpath,
-                    module_path: cfg_module_path,
-                    main_source_roots,
-                    test_source_roots,
-                    main_output_dir,
-                    source: cfg_source,
-                    target: cfg_target,
-                    release: cfg_release,
-                    enable_preview,
-                    ..
-                } = cfg;
-
-                let classpath = paths_to_strings(compile_classpath.iter());
-                let module_path = if cfg_module_path.is_empty() {
-                    config
-                        .module_path
-                        .iter()
-                        .map(|entry| entry.path.to_string_lossy().to_string())
-                        .collect()
-                } else {
-                    paths_to_strings(cfg_module_path.iter())
-                };
-
-                let mut source_roots: Vec<String> = main_source_roots
-                    .iter()
-                    .chain(test_source_roots.iter())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
-                source_roots.extend(
-                    config
-                        .source_roots
-                        .iter()
-                        .filter(|root| {
-                            selected_root
-                                .as_ref()
-                                .map_or(true, |selected| root.path.starts_with(selected))
-                        })
-                        .map(|root| root.path.to_string_lossy().to_string()),
-                );
-                source_roots.sort();
-                source_roots.dedup();
-
-                let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
-                let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
-
-                (
-                    classpath,
-                    module_path,
-                    source_roots,
-                    source,
-                    target_version,
-                    cfg_release,
-                    main_output_dir.map(|p| p.to_string_lossy().to_string()),
-                    enable_preview,
-                )
-            }
-            // For simple projects, `nova-project` is already the source of truth.
-            nova_project::BuildSystem::Simple => (
-                config
-                    .classpath
-                    .iter()
-                    .map(|entry| entry.path.to_string_lossy().to_string())
-                    .collect(),
-                config
-                    .module_path
-                    .iter()
-                    .map(|entry| entry.path.to_string_lossy().to_string())
-                    .collect(),
-                config
-                    .source_roots
-                    .iter()
-                    .map(|root| root.path.to_string_lossy().to_string())
-                    .collect(),
-                Some(config.java.source.0.to_string()),
-                Some(config.java.target.0.to_string()),
-                None,
-                None,
-                false,
-            ),
-            // Bazel workspaces are handled above via `bazel_workspace_root`.
-            nova_project::BuildSystem::Bazel => {
-                return Err(NovaLspError::InvalidParams(
+                        .map(|root| root.path.to_string_lossy().to_string())
+                        .collect(),
+                    Some(config.java.source.0.to_string()),
+                    Some(config.java.target.0.to_string()),
+                    None,
+                    None,
+                    false,
+                )),
+                // Bazel workspaces are handled above via `bazel_workspace_root`.
+                nova_project::BuildSystem::Bazel => Err(NovaLspError::InvalidParams(
                     "Bazel workspace was not detected at the requested root".to_string(),
-                ));
-            }
-        };
+                )),
+            }?;
 
-        let result = TargetClasspathResult {
-            project_root: project_root.to_string_lossy().to_string(),
-            target: normalized_target,
-            classpath,
-            module_path,
-            source_roots,
-            source,
-            target_version,
-            release,
-            output_dir,
-            enable_preview,
-        };
-        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            let result = TargetClasspathResult {
+                project_root: project_root.to_string_lossy().to_string(),
+                target: normalized_target,
+                classpath,
+                module_path,
+                source_roots,
+                source,
+                target_version,
+                release,
+                output_dir,
+                enable_preview,
+            };
+            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        })();
+
+        status_guard.finish_from_result(&value_result);
+        value_result
     }
 }
 
@@ -1148,41 +1176,47 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
         .unwrap_or_else(|_| requested_root.clone());
 
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
-        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
-            .map(|dir| dir.queries_dir().join("bazel.json"))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-        let runner = nova_build_bazel::DefaultCommandRunner::default();
-        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-            .and_then(|ws| ws.with_cache_path(cache_path))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-
-        let targets = workspace
-            .java_targets()
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-
-        let mut units = Vec::with_capacity(targets.len());
-        for target in targets {
-            let info = workspace
-                .target_compile_info(&target)
+        let mut status_guard = BuildStatusGuard::new(&workspace_root);
+        let value_result: Result<serde_json::Value> = (|| {
+            let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
+                .map(|dir| dir.queries_dir().join("bazel.json"))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-            units.push(ProjectModelUnit::Bazel {
-                target,
-                compile_classpath: info.classpath,
-                module_path: info.module_path,
-                source_roots: info.source_roots,
-                language_level: Some(JavaLanguageLevel {
-                    source: info.source,
-                    target: info.target,
-                    release: None,
-                }),
-            });
-        }
+            let runner = nova_build_bazel::DefaultCommandRunner::default();
+            let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+                .and_then(|ws| ws.with_cache_path(cache_path))
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-        let result = ProjectModelResult {
-            project_root: workspace_root.to_string_lossy().to_string(),
-            units,
-        };
-        return serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()));
+            let targets = workspace
+                .java_targets()
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+            let mut units = Vec::with_capacity(targets.len());
+            for target in targets {
+                let info = workspace
+                    .target_compile_info(&target)
+                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+                units.push(ProjectModelUnit::Bazel {
+                    target,
+                    compile_classpath: info.classpath,
+                    module_path: info.module_path,
+                    source_roots: info.source_roots,
+                    language_level: Some(JavaLanguageLevel {
+                        source: info.source,
+                        target: info.target,
+                        release: None,
+                    }),
+                });
+            }
+
+            let result = ProjectModelResult {
+                project_root: workspace_root.to_string_lossy().to_string(),
+                units,
+            };
+            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        })();
+
+        status_guard.finish_from_result(&value_result);
+        return value_result;
     }
 
     let nova_config = load_workspace_config(&requested_root);
@@ -1194,169 +1228,194 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
 
-    let units = match config.build_system {
-        nova_project::BuildSystem::Maven => config
-            .modules
-            .iter()
-            .map(|module| {
-                let rel = module
-                    .root
-                    .strip_prefix(&project_root)
-                    .unwrap_or(module.root.as_path());
-                let rel = if rel.as_os_str().is_empty() {
-                    ".".to_string()
-                } else {
-                    rel.to_string_lossy().to_string()
-                };
-
-                let module_relative = if rel == "." {
-                    None
-                } else {
-                    Some(Path::new(&rel))
-                };
-                let cfg = manager
-                    .java_compile_config_maven(&project_root, module_relative)
-                    .map_err(map_build_error)?;
-
-                let JavaCompileConfig {
-                    compile_classpath,
-                    module_path: cfg_module_path,
-                    main_source_roots,
-                    test_source_roots,
-                    source,
-                    target,
-                    release,
-                    ..
-                } = cfg;
-
-                let mut source_roots: Vec<String> = main_source_roots
-                    .iter()
-                    .chain(test_source_roots.iter())
-                    .map(|root| root.to_string_lossy().to_string())
-                    .collect();
-                source_roots.extend(
-                    config
-                        .source_roots
+    match config.build_system {
+        nova_project::BuildSystem::Maven | nova_project::BuildSystem::Gradle => {
+            let build_system = config.build_system;
+            let mut status_guard = BuildStatusGuard::new(&project_root);
+            let value_result: Result<serde_json::Value> = (|| {
+                let units = match build_system {
+                    nova_project::BuildSystem::Maven => config
+                        .modules
                         .iter()
-                        .filter(|root| root.path.starts_with(&module.root))
-                        .map(|root| root.path.to_string_lossy().to_string()),
-                );
-                source_roots.sort();
-                source_roots.dedup();
+                        .map(|module| {
+                            let rel = module
+                                .root
+                                .strip_prefix(&project_root)
+                                .unwrap_or(module.root.as_path());
+                            let rel = if rel.as_os_str().is_empty() {
+                                ".".to_string()
+                            } else {
+                                rel.to_string_lossy().to_string()
+                            };
 
-                Ok(ProjectModelUnit::Maven {
-                    module: rel,
-                    compile_classpath: paths_to_strings(compile_classpath.iter()),
-                    module_path: if cfg_module_path.is_empty() {
-                        config
-                            .module_path
-                            .iter()
-                            .map(|entry| entry.path.to_string_lossy().to_string())
-                            .collect()
-                    } else {
-                        paths_to_strings(cfg_module_path.iter())
-                    },
-                    source_roots,
-                    language_level: Some(JavaLanguageLevel {
-                        source: source.or_else(|| Some(config.java.source.0.to_string())),
-                        target: target.or_else(|| Some(config.java.target.0.to_string())),
-                        release,
-                    }),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
-        nova_project::BuildSystem::Gradle => config
-            .modules
-            .iter()
-            .map(|module| {
-                let rel = module
-                    .root
-                    .strip_prefix(&project_root)
-                    .unwrap_or(module.root.as_path());
-                let project_path = if rel.as_os_str().is_empty() {
-                    ":".to_string()
-                } else {
-                    let mut out = String::from(":");
-                    let mut first = true;
-                    for component in rel.components() {
-                        let part = component.as_os_str().to_string_lossy();
-                        if part.is_empty() {
-                            continue;
-                        }
-                        if !first {
-                            out.push(':');
-                        }
-                        first = false;
-                        out.push_str(&part);
+                            let module_relative = if rel == "." {
+                                None
+                            } else {
+                                Some(Path::new(&rel))
+                            };
+                            let cfg = manager
+                                .java_compile_config_maven(&project_root, module_relative)
+                                .map_err(map_build_error)?;
+
+                            let JavaCompileConfig {
+                                compile_classpath,
+                                module_path: cfg_module_path,
+                                main_source_roots,
+                                test_source_roots,
+                                source,
+                                target,
+                                release,
+                                ..
+                            } = cfg;
+
+                            let mut source_roots: Vec<String> = main_source_roots
+                                .iter()
+                                .chain(test_source_roots.iter())
+                                .map(|root| root.to_string_lossy().to_string())
+                                .collect();
+                            source_roots.extend(
+                                config
+                                    .source_roots
+                                    .iter()
+                                    .filter(|root| root.path.starts_with(&module.root))
+                                    .map(|root| root.path.to_string_lossy().to_string()),
+                            );
+                            source_roots.sort();
+                            source_roots.dedup();
+
+                            Ok(ProjectModelUnit::Maven {
+                                module: rel,
+                                compile_classpath: paths_to_strings(compile_classpath.iter()),
+                                module_path: if cfg_module_path.is_empty() {
+                                    config
+                                        .module_path
+                                        .iter()
+                                        .map(|entry| entry.path.to_string_lossy().to_string())
+                                        .collect()
+                                } else {
+                                    paths_to_strings(cfg_module_path.iter())
+                                },
+                                source_roots,
+                                language_level: Some(JavaLanguageLevel {
+                                    source: source
+                                        .or_else(|| Some(config.java.source.0.to_string())),
+                                    target: target
+                                        .or_else(|| Some(config.java.target.0.to_string())),
+                                    release,
+                                }),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    nova_project::BuildSystem::Gradle => config
+                        .modules
+                        .iter()
+                        .map(|module| {
+                            let rel = module
+                                .root
+                                .strip_prefix(&project_root)
+                                .unwrap_or(module.root.as_path());
+                            let project_path = if rel.as_os_str().is_empty() {
+                                ":".to_string()
+                            } else {
+                                let mut out = String::from(":");
+                                let mut first = true;
+                                for component in rel.components() {
+                                    let part = component.as_os_str().to_string_lossy();
+                                    if part.is_empty() {
+                                        continue;
+                                    }
+                                    if !first {
+                                        out.push(':');
+                                    }
+                                    first = false;
+                                    out.push_str(&part);
+                                }
+                                out
+                            };
+
+                            let cfg = manager
+                                .java_compile_config_gradle(
+                                    &project_root,
+                                    if project_path == ":" {
+                                        None
+                                    } else {
+                                        Some(project_path.as_str())
+                                    },
+                                )
+                                .map_err(map_build_error)?;
+
+                            let JavaCompileConfig {
+                                compile_classpath,
+                                module_path: cfg_module_path,
+                                main_source_roots,
+                                test_source_roots,
+                                source,
+                                target,
+                                release,
+                                ..
+                            } = cfg;
+
+                            let mut source_roots: Vec<String> = main_source_roots
+                                .iter()
+                                .chain(test_source_roots.iter())
+                                .map(|root| root.to_string_lossy().to_string())
+                                .collect();
+                            source_roots.extend(
+                                config
+                                    .source_roots
+                                    .iter()
+                                    .filter(|root| root.path.starts_with(&module.root))
+                                    .map(|root| root.path.to_string_lossy().to_string()),
+                            );
+                            source_roots.sort();
+                            source_roots.dedup();
+
+                            Ok(ProjectModelUnit::Gradle {
+                                project_path,
+                                compile_classpath: paths_to_strings(compile_classpath.iter()),
+                                module_path: if cfg_module_path.is_empty() {
+                                    config
+                                        .module_path
+                                        .iter()
+                                        .map(|entry| entry.path.to_string_lossy().to_string())
+                                        .collect()
+                                } else {
+                                    paths_to_strings(cfg_module_path.iter())
+                                },
+                                source_roots,
+                                language_level: Some(JavaLanguageLevel {
+                                    source: source
+                                        .or_else(|| Some(config.java.source.0.to_string())),
+                                    target: target
+                                        .or_else(|| Some(config.java.target.0.to_string())),
+                                    release,
+                                }),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    nova_project::BuildSystem::Simple | nova_project::BuildSystem::Bazel => {
+                        unreachable!("handled by outer match")
                     }
-                    out
                 };
 
-                let cfg = manager
-                    .java_compile_config_gradle(
-                        &project_root,
-                        if project_path == ":" {
-                            None
-                        } else {
-                            Some(project_path.as_str())
-                        },
-                    )
-                    .map_err(map_build_error)?;
+                let result = ProjectModelResult {
+                    project_root: project_root.to_string_lossy().to_string(),
+                    units,
+                };
+                serde_json::to_value(result)
+                    .map_err(|err| NovaLspError::Internal(err.to_string()))
+            })();
 
-                let JavaCompileConfig {
-                    compile_classpath,
-                    module_path: cfg_module_path,
-                    main_source_roots,
-                    test_source_roots,
-                    source,
-                    target,
-                    release,
-                    ..
-                } = cfg;
-
-                let mut source_roots: Vec<String> = main_source_roots
-                    .iter()
-                    .chain(test_source_roots.iter())
-                    .map(|root| root.to_string_lossy().to_string())
-                    .collect();
-                source_roots.extend(
-                    config
-                        .source_roots
-                        .iter()
-                        .filter(|root| root.path.starts_with(&module.root))
-                        .map(|root| root.path.to_string_lossy().to_string()),
-                );
-                source_roots.sort();
-                source_roots.dedup();
-
-                Ok(ProjectModelUnit::Gradle {
-                    project_path,
-                    compile_classpath: paths_to_strings(compile_classpath.iter()),
-                    module_path: if cfg_module_path.is_empty() {
-                        config
-                            .module_path
-                            .iter()
-                            .map(|entry| entry.path.to_string_lossy().to_string())
-                            .collect()
-                    } else {
-                        paths_to_strings(cfg_module_path.iter())
-                    },
-                    source_roots,
-                    language_level: Some(JavaLanguageLevel {
-                        source: source.or_else(|| Some(config.java.source.0.to_string())),
-                        target: target.or_else(|| Some(config.java.target.0.to_string())),
-                        release,
-                    }),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
+            status_guard.finish_from_result(&value_result);
+            value_result
+        }
         nova_project::BuildSystem::Simple => {
             let source_roots = config
                 .source_roots
                 .iter()
                 .map(|root| root.path.to_string_lossy().to_string())
                 .collect();
-            vec![ProjectModelUnit::Simple {
+            let units = vec![ProjectModelUnit::Simple {
                 module: ".".to_string(),
                 compile_classpath: config
                     .classpath
@@ -1374,20 +1433,262 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     target: Some(config.java.target.0.to_string()),
                     release: None,
                 }),
-            }]
-        }
-        nova_project::BuildSystem::Bazel => {
-            return Err(NovaLspError::InvalidParams(
-                "Bazel workspace was not detected at the requested root".to_string(),
-            ));
-        }
-    };
+            }];
 
-    let result = ProjectModelResult {
-        project_root: project_root.to_string_lossy().to_string(),
-        units,
-    };
-    serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            let result = ProjectModelResult {
+                project_root: project_root.to_string_lossy().to_string(),
+                units,
+            };
+            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        }
+        nova_project::BuildSystem::Bazel => Err(NovaLspError::InvalidParams(
+            "Bazel workspace was not detected at the requested root".to_string(),
+        )),
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Build status tracking (`nova/build/status`)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
+struct BuildStatusEntry {
+    in_flight_count: u32,
+    last_failed: bool,
+    last_error: Option<String>,
+}
+
+static BUILD_STATUS_REGISTRY: OnceLock<Mutex<BTreeMap<PathBuf, BuildStatusEntry>>> = OnceLock::new();
+
+fn build_status_registry() -> &'static Mutex<BTreeMap<PathBuf, BuildStatusEntry>> {
+    BUILD_STATUS_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn canonicalize_project_root(project_root: &Path) -> PathBuf {
+    project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+}
+
+fn build_status_snapshot_for_project_root(project_root: &Path) -> (BuildStatus, Option<String>) {
+    let key = canonicalize_project_root(project_root);
+    let registry = build_status_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    match registry.get(&key) {
+        Some(entry) if entry.in_flight_count > 0 => (BuildStatus::Building, None),
+        Some(entry) if entry.last_failed => (BuildStatus::Failed, entry.last_error.clone()),
+        _ => (BuildStatus::Idle, None),
+    }
+}
+
+#[cfg(test)]
+fn build_status_for_project_root(project_root: &Path) -> BuildStatus {
+    build_status_snapshot_for_project_root(project_root).0
+}
+
+#[derive(Debug)]
+enum BuildInvocationOutcome {
+    Success,
+    Failure(Option<String>),
+}
+
+#[derive(Debug)]
+pub(super) struct BuildStatusGuard {
+    project_root: PathBuf,
+    outcome: Option<BuildInvocationOutcome>,
+}
+
+impl BuildStatusGuard {
+    pub(super) fn new(project_root: &Path) -> Self {
+        let project_root = canonicalize_project_root(project_root);
+        let mut registry = build_status_registry()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let entry = registry.entry(project_root.clone()).or_default();
+        entry.in_flight_count = entry.in_flight_count.saturating_add(1);
+        drop(registry);
+
+        Self {
+            project_root,
+            outcome: None,
+        }
+    }
+
+    pub(super) fn mark_success(&mut self) {
+        self.outcome = Some(BuildInvocationOutcome::Success);
+    }
+
+    pub(super) fn mark_failure(&mut self, error: Option<String>) {
+        self.outcome = Some(BuildInvocationOutcome::Failure(error));
+    }
+
+    pub(super) fn finish_from_result<T>(&mut self, result: &Result<T>) {
+        match result {
+            Ok(_) => self.mark_success(),
+            Err(err) => self.mark_failure(Some(err.to_string())),
+        }
+    }
+}
+
+impl Drop for BuildStatusGuard {
+    fn drop(&mut self) {
+        let mut registry = build_status_registry()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let mut should_remove = false;
+
+        if let Some(entry) = registry.get_mut(&self.project_root) {
+            entry.in_flight_count = entry.in_flight_count.saturating_sub(1);
+
+            match self.outcome.take() {
+                Some(BuildInvocationOutcome::Success) => {
+                    entry.last_failed = false;
+                    entry.last_error = None;
+                }
+                Some(BuildInvocationOutcome::Failure(error)) => {
+                    entry.last_failed = true;
+                    entry.last_error = error;
+                }
+                None => {
+                    entry.last_failed = true;
+                    entry
+                        .last_error
+                        .get_or_insert_with(|| "build invocation aborted".to_string());
+                }
+            }
+
+            should_remove =
+                entry.in_flight_count == 0 && !entry.last_failed && entry.last_error.is_none();
+        }
+
+        if should_remove {
+            registry.remove(&self.project_root);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuildStatusCommandRunner {
+    inner: Arc<dyn CommandRunner>,
+    failed: AtomicBool,
+    last_error: Mutex<Option<String>>,
+    guard: BuildStatusGuard,
+}
+
+impl CommandRunner for BuildStatusCommandRunner {
+    fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
+        let result = self.inner.run(cwd, program, args);
+
+        match &result {
+            Ok(output) => {
+                if !output.status.success() {
+                    self.failed.store(true, Ordering::Relaxed);
+                    let mut last_error = self
+                        .last_error
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    if last_error.is_none() {
+                        *last_error = output
+                            .status
+                            .code()
+                            .filter(|code| *code != 0)
+                            .map(|code| format!("command exited with status code {code}"))
+                            .or_else(|| Some(format!("command exited with status {status:?}", status = output.status)));
+                    }
+                }
+            }
+            Err(err) => {
+                self.failed.store(true, Ordering::Relaxed);
+                let mut last_error = self
+                    .last_error
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                if last_error.is_none() {
+                    *last_error = Some(err.to_string());
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl Drop for BuildStatusCommandRunner {
+    fn drop(&mut self) {
+        if self.failed.load(Ordering::Relaxed) {
+            let last_error = self
+                .last_error
+                .get_mut()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            self.guard.mark_failure(last_error);
+        } else {
+            self.guard.mark_success();
+        }
+        // `BuildStatusGuard` drops after this and updates the process-global registry.
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BuildStatusCommandRunnerFactory {
+    project_root: PathBuf,
+    timeout: Option<Duration>,
+}
+
+impl CommandRunnerFactory for BuildStatusCommandRunnerFactory {
+    fn build_runner(&self, cancellation: nova_process::CancellationToken) -> Arc<dyn CommandRunner> {
+        let inner = Arc::new(DefaultCommandRunner {
+            timeout: self.timeout,
+            cancellation: Some(cancellation),
+        });
+        Arc::new(BuildStatusCommandRunner {
+            inner,
+            failed: AtomicBool::new(false),
+            last_error: Mutex::new(None),
+            guard: BuildStatusGuard::new(&self.project_root),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BuildStatusBazelBuildExecutor {
+    workspace_root: PathBuf,
+    inner: Arc<dyn BazelBuildExecutor>,
+}
+
+impl BazelBuildExecutor for BuildStatusBazelBuildExecutor {
+    fn compile(
+        &self,
+        config: &BazelBspConfig,
+        workspace_root: &Path,
+        targets: &[String],
+        cancellation: nova_process::CancellationToken,
+    ) -> anyhow::Result<BspCompileOutcome> {
+        let mut status_guard = BuildStatusGuard::new(&self.workspace_root);
+        let cancellation_for_inner = cancellation.clone();
+        let result = self
+            .inner
+            .compile(config, workspace_root, targets, cancellation_for_inner);
+
+        match &result {
+            Ok(outcome) => {
+                if cancellation.is_cancelled() || matches!(outcome.status_code, 2 | 3) {
+                    let message = match outcome.status_code {
+                        3 => Some("bazel build cancelled".to_string()),
+                        2 => Some("bazel build failed".to_string()),
+                        _ => Some("bazel build cancelled".to_string()),
+                    };
+                    status_guard.mark_failure(message);
+                } else {
+                    status_guard.mark_success();
+                }
+            }
+            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+        }
+
+        result
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1399,17 +1700,19 @@ pub struct BuildStatusParams {
 
 pub const BUILD_STATUS_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildStatus {
+    Idle,
+    Building,
+    Failed,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildStatusResult {
     pub schema_version: u32,
-    pub status: BuildTaskState,
-    #[serde(default)]
-    pub build_id: Option<u64>,
-    #[serde(default)]
-    pub queued: usize,
-    #[serde(default)]
-    pub message: Option<String>,
+    pub status: BuildStatus,
     #[serde(default)]
     pub last_error: Option<String>,
 }
@@ -1424,73 +1727,39 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
         ));
     }
 
-    let requested_root = PathBuf::from(&req.project_root);
-    let requested_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
-
-    let snapshot = build_orchestrator_if_present(&requested_root).map(|o| o.status());
-    if let Some(BuildStatusSnapshot {
-        state,
-        active_id,
-        queued,
-        last_completed_id,
-        message,
-        last_error,
-    }) = snapshot
+    let project_root = PathBuf::from(&req.project_root);
+    let key = canonicalize_project_root(&project_root);
+    let orchestrator_building = build_orchestrator_if_present(&key)
+        .map(|o| matches!(o.status().state, BuildTaskState::Queued | BuildTaskState::Running))
+        .unwrap_or(false);
+    let bazel_building = nova_project::bazel_workspace_root(&key)
+        .and_then(|workspace_root| bazel_build_orchestrator_if_present(&workspace_root))
+        .map(|o| {
+            matches!(
+                o.status().state,
+                BazelBuildTaskState::Queued | BazelBuildTaskState::Running
+            )
+        })
+        .unwrap_or(false);
+    let (registry_status, registry_last_error) = build_status_snapshot_for_project_root(&key);
+    let status = if registry_status == BuildStatus::Building || orchestrator_building || bazel_building
     {
-        let resp = BuildStatusResult {
-            schema_version: BUILD_STATUS_SCHEMA_VERSION,
-            status: state,
-            build_id: active_id.or(last_completed_id),
-            queued,
-            message,
-            last_error,
-        };
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
-    }
-
-    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
-        let snapshot = bazel_build_orchestrator_if_present(&workspace_root).map(|o| o.status());
-        let resp = match snapshot {
-            Some(BazelBuildStatusSnapshot {
-                state,
-                active_id,
-                queued,
-                last_completed_id,
-                message,
-                last_error,
-            }) => BuildStatusResult {
-                schema_version: BUILD_STATUS_SCHEMA_VERSION,
-                status: map_bazel_task_state(state),
-                build_id: active_id.or(last_completed_id),
-                queued,
-                message,
-                last_error,
-            },
-            None => BuildStatusResult {
-                schema_version: BUILD_STATUS_SCHEMA_VERSION,
-                status: BuildTaskState::Idle,
-                build_id: None,
-                queued: 0,
-                message: None,
-                last_error: None,
-            },
-        };
-
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
-    }
-
-    let resp = BuildStatusResult {
-        schema_version: BUILD_STATUS_SCHEMA_VERSION,
-        status: BuildTaskState::Idle,
-        build_id: None,
-        queued: 0,
-        message: None,
-        last_error: None,
+        BuildStatus::Building
+    } else {
+        registry_status
+    };
+    let last_error = if status == BuildStatus::Failed {
+        registry_last_error
+    } else {
+        None
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(BuildStatusResult {
+        schema_version: BUILD_STATUS_SCHEMA_VERSION,
+        status,
+        last_error,
+    })
+    .map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1588,7 +1857,6 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
 
         return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
     }
-
     let resp = BuildDiagnosticsResult {
         schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
         target: req.target,
@@ -1712,6 +1980,65 @@ mod tests {
         assert!(value.get("generatedSourceRoots").is_some());
         assert!(value.get("languageLevel").is_some());
         assert!(value.get("outputDirs").is_some());
+    }
+
+    #[test]
+    fn build_status_defaults_to_idle() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(build_status_for_project_root(tmp.path()), BuildStatus::Idle);
+    }
+
+    #[test]
+    fn build_status_is_building_while_guard_held() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Idle);
+
+        let mut guard = BuildStatusGuard::new(root);
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Building);
+        guard.mark_success();
+        drop(guard);
+
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Idle);
+    }
+
+    #[test]
+    fn build_status_failed_then_idle_after_success() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        {
+            let mut guard = BuildStatusGuard::new(root);
+            guard.mark_failure(Some("boom".to_string()));
+        }
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Failed);
+
+        {
+            let mut guard = BuildStatusGuard::new(root);
+            guard.mark_success();
+        }
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Idle);
+    }
+
+    #[test]
+    fn build_status_canonicalizes_project_roots() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let root_with_dot = root.join(".");
+
+        let mut guard = BuildStatusGuard::new(&root_with_dot);
+        assert_eq!(build_status_for_project_root(root), BuildStatus::Building);
+        guard.mark_success();
+        drop(guard);
+
+        {
+            let mut guard = BuildStatusGuard::new(root);
+            guard.mark_failure(Some("fail".to_string()));
+        }
+        assert_eq!(
+            build_status_for_project_root(&root_with_dot),
+            BuildStatus::Failed
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::build::NovaDiagnostic;
+use super::build::{BuildStatusGuard, NovaDiagnostic};
 use super::config::load_workspace_config_with_path;
 
 #[derive(Debug, Deserialize)]
@@ -165,9 +165,36 @@ pub fn handle_run_annotation_processing(
     let target = resolve_target(&apt, &params)?;
 
     let mut reporter = VecProgress::default();
-    let run_result = apt
-        .run(&build, target, Some(cancel), &mut reporter)
-        .map_err(map_io_error)?;
+    let run_result = {
+        let mut status_guard = BuildStatusGuard::new(&root);
+        let run_result = apt.run(&build, target, Some(cancel), &mut reporter);
+        match &run_result {
+            Ok(result) => {
+                let has_errors = result
+                    .diagnostics
+                    .iter()
+                    .any(|diag| matches!(diag.severity, nova_core::DiagnosticSeverity::Error));
+                if matches!(result.status, AptRunStatus::Failed) || has_errors {
+                    let first_error = result
+                        .diagnostics
+                        .iter()
+                        .find(|diag| matches!(diag.severity, nova_core::DiagnosticSeverity::Error))
+                        .map(|diag| diag.message.clone());
+                    status_guard.mark_failure(
+                        first_error
+                            .or_else(|| result.error.clone())
+                            .or_else(|| Some("annotation processing failed".to_string())),
+                    );
+                } else if matches!(result.status, AptRunStatus::Cancelled) {
+                    status_guard.mark_failure(Some("annotation processing cancelled".to_string()));
+                } else {
+                    status_guard.mark_success();
+                }
+            }
+            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+        }
+        run_result.map_err(map_io_error)?
+    };
 
     let module_diagnostics = group_diagnostics_by_module(&run_result.diagnostics, apt.project());
 

@@ -3981,6 +3981,7 @@ dependencies = [
  "nova-jdwp",
  "nova-memory",
  "nova-metrics",
+ "nova-process",
  "nova-project",
  "nova-refactor",
  "nova-remote-proto",
