@@ -1029,6 +1029,13 @@ mod tests {
         }
 
         #[test]
+        fn final_sigma_folds_to_sigma() {
+            // Greek has distinct lowercase sigma forms: normal sigma (σ) and final sigma (ς).
+            // Unicode case folding maps both to σ.
+            assert!(fuzzy_match("σ", "ς").is_some());
+        }
+
+        #[test]
         fn canonical_equivalence_matches() {
             let decomposed = "cafe\u{0301}";
             let composed = "café";

@@ -765,6 +765,17 @@ mod tests {
 
     #[cfg(feature = "unicode")]
     #[test]
+    fn unicode_case_folding_normalizes_final_sigma() {
+        // Greek final sigma (ς) should be case-folded to normal sigma (σ).
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "αβς");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("αβσ"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
     fn unicode_normalization_makes_decomposed_match_composed() {
         let mut builder = TrigramIndexBuilder::new();
         builder.insert(1, "cafe\u{0301}");
