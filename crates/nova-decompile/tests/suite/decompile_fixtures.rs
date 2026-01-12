@@ -4,9 +4,7 @@ use nova_decompile::{decompile_classfile, decompile_classfile_cached, SymbolKey}
 use std::fs;
 use tempfile::TempDir;
 
-mod suite;
-
-const FOO_CLASS: &[u8] = include_bytes!("fixtures/com/example/Foo.class");
+const FOO_CLASS: &[u8] = include_bytes!("../fixtures/com/example/Foo.class");
 
 #[test]
 fn decompiled_output_contains_expected_signatures() {
