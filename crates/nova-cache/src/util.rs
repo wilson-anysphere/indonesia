@@ -45,13 +45,21 @@ pub(crate) fn bincode_deserialize<T: for<'de> Deserialize<'de>>(
 }
 
 pub(crate) fn read_file_limited(path: &Path) -> Option<Vec<u8>> {
-    let meta = std::fs::metadata(path).ok()?;
+    // Avoid following symlinks out of the cache directory.
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+
     if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
+        let _ = std::fs::remove_file(path);
         return None;
     }
 
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
+        let _ = std::fs::remove_file(path);
         return None;
     }
 

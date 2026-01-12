@@ -82,6 +82,10 @@ fn derived_artifact_cache_corruption_is_cache_miss() {
         .load("type_of", query_schema_version, &args, &inputs)
         .expect("load");
     assert_eq!(loaded, None);
+    assert!(
+        !entry_path.exists(),
+        "expected corrupted cache entry to be deleted"
+    );
 }
 
 #[test]
@@ -176,11 +180,16 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     let file = std::fs::File::create(&entry_path).unwrap();
     file.set_len((nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES + 1) as u64)
         .unwrap();
+    drop(file);
 
     let loaded: Option<Value> = cache
         .load("type_of", query_schema_version, &args, &inputs)
         .expect("load");
     assert_eq!(loaded, None);
+    assert!(
+        !entry_path.exists(),
+        "expected oversized cache entry to be deleted"
+    );
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]

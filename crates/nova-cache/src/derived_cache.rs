@@ -139,22 +139,30 @@ impl DerivedArtifactCache {
         };
         let persisted: PersistedDerivedValueOwned<T> = match bincode_deserialize(&bytes) {
             Ok(value) => value,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
         };
 
         if persisted.schema_version != DERIVED_CACHE_SCHEMA_VERSION {
+            let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
         if persisted.query_schema_version != query_schema_version {
+            let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
         if persisted.nova_version != nova_core::NOVA_VERSION {
+            let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
         if persisted.query_name != query_name {
+            let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
         if persisted.key_fingerprint != key_fingerprint {
+            let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
 

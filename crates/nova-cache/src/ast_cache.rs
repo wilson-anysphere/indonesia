@@ -145,25 +145,34 @@ impl AstArtifactCache {
         };
         let persisted: PersistedAstArtifactsOwned = match bincode_deserialize(&bytes) {
             Ok(persisted) => persisted,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                let _ = std::fs::remove_file(&artifact_path);
+                return Ok(None);
+            }
         };
 
         if persisted.schema_version != AST_ARTIFACT_SCHEMA_VERSION {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
         if persisted.syntax_schema_version != nova_syntax::SYNTAX_SCHEMA_VERSION {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
         if persisted.hir_schema_version != nova_hir::HIR_SCHEMA_VERSION {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
         if persisted.nova_version != nova_core::NOVA_VERSION {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
         if persisted.file_path != file_path {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
         if persisted.file_fingerprint != *fingerprint {
+            let _ = std::fs::remove_file(&artifact_path);
             return Ok(None);
         }
 

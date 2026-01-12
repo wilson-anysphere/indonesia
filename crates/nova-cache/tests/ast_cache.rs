@@ -24,8 +24,13 @@ fn ast_cache_oversized_metadata_is_cache_miss() {
     let file = std::fs::File::create(&metadata_path).unwrap();
     file.set_len((nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES + 1) as u64)
         .unwrap();
+    drop(file);
 
     assert!(cache.load("src/Foo.java", &fp).unwrap().is_none());
+    assert!(
+        !metadata_path.exists(),
+        "expected oversized metadata payload to be deleted"
+    );
 }
 
 #[test]
@@ -56,6 +61,11 @@ fn ast_cache_oversized_artifact_is_cache_miss() {
     let file = std::fs::File::create(&artifact_path).unwrap();
     file.set_len((nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES + 1) as u64)
         .unwrap();
+    drop(file);
 
     assert!(cache.load(file_path, &fp).unwrap().is_none());
+    assert!(
+        !artifact_path.exists(),
+        "expected oversized artifact payload to be deleted"
+    );
 }
