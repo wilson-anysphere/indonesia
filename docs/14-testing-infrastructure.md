@@ -490,8 +490,8 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 ./scripts/run-real-project-tests.sh
 
 # or, run the suites directly (after cloning)
-cargo test -p nova-project --test harness -- --include-ignored real_projects::
-cargo test -p nova-cli --test real_projects -- --include-ignored
+cargo test -p nova-project --test harness -- --ignored real_projects::
+cargo test -p nova-cli --test real_projects -- --ignored
 ```
 
 For CI-like behavior (and to reduce peak memory), consider running with a single test thread:
