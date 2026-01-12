@@ -84,9 +84,10 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 
 ### Major gaps (high impact)
 
-1. **Workspace engine keeps a full in-memory `ProjectIndexes` without tracking or eviction**
-   - `crates/nova-workspace/src/engine.rs`: `indexes: Arc<Mutex<ProjectIndexes>>` is populated after
-     indexing, but does not register a `MemoryTracker` and is not evictable.
+1. **Workspace engine project indexes eviction is coarse-grained**
+   - `crates/nova-workspace/src/engine.rs`: `WorkspaceProjectIndexesEvictor` tracks the in-memory
+     `ProjectIndexes` and can drop it under pressure, but eviction currently drops the entire
+     in-memory index (no partial retention) and does not persist shards via `flush_to_disk()`.
 2. **Large external indexes are tracked but not evictable**
    - Classpath + JDK indexes are tracked via `InputIndexTracker`, but there is currently no
      `MemoryEvictor` that can drop/clear them under `High`/`Critical` pressure.
@@ -94,10 +95,10 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
    - Classpath/JDK indexes (arguably “type info”) are currently tracked under `Indexes`.
    - No component registers under `TypeInfo`, so the budget split is not meaningful for real-world
      sessions.
-4. **Multiple memory managers per process**
-   - `nova-lsp` owns a `MemoryManager`.
-   - `nova-workspace::Workspace::open(...)` constructs its own `MemoryManager`.
-   - This risks “double budgeting” the same process RSS and leads to inconsistent pressure views.
+4. **Multiple memory managers per process (partially addressed)**
+   - `nova-workspace::Workspace::open_with_memory_manager(...)` allows a host process to share a
+     single `MemoryManager` across components (workspace, symbol search, query caches, etc.).
+   - `nova-lsp` should prefer `open_with_memory_manager` whenever it constructs a workspace.
 5. **LSP overlay-only documents may be untracked**
    - LSP tracks editor-open document text sizes, but virtual/decompiled overlay documents opened
      without updating the open-doc set can escape that accounting.
@@ -213,11 +214,8 @@ coherent end-to-end system.
 1. **(Done on main) `nova-index`: heap size estimation helpers**
    - `ProjectIndexes::estimated_bytes()` and per-index helpers exist with monotonicity tests.
 
-2. **`nova-workspace`: track in-memory `ProjectIndexes` held by the workspace engine**
-   - Wrap `engine::WorkspaceEngine.indexes` in a small struct that:
-     - registers a `MemoryTracker` (category `Indexes`)
-     - updates tracked bytes using `ProjectIndexes::estimated_bytes()`
-   - Unit tests: tracker reflects growth after indexing; tracker drops after eviction.
+2. **(Done on main) `nova-workspace`: track in-memory `ProjectIndexes` held by the workspace engine**
+   - Implemented via `WorkspaceProjectIndexesEvictor` + `ProjectIndexes::estimated_bytes()`.
 
 3. **(Done on main) Track classpath/JDK index memory**
    - `ClasspathIndex::estimated_bytes()` and `JdkIndex::estimated_bytes()` exist.
@@ -225,15 +223,10 @@ coherent end-to-end system.
 
 ### Track B — Eviction integration (make pressure reduce RSS without breaking UX)
 
-4. **`nova-workspace`: evictor for the engine’s in-memory `ProjectIndexes`**
-   - Implement `MemoryEvictor`:
-     - `flush_to_disk()` persists indexes when possible (project cache dir).
-     - `evict()` drops cold parts first.
-   - Proposed eviction ladder:
-     - Medium: drop `annotations` + `inheritance` first (if we expose partial clears).
-     - High: keep only `symbols`.
-     - Critical: clear everything (fall back to disk view for workspace queries).
-   - Unit tests: each pressure level produces expected retained subsets.
+4. **(Partially done on main) `nova-workspace`: evictor for the engine’s in-memory `ProjectIndexes`**
+   - `WorkspaceProjectIndexesEvictor` can drop the in-memory indexes under pressure.
+   - Remaining work: persist shards in `flush_to_disk()` and support partial retention (keep symbols
+     while dropping references/inheritance/etc.) to reduce UX impact.
 
 5. **`nova-db` / `nova-workspace`: classpath index eviction hook**
    - Add a memory evictor that can drop `ClasspathIndex` (set Salsa input to `None`) at
