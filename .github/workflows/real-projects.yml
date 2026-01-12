@@ -11,12 +11,11 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/real-projects.yml"
-      - "crates/nova-workspace/tests/harness.rs"
+      - "crates/nova-workspace/tests/workspace_events.rs"
       - "crates/nova-workspace/tests/suite/mod.rs"
       - "crates/nova-workspace/tests/suite/real_projects.rs"
-      - "crates/nova-cli/tests/harness.rs"
+      - "crates/nova-cli/tests/real_projects.rs"
       - "crates/nova-cli/tests/suite/mod.rs"
-      - "crates/nova-cli/tests/suite/real_projects.rs"
       - "scripts/run-real-project-tests.sh"
       - "scripts/clone-test-projects.sh"
       - "scripts/javac-validate.sh"

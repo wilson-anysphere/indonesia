@@ -561,7 +561,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
   - pinned revisions live in: `test-projects/pins.toml` (single source of truth)
   - note: `test-projects/**` is gitignored (only `README.md` + `pins.toml` are checked in)
 - Tests:
-  - `crates/nova-project/tests/harness.rs`
+  - `crates/nova-workspace/tests/suite/real_projects.rs` (compiled into `crates/nova-workspace/tests/workspace_events.rs`)
   - `crates/nova-cli/tests/real_projects.rs`
 
 **Run locally:**
@@ -571,7 +571,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 ./scripts/run-real-project-tests.sh
 
 # or, run the suites directly (after cloning)
-cargo test --locked -p nova-project --test harness -- --ignored
+cargo test --locked -p nova-workspace --test workspace_events -- --ignored
 cargo test --locked -p nova-cli --test real_projects -- --ignored
 ```
 
