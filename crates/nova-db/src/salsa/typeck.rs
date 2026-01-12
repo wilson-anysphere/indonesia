@@ -8954,8 +8954,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 text.as_str(),
                 Some(*span),
             );
-            explicit_type_args_errorish |=
-                resolved.ty.is_errorish() || !resolved.diagnostics.is_empty();
+            // Explicit method type arguments must be valid, non-wildcard reference types.
+            //
+            // `resolve_type_ref_text` parses types in general (including primitives and wildcards),
+            // but Java does not allow those as explicit type arguments in generic method invocation.
+            explicit_type_args_errorish |= resolved.ty.is_errorish()
+                || !resolved.diagnostics.is_empty()
+                || !resolved.ty.is_reference();
             self.diagnostics.extend(resolved.diagnostics);
             resolved_explicit_type_args.push(resolved.ty);
             explicit_type_args_span = Some(match explicit_type_args_span {
