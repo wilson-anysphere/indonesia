@@ -277,6 +277,32 @@ class C implements I { void test(){ C c=null; c.$0foo(); } }
 }
 
 #[test]
+fn go_to_implementation_on_super_call_does_not_return_overrides() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base {
+    void $1foo() {}
+}
+//- /Sub.java
+class Sub extends Base {
+    @Override
+    void $2foo() {}
+    void test() { super.$0foo(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_does_not_trigger_on_constructor_call() {
     let fixture = FileIdFixture::parse(
         r#"

@@ -736,4 +736,67 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn go_to_implementation_on_super_call_resolves_super_method_definition() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let root = temp_dir.path();
+
+        let mut db = InMemoryFileStore::new();
+
+        let base_path = root.join("Base.java");
+        let sub_path = root.join("Sub.java");
+
+        let base_file = db.file_id_for_path(&base_path);
+        let sub_file = db.file_id_for_path(&sub_path);
+
+        let base_text = "class Base {\n    void foo() {}\n}\n".to_string();
+        let sub_text = "class Sub extends Base {\n    @Override\n    void foo() {}\n    void test() { super.foo(); }\n}\n".to_string();
+
+        db.set_file_text(base_file, base_text);
+        db.set_file_text(sub_file, sub_text);
+
+        let index = cached_file_navigation_index(&db, sub_file);
+        let parsed_sub = index.file(sub_file).expect("sub parsed");
+        assert_eq!(
+            parsed_sub.types.len(),
+            1,
+            "expected one type in Sub.java, got types={:?}",
+            parsed_sub.types
+        );
+        let sub_ty = &parsed_sub.types[0];
+        assert!(
+            sub_ty.methods.iter().any(|m| m.name == "test"),
+            "expected Sub.test() to be indexed, got methods={:?}",
+            sub_ty.methods
+        );
+        assert!(
+            parsed_sub
+                .calls
+                .iter()
+                .any(|call| call.receiver == "super" && call.method == "foo"),
+            "expected `super.foo()` to be indexed as a call site, got calls={:?}",
+            parsed_sub.calls
+        );
+        let offset = parsed_sub
+            .text
+            .find("super.foo")
+            .expect("super.foo")
+            + "super.".len();
+        let pos = crate::text::offset_to_position_with_index(&parsed_sub.line_index, &parsed_sub.text, offset);
+
+        let got = implementation(&db, sub_file, pos);
+        assert_eq!(got.len(), 1);
+
+        let parsed_base = index.file(base_file).expect("base parsed");
+        let base_foo_offset = parsed_base.text.find("foo").expect("foo");
+        let expected_pos = crate::text::offset_to_position_with_index(
+            &parsed_base.line_index,
+            &parsed_base.text,
+            base_foo_offset,
+        );
+
+        assert_eq!(got[0].uri, uri_for_path(&base_path).expect("base uri"));
+        assert_eq!(got[0].range.start, expected_pos);
+    }
 }

@@ -1467,6 +1467,31 @@ class C {
     }
 
     #[test]
+    fn super_calls_are_indexed_as_receiver_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class Base {
+  void foo() {}
+}
+
+class Sub extends Base {
+  void test() { super.foo(); }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(
+            parsed
+                .calls
+                .iter()
+                .any(|call| call.receiver == "super" && call.method == "foo"),
+            "expected `super.foo()` to be indexed as a receiver call, got parsed.calls={:?}",
+            parsed.calls
+        );
+    }
+
+    #[test]
     fn annotation_invocations_are_not_indexed_as_receiverless_calls() {
         let uri = Uri::from_str("file:///C.java").unwrap();
         let text = r#"

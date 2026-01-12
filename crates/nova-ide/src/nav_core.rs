@@ -515,6 +515,7 @@ where
         return Vec::new();
     };
 
+    let receiver_is_super = call.receiver == "super";
     let mut receiver_is_static_type = false;
     let receiver_ty = if call.receiver == "this" {
         Some(containing_type.name.clone())
@@ -541,7 +542,11 @@ where
 
     // Static dispatch: `Type.method()` is resolved at compile-time, so we should not
     // walk subtypes as we do for virtual dispatch.
-    let receiver_is_final = receiver_is_static_type || receiver_info.def().modifiers.is_final;
+    //
+    // `super.method()` is also statically dispatched (to a specific superclass implementation),
+    // so treat it like a final receiver here.
+    let receiver_is_final =
+        receiver_is_static_type || receiver_is_super || receiver_info.def().modifiers.is_final;
 
     let mut candidates: Vec<(Uri, Span)> = Vec::new();
 
