@@ -156,7 +156,7 @@ cargo fmt --all -- --check
 cargo clippy --locked -p nova-core --all-targets --all-features -- -D warnings
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh fmt --locked --all -- --check
+bash scripts/cargo_agent.sh fmt --all -- --check
 bash scripts/cargo_agent.sh clippy --locked -p nova-core --all-targets --all-features -- -D warnings
 
 # Repo invariants (CI runs this; nova-devtools)
