@@ -3193,22 +3193,46 @@ function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
 
   const record = params as Record<string, unknown>;
 
-  const directUri = record.uri;
-  if (typeof directUri === 'string' && directUri.trim().length > 0) {
-    return true;
-  }
+  const hasHint = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const obj = value as Record<string, unknown>;
 
-  const textDocument = record.textDocument;
-  if (textDocument && typeof textDocument === 'object') {
-    const tdUri = (textDocument as Record<string, unknown>).uri;
-    if (typeof tdUri === 'string' && tdUri.trim().length > 0) {
+    const directUri = obj.uri;
+    if (typeof directUri === 'string' && directUri.trim().length > 0) {
       return true;
     }
+
+    const textDocument = obj.textDocument;
+    if (textDocument && typeof textDocument === 'object') {
+      const tdUri = (textDocument as Record<string, unknown>).uri;
+      if (typeof tdUri === 'string' && tdUri.trim().length > 0) {
+        return true;
+      }
+    }
+
+    const projectRoot = obj.projectRoot;
+    if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+      return true;
+    }
+
+    return false;
+  };
+
+  if (hasHint(record)) {
+    return true;
   }
 
-  const projectRoot = record.projectRoot;
-  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
-    return true;
+  // `workspace/executeCommand` params wrap routing hints inside an `arguments` array. If those hints
+  // are present but don't match any workspace folder, avoid silently routing the request to the
+  // active editor's workspace and prompt instead.
+  if (typeof record.command === 'string' && Array.isArray(record.arguments)) {
+    for (const arg of record.arguments) {
+      if (hasHint(arg)) {
+        return true;
+      }
+    }
   }
 
   return false;
