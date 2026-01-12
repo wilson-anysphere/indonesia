@@ -1251,14 +1251,6 @@ bundles were loaded, any load/register errors, and per-provider runtime stats.
 
 No params are required; clients should send `{}` or omit params.
 
-Optional schema gating:
-
-```json
-{ "schemaVersion": 1 }
-```
-
-When `schemaVersion` is present, it must be `1`.
-
 #### Response
 
 ```json
@@ -1366,6 +1358,12 @@ Notes:
 - `range` follows standard LSP conventions (0-based line and UTF-16 `character` offsets) and may be
   `null` when the target does not include a span.
 - `span` is a UTF-8 byte-offset range `{start,end}` into the document text and may be `null`.
+
+#### Errors
+
+- `-32602` for invalid params (e.g. missing `textDocument.uri`).
+- `-32603` when `schemaVersion` is present but unsupported:
+  `"unsupported schemaVersion <version> (expected 1)"`.
 
 #### Safe-mode
 
