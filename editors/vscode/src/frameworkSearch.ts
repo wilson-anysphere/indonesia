@@ -3,8 +3,8 @@ import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRe
 import { uriFromFileLike } from './frameworkDashboard';
 import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 import { formatError, isSafeModeError } from './safeMode';
-import { utf8ByteOffsetToUtf16Offset } from './utf8';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
+import { utf8ByteOffsetToUtf16Offset } from './utf8Offsets';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { formatError } from './safeMode';
 
 import type { NovaFrameworksViewController } from './frameworksView';
-import { utf8ByteOffsetToUtf16Offset } from './utf8';
+import { utf8ByteOffsetToUtf16Offset } from './utf8Offsets';
 
 export type NovaRequest = <R>(
   method: string,

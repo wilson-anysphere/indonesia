@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { utf8ByteOffsetToUtf16Offset, utf8SpanToUtf16Offsets } from './utf8';
+import { utf8ByteOffsetToUtf16Offset, utf8SpanToUtf16Offsets } from './utf8Offsets';
 
 describe('utf8ByteOffsetToUtf16Offset', () => {
   it('maps ASCII byte offsets 1:1', () => {
