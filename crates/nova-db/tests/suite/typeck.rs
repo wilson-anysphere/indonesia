@@ -4867,6 +4867,36 @@ class C {
 }
 
 #[test]
+fn intersection_bounds_merge_generic_method_type_params_across_bounds() {
+    let src = r#"
+interface I { <U> U id(U u); }
+interface J { <V> V id(V v); }
+class C {
+    <T extends I & J> String m(T t) {
+        return t.id("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve generic method; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected inferred return type to be assignable; got {diags:?}"
+    );
+
+    let offset = src.find("t.id(\"x\")").expect("snippet should contain call") + "t.id".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
   import java.util.function.Function;

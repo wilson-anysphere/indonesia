@@ -3487,11 +3487,32 @@ fn collect_method_candidates(
                 let sig_key = (method.is_static, erased_params);
 
                 if let Some(&existing) = seen_sigs.get(&sig_key) {
+                    // Best-effort intersection handling: if two unrelated bounds declare the same
+                    // generic method, their type parameter ids will differ even though the methods
+                    // are "the same" up to alpha-renaming. To avoid leaking an unrelated type var
+                    // into the merged return type (`String & V`), rewrite the current method's
+                    // type vars to the existing candidate's ids (by position) before computing the
+                    // GLB return type.
+                    if method.type_params.len() != out[existing].method.type_params.len() {
+                        continue;
+                    }
                     let existing_return = substitute(
                         &out[existing].method.return_type,
                         &out[existing].class_subst,
                     );
-                    let current_return = substitute(&method.return_type, &subst);
+                    let mut current_return = substitute(&method.return_type, &subst);
+                    if !method.type_params.is_empty() {
+                        let mut tv_subst = HashMap::with_capacity(method.type_params.len());
+                        for (from, to) in method
+                            .type_params
+                            .iter()
+                            .copied()
+                            .zip(out[existing].method.type_params.iter().copied())
+                        {
+                            tv_subst.insert(from, Type::TypeVar(to));
+                        }
+                        current_return = substitute(&current_return, &tv_subst);
+                    }
                     out[existing].method.return_type = glb(env, &existing_return, &current_return);
                     continue;
                 }
