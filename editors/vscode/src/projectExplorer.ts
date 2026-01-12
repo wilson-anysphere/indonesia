@@ -305,18 +305,18 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         };
         if (!this.isProjectModelSupportedForWorkspace(workspace)) {
           await this.triggerUnsupportedWelcome();
-         return [
-             {
-               type: 'message',
-               id: `${element.id}:unsupported`,
-               label: 'Project model not supported by this server.',
-               description: 'Update nova-lsp to a build that supports nova/projectModel.',
-               icon: new vscode.ThemeIcon('info'),
+          return [
+            {
+              type: 'message',
+              id: `${element.id}:unsupported`,
+              label: 'Project model not supported by this server.',
+              description: 'Update nova-lsp to a build that supports nova/projectModel.',
+              icon: new vscode.ThemeIcon('info'),
               command: { title: 'Show Project Configuration', command: COMMAND_SHOW_CONFIG, arguments: [workspace] },
-             },
-             configurationNode,
-           ];
-         }
+            },
+            configurationNode,
+          ];
+        }
 
         const snapshot = this.cache.peekProjectModel(workspace);
         const model = snapshot.value;
