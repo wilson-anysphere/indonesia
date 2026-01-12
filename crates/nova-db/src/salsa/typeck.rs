@@ -12,6 +12,7 @@ use nova_hir::item_tree::Modifiers;
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
+use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_types::{
     assignment_conversion, binary_numeric_promotion, format_type, CallKind, ClassDef, ClassKind,
     Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution, PrimitiveType, ResolvedMethod,
@@ -25,6 +26,10 @@ use super::cancellation as cancel;
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
 use super::ArcEq;
+
+use nova_classpath::ModuleAwareClasspathIndex;
+use nova_modules::{ModuleGraph, ModuleName};
+use nova_project::ProjectConfig;
 
 struct WorkspaceFirstIndex<'a> {
     workspace: &'a nova_resolve::WorkspaceDefMap,
@@ -223,14 +228,27 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
     let workspace = db.workspace_def_map(project);
+    let jpms_env = db.jpms_compilation_env(project);
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let cfg = db.project_config(project);
+        let file_rel = db.file_rel_path(file);
+        let from = module_for_file(&cfg, file_rel.as_str());
+        JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+    });
 
     let workspace_index = WorkspaceFirstIndex {
         workspace: &workspace,
         classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
     };
-    let resolver = nova_resolve::Resolver::new(&*jdk)
-        .with_classpath(&workspace_index)
-        .with_workspace(&workspace);
+
+    let resolver = if let Some(index) = jpms_index.as_ref() {
+        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+    } else {
+        nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&workspace_index)
+            .with_workspace(&workspace)
+    };
 
     let scopes = db.scope_graph(file);
     let body_scope = match owner {
@@ -251,12 +269,22 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
 
     // Build an env for this body.
     let mut store = TypeStore::with_minimal_jdk();
-    let provider = match classpath.as_deref() {
-        Some(cp) => nova_types::ChainTypeProvider::new(vec![
-            cp as &dyn TypeProvider,
+    let provider = if let Some(env) = jpms_env.as_deref() {
+        // In JPMS mode, ignore the legacy `classpath_index` input (which may contain
+        // module-path entries mixed into the classpath) and instead use the JPMS-aware
+        // compilation environment's module-aware index.
+        nova_types::ChainTypeProvider::new(vec![
+            &env.classpath as &dyn TypeProvider,
             &*jdk as &dyn TypeProvider,
-        ]),
-        None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        ])
+    } else {
+        match classpath.as_deref() {
+            Some(cp) => nova_types::ChainTypeProvider::new(vec![
+                cp as &dyn TypeProvider,
+                &*jdk as &dyn TypeProvider,
+            ]),
+            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        }
     };
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
@@ -327,6 +355,162 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
 
     db.record_query_stat("typeck_body", start.elapsed());
     result
+}
+
+/// JPMS-aware [`TypeIndex`] used by typeck.
+///
+/// This mirrors the JPMS enforcement used by Nova's name-resolution layer:
+/// - module readability (`requires`)
+/// - package exports (`exports`)
+///
+/// Unlike the legacy `classpath_index` input (which may contain a "flattened"
+/// view of both classpath + module-path entries), this index consults the
+/// JPMS compilation environment's module-aware classpath index.
+struct JpmsTypeckIndex<'a> {
+    workspace: &'a nova_resolve::WorkspaceDefMap,
+    graph: &'a ModuleGraph,
+    classpath: &'a ModuleAwareClasspathIndex,
+    jdk: &'a nova_jdk::JdkIndex,
+    from: ModuleName,
+}
+
+impl<'a> JpmsTypeckIndex<'a> {
+    fn new(
+        env: &'a JpmsCompilationEnvironment,
+        workspace: &'a nova_resolve::WorkspaceDefMap,
+        jdk: &'a nova_jdk::JdkIndex,
+        from: ModuleName,
+    ) -> Self {
+        Self {
+            workspace,
+            graph: &env.env.graph,
+            classpath: &env.classpath,
+            jdk,
+            from,
+        }
+    }
+
+    fn module_of_type(&self, ty: &TypeName) -> Option<ModuleName> {
+        if let Some(item) = self.workspace.item_by_type_name(ty) {
+            if let Some(module) = self.workspace.module_for_item(item) {
+                return Some(module.clone());
+            }
+            return Some(ModuleName::unnamed());
+        }
+
+        if let Some(to) = self.classpath.module_of(ty.as_str()) {
+            return Some(to.clone());
+        }
+
+        // If the type exists in the classpath index but has no module metadata,
+        // treat it as belonging to the classpath "unnamed module".
+        if self.classpath.types.lookup_binary(ty.as_str()).is_some() {
+            return Some(ModuleName::unnamed());
+        }
+
+        self.jdk.module_of_type(ty.as_str())
+    }
+
+    fn type_is_accessible(&self, ty: &TypeName) -> bool {
+        let Some(to) = self.module_of_type(ty) else {
+            return true;
+        };
+
+        if !self.graph.can_read(&self.from, &to) {
+            return false;
+        }
+
+        let package = ty
+            .as_str()
+            .rsplit_once('.')
+            .map(|(pkg, _)| pkg)
+            .unwrap_or("");
+
+        let Some(info) = self.graph.get(&to) else {
+            return true;
+        };
+
+        info.exports_package_to(package, &self.from)
+    }
+}
+
+impl TypeIndex for JpmsTypeckIndex<'_> {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
+        if let Some(ty) = self.workspace.resolve_type(name) {
+            if self.type_is_accessible(&ty) {
+                return Some(ty);
+            }
+        }
+
+        if let Some(ty) = self.classpath.resolve_type(name) {
+            if self.type_is_accessible(&ty) {
+                return Some(ty);
+            }
+        }
+
+        let ty = self.jdk.resolve_type(name)?;
+        self.type_is_accessible(&ty).then_some(ty)
+    }
+
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
+        if let Some(ty) = self.workspace.resolve_type_in_package(package, name) {
+            if self.type_is_accessible(&ty) {
+                return Some(ty);
+            }
+        }
+
+        if let Some(ty) = self.classpath.resolve_type_in_package(package, name) {
+            if self.type_is_accessible(&ty) {
+                return Some(ty);
+            }
+        }
+
+        let ty = self.jdk.resolve_type_in_package(package, name)?;
+        self.type_is_accessible(&ty).then_some(ty)
+    }
+
+    fn package_exists(&self, package: &PackageName) -> bool {
+        self.workspace.package_exists(package)
+            || self.classpath.package_exists(package)
+            || self.jdk.package_exists(package)
+    }
+
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+        // Static member imports require the owning type to be accessible.
+        if !self.type_is_accessible(owner) {
+            return None;
+        }
+
+        self.workspace
+            .resolve_static_member(owner, name)
+            .or_else(|| self.classpath.resolve_static_member(owner, name))
+            .or_else(|| self.jdk.resolve_static_member(owner, name))
+    }
+}
+
+fn module_for_file(cfg: &ProjectConfig, rel_path: &str) -> ModuleName {
+    if cfg.jpms_modules.is_empty() {
+        return ModuleName::unnamed();
+    }
+
+    let file_path = cfg.workspace_root.join(rel_path);
+    let mut best: Option<(usize, ModuleName)> = None;
+    for root in &cfg.jpms_modules {
+        if !file_path.starts_with(&root.root) {
+            continue;
+        }
+        let depth = root.root.components().count();
+        let replace = match &best {
+            Some((best_depth, _)) => depth > *best_depth,
+            None => true,
+        };
+        if replace {
+            best = Some((depth, root.name.clone()));
+        }
+    }
+
+    best.map(|(_, name)| name)
+        .unwrap_or_else(ModuleName::unnamed)
 }
 
 #[derive(Debug, Clone)]
