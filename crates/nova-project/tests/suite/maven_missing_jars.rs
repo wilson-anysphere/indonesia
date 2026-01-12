@@ -70,14 +70,16 @@ fn maven_project_omits_missing_dependency_jars_until_present_on_disk() {
             .classpath
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to classpath"
+        "missing jar should not be added to classpath: {}",
+        expected_jar.display()
     );
     assert!(
         !config
             .module_path
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to module-path"
+        "missing jar should not be added to module-path: {}",
+        expected_jar.display()
     );
 
     // Creating the jar should cause it to be added to the classpath on reload.
@@ -90,14 +92,16 @@ fn maven_project_omits_missing_dependency_jars_until_present_on_disk() {
             .classpath
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "expected jar path to appear on classpath after creation"
+        "expected jar path to appear on classpath after creation: {}",
+        expected_jar.display()
     );
     assert!(
         !config2
             .module_path
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "jar should not be added to module-path for non-JPMS projects"
+        "jar should not be added to module-path for non-JPMS projects: {}",
+        expected_jar.display()
     );
 }
 
@@ -151,16 +155,18 @@ fn maven_workspace_model_omits_missing_dependency_jars_until_present_on_disk() {
                 .classpath
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module classpath ({})",
-            module.id
+            "missing jar should not be added to module classpath ({}): {}",
+            module.id,
+            expected_jar.display(),
         );
         assert!(
             !module
                 .module_path
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module module-path ({})",
-            module.id
+            "missing jar should not be added to module module-path ({}): {}",
+            module.id,
+            expected_jar.display(),
         );
     }
 
@@ -176,16 +182,18 @@ fn maven_workspace_model_omits_missing_dependency_jars_until_present_on_disk() {
                 .classpath
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "expected jar path to appear on module classpath after creation ({})",
-            module.id
+            "expected jar path to appear on module classpath after creation ({}): {}",
+            module.id,
+            expected_jar.display(),
         );
         assert!(
             !module
                 .module_path
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "jar should not be placed on module-path for non-JPMS modules ({})",
-            module.id
+            "jar should not be placed on module-path for non-JPMS modules ({}): {}",
+            module.id,
+            expected_jar.display(),
         );
     }
 }
