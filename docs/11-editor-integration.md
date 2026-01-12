@@ -70,6 +70,7 @@ Notes:
 - The stdio server requests standard file-operation notifications via `initializeResult.capabilities.workspace.fileOperations` and supports a fallback `nova/workspace/renamePath` notification for clients that cannot send `workspace/didRenameFiles` (see `protocol-extensions.md`). Editor clients should prefer sending the standard file-operation notifications through their LSP client library (e.g. `vscode-languageclient`'s `fileOperations` feature) rather than manually forwarding editor file events, to avoid duplicate notifications.
 - `workspace/didChangeWatchedFiles` is handled, but the server does not dynamically register file watchers today; clients must configure watchers on their side if they want to send these notifications.
 - OS file watching for the workspace engine (used by `nova` CLI / `nova-workspace`) is implemented in `nova-vfs` behind `watch-notify`. See [`file-watching.md`](file-watching.md) for the watcher layering and deterministic testing guidance.
+- Some Nova commands/requests apply edits by sending the standard `workspace/applyEdit` request to the client (e.g. `nova/java/organizeImports`, `nova.safeDelete`). Clients must handle `workspace/applyEdit` for these to take effect.
 
 ### Server Architecture
 
@@ -240,9 +241,9 @@ Notes for client authors:
 │  • nova/extensions/navigation                                    │
 │                                                                  │
 │  CUSTOM NOTIFICATIONS (experimental.nova.notifications)           │
-│  • nova/memoryStatusChanged                                      │
-│  • nova/safeModeChanged                                          │
-│  • nova/workspace/renamePath                                     │
+│  • nova/memoryStatusChanged (server → client)                    │
+│  • nova/safeModeChanged (server → client)                        │
+│  • nova/workspace/renamePath (client → server)                   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
