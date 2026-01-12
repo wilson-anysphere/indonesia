@@ -147,29 +147,29 @@ fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
             continue;
         }
 
-        // Support Gradle/Kotlin/Groovy raw strings: `'''...'''` / `\"\"\"...\"\"\"`.
-        let raw_dir = if bytes[idx..].starts_with(b"'''") {
+        let quote = bytes[idx];
+        // Support Gradle/Kotlin/Groovy raw strings: `'''...'''` / `"""..."""`.
+        let raw_dir = if quote == b'\'' && bytes[idx..].starts_with(b"'''") {
             idx += 3;
             let start_idx = idx;
-            while idx < bytes.len() && !bytes[idx..].starts_with(b"'''") {
+            while idx + 2 < bytes.len() && !bytes[idx..].starts_with(b"'''") {
                 idx += 1;
             }
-            if idx >= bytes.len() {
+            if idx + 2 >= bytes.len() {
                 continue;
             }
             &contents[start_idx..idx]
-        } else if bytes[idx..].starts_with(b"\"\"\"") {
+        } else if quote == b'"' && bytes[idx..].starts_with(b"\"\"\"") {
             idx += 3;
             let start_idx = idx;
-            while idx < bytes.len() && !bytes[idx..].starts_with(b"\"\"\"") {
+            while idx + 2 < bytes.len() && !bytes[idx..].starts_with(b"\"\"\"") {
                 idx += 1;
             }
-            if idx >= bytes.len() {
+            if idx + 2 >= bytes.len() {
                 continue;
             }
             &contents[start_idx..idx]
         } else {
-            let quote = bytes[idx];
             idx += 1;
             let start_idx = idx;
             while idx < bytes.len() && bytes[idx] != quote {
