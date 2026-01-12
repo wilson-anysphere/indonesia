@@ -193,6 +193,19 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
+    if path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|dir| dir == ".bsp")
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
+        return true;
+    }
+
     if name == "pom.xml"
         || name == "module-info.java"
         || name == "nova.toml"
@@ -257,6 +270,7 @@ mod tests {
             root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
             root.join(".nova").join("queries").join("gradle.json"),
+            root.join(".bsp").join("server.json"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
             root.join(".bazelversion"),
@@ -323,6 +337,7 @@ mod tests {
 
         let non_build_files = [
             root.join("jvm.config"),
+            root.join(".bsp").join("server.txt"),
             // Wrapper jars must be in their canonical wrapper locations.
             root.join("gradle-wrapper.jar"),
             root.join(".mvn").join("maven-wrapper.jar"),

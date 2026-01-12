@@ -143,6 +143,8 @@ impl BuildSystemBackend for BazelBuildSystem {
             PathPattern::ExactFileName("MODULE.bazel.lock"),
             PathPattern::ExactFileName("bazelisk.rc"),
             PathPattern::ExactFileName(".bazelignore"),
+            // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
+            PathPattern::Glob("**/.bsp/*.json"),
             PathPattern::Glob("**/*.bzl"),
         ]
     }

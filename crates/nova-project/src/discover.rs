@@ -585,6 +585,14 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                     | ".bazelignore"
             ) || name.starts_with(".bazelrc.")
                 || path.extension().is_some_and(|ext| ext == "bzl")
+                || (path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                    && path
+                        .parent()
+                        .and_then(|parent| parent.file_name())
+                        .is_some_and(|dir| dir == ".bsp"))
         }
         BuildSystem::Simple => {
             // Simple projects can "upgrade" to another build system as soon as a marker file

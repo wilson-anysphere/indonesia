@@ -74,8 +74,8 @@ java_library(
 
 #[test]
 fn reloads_bazel_project_when_bazel_build_files_change() {
-    // These files can change `bazel query` / `aquery` results and therefore need to trigger a
-    // project reload.
+    // These files can change `bazel query` / `aquery` results (or how we obtain compile info) and
+    // therefore need to trigger a project reload.
     for changed_rel in [
         ".bazelrc",
         ".bazelrc.local",
@@ -83,6 +83,7 @@ fn reloads_bazel_project_when_bazel_build_files_change() {
         "MODULE.bazel.lock",
         "bazelisk.rc",
         ".bazelignore",
+        ".bsp/server.json",
         "tools/defs.bzl",
     ] {
         assert_reload_happens_for_changed_file(Path::new(changed_rel));
@@ -127,4 +128,3 @@ java_library(
         "did not expect new Bazel package {new_pkg:?} to be discovered without a reload"
     );
 }
-

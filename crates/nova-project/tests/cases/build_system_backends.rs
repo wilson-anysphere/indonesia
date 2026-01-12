@@ -79,6 +79,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(bazel
         .watch_files()
         .contains(&PathPattern::ExactFileName(".bazelignore")));
+    assert!(bazel
+        .watch_files()
+        .contains(&PathPattern::Glob("**/.bsp/*.json")));
 }
 
 #[test]
