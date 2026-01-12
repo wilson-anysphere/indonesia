@@ -2013,33 +2013,22 @@ fn record_body_references(
         item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
         tree: &nova_hir::item_tree::ItemTree,
     ) -> Option<TypeResolution> {
-        fn dotted_path(body: &hir::Body, expr: hir::ExprId) -> Option<String> {
-            match &body.exprs[expr] {
-                hir::Expr::Name { name, .. } => Some(name.clone()),
-                hir::Expr::FieldAccess { receiver, name, .. } => {
-                    let mut prefix = dotted_path(body, *receiver)?;
-                    prefix.push('.');
-                    prefix.push_str(name);
-                    Some(prefix)
-                }
-                _ => None,
-            }
-        }
-
         let &scope = scope_result.expr_scopes.get(&(owner, expr))?;
         match &body.exprs[expr] {
             hir::Expr::This { .. } | hir::Expr::Super { .. } => {
                 let item = enclosing_class(&scope_result.scopes, scope)?;
                 Some(TypeResolution::Source(item))
             }
-            hir::Expr::FieldAccess { .. } => {
+            hir::Expr::FieldAccess { receiver, name, .. } => {
                 // `p.Foo` / `Outer.Inner` in a static member selection context (`p.Foo.bar()`).
+                //
                 // We do not attempt general type inference for arbitrary field-access receivers,
-                // but we can best-effort resolve dotted paths that look like qualified type names.
-                let dotted = dotted_path(body, expr)?;
-                let root = dotted.split('.').next()?;
-                if let Some(root_resolved) =
-                    resolver.resolve_name(&scope_result.scopes, scope, &Name::from(root))
+                // but we can best-effort resolve dotted field-access chains that look like
+                // qualified type names.
+                let path = qualified_name_for_field_access(body, *receiver, name.as_str())?;
+                let root = path.segments().first()?;
+
+                if let Some(root_resolved) = resolver.resolve_name(&scope_result.scopes, scope, root)
                 {
                     // If the root segment is a value, this is an expression (`obj.foo`), not a
                     // type/package qualification (`p.Foo`), so we can't safely treat it as a type.
@@ -2050,11 +2039,12 @@ fn record_body_references(
                         return None;
                     }
                 }
+
                 let scope = type_resolution_scope(&scope_result.scopes, scope);
                 resolver.resolve_qualified_type_resolution_in_scope(
                     &scope_result.scopes,
                     scope,
-                    &QualifiedName::from_dotted(&dotted),
+                    &path,
                 )
             }
             hir::Expr::Name { name, .. } => {

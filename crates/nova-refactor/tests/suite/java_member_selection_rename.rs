@@ -402,3 +402,137 @@ class Use {
         "expected old access gone: {after_use}"
     );
 }
+
+#[test]
+fn rename_static_method_updates_multi_segment_fully_qualified_method_call() {
+    let foo_file = FileId::new("Foo.java");
+    let use_file = FileId::new("Use.java");
+
+    let src_foo = r#"package com.example;
+class Foo {
+  static void bar() {}
+}
+"#;
+    let src_use = r#"package q;
+class Use {
+  void m() {
+    com.example.Foo.bar();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_foo.find("static void bar").unwrap() + "static void ".len() + 1;
+    let symbol = db
+        .symbol_at(&foo_file, offset)
+        .expect("symbol at com.example.Foo.bar method");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "baz".into(),
+        },
+    )
+    .unwrap();
+
+    let files: BTreeMap<FileId, String> = [
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_foo = out.get(&foo_file).unwrap();
+    let after_use = out.get(&use_file).unwrap();
+
+    assert!(
+        after_foo.contains("static void baz()"),
+        "expected method decl renamed: {after_foo}"
+    );
+    assert!(
+        after_use.contains("com.example.Foo.baz();"),
+        "expected fully qualified call updated: {after_use}"
+    );
+    assert!(
+        !after_use.contains("com.example.Foo.bar();"),
+        "expected old call gone: {after_use}"
+    );
+}
+
+#[test]
+fn rename_static_field_does_not_misclassify_value_chain_as_type_receiver() {
+    let foo_file = FileId::new("foo.java");
+    let use_file = FileId::new("Use.java");
+
+    let src_foo = r#"package obj;
+class foo {
+  static int bar;
+}
+"#;
+    let src_use = r#"package q;
+class Foo2 {
+  int bar;
+}
+
+class Obj {
+  Foo2 foo;
+}
+
+class Use {
+  void m() {
+    Obj obj = null;
+    int x = obj.foo.bar;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_foo.find("static int bar").unwrap() + "static int ".len() + 1;
+    let symbol = db
+        .symbol_at(&foo_file, offset)
+        .expect("symbol at obj.foo.bar field");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "baz".into(),
+        },
+    )
+    .unwrap();
+
+    let files: BTreeMap<FileId, String> = [
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_foo = out.get(&foo_file).unwrap();
+    let after_use = out.get(&use_file).unwrap();
+
+    assert!(
+        after_foo.contains("static int baz;"),
+        "expected field decl renamed: {after_foo}"
+    );
+
+    // `obj.foo.bar` is a value chain rooted in the local variable `obj`. It must not be
+    // interpreted as a qualified type name `obj.foo` with static member `bar`.
+    assert!(
+        after_use.contains("obj.foo.bar"),
+        "expected value chain unchanged: {after_use}"
+    );
+    assert!(
+        !after_use.contains("obj.foo.baz"),
+        "did not expect value chain to be rewritten as a qualified type access: {after_use}"
+    );
+}
