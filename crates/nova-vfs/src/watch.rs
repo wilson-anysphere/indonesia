@@ -299,6 +299,15 @@ impl FileWatcher for ManualFileWatcher {
     fn watch_path(&mut self, path: &Path, mode: WatchMode) -> io::Result<()> {
         let path = path.to_path_buf();
         self.watch_calls.push((path.clone(), mode));
+        // Mirror `NotifyFileWatcher` semantics: once a path is watched recursively, do not silently
+        // downgrade it to non-recursive on subsequent calls.
+        let mode = match self.watched.get(&path) {
+            Some(existing) if *existing == WatchMode::Recursive || mode == WatchMode::Recursive => {
+                WatchMode::Recursive
+            }
+            Some(_) => WatchMode::NonRecursive,
+            None => mode,
+        };
         self.watched.insert(path, mode);
         Ok(())
     }
@@ -1587,6 +1596,21 @@ mod tests {
                 changes: vec![FileChange::Created { path }]
             }
         );
+    }
+
+    #[test]
+    fn manual_watcher_combines_watch_modes_for_repeated_watches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let mut watcher = ManualFileWatcher::new();
+
+        watcher.watch_path(&root, WatchMode::NonRecursive).unwrap();
+        watcher.watch_path(&root, WatchMode::Recursive).unwrap();
+        assert_eq!(watcher.watched_paths(), vec![(root.clone(), WatchMode::Recursive)]);
+
+        // Do not downgrade an existing recursive watch.
+        watcher.watch_path(&root, WatchMode::NonRecursive).unwrap();
+        assert_eq!(watcher.watched_paths(), vec![(root, WatchMode::Recursive)]);
     }
 
     #[test]
