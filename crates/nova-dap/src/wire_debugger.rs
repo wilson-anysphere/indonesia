@@ -2579,6 +2579,7 @@ impl Debugger {
             None
         }
 
+        #[async_recursion::async_recursion]
         async fn format_stream_value(
             inspector: &mut Inspector,
             cancel: &CancellationToken,
@@ -2612,6 +2613,15 @@ impl Debugger {
                             ObjectKindPreview::PrimitiveWrapper { value } => {
                                 current = *value;
                                 continue;
+                            }
+                            ObjectKindPreview::Optional { value } => {
+                                return Ok(match value {
+                                    None => "Optional.empty".to_string(),
+                                    Some(v) => format!(
+                                        "Optional[{}]",
+                                        format_stream_value(dbg, cancel, &v).await?
+                                    ),
+                                });
                             }
                             _ => return Ok(format!("{runtime_type}#{id}")),
                         }

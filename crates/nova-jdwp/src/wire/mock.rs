@@ -454,6 +454,10 @@ impl MockJdwpServer {
     pub fn sample_hashset_id(&self) -> u64 {
         SAMPLE_HASHSET_OBJECT_ID
     }
+
+    pub fn sample_arraylist_id(&self) -> u64 {
+        SAMPLE_ARRAYLIST_OBJECT_ID
+    }
 }
 
 impl Drop for MockJdwpServer {
@@ -875,6 +879,11 @@ const SAMPLE_STRING_OBJECT_ID: u64 = 0x5101;
 const SAMPLE_INT_ARRAY_OBJECT_ID: u64 = 0x5102;
 const SAMPLE_HASHMAP_OBJECT_ID: u64 = 0x5103;
 const SAMPLE_HASHSET_OBJECT_ID: u64 = 0x5104;
+const SAMPLE_ARRAYLIST_OBJECT_ID: u64 = 0x5110;
+const SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID: u64 = 0x5111;
+const SAMPLE_INTEGER_1_OBJECT_ID: u64 = 0x5112;
+const SAMPLE_INTEGER_2_OBJECT_ID: u64 = 0x5113;
+const SAMPLE_INTEGER_3_OBJECT_ID: u64 = 0x5114;
 
 const HASHMAP_TABLE_ARRAY_OBJECT_ID: u64 = 0x5105;
 const HASHMAP_NODE_A_OBJECT_ID: u64 = 0x5106;
@@ -887,6 +896,9 @@ const HASHMAP_CLASS_ID: u64 = 0x6010;
 const HASHSET_CLASS_ID: u64 = 0x6011;
 const HASHMAP_NODE_CLASS_ID: u64 = 0x6012;
 const HASHMAP_TABLE_ARRAY_CLASS_ID: u64 = 0x6013;
+const ARRAYLIST_CLASS_ID: u64 = 0x6014;
+const INTEGER_CLASS_ID: u64 = 0x6015;
+const OBJECT_ARRAY_CLASS_ID: u64 = 0x6016;
 
 const HASHMAP_FIELD_SIZE_ID: u64 = 0x7010;
 const HASHMAP_FIELD_TABLE_ID: u64 = 0x7011;
@@ -895,6 +907,9 @@ const HASHSET_FIELD_MAP_ID: u64 = 0x7012;
 const HASHMAP_NODE_FIELD_KEY_ID: u64 = 0x7013;
 const HASHMAP_NODE_FIELD_VALUE_ID: u64 = 0x7014;
 const HASHMAP_NODE_FIELD_NEXT_ID: u64 = 0x7015;
+const ARRAYLIST_FIELD_SIZE_ID: u64 = 0x7016;
+const ARRAYLIST_FIELD_ELEMENT_DATA_ID: u64 = 0x7017;
+const INTEGER_FIELD_VALUE_ID: u64 = 0x7018;
 
 // Monitor objects used by thread/lock introspection commands.
 const OWNED_MONITOR_A_OBJECT_ID: u64 = 0x5201;
@@ -1601,6 +1616,9 @@ async fn handle_packet(
                 HASHSET_CLASS_ID => "Ljava/util/HashSet;",
                 HASHMAP_NODE_CLASS_ID => "Ljava/util/HashMap$Node;",
                 HASHMAP_TABLE_ARRAY_CLASS_ID => "[Ljava/util/HashMap$Node;",
+                ARRAYLIST_CLASS_ID => "Ljava/util/ArrayList;",
+                INTEGER_CLASS_ID => "Ljava/lang/Integer;",
+                OBJECT_ARRAY_CLASS_ID => "[Ljava/lang/Object;",
                 _ => "LObject;",
             };
             w.write_string(sig);
@@ -1867,6 +1885,25 @@ async fn handle_packet(
                     w.write_id(HASHMAP_NODE_FIELD_NEXT_ID, sizes.field_id);
                     w.write_string("next");
                     w.write_string("Ljava/util/HashMap$Node;");
+                    w.write_u32(1);
+                }
+                ARRAYLIST_CLASS_ID => {
+                    w.write_u32(2);
+                    w.write_id(ARRAYLIST_FIELD_SIZE_ID, sizes.field_id);
+                    w.write_string("size");
+                    w.write_string("I");
+                    w.write_u32(1);
+
+                    w.write_id(ARRAYLIST_FIELD_ELEMENT_DATA_ID, sizes.field_id);
+                    w.write_string("elementData");
+                    w.write_string("[Ljava/lang/Object;");
+                    w.write_u32(1);
+                }
+                INTEGER_CLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(INTEGER_FIELD_VALUE_ID, sizes.field_id);
+                    w.write_string("value");
+                    w.write_string("I");
                     w.write_u32(1);
                 }
                 _ => {
@@ -2139,9 +2176,23 @@ async fn handle_packet(
                         w.write_u8(1); // TypeTag.CLASS
                         w.write_reference_type_id(HASHSET_CLASS_ID, sizes);
                     }
+                    SAMPLE_ARRAYLIST_OBJECT_ID => {
+                        w.write_u8(1); // TypeTag.CLASS
+                        w.write_reference_type_id(ARRAYLIST_CLASS_ID, sizes);
+                    }
+                    SAMPLE_INTEGER_1_OBJECT_ID
+                    | SAMPLE_INTEGER_2_OBJECT_ID
+                    | SAMPLE_INTEGER_3_OBJECT_ID => {
+                        w.write_u8(1); // TypeTag.CLASS
+                        w.write_reference_type_id(INTEGER_CLASS_ID, sizes);
+                    }
                     HASHMAP_TABLE_ARRAY_OBJECT_ID => {
                         w.write_u8(3); // TypeTag.ARRAY
                         w.write_reference_type_id(HASHMAP_TABLE_ARRAY_CLASS_ID, sizes);
+                    }
+                    SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID => {
+                        w.write_u8(3); // TypeTag.ARRAY
+                        w.write_reference_type_id(OBJECT_ARRAY_CLASS_ID, sizes);
                     }
                     HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID => {
                         w.write_u8(1); // TypeTag.CLASS
@@ -2247,6 +2298,16 @@ async fn handle_packet(
                         tag: b'L',
                         id: SAMPLE_HASHMAP_OBJECT_ID,
                     },
+                    (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_SIZE_ID) => JdwpValue::Int(3),
+                    (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_ELEMENT_DATA_ID) => {
+                        JdwpValue::Object {
+                            tag: b'[',
+                            id: SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID,
+                        }
+                    }
+                    (SAMPLE_INTEGER_1_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(10),
+                    (SAMPLE_INTEGER_2_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(20),
+                    (SAMPLE_INTEGER_3_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(30),
                     (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => JdwpValue::Object {
                         tag: b's',
                         id: HASHMAP_KEY_A_OBJECT_ID,
@@ -2347,6 +2408,7 @@ async fn handle_packet(
                     ARRAY_OBJECT_ID => 3,
                     SAMPLE_INT_ARRAY_OBJECT_ID => 5,
                     HASHMAP_TABLE_ARRAY_OBJECT_ID => 2,
+                    SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID => 3,
                     _ => 0,
                 }
             };
@@ -2471,6 +2533,24 @@ async fn handle_packet(
                         } else {
                             &[]
                         };
+
+                        w.write_u8(b'L');
+                        w.write_u32(slice.len() as u32);
+                        for object_id in slice {
+                            w.write_u8(b'L');
+                            w.write_object_id(*object_id, sizes);
+                        }
+                    }
+                    SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID => {
+                        let values = [
+                            SAMPLE_INTEGER_1_OBJECT_ID,
+                            SAMPLE_INTEGER_2_OBJECT_ID,
+                            SAMPLE_INTEGER_3_OBJECT_ID,
+                        ];
+                        let start = first_index.max(0) as usize;
+                        let req = length.max(0) as usize;
+                        let end = start.saturating_add(req).min(values.len());
+                        let slice = if start < end { &values[start..end] } else { &[] };
 
                         w.write_u8(b'L');
                         w.write_u32(slice.len() as u32);

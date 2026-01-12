@@ -499,6 +499,153 @@ fn format_wire_value(value: &JdwpValue) -> String {
     }
 }
 
+fn jdwp_primitive_type_name(value: &JdwpValue) -> Option<String> {
+    Some(match value {
+        JdwpValue::Void => "void",
+        JdwpValue::Boolean(_) => "boolean",
+        JdwpValue::Byte(_) => "byte",
+        JdwpValue::Char(_) => "char",
+        JdwpValue::Short(_) => "short",
+        JdwpValue::Int(_) => "int",
+        JdwpValue::Long(_) => "long",
+        JdwpValue::Float(_) => "float",
+        JdwpValue::Double(_) => "double",
+        JdwpValue::Object { .. } => return None,
+    }
+    .to_string())
+}
+
+/// Stream-debug value formatter that mirrors `nova-stream-debug`'s legacy `format_sample_value`
+/// semantics.
+///
+/// The wire adapter receives `JdwpValue`s that may be boxed primitives (`Integer`, `Long`, ...)
+/// and should show them as the underlying primitive string rather than `java.lang.Integer#...`.
+#[async_recursion::async_recursion]
+pub(crate) async fn format_stream_sample_value(
+    inspector: &mut inspect::Inspector,
+    value: &JdwpValue,
+) -> Result<(String, Option<String>), JdwpError> {
+    match value {
+        JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), None)),
+        JdwpValue::Void => Ok(("void".to_string(), Some("void".to_string()))),
+        JdwpValue::Boolean(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Byte(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Char(v) => Ok((char::from_u32(*v as u32).unwrap_or('\u{FFFD}').to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Short(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Int(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Long(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Float(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Double(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Object { id, .. } => {
+            let id = *id;
+            let preview = match inspector.preview_object(id).await {
+                Ok(preview) => preview,
+                Err(_) => {
+                    // Best-effort fallback: we may not be able to resolve the runtime type (e.g.
+                    // the object was collected). Still return a stable string.
+                    return Ok((format!("object#{id}"), None));
+                }
+            };
+
+            match preview.kind {
+                inspect::ObjectKindPreview::String { value } => {
+                    Ok((value, Some(preview.runtime_type)))
+                }
+                inspect::ObjectKindPreview::PrimitiveWrapper { value } => {
+                    format_stream_sample_value(inspector, &value).await
+                }
+                inspect::ObjectKindPreview::Optional { value } => {
+                    let display = match value {
+                        None => "Optional.empty".to_string(),
+                        Some(inner) => {
+                            let (inner_display, _ty) =
+                                format_stream_sample_value(inspector, &inner).await?;
+                            format!("Optional[{inner_display}]")
+                        }
+                    };
+                    Ok((display, Some(preview.runtime_type)))
+                }
+                _ => Ok((format!("{}#{id}", preview.runtime_type), Some(preview.runtime_type))),
+            }
+        }
+    }
+}
+
+fn parse_indexed_child_name(name: &str) -> Option<usize> {
+    let name = name.trim();
+    if !name.starts_with('[') || !name.ends_with(']') {
+        return None;
+    }
+    let inner = &name[1..name.len().saturating_sub(1)];
+    if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    inner.parse::<usize>().ok()
+}
+
+/// Convert a list-like object (e.g. `java.util.ArrayList`) into a `StreamSample` using the same
+/// child-expansion logic as the variables UI (`Inspector::object_children`).
+///
+/// This differs from the preview-based approach because `object_children` for lists/arrays
+/// includes a metadata entry (e.g. `size` / `length`) followed by indexed elements (`[0]`, ...).
+/// Stream debug samples should include only the indexed elements.
+pub(crate) async fn stream_sample_from_list_object(
+    jdwp: &JdwpClient,
+    list_object_id: ObjectId,
+) -> Result<StreamSample, JdwpError> {
+    if list_object_id == 0 {
+        return Ok(StreamSample {
+            elements: Vec::new(),
+            truncated: false,
+            element_type: None,
+            collection_type: None,
+        });
+    }
+
+    // Keep the list pinned throughout preview + children inspection to avoid GC races for
+    // temporary objects returned from InvokeMethod.
+    let _pin = TemporaryObjectPin::new(jdwp, list_object_id).await;
+    let mut inspector = inspect::Inspector::new(jdwp.clone());
+
+    let preview = inspector.preview_object(list_object_id).await?;
+    let collection_type = Some(preview.runtime_type.clone());
+
+    let children = inspector.object_children(list_object_id).await?;
+
+    let returned_size = children.iter().find_map(|child| match (child.name.as_str(), &child.value)
+    {
+        ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
+        _ => None,
+    });
+
+    let mut indexed_children: Vec<(usize, JdwpValue)> = children
+        .into_iter()
+        .filter_map(|child| parse_indexed_child_name(&child.name).map(|idx| (idx, child.value)))
+        .collect();
+    indexed_children.sort_by_key(|(idx, _)| *idx);
+
+    let mut elements = Vec::with_capacity(indexed_children.len());
+    let mut element_type: Option<String> = None;
+    for (_idx, value) in indexed_children {
+        let (display, ty) = format_stream_sample_value(&mut inspector, &value).await?;
+        elements.push(display);
+        if element_type.is_none() {
+            element_type = ty;
+        }
+    }
+
+    let truncated = returned_size
+        .map(|size| size > elements.len())
+        .unwrap_or(false);
+
+    Ok(StreamSample {
+        elements,
+        truncated,
+        element_type,
+        collection_type,
+    })
+}
+
 async fn timed_async<T, E, Fut>(f: impl FnOnce() -> Fut) -> Result<(T, u128), E>
 where
     Fut: Future<Output = Result<T, E>>,
@@ -1004,6 +1151,36 @@ mod tests {
         assert!(
             server.pinned_object_ids().await.is_empty(),
             "expected pin to be released after preview inspection"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_sample_from_list_object_filters_size_and_unwraps_boxed_primitives() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let sample = stream_sample_from_list_object(&client, server.sample_arraylist_id())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sample.collection_type.as_deref(),
+            Some("java.util.ArrayList"),
+            "expected collection_type from preview_object: {sample:?}"
+        );
+        assert_eq!(
+            sample.elements,
+            vec!["10", "20", "30"],
+            "expected only indexed elements (no `size` metadata) and boxed primitives to be unwrapped: {sample:?}"
+        );
+        assert_eq!(
+            sample.element_type.as_deref(),
+            Some("int"),
+            "expected primitive wrapper to infer element type: {sample:?}"
+        );
+        assert!(
+            !sample.truncated,
+            "expected sample list size to match returned elements: {sample:?}"
         );
     }
 
