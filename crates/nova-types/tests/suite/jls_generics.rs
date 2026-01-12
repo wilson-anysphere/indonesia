@@ -1,7 +1,7 @@
 use nova_types::{
-    is_assignable, is_subtype, resolve_method_call, CallKind, ClassDef, ClassKind, ClassType,
-    FieldDef, MethodCall, MethodDef, MethodResolution, TyContext, Type, TypeEnv, TypeParamDef,
-    TypeStore, WildcardBound,
+    instantiate_supertype, is_assignable, is_subtype, resolve_method_call, CallKind, ClassDef,
+    ClassKind, ClassType, FieldDef, MethodCall, MethodDef, MethodResolution, TyContext, Type,
+    TypeEnv, TypeParamDef, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -21,6 +21,73 @@ fn inheritance_type_arg_substitution() {
 
     assert!(is_subtype(&env, &array_list_string, &list_string));
     assert!(!is_subtype(&env, &array_list_string, &list_object));
+}
+
+#[test]
+fn instantiate_supertype_is_order_independent_for_type_var_and_intersection_bounds() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+    let integer = env.well_known().integer;
+
+    // interface I<X>
+    let i_x = env.add_type_param("X", vec![Type::class(object, vec![])]);
+    let iface = env.add_class(ClassDef {
+        name: "com.example.I".to_string(),
+        kind: ClassKind::Interface,
+        type_params: vec![i_x],
+        super_class: None,
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    // class A implements I<String>
+    let a = env.add_class(ClassDef {
+        name: "com.example.A".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![Type::class(iface, vec![Type::class(string, vec![])])],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    // class B implements I<Integer>
+    let b = env.add_class(ClassDef {
+        name: "com.example.B".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![Type::class(iface, vec![Type::class(integer, vec![])])],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    // Two type vars with identical bounds in opposite order.
+    let t1 = env.add_type_param("T1", vec![Type::class(a, vec![]), Type::class(b, vec![])]);
+    let t2 = env.add_type_param("T2", vec![Type::class(b, vec![]), Type::class(a, vec![])]);
+
+    let args1 =
+        instantiate_supertype(&env, &Type::TypeVar(t1), iface).expect("should instantiate supertype");
+    let args2 =
+        instantiate_supertype(&env, &Type::TypeVar(t2), iface).expect("should instantiate supertype");
+
+    assert_eq!(args1, args2);
+    assert_eq!(args1, vec![Type::class(string, vec![])]);
+
+    // And the same for raw intersection types in opposite order.
+    let i1 = Type::Intersection(vec![Type::class(b, vec![]), Type::class(a, vec![])]);
+    let i2 = Type::Intersection(vec![Type::class(a, vec![]), Type::class(b, vec![])]);
+    let i_args1 =
+        instantiate_supertype(&env, &i1, iface).expect("should instantiate supertype");
+    let i_args2 =
+        instantiate_supertype(&env, &i2, iface).expect("should instantiate supertype");
+    assert_eq!(i_args1, i_args2);
+    assert_eq!(i_args1, vec![Type::class(string, vec![])]);
 }
 
 #[test]

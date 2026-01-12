@@ -21,7 +21,16 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
         }
         Type::Intersection(parts) => {
             // Best-effort: if any component can be viewed as the requested supertype, use it.
-            for part in parts {
+            // Sort to ensure deterministic results independent of intersection order.
+            let mut sorted: Vec<&Type> = parts.iter().collect();
+            sorted.sort_by_cached_key(|ty| {
+                (
+                    crate::intersection_component_rank(env, ty),
+                    crate::type_sort_key(env, ty),
+                )
+            });
+
+            for part in sorted {
                 if let Some(found) = instantiate_as_supertype(env, part, target) {
                     return Some(found);
                 }
@@ -31,7 +40,17 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
         Type::TypeVar(id) => {
             // Best-effort: consult the first upper bound that can be instantiated.
             let tp = env.type_param(*id)?;
-            for bound in &tp.upper_bounds {
+            // Sort bounds so results don't depend on the (sometimes unstable) ordering of bound
+            // collection (e.g. inference bounds, capture conversion, or recovery).
+            let mut sorted: Vec<&Type> = tp.upper_bounds.iter().collect();
+            sorted.sort_by_cached_key(|ty| {
+                (
+                    crate::intersection_component_rank(env, ty),
+                    crate::type_sort_key(env, ty),
+                )
+            });
+
+            for bound in sorted {
                 if let Some(found) = instantiate_as_supertype(env, bound, target) {
                     return Some(found);
                 }
@@ -77,10 +96,14 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
                     queue.push_back(raw_sc);
                 }
             }
-            for iface in &class_def.interfaces {
-                if let Some(raw_iface) = raw_class_type(env, iface) {
-                    queue.push_back(raw_iface);
-                }
+            let mut ifaces: Vec<Type> = class_def
+                .interfaces
+                .iter()
+                .filter_map(|iface| raw_class_type(env, iface))
+                .collect();
+            ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
+            for iface in ifaces {
+                queue.push_back(iface);
             }
             if class_def.kind == ClassKind::Interface {
                 queue.push_back(Type::class(env.well_known().object, vec![]));
@@ -98,9 +121,17 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
             let sc = crate::substitute(sc, &subst);
             queue.push_back(crate::canonicalize_named(env, &sc));
         }
-        for iface in &class_def.interfaces {
-            let iface = crate::substitute(iface, &subst);
-            queue.push_back(crate::canonicalize_named(env, &iface));
+        let mut ifaces: Vec<Type> = class_def
+            .interfaces
+            .iter()
+            .map(|iface| {
+                let iface = crate::substitute(iface, &subst);
+                crate::canonicalize_named(env, &iface)
+            })
+            .collect();
+        ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
+        for iface in ifaces {
+            queue.push_back(iface);
         }
         // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
         if class_def.kind == ClassKind::Interface {
