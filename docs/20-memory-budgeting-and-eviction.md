@@ -58,37 +58,46 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 - `nova_memory::MemoryEvictor`:
   - Cooperative eviction; must remain snapshot-safe (cached values should be behind `Arc`)
 
-### Currently tracked + evictable
+### Currently tracked + evictable (today)
 
 | Component | Crate | Category | Tracked? | Evictable? | Notes |
 |---|---|---:|---:|---:|---|
 | `QueryCache` (hot/warm + optional disk spill) | `nova-db` | QueryCache | yes | yes | `flush_to_disk()` persists warm tier (`crates/nova-db/src/query_cache.rs`) |
 | Salsa memos (coarse footprint) | `nova-db` | QueryCache | partial | yes | `SalsaMemoEvictor` rebuilds DB to drop memos (`crates/nova-db/src/salsa/mod.rs`) |
 | `SyntaxTreeStore` | `nova-syntax` | SyntaxTrees | yes | yes | Pins open docs, evicts closed files first (`crates/nova-syntax/src/tree_store.rs`) |
+| `ItemTreeStore` (open-doc pinned `item_tree`) | `nova-db` | SyntaxTrees | yes | yes | Preserves open-doc summaries across Salsa memo eviction (`crates/nova-db/src/salsa/item_tree_store.rs`) |
 | `IndexCache` (generic bytes) | `nova-index` | Indexes | yes | yes | LRU-based (`crates/nova-index/src/memory_cache.rs`) |
 | `WorkspaceSymbolSearcher` | `nova-index` | Indexes | yes | yes | Tracks trigram/prefix index bytes (`crates/nova-index/src/symbol_search.rs`) |
 
-### Currently tracked but non-evictable
+### Currently tracked but non-evictable (today)
 
 | Component | Crate | Category | Tracked? | Notes |
 |---|---|---:|---:|---|
 | Open document text (editor buffers) | `nova-lsp` | Other | yes | Tracked via `documents_memory` registration (`crates/nova-lsp/src/main.rs`) |
+| Salsa inputs (file contents) | `nova-db` | Other | yes | `SalsaInputFootprint` tracks per-file `file_content` sizes (registered via `register_salsa_memo_evictor`) |
+| Classpath index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `ClasspathIndex::estimated_bytes()` |
+| JDK index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `JdkIndex::estimated_bytes()` |
+| VFS overlay documents | `nova-workspace` | Other | yes | Tracked via `OverlayFs::estimated_bytes()` |
 
 ### Major gaps (high impact)
 
-1. **Workspace `ProjectIndexes` held in memory are not tracked and not evictable**
-   - `crates/nova-workspace/src/engine.rs`: `indexes: Arc<Mutex<ProjectIndexes>>` (unregistered).
-2. **Classpath index is not tracked**
-   - `nova-workspace` constructs `nova_classpath::ClasspathIndex` and stores it as a Salsa input;
-     no memory tracking / eviction hook exists.
-3. **JDK index is not tracked**
-   - LSP keeps `ServerState.jdk_index: Option<nova_jdk::JdkIndex>` outside `nova-memory`.
-4. **Type info category is unused**
-   - No component currently registers under `MemoryCategory::TypeInfo`.
-   - Many of the “real” heavyweight Salsa outputs (HIR/typeck/etc.) are not accounted separately.
-5. **VFS overlay memory is only partially tracked**
-   - `nova-lsp` tracks open-document *text* sizes, but overlay documents opened outside the “open
-     docs” set (e.g. virtual/decompiled files opened via `overlay().open(...)`) are not counted.
+1. **Workspace engine keeps a full in-memory `ProjectIndexes` without tracking or eviction**
+   - `crates/nova-workspace/src/engine.rs`: `indexes: Arc<Mutex<ProjectIndexes>>` is populated after
+     indexing, but does not register a `MemoryTracker` and is not evictable.
+2. **Large external indexes are tracked but not evictable**
+   - Classpath + JDK indexes are tracked via `InputIndexTracker`, but there is currently no
+     `MemoryEvictor` that can drop/clear them under `High`/`Critical` pressure.
+3. **`MemoryCategory::TypeInfo` is unused**
+   - Classpath/JDK indexes (arguably “type info”) are currently tracked under `Indexes`.
+   - No component registers under `TypeInfo`, so the budget split is not meaningful for real-world
+     sessions.
+4. **Multiple memory managers per process**
+   - `nova-lsp` owns a `MemoryManager`.
+   - `nova-workspace::Workspace::open(...)` constructs its own `MemoryManager`.
+   - This risks “double budgeting” the same process RSS and leads to inconsistent pressure views.
+5. **LSP overlay-only documents may be untracked**
+   - LSP tracks editor-open document text sizes, but virtual/decompiled overlay documents opened
+     without updating the open-doc set can escape that accounting.
 
 These gaps matter because `MemoryManager` uses RSS as an upper bound for *pressure*, but it can
 only evict *tracked + evictable* components. If RSS is dominated by untracked memory, Nova will
@@ -153,10 +162,11 @@ Before destructive eviction (especially `High`/`Critical`), we want to persist w
 
 ### Missing flush hooks
 
-- Workspace engine needs a `flush_to_disk()` hook for its in-memory `ProjectIndexes` (persist if
-  dirty before dropping).
-- If we add evictors for classpath/JDK indexes, they should expose a best-effort `flush_to_disk()`
-  (or “ensure persisted”) before clearing in-memory caches.
+- `SalsaMemoEvictor` already implements `flush_to_disk()` and uses
+  `Database::persist_project_indexes(...)` to best-effort persist indexes before destructive memo
+  eviction (`crates/nova-db/src/salsa/mod.rs`).
+- Remaining: if we add evictors for classpath/JDK indexes, they should expose a best-effort
+  `flush_to_disk()` (or “ensure persisted”) before clearing in-memory caches.
 
 ---
 
@@ -197,31 +207,22 @@ coherent end-to-end system.
 
 ### Track A — Accounting completeness (make pressure actionable)
 
-1. **`nova-index`: add heap size estimation helpers**
-   - Add `estimated_bytes()` (best-effort) for:
-     - `ProjectIndexes`
-     - `SymbolIndex`, `ReferenceIndex`, `InheritanceIndex`, `AnnotationIndex`
-   - Use capacities + string capacities; follow the style of
-     `SymbolSearchIndex::estimated_bytes()` (`crates/nova-index/src/symbol_search.rs`).
-   - Unit tests: “estimate grows with inserted data”; “estimate is non-zero for non-empty”.
+1. **(Done on main) `nova-index`: heap size estimation helpers**
+   - `ProjectIndexes::estimated_bytes()` and per-index helpers exist with monotonicity tests.
 
-2. **`nova-workspace`: track in-memory `ProjectIndexes`**
-   - Introduce a `WorkspaceIndexStore` wrapper that:
-     - holds the `ProjectIndexes`
+2. **`nova-workspace`: track in-memory `ProjectIndexes` held by the workspace engine**
+   - Wrap `engine::WorkspaceEngine.indexes` in a small struct that:
      - registers a `MemoryTracker` (category `Indexes`)
-     - refreshes bytes after index updates using `estimated_bytes()`
-   - Unit tests for accounting: tracker reflects growth and clears after eviction.
+     - updates tracked bytes using `ProjectIndexes::estimated_bytes()`
+   - Unit tests: tracker reflects growth after indexing; tracker drops after eviction.
 
-3. **Track classpath/JDK index memory**
-   - `nova-classpath`: add `estimated_bytes()` for `ClasspathIndex`.
-   - `nova-jdk`: add `estimated_bytes()` for `JdkIndex` (separate builtin vs symbol-backed).
-   - Wire trackers in the owning layer:
-     - workspace engine for `ClasspathIndex`
-     - LSP server and/or workspace engine for `JdkIndex`
+3. **(Done on main) Track classpath/JDK index memory**
+   - `ClasspathIndex::estimated_bytes()` and `JdkIndex::estimated_bytes()` exist.
+   - `nova-db` tracks both via `InputIndexTracker` when `register_salsa_memo_evictor` is called.
 
 ### Track B — Eviction integration (make pressure reduce RSS without breaking UX)
 
-4. **`nova-workspace`: evictor for in-memory `ProjectIndexes`**
+4. **`nova-workspace`: evictor for the engine’s in-memory `ProjectIndexes`**
    - Implement `MemoryEvictor`:
      - `flush_to_disk()` persists indexes when possible (project cache dir).
      - `evict()` drops cold parts first.
@@ -231,10 +232,12 @@ coherent end-to-end system.
      - Critical: clear everything (fall back to disk view for workspace queries).
    - Unit tests: each pressure level produces expected retained subsets.
 
-5. **`nova-workspace`: classpath index eviction hook**
-   - Add a memory evictor that can drop `ClasspathIndex` (set Salsa input to `None`) at `High`/`Critical`.
-   - Ensure queries behave deterministically with `None` classpath (they already support this in tests).
-   - Unit tests: under small budgets, classpath index is dropped and queries still return (possibly degraded) results without panicking.
+5. **`nova-db` / `nova-workspace`: classpath index eviction hook**
+   - Add a memory evictor that can drop `ClasspathIndex` (set Salsa input to `None`) at
+     `High`/`Critical`.
+   - Ensure queries behave deterministically with `None` classpath (existing tests already cover
+     classpath-optional behavior in many places).
+   - Unit tests: under small budgets, classpath index is dropped and core queries remain non-panicking.
 
 6. **`nova-jdk`: clear in-memory caches under pressure**
    - Add a method (or evictor) that clears large memo tables inside the symbol-backed index, while
@@ -250,8 +253,7 @@ coherent end-to-end system.
 ### Track C — System integration + regression protection
 
 8. **Ensure `MemoryManager::enforce()` is driven from the right places**
-   - LSP: already enforced on document memory refresh; also enforce after heavy operations
-     (project reload, indexing completion).
+   - LSP: already enforced on document memory refresh; also enforce after heavy operations.
    - Workspace engine: enforce after:
      - indexing batch completion
      - classpath rebuild
@@ -297,4 +299,3 @@ coherent end-to-end system.
    - Index and dependency caches may be mmap-backed and counted in RSS.
    - We should treat RSS as authoritative and ensure eviction can reduce RSS (by dropping mappings
      / archives) when needed.
-
