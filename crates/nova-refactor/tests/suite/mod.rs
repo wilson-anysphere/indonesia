@@ -8,6 +8,7 @@ mod extract_method;
 mod extract_method_additional;
 mod extract_method_fixtures;
 mod inline_method;
+mod inline_variable_field_shadowing;
 mod java_member_selection_rename;
 mod java_semantic_rename;
 mod java_semantic_symbols;
