@@ -4928,12 +4928,11 @@ pub(crate) fn core_completions(
     }
 
     if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
-        let receiver = receiver_before_double_colon(text, double_colon_offset);
         return decorate_completions(
             &text_index,
             prefix_start,
             offset,
-            method_reference_completions(db, file, offset, &receiver, &prefix),
+            method_reference_completions(db, file, offset, double_colon_offset, &prefix),
         );
     }
     if is_new_expression_type_completion_context(text, prefix_start) {
@@ -5485,12 +5484,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
-        let receiver = receiver_before_double_colon(text, double_colon_offset);
         return decorate_completions(
             &text_index,
             prefix_start,
             offset,
-            method_reference_completions(db, file, offset, &receiver, &prefix),
+            method_reference_completions(db, file, offset, double_colon_offset, &prefix),
         );
     }
     if is_new_expression_type_completion_context(text, prefix_start) {
@@ -7158,12 +7156,68 @@ fn method_reference_completions(
     db: &dyn Database,
     file: FileId,
     offset: usize,
-    receiver: &str,
+    double_colon_offset: usize,
     prefix: &str,
 ) -> Vec<CompletionItem> {
-    let receiver = receiver.trim();
-    if receiver.is_empty() {
-        return Vec::new();
+    fn split_dotted_receiver(receiver: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut start = 0usize;
+        let mut depth: i32 = 0;
+        for (idx, ch) in receiver.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = (depth - 1).max(0),
+                '.' if depth == 0 => {
+                    if start < idx {
+                        parts.push(receiver[start..idx].trim());
+                    }
+                    start = idx + 1;
+                }
+                _ => {}
+            }
+        }
+        if start < receiver.len() {
+            parts.push(receiver[start..].trim());
+        }
+        parts.into_iter().filter(|p| !p.is_empty()).collect()
+    }
+
+    fn infer_chained_field_access(
+        types: &mut TypeStore,
+        analysis: &Analysis,
+        file_ctx: &JavaFileTypeContext,
+        receiver: &str,
+        offset: usize,
+    ) -> Option<(Type, CallKind)> {
+        let parts = split_dotted_receiver(receiver);
+        if parts.len() < 2 {
+            return None;
+        }
+
+        let (mut ty, mut kind) = infer_receiver(types, analysis, file_ctx, parts[0], offset);
+        if matches!(ty, Type::Unknown | Type::Error) {
+            return None;
+        }
+
+        for part in parts.into_iter().skip(1) {
+            ensure_type_fields_loaded(types, &ty);
+            let class_id = class_id_of_type(types, &ty)?;
+            let class_def = types.class(class_id)?;
+
+            let field = class_def.fields.iter().find(|field| {
+                field.name == part
+                    && match kind {
+                        CallKind::Static => field.is_static,
+                        CallKind::Instance => !field.is_static,
+                    }
+            })?;
+
+            ty = field.ty.clone();
+            // Accessing a field produces a value receiver, even if the field itself is static.
+            kind = CallKind::Instance;
+        }
+
+        Some((ty, kind))
     }
 
     let text = db.file_content(file);
@@ -7172,44 +7226,76 @@ fn method_reference_completions(
     let mut types = completion_type_store(db, file);
     let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
 
-    let (receiver_ty, call_kind) = match receiver {
-        "this" => (
-            enclosing_class(&analysis, offset)
-                .map(|class| parse_source_type_in_context(&mut types, &file_ctx, &class.name))
-                .unwrap_or(Type::Unknown),
+    let receiver = receiver_before_double_colon(text, double_colon_offset);
+
+    let (mut receiver_ty, mut call_kind) = if receiver.is_empty() {
+        // Best-effort: handle receivers like `new Foo()::bar` / `foo()::bar` / `(foo)::bar` by
+        // inferring the type of the expression immediately before the `::`.
+        let receiver_type = infer_receiver_type_before_dot(db, file, double_colon_offset)
+            .unwrap_or_default();
+        if receiver_type.is_empty() {
+            return Vec::new();
+        }
+        (
+            parse_source_type_in_context(&mut types, &file_ctx, &receiver_type),
             CallKind::Instance,
-        ),
-        "super" => (
-            enclosing_class(&analysis, offset)
-                .and_then(|class| class.extends.as_deref())
-                .map(|extends| parse_source_type_in_context(&mut types, &file_ctx, extends))
-                .unwrap_or_else(|| parse_source_type_in_context(&mut types, &file_ctx, "Object")),
-            CallKind::Instance,
-        ),
-        other => infer_receiver(&mut types, &analysis, &file_ctx, other, offset),
+        )
+    } else {
+        match receiver.as_str() {
+            "this" => (
+                enclosing_class(&analysis, offset)
+                    .map(|class| parse_source_type_in_context(&mut types, &file_ctx, &class.name))
+                    .unwrap_or(Type::Unknown),
+                CallKind::Instance,
+            ),
+            "super" => (
+                enclosing_class(&analysis, offset)
+                    .and_then(|class| class.extends.as_deref())
+                    .map(|extends| parse_source_type_in_context(&mut types, &file_ctx, extends))
+                    .unwrap_or_else(|| {
+                        parse_source_type_in_context(&mut types, &file_ctx, "Object")
+                    }),
+                CallKind::Instance,
+            ),
+            other => infer_receiver(&mut types, &analysis, &file_ctx, other, offset),
+        }
     };
 
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return Vec::new();
     }
 
+    // For `Foo.bar::baz` (static field) / `foo.bar::baz` (instance field), attempt to interpret the
+    // dotted receiver as a field access chain when it does not resolve to a known type.
+    if !receiver.is_empty() && receiver.contains('.') && call_kind == CallKind::Static {
+        let is_known_type = class_id_of_type(&mut types, &receiver_ty).is_some();
+        if !is_known_type {
+            if let Some((ty, kind)) =
+                infer_chained_field_access(&mut types, &analysis, &file_ctx, &receiver, offset)
+            {
+                receiver_ty = ty;
+                call_kind = kind;
+            }
+        }
+    }
+
     let mut items = Vec::new();
     let mut seen = HashSet::<String>::new();
 
     let mut collect_methods = |call_kind: CallKind| {
-        for item in semantic_member_completions(&mut types, &receiver_ty, call_kind) {
+        for mut item in semantic_member_completions(&mut types, &receiver_ty, call_kind) {
             if item.kind != Some(CompletionItemKind::METHOD) {
                 continue;
             }
             if !seen.insert(item.label.clone()) {
                 continue;
             }
-            items.push(CompletionItem {
-                label: item.label.clone(),
-                kind: Some(CompletionItemKind::METHOD),
-                insert_text: Some(item.label),
-                ..Default::default()
-            });
+
+            // Method references should insert only the bare name (no `()`).
+            item.insert_text = Some(item.label.clone());
+            item.insert_text_format = None;
+            item.text_edit = None;
+            items.push(item);
         }
     };
 

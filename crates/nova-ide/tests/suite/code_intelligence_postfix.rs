@@ -369,6 +369,70 @@ class A {
 }
 
 #[test]
+fn completion_method_reference_expression_receiver_includes_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  void inst() {}
+}
+class A {
+  void m() {
+    new Foo()::in<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "inst"),
+        "expected completion list to contain new Foo()::inst; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_expression_receiver_method_call_includes_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  void inst() {}
+}
+class A {
+  Foo foo() { return null; }
+  void m() {
+    foo()::in<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "inst"),
+        "expected completion list to contain foo()::inst; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_static_field_receiver_includes_jdk_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void m() {
+    System.out::pri<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "println"),
+        "expected completion list to contain System.out::println; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_enum_constants_in_switch_case_labels() {
     let (db, file, pos, _text) = fixture(
         r#"
