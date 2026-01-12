@@ -8631,7 +8631,8 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
 
     let source_snippet = byte_range_for_ide_range(&source, selection)
-        .and_then(|bytes| source.get(bytes).map(ToString::to_string));
+        .and_then(|bytes| source.get(bytes).map(ToString::to_string))
+        .filter(|s| !s.trim().is_empty());
 
     let file = file_rel;
     let source_file = Some(file.clone());
