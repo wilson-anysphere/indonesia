@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { isMethodNotFoundError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -250,22 +251,3 @@ export class ProjectModelCache {
   }
 }
 
-function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  // `nova-lsp` currently reports unknown `nova/*` custom methods as `-32602` with an
-  // "unknown (stateless) method" message (because everything is routed through a single dispatcher).
-  if (code === -32602 && typeof message === 'string' && message.toLowerCase().includes('unknown (stateless) method')) {
-    return true;
-  }
-
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
-}
