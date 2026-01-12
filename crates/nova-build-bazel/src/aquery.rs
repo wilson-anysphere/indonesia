@@ -1073,4 +1073,57 @@ mod tests {
         );
         assert_eq!(info.output_dir.as_deref(), Some("out/classes"));
     }
+
+    #[test]
+    fn java_compile_info_json_aliases_are_supported() {
+        // Cache files historically used `output_directory` / `enable_preview` field names.
+        let json = r#"
+        {
+            "classpath": ["cp.jar"],
+            "output_directory": "out/classes",
+            "enable_preview": true
+        }
+        "#;
+
+        let info: JavaCompileInfo = serde_json::from_str(json).expect("deserialize JavaCompileInfo");
+        assert_eq!(info.output_dir.as_deref(), Some("out/classes"));
+        assert!(info.preview);
+    }
+
+    #[test]
+    fn java_compile_info_json_roundtrip_preserves_annotation_processing() {
+        let mut apt = AnnotationProcessingConfig::default();
+        apt.enabled = true;
+        apt.generated_sources_dir = Some(std::path::PathBuf::from("gen"));
+        apt.processor_path = vec![std::path::PathBuf::from("proc.jar")];
+        apt.processors = vec!["com.example.Proc".to_string()];
+        apt.options = std::collections::BTreeMap::from([(
+            "key".to_string(),
+            "value".to_string(),
+        )]);
+        apt.compiler_args = vec![
+            "-processorpath".to_string(),
+            "proc.jar".to_string(),
+            "-Akey=value".to_string(),
+            "-s".to_string(),
+            "gen".to_string(),
+        ];
+
+        let info = JavaCompileInfo {
+            classpath: vec!["cp.jar".to_string()],
+            module_path: Vec::new(),
+            source_roots: Vec::new(),
+            source: Some("21".to_string()),
+            target: Some("21".to_string()),
+            release: Some("21".to_string()),
+            output_dir: Some("out/classes".to_string()),
+            preview: true,
+            annotation_processing: Some(apt),
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize JavaCompileInfo");
+        let decoded: JavaCompileInfo =
+            serde_json::from_str(&json).expect("deserialize JavaCompileInfo");
+        assert_eq!(decoded, info);
+    }
 }
