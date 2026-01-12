@@ -92,7 +92,10 @@ impl TemplateDelimiter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LexMode {
-    Template(TemplateDelimiter),
+    Template {
+        delimiter: TemplateDelimiter,
+        start: usize,
+    },
     /// Lexing an embedded Java expression inside a string template interpolation.
     ///
     /// The interpolation is opened by a `\{` sequence lexed as
@@ -169,33 +172,38 @@ impl<'a> Lexer<'a> {
             // tokens intact and surfacing a zero-length `Error` sentinel at EOF.
             if !self.mode_stack.is_empty() {
                 let mut delimiter = None;
-                let mut in_expr = false;
+                let mut template_start = None;
                 for mode in self.mode_stack.iter().rev() {
                     match *mode {
-                        LexMode::Template(d) => {
+                        LexMode::Template {
+                            delimiter: d,
+                            start,
+                        } => {
                             delimiter = Some(d);
+                            template_start = Some(start);
                             break;
                         }
-                        LexMode::TemplateInterpolation { .. } => {
-                            in_expr = true;
-                        }
+                        LexMode::TemplateInterpolation { .. } => {}
                     }
                 }
-                in_expr |= self
+                let delimiter = delimiter.unwrap_or(TemplateDelimiter::Quote);
+                let template_start = template_start.unwrap_or(self.pos);
+                let in_expr = self
                     .mode_stack
                     .iter()
                     .any(|m| matches!(m, LexMode::TemplateInterpolation { .. }));
-                let delimiter = delimiter.unwrap_or(TemplateDelimiter::Quote);
 
                 let message = match (delimiter, in_expr) {
                     (TemplateDelimiter::Quote, false) => "unterminated string template",
-                    (TemplateDelimiter::Quote, true) => "unterminated string template interpolation",
+                    (TemplateDelimiter::Quote, true) => {
+                        "unterminated string template interpolation"
+                    }
                     (TemplateDelimiter::TextBlock, false) => "unterminated text block template",
                     (TemplateDelimiter::TextBlock, true) => {
                         "unterminated text block template interpolation"
                     }
                 };
-                self.push_error(message, self.pos, self.pos);
+                self.push_error(message, template_start, self.pos);
                 self.mode_stack.clear();
                 return SyntaxKind::Error;
             }
@@ -204,8 +212,8 @@ impl<'a> Lexer<'a> {
         }
 
         match self.mode_stack.last().copied() {
-            Some(LexMode::Template(delim)) => {
-                return self.scan_string_template_token(delim);
+            Some(LexMode::Template { delimiter, start }) => {
+                return self.scan_string_template_token(delimiter, start);
             }
             Some(LexMode::TemplateInterpolation { .. }) => {
                 // Lex a normal Java token, but track `{`/`}` so we know when the interpolation
@@ -241,7 +249,7 @@ impl<'a> Lexer<'a> {
             .iter_mut()
             .enumerate()
             .rev()
-             .find(|(_, m)| matches!(m, LexMode::TemplateInterpolation { .. }))
+            .find(|(_, m)| matches!(m, LexMode::TemplateInterpolation { .. }))
         else {
             return false;
         };
@@ -394,11 +402,15 @@ impl<'a> Lexer<'a> {
             TemplateDelimiter::Quote
         };
 
-        self.mode_stack.push(LexMode::Template(delimiter));
+        self.mode_stack.push(LexMode::Template { delimiter, start });
         SyntaxKind::StringTemplateStart
     }
 
-    fn scan_string_template_token(&mut self, delimiter: TemplateDelimiter) -> SyntaxKind {
+    fn scan_string_template_token(
+        &mut self,
+        delimiter: TemplateDelimiter,
+        template_start: usize,
+    ) -> SyntaxKind {
         // Closing delimiter?
         if delimiter == TemplateDelimiter::Quote {
             if self.peek_byte(0) == Some(b'"') {
@@ -489,7 +501,11 @@ impl<'a> Lexer<'a> {
                         }
                         Some('\n' | '\r') | None => {
                             // A backslash at end-of-line or end-of-file can't start an escape.
-                            self.push_error("unterminated string template", start, self.pos);
+                            self.push_error(
+                                "unterminated string template",
+                                template_start,
+                                self.pos,
+                            );
                             self.mode_stack.pop(); // Template
                             unterminated = true;
                             break;
@@ -501,7 +517,7 @@ impl<'a> Lexer<'a> {
                 }
                 Some('\n' | '\r') if !delimiter.is_text_block() => {
                     // Normal string templates can't contain raw newlines.
-                    self.push_error("unterminated string template", start, self.pos);
+                    self.push_error("unterminated string template", template_start, self.pos);
                     self.mode_stack.pop(); // Template
                     unterminated = true;
                     break;
@@ -522,7 +538,11 @@ impl<'a> Lexer<'a> {
             // one char to avoid an infinite loop and surface an error.
             let err_start = self.pos;
             self.bump_char();
-            self.push_error("unexpected character in string template", err_start, self.pos);
+            self.push_error(
+                "unexpected character in string template",
+                err_start,
+                self.pos,
+            );
             return SyntaxKind::Error;
         }
 
