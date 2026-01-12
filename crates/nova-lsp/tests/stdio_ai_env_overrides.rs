@@ -71,6 +71,16 @@ model = "default"
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        // Ensure the only overrides in effect are the ones explicitly under test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         .env(env_key, env_value)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
