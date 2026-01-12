@@ -2096,6 +2096,16 @@ fn resolve_snapshot_jar_file_name(
     })
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+}
+
 fn child_element<'a>(
     node: &'a roxmltree::Node<'a, 'a>,
     name: &str,
