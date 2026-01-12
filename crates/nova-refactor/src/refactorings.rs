@@ -1665,6 +1665,25 @@ pub fn inline_variable(
         }) {
             return Err(RefactorError::InlineSideEffects);
         }
+
+        // 4) Reject when deleting the declaration would reorder side effects *within* the usage
+        // statement. For example:
+        //
+        //   int a = foo();
+        //   println(bar() + a);
+        //
+        // Inlining `a` would become `println(bar() + foo())`, which evaluates `bar()` before
+        // `foo()` (Java evaluates binary operands left-to-right).
+        let usage_start = usage.range.start;
+        if usage_stmt.syntax().descendants().any(|node| {
+            if !has_side_effects(&node) {
+                return false;
+            }
+            let range = syntax_range(&node);
+            range.end <= usage_start
+        }) {
+            return Err(RefactorError::InlineSideEffects);
+        }
     }
 
     // --- Initializer dependency stability analysis ---
