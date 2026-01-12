@@ -3,7 +3,7 @@ use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnaps
 use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_index::{
-    load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
+    load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
@@ -356,15 +356,15 @@ impl Workspace {
         // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
         // full file contents before deciding whether the cache is reusable.
         let shard_count = DEFAULT_SHARD_COUNT;
-        let loaded = load_sharded_index_archives_from_fast_snapshot(
+        let loaded = load_sharded_index_view_lazy_from_fast_snapshot(
             &cache_dir,
             &stamp_snapshot,
             shard_count,
         )
         .context("failed to load cached indexes")?;
         Cancelled::check(cancel)?;
-        let (loaded_shards, mut invalidated_files) = match loaded {
-            Some(loaded) => (Some(loaded.shards), loaded.invalidated_files),
+        let (loaded_view, mut invalidated_files) = match loaded {
+            Some(loaded) => (Some(loaded.view), loaded.invalidated_files),
             None => (
                 None,
                 stamp_snapshot.file_fingerprints().keys().cloned().collect(),
@@ -394,12 +394,12 @@ impl Workspace {
             return Ok((stamp_snapshot, cache_dir, Vec::new(), metrics));
         }
 
-        let mut shards = match loaded_shards {
-            Some(loaded_shards) => {
+        let mut shards = match &loaded_view {
+            Some(view) => {
                 let mut shards = Vec::with_capacity(shard_count as usize);
-                for shard in loaded_shards {
+                for shard_id in 0..shard_count {
                     Cancelled::check(cancel)?;
-                    let indexes = match shard {
+                    let indexes = match view.shard(shard_id) {
                         Some(archives) => ProjectIndexes {
                             symbols: archives.symbols.to_owned()?,
                             references: archives.references.to_owned()?,
@@ -409,6 +409,20 @@ impl Workspace {
                         None => ProjectIndexes::default(),
                     };
                     shards.push(indexes);
+                }
+
+                // If any shards were missing or corrupt, mark all files that map to those shards
+                // as invalidated so we rebuild them during this indexing run.
+                let missing_shards = view.missing_shards();
+                if !missing_shards.is_empty() {
+                    let mut invalidated: std::collections::BTreeSet<String> =
+                        invalidated_files.into_iter().collect();
+                    for path in stamp_snapshot.file_fingerprints().keys() {
+                        if missing_shards.contains(&shard_id_for_path(path, shard_count)) {
+                            invalidated.insert(path.clone());
+                        }
+                    }
+                    invalidated_files = invalidated.into_iter().collect();
                 }
                 shards
             }
