@@ -73,7 +73,10 @@ To handle this, the workspace reconciles its desired watch paths (directory root
 are retried later (instead of failing permanently), which keeps “generated sources not created yet”
 from breaking file watching.
 
-Implementation reference: `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`).
+Implementation references:
+
+- `crates/nova-workspace/src/engine.rs` (`compute_watch_roots`)
+- `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`)
 
 ## Optional build-tool invocation during workspace load/reload
 
