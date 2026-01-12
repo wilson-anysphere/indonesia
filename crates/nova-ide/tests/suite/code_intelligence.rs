@@ -152,6 +152,36 @@ class A {
 }
 
 #[test]
+fn completion_includes_enum_constants_as_static_members() {
+    let enum_path = PathBuf::from("/workspace/src/main/java/p/Color.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let enum_text = r#"
+package p;
+enum Color { RED, GREEN }
+"#
+    .to_string();
+
+    let main_text = r#"
+package p;
+class Main {
+  void m() {
+    Color.<|>
+  }
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(enum_path, enum_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"RED"),
+        "expected completion list to contain enum constant Color.RED; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_deduplicates_items_by_label_and_kind() {
     // `Stream` member completions come from two sources:
     // - hardcoded `STREAM_MEMBER_METHODS`
