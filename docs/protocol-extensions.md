@@ -954,6 +954,55 @@ Notes:
 
 ---
 
+## Workspace + semantic search helpers
+
+### `nova/workspace/renamePath`
+
+- **Kind:** notification
+- **Stability:** experimental
+
+This notification informs Nova that a `file://` URI has been renamed/moved from `from` to `to`.
+
+It is primarily useful for clients that cannot (or do not) send standard LSP workspace file
+operation notifications (`workspace/didRenameFiles`).
+
+#### Notification params
+
+```json
+{
+  "from": "file:///absolute/path/to/OldName.java",
+  "to": "file:///absolute/path/to/NewName.java"
+}
+```
+
+---
+
+### `nova/semanticSearch/indexStatus`
+
+- **Kind:** request
+- **Stability:** experimental
+
+Returns status for Nova's best-effort background semantic-search indexing pass (used by some AI
+features).
+
+#### Request params
+
+`null` (no params).
+
+#### Response
+
+```json
+{
+  "currentRunId": 1,
+  "completedRunId": 1,
+  "done": true,
+  "indexedFiles": 1234,
+  "indexedBytes": 567890
+}
+```
+
+---
+
 ## AI augmentation endpoints
 
 These endpoints are currently implemented in the `nova-lsp` **binary**
