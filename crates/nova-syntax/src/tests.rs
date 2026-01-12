@@ -395,6 +395,21 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
         "did not expect a `StringTemplateExprEnd` token for unterminated interpolation"
     );
 
+    // EOF while inside a text block template interpolation (`""" ... \{ ...`).
+    let input = "STR.\"\"\"\nhello \\{x";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateExprStart),
+        "expected a `StringTemplateExprStart` token, got: {tokens:?}"
+    );
+
     // Unterminated text-block template (no closing `"""`).
     let input = r#"STR."""unterminated"#;
     let (tokens, errors) = lex_with_errors(input);
@@ -1015,6 +1030,11 @@ fn parse_java_surfaces_unterminated_string_template_lexer_errors_as_parse_errors
         (
             r#"class Foo { String s = STR."hello \{x"#,
             "unterminated string template interpolation",
+        ),
+        (
+            r#"class Foo { String s = STR."""
+hello \{x"#,
+            "unterminated text block template interpolation",
         ),
         (
             "class Foo { String s = STR.\"\"\"\nunterminated",
