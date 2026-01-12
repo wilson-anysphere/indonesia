@@ -2,7 +2,7 @@ use crate::{
     aquery::{parse_aquery_textproto_streaming_javac_action_info, JavaCompileInfo},
     build::{bazel_build_args, BazelBuildOptions},
     cache::{digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest},
-    command::{CommandOutput, CommandRunner},
+    command::{read_line_limited, CommandOutput, CommandRunner},
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -22,6 +22,7 @@ enum BspConnection {
 }
 
 const JAVA_TARGETS_QUERY: &str = r#"kind("java_.* rule", //...)"#;
+const MAX_BAZEL_STDOUT_LINE_BYTES: usize = 64 * 1024; // 64 KiB
 
 // Query/aquery expressions are part of the cache key; changing them should invalidate cached
 // compile info (even if file digests happen to remain the same).
@@ -220,14 +221,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let result = self.execution_root.get_or_init(|| {
             self.runner
                 .run_with_stdout(&self.root, "bazel", &["info", "execution_root"], |stdout| {
-                    let mut line = String::new();
+                    let mut line = Vec::<u8>::new();
                     loop {
-                        line.clear();
-                        let bytes = stdout.read_line(&mut line)?;
+                        let bytes = read_line_limited(
+                            stdout,
+                            &mut line,
+                            MAX_BAZEL_STDOUT_LINE_BYTES,
+                            "bazel info execution_root",
+                        )?;
                         if bytes == 0 {
                             break;
                         }
-                        let trimmed = line.trim();
+                        let text = std::str::from_utf8(&line)
+                            .context("bazel info execution_root returned non-UTF-8 output")?;
+                        let trimmed = text.trim();
                         if trimmed.is_empty() {
                             continue;
                         }
@@ -736,14 +743,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             &["query", JAVA_TARGETS_QUERY],
             |stdout| {
                 let mut targets = Vec::new();
-                let mut line = String::new();
+                let mut line = Vec::<u8>::new();
                 loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
+                    let bytes = read_line_limited(
+                        stdout,
+                        &mut line,
+                        MAX_BAZEL_STDOUT_LINE_BYTES,
+                        "bazel query (java targets)",
+                    )?;
                     if bytes == 0 {
                         break;
                     }
-                    let trimmed = line.trim();
+                    let text = std::str::from_utf8(&line)
+                        .context("bazel query returned non-UTF-8 output")?;
+                    let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         targets.push(trimmed.to_string());
                     }
@@ -775,14 +788,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         self.runner
             .run_with_stdout(&self.root, "bazel", &["query", &query], |stdout| {
                 let mut targets = Vec::new();
-                let mut line = String::new();
+                let mut line = Vec::<u8>::new();
                 loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
+                    let bytes = read_line_limited(
+                        stdout,
+                        &mut line,
+                        MAX_BAZEL_STDOUT_LINE_BYTES,
+                        "bazel query (java targets in universe)",
+                    )?;
                     if bytes == 0 {
                         break;
                     }
-                    let trimmed = line.trim();
+                    let text = std::str::from_utf8(&line)
+                        .context("bazel query returned non-UTF-8 output")?;
+                    let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         targets.push(trimmed.to_string());
                     }
@@ -993,15 +1012,21 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel",
             &["query", expr, "--output=label_kind"],
             |stdout| {
-                let mut line = String::new();
+                let mut line = Vec::<u8>::new();
                 let mut out = Vec::new();
                 loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
+                    let bytes = read_line_limited(
+                        stdout,
+                        &mut line,
+                        MAX_BAZEL_STDOUT_LINE_BYTES,
+                        "bazel query --output=label_kind",
+                    )?;
                     if bytes == 0 {
                         break;
                     }
-                    let trimmed = line.trim();
+                    let text = std::str::from_utf8(&line)
+                        .context("bazel query returned non-UTF-8 output")?;
+                    let trimmed = text.trim();
                     if trimmed.is_empty() {
                         continue;
                     }
@@ -1533,14 +1558,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
             |stdout| {
-                let mut line = String::new();
+                let mut line = Vec::<u8>::new();
                 loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
+                    let bytes = read_line_limited(
+                        stdout,
+                        &mut line,
+                        MAX_BAZEL_STDOUT_LINE_BYTES,
+                        "bazel query buildfiles(...)",
+                    )?;
                     if bytes == 0 {
                         break;
                     }
-                    let label = line.trim();
+                    let text = std::str::from_utf8(&line)
+                        .context("bazel query returned non-UTF-8 output")?;
+                    let label = text.trim();
                     if label.is_empty() {
                         continue;
                     }
@@ -1563,14 +1594,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     "bazel",
                     &["query", &deps_query, "--output=label"],
                     |stdout| {
-                        let mut line = String::new();
+                        let mut line = Vec::<u8>::new();
                         loop {
-                            line.clear();
-                            let bytes = stdout.read_line(&mut line)?;
+                            let bytes = read_line_limited(
+                                stdout,
+                                &mut line,
+                                MAX_BAZEL_STDOUT_LINE_BYTES,
+                                "bazel query deps(...)",
+                            )?;
                             if bytes == 0 {
                                 break;
                             }
-                            let label = line.trim();
+                            let text = std::str::from_utf8(&line)
+                                .context("bazel query returned non-UTF-8 output")?;
+                            let label = text.trim();
                             if label.is_empty() {
                                 continue;
                             }
@@ -1593,14 +1630,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel",
             &["query", &loadfiles_query, "--output=label"],
             |stdout| {
-                let mut line = String::new();
+                let mut line = Vec::<u8>::new();
                 loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
+                    let bytes = read_line_limited(
+                        stdout,
+                        &mut line,
+                        MAX_BAZEL_STDOUT_LINE_BYTES,
+                        "bazel query loadfiles(...)",
+                    )?;
                     if bytes == 0 {
                         break;
                     }
-                    let label = line.trim();
+                    let text = std::str::from_utf8(&line)
+                        .context("bazel query returned non-UTF-8 output")?;
+                    let label = text.trim();
                     if label.is_empty() {
                         continue;
                     }

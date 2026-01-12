@@ -369,14 +369,74 @@ fn append_crash_record(path: &Path, record: &CrashRecord) -> std::io::Result<()>
 }
 
 fn read_persisted_crashes(path: &Path, max_records: usize) -> Vec<CrashRecord> {
+    const MAX_CRASH_RECORD_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
+
+    fn read_line_limited<R: BufRead>(
+        reader: &mut R,
+        max_len: usize,
+    ) -> std::io::Result<Option<String>> {
+        let mut buf = Vec::<u8>::new();
+        loop {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let newline_pos = available.iter().position(|&b| b == b'\n');
+            let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+            if buf.len() + take > max_len {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("crash record line exceeds maximum size ({max_len} bytes)"),
+                ));
+            }
+
+            buf.extend_from_slice(&available[..take]);
+            reader.consume(take);
+            if newline_pos.is_some() {
+                break;
+            }
+        }
+
+        Ok(Some(String::from_utf8_lossy(&buf).to_string()))
+    }
+
+    fn discard_until_newline<R: BufRead>(reader: &mut R) -> std::io::Result<()> {
+        loop {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                return Ok(());
+            }
+            if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                reader.consume(pos + 1);
+                return Ok(());
+            }
+            let len = available.len();
+            reader.consume(len);
+        }
+    }
+
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(_) => return Vec::new(),
     };
 
     let mut ring = VecDeque::with_capacity(max_records.min(512));
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { continue };
+    let mut reader = BufReader::new(file);
+    loop {
+        let line = match read_line_limited(&mut reader, MAX_CRASH_RECORD_LINE_BYTES) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                // Skip lines that exceed our bound without aborting the entire scan.
+                let _ = discard_until_newline(&mut reader);
+                continue;
+            }
+            Err(_) => break,
+        };
         if line.trim().is_empty() {
             continue;
         }

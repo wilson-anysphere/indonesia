@@ -5,10 +5,13 @@ use std::collections::BTreeSet;
 use std::io::BufRead;
 use std::path::PathBuf;
 
-// `read_line` grows the backing buffer to fit the longest line seen. Some Bazel action arguments
-// (e.g. long classpaths) can be very large; cap the retained buffer size to avoid permanently
-// holding onto multi-megabyte allocations.
+use crate::command::read_line_limited;
+
+// Bazel `aquery` output can contain very large single-line arguments (e.g. long classpaths).
+// Avoid unbounded `read_line` buffering by enforcing a maximum line size, and cap the retained
+// buffer capacity so we don't permanently hold onto multi-megabyte allocations.
 const MAX_LINE_BUF_CAPACITY_BYTES: usize = 1024 * 1024;
+const MAX_AQUERY_LINE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 /// A parsed `Javac` action from `bazel aquery --output=textproto`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +86,8 @@ pub(crate) fn parse_aquery_textproto_streaming_javac_action_info<R: BufRead>(
 
 struct AqueryTextprotoStreamingParser<R: BufRead> {
     reader: R,
-    line_buf: String,
+    line_buf: Vec<u8>,
+    max_line_bytes: usize,
     in_action: bool,
     depth: i32,
     is_javac: Option<bool>,
@@ -97,7 +101,8 @@ impl<R: BufRead> AqueryTextprotoStreamingParser<R> {
     fn new(reader: R) -> Self {
         Self {
             reader,
-            line_buf: String::new(),
+            line_buf: Vec::new(),
+            max_line_bytes: MAX_AQUERY_LINE_BYTES,
             in_action: false,
             depth: 0,
             is_javac: None,
@@ -106,6 +111,13 @@ impl<R: BufRead> AqueryTextprotoStreamingParser<R> {
             collect_arguments: true,
             done: false,
         }
+    }
+
+    #[cfg(test)]
+    fn new_with_max_line_bytes(reader: R, max_line_bytes: usize) -> Self {
+        let mut parser = Self::new(reader);
+        parser.max_line_bytes = max_line_bytes;
+        parser
     }
 }
 
@@ -122,7 +134,12 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
             if self.line_buf.capacity() > MAX_LINE_BUF_CAPACITY_BYTES {
                 self.line_buf.shrink_to(MAX_LINE_BUF_CAPACITY_BYTES);
             }
-            let bytes = match self.reader.read_line(&mut self.line_buf) {
+            let bytes = match read_line_limited(
+                &mut self.reader,
+                &mut self.line_buf,
+                self.max_line_bytes,
+                "bazel aquery",
+            ) {
                 Ok(0) => {
                     self.done = true;
                     return None;
@@ -139,7 +156,14 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
                 return None;
             }
 
-            let line = self.line_buf.trim_end_matches(['\n', '\r']);
+            let text = match std::str::from_utf8(&self.line_buf) {
+                Ok(text) => text,
+                Err(_) => {
+                    self.done = true;
+                    return None;
+                }
+            };
+            let line = text.trim_end_matches(['\n', '\r']);
             let trimmed_start = line.trim_start();
 
             if !self.in_action {
@@ -227,7 +251,8 @@ struct AptState {
 
 struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
     reader: R,
-    line_buf: String,
+    line_buf: Vec<u8>,
+    max_line_bytes: usize,
     in_action: bool,
     depth: i32,
     is_javac: Option<bool>,
@@ -244,7 +269,8 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
     fn new(reader: R) -> Self {
         Self {
             reader,
-            line_buf: String::new(),
+            line_buf: Vec::new(),
+            max_line_bytes: MAX_AQUERY_LINE_BYTES,
             in_action: false,
             depth: 0,
             is_javac: None,
@@ -256,6 +282,13 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             pending: None,
             done: false,
         }
+    }
+
+    #[cfg(test)]
+    fn new_with_max_line_bytes(reader: R, max_line_bytes: usize) -> Self {
+        let mut parser = Self::new(reader);
+        parser.max_line_bytes = max_line_bytes;
+        parser
     }
 }
 
@@ -475,7 +508,12 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
             if self.line_buf.capacity() > MAX_LINE_BUF_CAPACITY_BYTES {
                 self.line_buf.shrink_to(MAX_LINE_BUF_CAPACITY_BYTES);
             }
-            let bytes = match self.reader.read_line(&mut self.line_buf) {
+            let bytes = match read_line_limited(
+                &mut self.reader,
+                &mut self.line_buf,
+                self.max_line_bytes,
+                "bazel aquery",
+            ) {
                 Ok(0) => {
                     self.done = true;
                     return None;
@@ -492,7 +530,14 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                 return None;
             }
 
-            let line = self.line_buf.trim_end_matches(['\n', '\r']);
+            let text = match std::str::from_utf8(&self.line_buf) {
+                Ok(text) => text,
+                Err(_) => {
+                    self.done = true;
+                    return None;
+                }
+            };
+            let line = text.trim_end_matches(['\n', '\r']);
             let trimmed_start = line.trim_start();
             let delta = brace_delta_unquoted(trimmed_start);
 
@@ -1123,5 +1168,27 @@ mod tests {
         let decoded: JavaCompileInfo =
             serde_json::from_str(&json).expect("deserialize JavaCompileInfo");
         assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn streaming_parsers_stop_on_overlong_lines() {
+        // Use a small per-line limit so this test doesn't need to allocate a huge
+        // synthetic aquery output. The production limit is intentionally much larger.
+        let line_limit = 64;
+
+        let long_arg = "A".repeat(512);
+        let output = format!(
+            "action {{\n  mnemonic: \"Javac\"\n  arguments: \"{long_arg}\"\n}}\n"
+        );
+
+        let reader = std::io::BufReader::new(std::io::Cursor::new(output.as_bytes()));
+        let mut actions =
+            AqueryTextprotoStreamingParser::new_with_max_line_bytes(reader, line_limit);
+        assert!(actions.next().is_none());
+
+        let reader = std::io::BufReader::new(std::io::Cursor::new(output.as_bytes()));
+        let mut infos =
+            AqueryTextprotoStreamingJavacInfoParser::new_with_max_line_bytes(reader, line_limit);
+        assert!(infos.next().is_none());
     }
 }

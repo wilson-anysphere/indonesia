@@ -50,6 +50,40 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
+pub(crate) fn read_line_limited<R: BufRead + ?Sized>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max_len: usize,
+    context: &str,
+) -> io::Result<usize> {
+    buf.clear();
+    let mut total = 0usize;
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(total);
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+        if buf.len() + take > max_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{context}: line exceeds maximum size ({max_len} bytes)"),
+            ));
+        }
+
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        total += take;
+
+        if newline_pos.is_some() {
+            return Ok(total);
+        }
+    }
+}
+
 pub trait CommandRunner: Send + Sync {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<CommandOutput>;
 
