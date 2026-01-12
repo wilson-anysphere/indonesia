@@ -224,20 +224,60 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             _ => None,
         },
         HirExpr::Unary { op, expr, .. } => {
-            let inner = const_value_for_expr(body, *expr)?;
+            let inner = const_value_for_expr(body, *expr);
             match (*op, inner) {
-                (UnaryOp::Plus, v) => Some(v),
-                (UnaryOp::Minus, nova_types::ConstValue::Int(v)) => {
+                (UnaryOp::Plus, Some(v)) => Some(v),
+                (UnaryOp::Minus, Some(nova_types::ConstValue::Int(v))) => {
                     // Java integer constants use 32-bit two's complement arithmetic (JLS 4.2.2).
                     let v32 = i32::try_from(v).ok()?;
                     Some(nova_types::ConstValue::Int(i64::from(v32.wrapping_neg())))
                 }
-                (UnaryOp::BitNot, nova_types::ConstValue::Int(v)) => {
+                (UnaryOp::Minus, None) => {
+                    // JLS 3.10.1: `2147483648` and `9223372036854775808L` are only legal as the
+                    // operand of unary `-`, yielding `Integer.MIN_VALUE`/`Long.MIN_VALUE`.
+                    //
+                    // `nova_syntax::parse_int_literal`/`parse_long_literal` intentionally reject
+                    // the (MAX+1) forms, so we special-case them here for constant folding.
+                    fn parse_decimal_u64(text: &str) -> Option<u64> {
+                        let text: String = text.chars().filter(|c| *c != '_').collect();
+                        if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
+                            return None;
+                        }
+                        text.parse().ok()
+                    }
+
+                    match &body.exprs[*expr] {
+                        HirExpr::Literal {
+                            kind: LiteralKind::Int,
+                            value,
+                            ..
+                        } if parse_decimal_u64(value) == Some((i32::MAX as u64) + 1) => {
+                            Some(nova_types::ConstValue::Int(i64::from(i32::MIN)))
+                        }
+                        HirExpr::Literal {
+                            kind: LiteralKind::Long,
+                            value,
+                            ..
+                        } => {
+                            let digits = value
+                                .strip_suffix('l')
+                                .or_else(|| value.strip_suffix('L'))
+                                .unwrap_or(value);
+                            if parse_decimal_u64(digits) == Some((i64::MAX as u64) + 1) {
+                                Some(nova_types::ConstValue::Int(i64::MIN))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                (UnaryOp::BitNot, Some(nova_types::ConstValue::Int(v))) => {
                     // Java bitwise operators on `int` operate on 32-bit two's complement values.
                     let v32 = i32::try_from(v).ok()?;
                     Some(nova_types::ConstValue::Int(i64::from(!v32)))
                 }
-                (UnaryOp::Not, nova_types::ConstValue::Boolean(v)) => {
+                (UnaryOp::Not, Some(nova_types::ConstValue::Boolean(v))) => {
                     Some(nova_types::ConstValue::Boolean(!v))
                 }
                 _ => None,

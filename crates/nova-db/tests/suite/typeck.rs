@@ -1219,6 +1219,20 @@ class C { void m(){ byte b = 1 + 2; } }
 }
 
 #[test]
+fn byte_initializer_allows_constant_expression_with_int_min_value() {
+    let src = r#"
+class C { void m(){ byte b = (-2147483648 == -2147483648 ? 1 : 2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_char_constant() {
     let src = r#"
 class C { void m(){ byte b = 'a'; } }
