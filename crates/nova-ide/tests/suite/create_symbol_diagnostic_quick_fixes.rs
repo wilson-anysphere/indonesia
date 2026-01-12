@@ -263,3 +263,48 @@ fn create_symbol_quick_fix_is_filtered_by_selection_range() {
     );
 }
 
+#[test]
+fn create_symbol_quick_fixes_are_deduped_across_diagnostics() {
+    let source = r#"class A {
+  void m() {
+    foo();
+  }
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("foo").expect("expected `foo` in fixture");
+    let foo_end = foo_start + "foo".len();
+    let range = Range::new(
+        offset_to_position(source, foo_start),
+        offset_to_position(source, foo_end),
+    );
+
+    let diagnostics = vec![
+        Diagnostic {
+            range: range.clone(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("unresolved-method".to_string())),
+            message: "unresolved method `foo`".to_string(),
+            ..Diagnostic::default()
+        },
+        Diagnostic {
+            range: range.clone(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("UNRESOLVED_REFERENCE".to_string())),
+            message: "Cannot resolve symbol 'foo'".to_string(),
+            ..Diagnostic::default()
+        },
+    ];
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &diagnostics);
+    let matching: Vec<_> = actions
+        .iter()
+        .filter(|action| action.title == "Create method 'foo'")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected Create method action to be deduped; got {actions:#?}"
+    );
+}
