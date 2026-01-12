@@ -11257,8 +11257,12 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         | HirStmt::Continue { range, .. }
         | HirStmt::Empty { range, .. } => *range,
     };
-    let may_contain = stmt_range.start <= target_range.start && target_range.end <= stmt_range.end;
-    if !may_contain {
+    // Best-effort pruning: only skip when we have a non-empty range and the target start is
+    // clearly outside it. Parse recovery can produce degenerate spans that don't strictly contain
+    // children.
+    if !stmt_range.is_empty()
+        && !(stmt_range.start <= target_range.start && target_range.start < stmt_range.end)
+    {
         return;
     }
 
