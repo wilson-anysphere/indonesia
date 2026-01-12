@@ -1844,6 +1844,37 @@ class A {
 }
 
 #[test]
+fn completion_includes_current_file_enum_type_names_in_expression_context() {
+    let (db, file, pos) = fixture(
+        r#"
+enum MyEnum { A }
+class A {
+  void take(Object x) {}
+  void m() {
+    take(My<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let enum_item = items
+        .iter()
+        .find(|item| item.label == "MyEnum")
+        .expect("expected completion list to contain MyEnum");
+    assert_eq!(enum_item.kind, Some(CompletionItemKind::ENUM));
+    assert_eq!(enum_item.detail.as_deref(), Some("MyEnum"));
+    assert!(
+        enum_item
+            .additional_text_edits
+            .as_ref()
+            .is_none_or(|edits| edits.is_empty()),
+        "expected current-file enum completion to not require an import; got additional_text_edits={:?}",
+        enum_item.additional_text_edits
+    );
+}
+
+#[test]
 fn completion_filters_incompatible_items_in_string_initializer() {
     let (db, file, pos) = fixture(
         r#"

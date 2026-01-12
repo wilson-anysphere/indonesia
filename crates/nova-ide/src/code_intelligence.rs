@@ -11978,6 +11978,40 @@ fn expression_type_name_completions(
     let mut seen: HashSet<String> = HashSet::new();
     let mut added = 0usize;
 
+    fn top_level_type_names_with_kind(tokens: &[Token]) -> Vec<(String, CompletionItemKind)> {
+        let mut out = Vec::new();
+        let mut brace_depth: i32 = 0;
+        let mut i = 0usize;
+        while i + 1 < tokens.len() {
+            if brace_depth == 0 && tokens[i].kind == TokenKind::Ident {
+                let kind = match tokens[i].text.as_str() {
+                    "class" => Some(CompletionItemKind::CLASS),
+                    "interface" => Some(CompletionItemKind::INTERFACE),
+                    "enum" => Some(CompletionItemKind::ENUM),
+                    // Records are represented as classes in the completion model for now.
+                    "record" => Some(CompletionItemKind::CLASS),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    if let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident)
+                    {
+                        out.push((name_tok.text.clone(), kind));
+                    }
+                }
+            }
+
+            match tokens[i].kind {
+                TokenKind::Symbol('{') => brace_depth += 1,
+                TokenKind::Symbol('}') => brace_depth -= 1,
+                _ => {}
+            }
+
+            i += 1;
+        }
+
+        out
+    }
+
     let push_type = |simple: String,
                      kind: CompletionItemKind,
                      fqn: String,
@@ -12014,18 +12048,18 @@ fn expression_type_name_completions(
     };
 
     // 1) Types declared in this file.
-    for class in &analysis.classes {
-        if !class.name.starts_with(prefix) {
+    for (name, kind) in top_level_type_names_with_kind(&analysis.tokens) {
+        if !name.starts_with(prefix) {
             continue;
         }
         let fqn = if imports.current_package.is_empty() {
-            class.name.clone()
+            name.clone()
         } else {
-            format!("{}.{}", imports.current_package, class.name)
+            format!("{}.{}", imports.current_package, name)
         };
         push_type(
-            class.name.clone(),
-            CompletionItemKind::CLASS,
+            name,
+            kind,
             fqn,
             true,
             &mut items,
