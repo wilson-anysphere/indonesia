@@ -18,3 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol extensions; update architecture reconciliation and surface the new docs from `README.md`.
 - AI privacy: gate cloud code-editing (patch/apply) behind explicit opt-in flags and refuse edits
   when anonymization is enabled (patches cannot be applied reliably).
+- AI completions: add a server startup override `NOVA_AI_COMPLETIONS_MAX_ITEMS` to cap (or disable
+  with `0`) async multi-token completion items (used by the VS Code setting
+  `nova.aiCompletions.maxItems`; restart required).
