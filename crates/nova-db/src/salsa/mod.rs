@@ -933,10 +933,27 @@ impl MemoryEvictor for SalsaMemoEvictor {
             };
         }
 
-        // Eviction must be best-effort and non-panicking. `ra_ap_salsa` does not
-        // currently expose a stable per-query sweep API, so we rebuild the
-        // database from inputs and swap it behind the mutex. Outstanding
-        // snapshots remain valid because they own their storage snapshots.
+        // Eviction must be best-effort and non-panicking.
+        //
+        // NOTE(perf): As of `ra_salsa`/`ra_ap_salsa` 0.0.269 we did not find a
+        // *safe* public API to drop memoized values for a particular query key
+        // (e.g. "evict memos for `FileId(123)`"):
+        //
+        // - `QueryTableMut::invalidate(&key)` exists, but it only forces
+        //   recomputation; it does **not** drop the stored value and therefore
+        //   does not meaningfully reduce memory usage.
+        // - `QueryTable::purge()` exists, but its docs explicitly warn that it
+        //   breaks Salsa invariants ("any further queries might return nonsense
+        //   results"), so it is unsuitable for production eviction.
+        // - There is internal LRU-backed memo storage
+        //   (`ra_salsa::plumbing::LruMemoizedStorage`) that can clear stored
+        //   values, but it is query-definition opt-in and still does not expose
+        //   a per-key/manual eviction hook.
+        //
+        // Until `ra_salsa` grows a stable "drop memo for key" / sweep API, the
+        // least-worst option is to rebuild the database from inputs and swap it
+        // behind the mutex. Outstanding snapshots remain valid because they own
+        // their storage snapshots.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs
@@ -1583,6 +1600,9 @@ impl Database {
             return;
         }
 
+        // NB: This is necessarily coarse (see `SalsaMemoEvictor::evict` for
+        // details). We rebuild the underlying Salsa database because `ra_salsa`
+        // doesn't currently provide a production-safe per-key memo eviction API.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs

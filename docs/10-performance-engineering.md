@@ -443,6 +443,17 @@ fn tick(manager: &MemoryManager) {
 }
 ```
 
+### Salsa memo eviction (current limitation)
+
+Nova’s Salsa database (`ra_ap_salsa` / `ra_salsa`) memoizes many query results. Under memory
+pressure we would ideally evict *per-file* memoized values (e.g. drop memos for cold files while
+keeping open/recent files warm).
+
+As of `ra_salsa`/`ra_ap_salsa` **0.0.269**, Nova does **not** have access to a production-safe
+public API to drop memoized values for a specific query key. The implementation in
+`crates/nova-db/src/salsa/mod.rs::SalsaMemoEvictor` therefore falls back to rebuilding the whole
+`RootDatabase` from inputs to clear memo tables (snapshots remain valid).
+
 ---
 
 ## Persistence
