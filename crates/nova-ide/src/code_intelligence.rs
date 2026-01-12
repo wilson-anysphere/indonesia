@@ -7228,6 +7228,9 @@ fn general_completions(
         .or_else(|| infer_expected_type(&analysis, offset, prefix_start, &in_scope_types));
 
     filter_completions_by_expected_type(&analysis, expected_type.as_deref(), &mut items);
+    if let Some(expected) = expected_type.as_deref() {
+        add_expected_type_literal_completions(expected, &mut items);
+    }
 
     let ctx = CompletionRankingContext {
         expected_type,
@@ -8097,6 +8100,64 @@ fn is_resolved_type(env: &dyn TypeEnv, ty: &Type) -> bool {
         _ => true,
     }
 }
+
+fn add_expected_type_literal_completions(expected_type: &str, items: &mut Vec<CompletionItem>) {
+    let mut types = TypeStore::with_minimal_jdk();
+    let expected_ty = parse_source_type(&mut types, expected_type);
+
+    if expected_ty.is_primitive_boolean() {
+        items.push(CompletionItem {
+            label: "true".to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(expected_type.to_string()),
+            ..Default::default()
+        });
+        items.push(CompletionItem {
+            label: "false".to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(expected_type.to_string()),
+            ..Default::default()
+        });
+    }
+
+    if matches!(expected_ty, Type::Primitive(p) if p.is_numeric()) {
+        items.push(CompletionItem {
+            label: "0".to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(expected_type.to_string()),
+            ..Default::default()
+        });
+    }
+
+    if is_java_lang_string(&types, &expected_ty) {
+        items.push(CompletionItem {
+            label: "\"\"".to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(expected_type.to_string()),
+            ..Default::default()
+        });
+    }
+
+    if expected_ty.is_reference() {
+        items.push(CompletionItem {
+            label: "null".to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(expected_type.to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+fn is_java_lang_string(types: &TypeStore, ty: &Type) -> bool {
+    match ty {
+        Type::Named(name) => name == "java.lang.String" || name == "String",
+        Type::Class(nova_types::ClassType { def, .. }) => types
+            .class(*def)
+            .is_some_and(|class_def| class_def.name == "java.lang.String"),
+        _ => false,
+    }
+}
+
 fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     match kind {
         Some(
@@ -8104,6 +8165,7 @@ fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
             | CompletionItemKind::FUNCTION
             | CompletionItemKind::CONSTRUCTOR,
         ) => 100,
+        Some(CompletionItemKind::VALUE | CompletionItemKind::CONSTANT) => 110,
         Some(CompletionItemKind::FIELD) => 80,
         Some(CompletionItemKind::VARIABLE) => 70,
         Some(

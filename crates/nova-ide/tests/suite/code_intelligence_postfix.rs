@@ -304,3 +304,71 @@ class A {
         "expected enum constant completion to include `RED`; got {items:#?}"
     );
 }
+
+#[test]
+fn completion_suggests_boolean_literals_for_boolean_initializer() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void m() {
+    boolean b = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"true"),
+        "expected completion list to contain boolean literal `true`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"false"),
+        "expected completion list to contain boolean literal `false`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_suggests_string_and_null_literals_for_string_initializer() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"\"\""),
+        "expected completion list to contain empty string literal; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"null"),
+        "expected completion list to contain `null`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_suggests_zero_for_numeric_initializer() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void m() {
+    int n = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"0"),
+        "expected completion list to contain numeric literal `0`; got {labels:?}"
+    );
+}
