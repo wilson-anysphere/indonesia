@@ -1949,8 +1949,17 @@ fn exists_as_jar(path: &Path) -> bool {
     //
     // Missing artifacts are treated as absent so downstream indexing doesn't try to open
     // non-existent archives.
-    path.is_file() || path.is_dir()
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return false;
+    }
+
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
 }
+
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
     let version = dep.version.as_deref()?;
     if version.contains("${") {
@@ -2075,17 +2084,6 @@ fn resolve_snapshot_jar_file_name(
     } else {
         format!("{artifact_id}-{value}.jar")
     })
-}
-
-fn exists_as_jar(path: &Path) -> bool {
-    if !path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
-    {
-        return false;
-    }
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
 fn child_element<'a>(
