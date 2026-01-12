@@ -34,16 +34,15 @@ fn ensure_worker_binary() -> PathBuf {
         // Keep this build serial to avoid exhausting thread/process limits in constrained test
         // environments. Also match the `test` profile settings (notably, reduced debuginfo) to
         // stay within the default `scripts/cargo_agent.sh` RLIMIT_AS budget.
+        //
+        // Use the wrapper's env var rather than passing `-j` directly so this stays compatible
+        // even when callers set `NOVA_CARGO_JOBS` globally (which would otherwise result in
+        // duplicate `--jobs` flags).
         .arg("--profile")
         .arg("test")
-        .arg("-j")
-        .arg("1")
+        .env("NOVA_CARGO_JOBS", "1")
         .arg("-p")
         .arg("nova-worker")
-        // Nested cargo builds run under the same sandbox RLIMIT_AS ceiling as the test harness.
-        // Keep the worker build single-threaded to avoid spurious OOM / thread-spawn failures.
-        .arg("-j")
-        .arg("1")
         .current_dir(&repo_root)
         .status()
         .expect("spawn scripts/cargo_agent.sh build -p nova-worker");
