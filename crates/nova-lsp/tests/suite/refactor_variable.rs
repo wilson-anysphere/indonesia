@@ -493,6 +493,29 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_in_for_update() {
+    let fixture = r#"
+class C {
+    void m(int n, int step) {
+        for (int i = 0; i < n; i += /*start*/step/*end*/) {
+            System.out.println(i);
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn extract_variable_code_action_not_offered_for_if_body_without_braces_multiline() {
     let fixture = r#"
 class C {
