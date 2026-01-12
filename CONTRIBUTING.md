@@ -97,7 +97,7 @@ before/after fixtures). To update those expectations:
 
 Note: the parser golden corpus is the `golden_corpus` test inside the consolidated `harness`
 integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no standalone
-`--test golden_corpus` target — run it via `--test harness` (optionally filtering by test name).
+integration test target named `golden_corpus` — run it via `--test harness` (optionally filtering by test name).
 
 ```bash
 # Local dev
