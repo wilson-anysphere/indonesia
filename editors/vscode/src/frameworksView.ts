@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
-import * as path from 'node:path';
-import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT } from './frameworkDashboard';
+import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT, uriFromFileLike } from './frameworkDashboard';
 
 type WebEndpoint = {
   path: string;
@@ -96,7 +95,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
     item.tooltip = `${endpoint.file}:${endpoint.line}`;
 
-    const uri = resolveEndpointUri(element.baseUri, endpoint.file);
+    const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
     if (uri) {
       item.command = {
         command: OPEN_ENDPOINT_COMMAND,
@@ -227,46 +226,6 @@ async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): P
     }
     throw err;
   }
-}
-
-function resolveEndpointUri(baseUri: vscode.Uri, file: string): vscode.Uri | undefined {
-  if (typeof file !== 'string' || file.length === 0) {
-    return undefined;
-  }
-
-  if (looksLikeUriString(file)) {
-    try {
-      return vscode.Uri.parse(file);
-    } catch {
-      // fall through
-    }
-  }
-
-  if (looksLikeAbsolutePath(file)) {
-    // When running in a remote workspace, preserve the workspace scheme.
-    if (baseUri.scheme !== 'file') {
-      return baseUri.with({ path: file });
-    }
-
-    return vscode.Uri.file(file);
-  }
-
-  const baseSegments = file.split(/[\\/]+/).filter(Boolean);
-  if (baseSegments.length === 0) {
-    return undefined;
-  }
-
-  // Prefer workspace URI join so remote workspaces (vscode-remote, etc.) resolve correctly.
-  return vscode.Uri.joinPath(baseUri, ...baseSegments);
-}
-
-function looksLikeUriString(value: string): boolean {
-  // `scheme:` is the only required part of a URI. We special-case Windows drive letters.
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value);
-}
-
-function looksLikeAbsolutePath(value: string): boolean {
-  return path.isAbsolute(value) || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
 function formatError(err: unknown): string {
