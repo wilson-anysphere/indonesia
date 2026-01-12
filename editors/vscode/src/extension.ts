@@ -497,6 +497,17 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
           }
 
+          // Safety net: if `nova.safeDelete` is invoked directly (e.g. via a command-only code action),
+          // VS Code will ignore the preview payload returned by the language server. Route that case
+          // through the VS Code-side preview/confirmation UX.
+          if (command === 'nova.safeDelete') {
+            const result = await next(command, args);
+            if (isSafeDeletePreviewPayload(result)) {
+              await vscode.commands.executeCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, result);
+            }
+            return result;
+          }
+
           return await next(command, args);
         } catch (err) {
           if (isSafeModeError(err)) {
