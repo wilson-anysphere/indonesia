@@ -68,7 +68,7 @@
 //!   can do is fall back to interpreting them as creates/deletes/modifies.
 //! - Some platforms report "atomic save" as a rename + create; consumers should treat `Moved` and
 //!   `Modified` as hints and always re-read file contents when needed.
-//! - Cross-root moves (e.g. between watched roots) may not be pairable, depending on the backend.
+//! - Cross-root moves (e.g. between watched paths/roots) may not be pairable, depending on the backend.
 //!
 //! # Testing
 //!
