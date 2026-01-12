@@ -869,7 +869,16 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let mut inputs = BTreeSet::<PathBuf>::new();
 
         // Always include core workspace config files (even if absent) for sound invalidation.
-        for name in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel", ".bazelrc"] {
+        for name in [
+            "WORKSPACE",
+            "WORKSPACE.bazel",
+            "MODULE.bazel",
+            "MODULE.bazel.lock",
+            ".bazelrc",
+            ".bazelignore",
+            ".bazelversion",
+            "bazelisk.rc",
+        ] {
             inputs.insert(self.root.join(name));
         }
 
@@ -1162,6 +1171,7 @@ fn is_bazel_build_definition_file(path: &Path) -> bool {
             | "MODULE.bazel"
             | "MODULE.bazel.lock"
             | "bazelisk.rc"
+            | ".bazelignore"
             | ".bazelrc"
             | ".bazelversion"
     ) || name.starts_with(".bazelrc.")

@@ -184,6 +184,31 @@ fn bazelrc_digest_invalidation_triggers_aquery() {
 }
 
 #[test]
+fn bazelignore_digest_invalidation_triggers_aquery() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::write(root.join(".bazelignore"), "ignored_pkg").unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
+
+    let info = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(info.classpath, vec!["a.jar".to_string()]);
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit: no additional aquery calls.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Editing `.bazelignore` should invalidate the compile-info cache key.
+    fs::write(root.join(".bazelignore"), "ignored_pkg\nnewly_ignored").unwrap();
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
 fn target_compile_info_cache_is_invalidated_when_any_build_definition_input_changes() {
     let dir = tempdir().unwrap();
     let workspace_root = dir.path().join("workspace");
