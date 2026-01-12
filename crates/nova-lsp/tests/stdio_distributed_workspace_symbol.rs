@@ -31,6 +31,10 @@ fn ensure_worker_binary() -> PathBuf {
         .arg(repo_root.join("scripts/cargo_agent.sh"))
         .arg("build")
         .arg("--quiet")
+        // Keep this build serial to avoid exhausting thread/process limits in constrained test
+        // environments.
+        .arg("-j")
+        .arg("1")
         .arg("-p")
         .arg("nova-worker")
         .current_dir(&repo_root)
