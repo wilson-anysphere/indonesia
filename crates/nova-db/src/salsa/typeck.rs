@@ -10893,7 +10893,6 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Expr { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
-        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -11193,20 +11192,6 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
         },
-        HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
-        } => {
-            find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
-            find_enclosing_target_typed_expr_in_stmt_inner(
-                body,
-                *switch_body,
-                target,
-                target_range,
-                best,
-            );
-        }
         HirExpr::Invalid { children, .. } => {
             for child in children {
                 find_enclosing_target_typed_expr_in_expr(body, *child, target, target_range, best);
