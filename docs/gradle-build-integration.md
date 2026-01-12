@@ -68,6 +68,10 @@ build tool (`nova-build`) and persisting the results for later reloads.
 - `GradleBuild::projects(...)` populates `projects` (Gradle project path → `projectDir`)
 - `GradleBuild::java_compile_config(..., project_path=Some(":app"), ...)` populates
   `javaCompileConfigs[":app"]` with resolved compilation inputs
+- `GradleBuild::java_compile_config(..., project_path=Some(":__buildSrc"), ...)` populates
+  `javaCompileConfigs[":__buildSrc"]` by running Gradle against the special nested `buildSrc/` build
+  (`--project-dir buildSrc`) and invoking Nova tasks as root tasks of that nested build (no
+  `:path:` prefix)
 - `GradleBuild::java_compile_configs_all(...)` populates `projects` *and* `javaCompileConfigs` for
   all subprojects in a **single** Gradle invocation (via `printNovaAllJavaCompileConfigs`)
 
