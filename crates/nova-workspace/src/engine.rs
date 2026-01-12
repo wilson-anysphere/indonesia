@@ -1744,6 +1744,16 @@ fn reload_project_and_sync(
 
 #[cfg(test)]
 mod tests {
+    // NOTE(file-watching tests):
+    // Avoid tests that rely on real OS watcher timing (starting `notify`, touching the filesystem,
+    // then sleeping and hoping an event arrives). They are flaky across platforms/CI.
+    //
+    // Prefer deterministic tests that either:
+    // - inject a manual watcher (e.g. `nova_vfs::ManualFileWatcher`) into the workspace, or
+    // - bypass the watcher entirely and call `apply_filesystem_events` with normalized events.
+    //
+    // See `docs/file-watching.md` for more background.
+
     use nova_cache::{CacheConfig, CacheDir};
     use nova_db::persistence::{PersistenceConfig, PersistenceMode};
     use nova_db::NovaInputs;

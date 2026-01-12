@@ -1,3 +1,74 @@
+//! File watching.
+//!
+//! This module defines [`FileWatcher`], Nova's cross-platform file-watching abstraction.
+//!
+//! # Ownership / layering
+//!
+//! `nova-vfs` intentionally owns *all* operating-system integration for file watching.
+//! Higher layers (like `nova-workspace` and the LSP/DAP binaries) depend only on the
+//! [`FileWatcher`] trait and the stable [`WatchEvent`] / [`crate::change::FileChange`] model.
+//!
+//! In particular:
+//!
+//! - OS backends (currently a Notify-based implementation) live in `nova-vfs` behind the
+//!   `watch-notify` feature. This keeps `notify` and platform-specific watcher dependencies out of
+//!   the default build.
+//!   - This feature should be enabled by binaries / integration crates that actually need OS file
+//!     watching (e.g. `nova-lsp`, `nova-cli`, `nova-workspace`), not by low-level library crates.
+//! - Move/rename normalization lives here (pairing `from`/`to` where possible) so consumers don't
+//!   need to implement per-platform rename heuristics.
+//!
+//! # Event delivery
+//!
+//! Most OS watchers are *push-based* internally (a background thread invokes a callback when the OS
+//! reports a change). `nova-vfs` exposes these changes as an event stream (`crossbeam_channel`)
+//! returned by [`FileWatcher::receiver`].
+//!
+//! Watchers can surface errors asynchronously; these are delivered on the same stream (see
+//! [`WatchMessage`]).
+//!
+//! This design keeps the watcher boundary "library friendly": consumers can integrate file
+//! watching into their own event loops without forcing a particular async runtime.
+//!
+//! # Semantics
+//!
+//! `nova-vfs` normalizes backend-specific events into a small set of high-level operations (see
+//! [`crate::change::FileChange`]):
+//!
+//! - **Created**
+//! - **Modified**
+//! - **Deleted**
+//! - **Moved**
+//!
+//! Backends are allowed to be *lossy* and the OS can legitimately coalesce/reorder events; this is
+//! unavoidable in practice. The goal is to provide a stable "best effort" stream that higher
+//! layers can batch/debounce.
+//!
+//! ## Rename pairing and limitations
+//!
+//! Many watcher backends do not provide an atomic rename event. Instead, they may emit two separate
+//! events ("rename from" and "rename to"), sometimes out-of-order or split across frames.
+//!
+//! `nova-vfs` attempts to pair these into a single logical **Moved** change by buffering a bounded
+//! set of pending "from" paths and matching them against subsequent "to" paths within a small time
+//! window.
+//!
+//! Limitations:
+//!
+//! - Pairing is heuristic: under heavy churn, "from"/"to" events can be reordered and the best we
+//!   can do is fall back to interpreting them as creates/deletes/modifies.
+//! - Some platforms report "atomic save" as a rename + create; consumers should treat `Moved` and
+//!   `Modified` as hints and always re-read file contents when needed.
+//! - Cross-root moves (e.g. between watched roots) may not be pairable, depending on the backend.
+//!
+//! # Testing
+//!
+//! Avoid tests that rely on real OS watcher timing (sleeping and hoping the watcher fires). They
+//! tend to be flaky on CI and across platforms.
+//!
+//! Instead, prefer a deterministic injected watcher (see [`ManualFileWatcher`]) or direct calls
+//! into higher-level "apply events" APIs. See `docs/file-watching.md` for guidance.
+
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,6 +80,9 @@ use crate::change::FileChange;
 /// An event produced by a file watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchEvent {
+    /// One or more normalized file changes.
+    ///
+    /// Backends may batch multiple changes together to reduce overhead.
     pub changes: Vec<FileChange>,
 }
 
@@ -19,6 +93,17 @@ pub struct WatchEvent {
 pub type WatchMessage = io::Result<WatchEvent>;
 
 /// Event-driven watcher abstraction.
+///
+/// Consumers are expected to:
+///
+/// 1. Register roots to watch with [`watch_root`](FileWatcher::watch_root).
+/// 2. Consume events from [`receiver`](FileWatcher::receiver).
+///
+/// Notes:
+///
+/// - Watchers are allowed to coalesce events.
+/// - Consumers should treat events as *hints* and consult the filesystem/VFS for the authoritative
+///   state.
 pub trait FileWatcher: Send {
     /// Begin watching `root` recursively.
     fn watch_root(&mut self, root: &Path) -> io::Result<()>;

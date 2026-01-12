@@ -522,13 +522,12 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Nested/inner class type arguments are flattened into a single argument list (Nova’s `Type::Class` does not model owner-type generics yet).
 
 ### `nova-vfs`
-- **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, watcher abstractions).
-- **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
+- **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, file-watching). Includes feature-gated OS watcher integration (Notify-backed; keeps the `notify` dependency inside `nova-vfs`) and move/rename normalization.
+- **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`), `crates/nova-vfs/src/watch.rs` (`FileWatcher`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - `nova-lsp`’s stdio server uses `nova_vfs::Vfs<LocalFs>` as its primary file store + open-document overlay (see `AnalysisState` in `crates/nova-lsp/src/main.rs`); decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store.
   - The richer path model (`VfsPath::{Archive,Decompiled}` / `ArchivePath`) exists, but adoption across the wider codebase is still partial; making `VfsPath`/ADR 0006 canonical URIs the end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files) is still in progress.
-  - The watcher abstractions (`FileWatcher`, `WatchEvent`) are not yet widely integrated; most file-change information still comes from editor-sent LSP notifications.
 
 ### `nova-worker`
 - **Purpose:** `nova-worker` binary for distributed mode (connects to `nova-router` and builds shard indexes).
@@ -539,7 +538,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - v3 is the current router↔worker protocol; schema evolution is expected within minor versions.
 
 ### `nova-workspace`
-- **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events).
+- **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events). Workspace watching is built on `nova-vfs::FileWatcher` and refreshes its watch roots dynamically after project reload (when source roots change).
 - **Key entry points:** `crates/nova-workspace/src/lib.rs` (`Workspace::open`, `Workspace::index_and_write_cache`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
