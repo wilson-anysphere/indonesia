@@ -253,6 +253,24 @@ class Main {
 }
 
 #[test]
+fn completion_parameter_receiver_works_in_package() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let foo_text = "package p; class Foo { void bar() {} }".to_string();
+    let main_text = r#"package p; class Main { void m(Foo f) { f.<|> } }"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for parameter receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_deduplicates_items_by_label_and_kind() {
     // Member completions come from two sources:
     // - semantic member enumeration via `TypeStore` (source types/JDK)

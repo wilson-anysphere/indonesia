@@ -10553,21 +10553,9 @@ fn infer_receiver(
             CallKind::Instance,
         );
     }
-    if let Some(param) = analysis
-        .methods
-        .iter()
-        .flat_map(|m| m.params.iter())
-        .find(|p| p.name == receiver)
-    {
-        return (parse_source_type(types, &param.ty), CallKind::Instance);
-    }
-    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
-        return (
-            parse_source_type_in_context(types, file_ctx, &field.ty),
-            CallKind::Instance,
-        );
-    }
 
+    // Prefer parameters from the enclosing method (scope-aware) so we resolve types using the
+    // current file's package/import context.
     if let Some(method) = analysis
         .methods
         .iter()
@@ -10579,6 +10567,27 @@ fn infer_receiver(
                 CallKind::Instance,
             );
         }
+    }
+
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+        return (
+            parse_source_type_in_context(types, file_ctx, &field.ty),
+            CallKind::Instance,
+        );
+    }
+
+    // Best-effort fallback: if we can't determine the enclosing method, scan all method
+    // parameters. Still use the file context so unqualified types in `package ...;` files resolve.
+    if let Some(param) = analysis
+        .methods
+        .iter()
+        .flat_map(|m| m.params.iter())
+        .find(|p| p.name == receiver)
+    {
+        return (
+            parse_source_type_in_context(types, file_ctx, &param.ty),
+            CallKind::Instance,
+        );
     }
 
     // Allow `Foo.bar()` / `Foo.<cursor>` to treat `Foo` as a type reference.
