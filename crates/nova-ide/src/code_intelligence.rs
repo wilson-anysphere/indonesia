@@ -11963,13 +11963,12 @@ fn expression_type_name_completions(
         .cloned()
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
-    // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
-    // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
-    // produced enough items.
-    let jdk_class_names: &[String] = jdk
-        .all_binary_class_names()
-        .or_else(|_| EMPTY_JDK_INDEX.all_binary_class_names())
-        .unwrap_or(&[]);
+    // Builtin JDK indexes expose a stable sorted name slice; use it to avoid allocating/cloning a
+    // `Vec<String>` for each package via `class_names_with_prefix`.
+    //
+    // When backed by a real JDK symbol index, prefer `class_names_with_prefix` so we don't have to
+    // materialize/scan the full set of binary names for every completion request.
+    let builtin_jdk_names = jdk.binary_class_names();
 
     const MAX_TYPE_ITEMS: usize = 256;
     const MAX_JDK_PER_PACKAGE: usize = 64;
@@ -12136,48 +12135,101 @@ fn expression_type_name_completions(
 
         let pkg_prefix = format!("{pkg}.");
         let query = format!("{pkg_prefix}{prefix}");
-        let start = jdk_class_names.partition_point(|name| name.as_str() < query.as_str());
-
         let mut added_for_pkg = 0usize;
-        for binary in &jdk_class_names[start..] {
-            if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_JDK_PER_PACKAGE {
-                break;
-            }
-            if !binary.starts_with(query.as_str()) {
-                break;
-            }
 
-            let rest = &binary[pkg_prefix.len()..];
-            // Star-imports only expose direct package members (no subpackages).
-            if rest.contains('.') || rest.contains('$') {
-                continue;
+        if let Some(jdk_class_names) = builtin_jdk_names {
+            let start = jdk_class_names.partition_point(|name| name.as_str() < query.as_str());
+            for binary in &jdk_class_names[start..] {
+                if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_JDK_PER_PACKAGE {
+                    break;
+                }
+                if !binary.starts_with(query.as_str()) {
+                    break;
+                }
+                if !binary.starts_with(pkg_prefix.as_str()) {
+                    continue;
+                }
+                let rest = &binary[pkg_prefix.len()..];
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
+
+                let kind = jdk
+                    .lookup_type(binary.as_str())
+                    .ok()
+                    .flatten()
+                    .map(|stub| {
+                        if stub.access_flags & ACC_INTERFACE != 0 {
+                            CompletionItemKind::INTERFACE
+                        } else if stub.access_flags & ACC_ENUM != 0 {
+                            CompletionItemKind::ENUM
+                        } else {
+                            CompletionItemKind::CLASS
+                        }
+                    })
+                    .unwrap_or(CompletionItemKind::CLASS);
+
+                push_type(
+                    rest.to_string(),
+                    kind,
+                    binary.clone(),
+                    false,
+                    &mut items,
+                    &mut seen,
+                    &mut added,
+                );
+                added_for_pkg += 1;
             }
+        } else {
+            // Symbol-backed JDK: query only the relevant prefix window.
+            let jdk_candidates = jdk
+                .class_names_with_prefix(query.as_str())
+                .or_else(|_| EMPTY_JDK_INDEX.class_names_with_prefix(query.as_str()))
+                .unwrap_or_default();
+            for binary in jdk_candidates {
+                if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_JDK_PER_PACKAGE {
+                    break;
+                }
+                if !binary.starts_with(query.as_str()) {
+                    // `class_names_with_prefix` should only return matches, but keep a defensive
+                    // guard to avoid accidentally scanning the entire list if an index violates the
+                    // contract.
+                    continue;
+                }
+                if !binary.starts_with(pkg_prefix.as_str()) {
+                    continue;
+                }
+                let rest = &binary[pkg_prefix.len()..];
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
 
-            let kind = jdk
-                .lookup_type(binary.as_str())
-                .ok()
-                .flatten()
-                .map(|stub| {
-                    if stub.access_flags & ACC_INTERFACE != 0 {
-                        CompletionItemKind::INTERFACE
-                    } else if stub.access_flags & ACC_ENUM != 0 {
-                        CompletionItemKind::ENUM
-                    } else {
-                        CompletionItemKind::CLASS
-                    }
-                })
-                .unwrap_or(CompletionItemKind::CLASS);
+                let kind = jdk
+                    .lookup_type(binary.as_str())
+                    .ok()
+                    .flatten()
+                    .map(|stub| {
+                        if stub.access_flags & ACC_INTERFACE != 0 {
+                            CompletionItemKind::INTERFACE
+                        } else if stub.access_flags & ACC_ENUM != 0 {
+                            CompletionItemKind::ENUM
+                        } else {
+                            CompletionItemKind::CLASS
+                        }
+                    })
+                    .unwrap_or(CompletionItemKind::CLASS);
 
-            push_type(
-                rest.to_string(),
-                kind,
-                binary.clone(),
-                false,
-                &mut items,
-                &mut seen,
-                &mut added,
-            );
-            added_for_pkg += 1;
+                push_type(
+                    rest.to_string(),
+                    kind,
+                    binary,
+                    false,
+                    &mut items,
+                    &mut seen,
+                    &mut added,
+                );
+                added_for_pkg += 1;
+            }
         }
     }
 
