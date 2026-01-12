@@ -2390,12 +2390,37 @@ fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
         }
     }
 
-    if uniq.len() == 1 {
-        return uniq.into_iter().next().unwrap();
+    if uniq.is_empty() {
+        return Type::Intersection(Vec::new());
     }
 
     uniq.sort_by_cached_key(|a| type_sort_key(env, a));
-    Type::Intersection(uniq)
+
+    // Prune redundant supertypes (e.g. `ArrayList & List` => `ArrayList`), while
+    // remaining deterministic in the face of our best-effort subtyping relation
+    // (e.g. `Named` vs `Class`, and error recovery types like `Unknown`).
+    //
+    // Since `uniq` is sorted by `type_sort_key`, we always keep the first
+    // representative when two types are mutually subtypes.
+    let mut pruned: Vec<Type> = Vec::with_capacity(uniq.len());
+    'cand: for t in uniq {
+        // If we've already kept something at least as specific as `t`, drop `t`.
+        for kept in &pruned {
+            if is_subtype(env, kept, &t) {
+                continue 'cand;
+            }
+        }
+
+        // Otherwise `t` is not implied by anything we've kept, so remove anything
+        // it implies (strict supertypes or mutually-subtype equivalents).
+        pruned.retain(|kept| !is_subtype(env, &t, kept));
+        pruned.push(t);
+    }
+
+    if pruned.len() == 1 {
+        return pruned.into_iter().next().unwrap();
+    }
+    Type::Intersection(pruned)
 }
 
 fn lub_same_generic_class(
