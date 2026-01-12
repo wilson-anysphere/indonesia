@@ -1,9 +1,14 @@
 mod support;
 
+// AI-related integration tests require the `ai` feature. Keep them gated so the crate can be
+// compiled/tested with `--no-default-features` (e.g. for faster CI or minimal builds).
+#[cfg(feature = "ai")]
 #[path = "suite/ai_code_actions.rs"]
 mod ai_code_actions;
+#[cfg(feature = "ai")]
 #[path = "suite/ai_completion_more.rs"]
 mod ai_completion_more;
+#[cfg(feature = "ai")]
 #[path = "suite/ai_excluded_paths.rs"]
 mod ai_excluded_paths;
 #[path = "suite/cli_help.rs"]
@@ -48,10 +53,13 @@ mod refactor_workspace_snapshot;
 mod references;
 #[path = "suite/semantic_search_index_status_stdio.rs"]
 mod semantic_search_index_status_stdio;
+#[cfg(feature = "ai")]
 #[path = "suite/semantic_search_workspace_indexing.rs"]
 mod semantic_search_workspace_indexing;
+#[cfg(feature = "ai")]
 #[path = "suite/stdio_ai_completion_more.rs"]
 mod stdio_ai_completion_more;
+#[cfg(feature = "ai")]
 #[path = "suite/stdio_ai_env_overrides.rs"]
 mod stdio_ai_env_overrides;
 #[path = "suite/stdio_call_hierarchy.rs"]
