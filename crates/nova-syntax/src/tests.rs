@@ -516,6 +516,23 @@ fn lexer_unicode_escape_line_terminator_ends_line_comment() {
 }
 
 #[test]
+fn lexer_token_is_underscore_identifier_respects_unicode_escape_translation() {
+    let input = "\\u005F _ _x \\u005Fx";
+    let tokens = lex(input);
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
+        .collect();
+
+    assert_eq!(non_trivia.len(), 4);
+    assert!(non_trivia[0].is_underscore_identifier(input));
+    assert!(non_trivia[1].is_underscore_identifier(input));
+    assert!(!non_trivia[2].is_underscore_identifier(input));
+    assert!(!non_trivia[3].is_underscore_identifier(input));
+}
+
+#[test]
 fn parse_java_surfaces_lexer_errors_as_parse_errors() {
     let input = "class Foo { String s = \"unterminated\n }";
     let result = parse_java(input);
