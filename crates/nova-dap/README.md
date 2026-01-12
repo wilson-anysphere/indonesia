@@ -313,6 +313,8 @@ Response body:
 
 - The wire implementation uses `javac` plus JDWP `DefineClass`/`InvokeMethod` internally; `javac`
   must be available on `PATH`.
+- On failure, the adapter responds with `success=false` and a human-readable `message` (standard DAP
+  error response shape).
 
 #### Example
 
