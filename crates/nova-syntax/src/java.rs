@@ -3964,7 +3964,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_block_lowers_array_creation_with_initializer() {
+    fn parse_block_lowers_array_creation_with_initializer_records_dims() {
         let block = parse_block("{ new int[] { 1, 2 }; }", 0);
         assert_eq!(block.statements.len(), 1);
 
