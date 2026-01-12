@@ -12586,6 +12586,9 @@ fn kind_weight(kind: Option<CompletionItemKind>, label: &str) -> i32 {
             | CompletionItemKind::CONSTRUCTOR,
         ) => 100,
         Some(CompletionItemKind::VALUE | CompletionItemKind::CONSTANT) => 110,
+        // Java arrays have a ubiquitous pseudo-field `length`; prioritize it slightly above methods
+        // so `xs.<|>` surfaces `length` before `Object` members like `equals`/`toString`.
+        Some(CompletionItemKind::FIELD) if label == "length" => 101,
         Some(CompletionItemKind::FIELD) => 80,
         Some(CompletionItemKind::VARIABLE) => 70,
         Some(

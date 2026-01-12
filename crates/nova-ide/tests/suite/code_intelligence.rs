@@ -90,6 +90,15 @@ class A { void m(){ int[] xs=null; xs.<|> } }
     );
 
     let items = completions(&db, file, pos);
+    assert!(
+        !items.is_empty(),
+        "expected non-empty completion list for array member access"
+    );
+    assert_eq!(
+        items[0].label, "length",
+        "expected array.length to rank first for empty prefix; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
     let item = items
         .iter()
         .find(|i| i.label == "length")
