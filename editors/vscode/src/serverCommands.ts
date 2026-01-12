@@ -3,6 +3,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 
 import { extractMainClassFromCommandArgs, extractTestIdFromCommandArgs } from './serverCommandArgs';
 import { debugTestById } from './testDebug';
+import { formatError } from './safeMode';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -63,23 +64,6 @@ interface NovaLspDebugConfiguration {
   vmArgs?: string[];
   projectName?: string;
   springBoot?: boolean;
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
 }
 
 function flattenTests(items: TestItem[]): TestItem[] {
