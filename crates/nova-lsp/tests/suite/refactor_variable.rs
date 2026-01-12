@@ -276,7 +276,7 @@ class C {
 }
 
 #[test]
-fn extract_variable_code_action_not_offered_for_side_effectful_expression() {
+fn extract_variable_code_action_for_side_effectful_expression_only_offers_explicit_type() {
     let fixture = r#"
 class Foo {}
 class C {
