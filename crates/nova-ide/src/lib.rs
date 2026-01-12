@@ -20,6 +20,7 @@ pub mod framework_db_adapter;
 mod java_completion;
 pub mod java_semantics;
 pub mod semantics;
+pub mod quick_fixes;
 
 pub mod code_intelligence;
 mod quick_fix;
