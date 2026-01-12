@@ -284,8 +284,19 @@ impl WorkspaceHierarchyIndex {
             ));
         }
 
-        let super_name = type_info.def.super_class.as_deref()?;
-        self.resolve_method_definition_inner(super_name, method_name, visited)
+        // Search interfaces / extended interfaces first.
+        for iface in &type_info.def.interfaces {
+            if let Some(def) = self.resolve_method_definition_inner(iface, method_name, visited) {
+                return Some(def);
+            }
+        }
+
+        // Then walk the superclass chain.
+        if let Some(super_name) = type_info.def.super_class.as_deref() {
+            return self.resolve_method_definition_inner(super_name, method_name, visited);
+        }
+
+        None
     }
 
     pub(crate) fn resolve_super_types(&self, type_name: &str) -> Vec<String> {

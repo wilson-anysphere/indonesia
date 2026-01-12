@@ -15,6 +15,10 @@ use nova_types::{Parameter, PrimitiveType, Span, Type};
 /// - malformed input yields an empty/partial list
 /// - individual malformed members are skipped
 /// - the function never panics
+///
+/// Note: this collects both `class` and `interface` declarations as `ClassData`. Framework analyzers
+/// often care about annotations/members on interfaces (e.g. MapStruct mappers), and `ClassData` is a
+/// lightweight, type-kind-agnostic container.
 #[must_use]
 pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
     let mut classes = Vec::new();

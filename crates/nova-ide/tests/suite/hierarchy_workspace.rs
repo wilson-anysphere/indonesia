@@ -187,6 +187,33 @@ class B { void foo(){ A a = new A(); a.$0bar(); } }
     assert_eq!(items[0].uri, fixture.marker_uri(1));
 }
 
+#[test]
+fn call_hierarchy_outgoing_resolves_interface_default_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $1foo() {} }
+//- /C.java
+class C implements I { void $0test(){ C c=null; c.foo(); } }
+"#,
+    );
+
+    let file_c = fixture.marker_file(0);
+    let pos_test = fixture.marker_position(0);
+    let items = prepare_call_hierarchy(&fixture.db, file_c, pos_test)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "test");
+
+    let outgoing = call_hierarchy_outgoing_calls(&fixture.db, file_c, "test");
+    assert!(
+        outgoing
+            .iter()
+            .any(|call| call.to.name == "foo" && call.to.uri == fixture.marker_uri(1)),
+        "expected outgoing calls to include foo in I.java; got {outgoing:#?}"
+    );
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");

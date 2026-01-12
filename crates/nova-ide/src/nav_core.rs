@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use lsp_types::{Location, Uri};
 use nova_index::InheritanceIndex;
@@ -326,6 +326,29 @@ where
     TI: NavTypeInfo + 'a,
     FTypeInfo: Fn(&str) -> Option<&'a TI>,
 {
+    let mut visited = BTreeSet::new();
+    resolve_method_definition_inner::<TI, FTypeInfo>(
+        lookup_type_info,
+        ty_name,
+        method_name,
+        &mut visited,
+    )
+}
+
+fn resolve_method_definition_inner<'a, TI, FTypeInfo>(
+    lookup_type_info: &'a FTypeInfo,
+    ty_name: &str,
+    method_name: &str,
+    visited: &mut BTreeSet<String>,
+) -> Option<(Uri, Span)>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+{
+    if !visited.insert(ty_name.to_string()) {
+        return None;
+    }
+
     let info = lookup_type_info(ty_name)?;
     if let Some(method) = info
         .def()
@@ -336,8 +359,27 @@ where
         return Some((info.uri().clone(), method.name_span));
     }
 
-    let super_name = info.def().super_class.as_deref()?;
-    resolve_method_definition::<TI, FTypeInfo>(lookup_type_info, super_name, method_name)
+    // Prefer walking the superclass chain before interfaces (class methods win over
+    // interface default methods in Java).
+    if let Some(super_name) = info.def().super_class.as_deref() {
+        if let Some(def) =
+            resolve_method_definition_inner::<TI, FTypeInfo>(lookup_type_info, super_name, method_name, visited)
+        {
+            return Some(def);
+        }
+    }
+
+    // If the method isn't found on the class/superclass chain, try interfaces.
+    // For interfaces, `TypeDef.interfaces` represents extended interfaces.
+    for iface in &info.def().interfaces {
+        if let Some(def) =
+            resolve_method_definition_inner::<TI, FTypeInfo>(lookup_type_info, iface, method_name, visited)
+        {
+            return Some(def);
+        }
+    }
+
+    None
 }
 
 pub(crate) fn implementation_for_type<'a, TI, FTypeInfo, FFile>(
