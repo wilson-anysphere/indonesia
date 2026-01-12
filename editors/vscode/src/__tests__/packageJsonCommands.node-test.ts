@@ -654,7 +654,7 @@ test('package.json contributes nova.build.buildTool setting', async () => {
   assert.equal(typed.scope, 'resource');
   assert.equal(
     typed.description,
-    "Build tool to use for project builds/reloads for a workspace folder. Use 'prompt' to choose each time.",
+    "Build tool to use for project builds/reloads. Use 'prompt' to choose each time.",
   );
 });
 
