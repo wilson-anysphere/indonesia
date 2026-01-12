@@ -93,7 +93,6 @@ fn parse_interface_declaration(
 
     let interface_name = node.name_token()?.text().to_string();
     let body = node.body()?;
-
     let mut fields = Vec::new();
     let mut methods = Vec::new();
     let constructors = Vec::new();

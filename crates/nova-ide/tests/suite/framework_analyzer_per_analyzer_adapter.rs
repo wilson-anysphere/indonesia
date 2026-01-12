@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
-use nova_ext::{ExtensionRegistry, ProjectId, Span, Symbol};
+use nova_ext::{ClassId, ExtensionRegistry, ProjectId, Span, Symbol};
 use nova_framework::{Database as FrameworkDatabase, FrameworkAnalyzer};
 use nova_scheduler::CancellationToken;
 
@@ -210,4 +210,63 @@ fn framework_analyzer_adapter_propagates_cancellation_to_analyzer_on_host_db() {
         .recv_timeout(Duration::from_secs(1))
         .expect("analyzer should finish after cancellation");
     assert!(saw_cancel.load(Ordering::SeqCst));
+}
+
+#[test]
+fn framework_analyzer_adapter_attempts_best_effort_class_navigation() {
+    struct ClassNavAnalyzer {
+        file: nova_ext::FileId,
+    }
+
+    impl FrameworkAnalyzer for ClassNavAnalyzer {
+        fn applies_to(&self, _db: &dyn FrameworkDatabase, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn navigation(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            symbol: &nova_framework::Symbol,
+        ) -> Vec<nova_framework::NavigationTarget> {
+            match *symbol {
+                nova_framework::Symbol::Class(_) => vec![nova_framework::NavigationTarget {
+                    file: self.file,
+                    span: Some(Span::new(2, 3)),
+                    label: "fwClassNavTarget".to_string(),
+                }],
+                _ => Vec::new(),
+            }
+        }
+    }
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/workspace/src/main/java/A.java"));
+    db.set_file_text(file, "class A {}".to_string());
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+
+    let analyzer = FrameworkAnalyzerOnTextDbAdapter::new(
+        "framework.class_nav_adapter",
+        ClassNavAnalyzer { file },
+    )
+    .into_arc();
+
+    let mut registry: ExtensionRegistry<dyn nova_db::Database + Send + Sync> =
+        ExtensionRegistry::default();
+    registry
+        .register_navigation_provider(analyzer)
+        .expect("register navigation provider");
+
+    let ide = IdeExtensions::with_registry(
+        db,
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+        registry,
+    );
+
+    // `framework_db` assigns dense class ids starting at 0 within a root; the fixture has one class.
+    let targets = ide.navigation(CancellationToken::new(), Symbol::Class(ClassId::from_raw(0)));
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].file, file);
+    assert_eq!(targets[0].label, "fwClassNavTarget");
+    assert_eq!(targets[0].span, Some(Span::new(2, 3)));
 }

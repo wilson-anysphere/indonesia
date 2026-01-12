@@ -522,31 +522,72 @@ where
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
-        let file = match params.symbol {
-            Symbol::File(file) => file,
-            // `nova-ext` does not currently provide a way to recover the owning file for a `ClassId`.
-            // Our `framework_db` adapter is root-scoped (built from a file), so we cannot reliably
-            // construct the correct framework DB for class-based navigation.
-            //
-            // Best-effort behavior: return no targets for class symbols.
-            Symbol::Class(_) => return Vec::new(),
+        let (fw_db, project, symbol) = match params.symbol {
+            Symbol::File(file) => {
+                let Some(fw_db) =
+                    crate::framework_db::framework_db_for_file(ctx.db.clone(), file, &ctx.cancel)
+                else {
+                    return Vec::new();
+                };
+
+                let project = fw_db.project_of_file(file);
+                (fw_db, project, FrameworkSymbol::File(file))
+            }
+            Symbol::Class(class) => {
+                // `framework_db_for_file` needs a file to anchor a root-scoped framework DB. For
+                // class-based navigation we don't have that information, so we attempt a
+                // best-effort fallback: pick any file known to the host DB, build a framework DB
+                // from it, then (if possible) re-anchor on a file returned by `all_files`.
+                //
+                // Limitation: the `ClassId` namespace used by `nova-ext` is not guaranteed to match
+                // the best-effort class ids produced by `framework_db`, so class navigation may
+                // return empty even when analyzers support it.
+                let seed_file = match ctx.db.all_file_ids().into_iter().next() {
+                    Some(file) => file,
+                    None => return Vec::new(),
+                };
+
+                let Some(seed_db) = crate::framework_db::framework_db_for_file(
+                    ctx.db.clone(),
+                    seed_file,
+                    &ctx.cancel,
+                ) else {
+                    return Vec::new();
+                };
+
+                let seed_project = seed_db.project_of_file(seed_file);
+                if !self.analyzer.applies_to(seed_db.as_ref(), seed_project) {
+                    return Vec::new();
+                }
+
+                let anchor_file = seed_db
+                    .all_files(seed_project)
+                    .into_iter()
+                    .next()
+                    .unwrap_or(seed_file);
+
+                let Some(fw_db) = crate::framework_db::framework_db_for_file(
+                    ctx.db.clone(),
+                    anchor_file,
+                    &ctx.cancel,
+                ) else {
+                    return Vec::new();
+                };
+
+                let project = fw_db.project_of_file(anchor_file);
+                // Avoid panics in analyzers that call `db.class(class)` by checking the class id is
+                // present in this root-scoped DB's class set.
+                if !fw_db.all_classes(project).contains(&class) {
+                    return Vec::new();
+                }
+
+                (fw_db, project, FrameworkSymbol::Class(class))
+            }
         };
 
-        let Some(fw_db) =
-            crate::framework_db::framework_db_for_file(ctx.db.clone(), file, &ctx.cancel)
-        else {
-            return Vec::new();
-        };
-
-        let project = fw_db.project_of_file(file);
         if !self.analyzer.applies_to(fw_db.as_ref(), project) {
             return Vec::new();
         }
-
-        let symbol = match params.symbol {
-            Symbol::File(file) => FrameworkSymbol::File(file),
-            Symbol::Class(class) => FrameworkSymbol::Class(class),
-        };
 
         self.analyzer
             .navigation_with_cancel(fw_db.as_ref(), &symbol, &ctx.cancel)
