@@ -1593,6 +1593,10 @@ Notes:
   - This override is read at process start; a server restart is required for changes to take effect.
   - This only affects **async multi-token** AI completions; standard (non-AI) completions returned
     from `textDocument/completion` are unaffected.
+  - When enabled, this value influences both:
+    - how many suggestions the server asks the AI provider to generate, and
+    - the final number of AI completion items returned (items are validated/deduped and then
+      truncated to the max).
   - VS Code note: the Nova VS Code extension surfaces `nova.aiCompletions.maxItems` by setting this
     env var when starting `nova-lsp` and prompts for a server restart when it changes.
 - Other server-side env var overrides that can disable AI completions entirely:
