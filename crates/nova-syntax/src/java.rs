@@ -2541,7 +2541,34 @@ impl Lowerer {
             callee
         });
 
-        let mut callee = if let Some(expr) = callee_node.as_ref() {
+        // The parser represents `<T>m(...)` (explicit generic invocation with no receiver) as a
+        // `FieldAccessExpression` without a receiver expression. That shape is convenient for
+        // syntax accessors (it preserves the `TypeArguments`), but semantically it's an unqualified
+        // method name and should behave like `m(...)` for name resolution/type checking.
+        let callee_is_unqualified_explicit_generic = callee_node.as_ref().is_some_and(|callee| {
+            callee.kind() == SyntaxKind::FieldAccessExpression
+                && !callee.children().any(|child| is_expression_kind(child.kind()))
+        });
+
+        let mut callee = if callee_is_unqualified_explicit_generic {
+            callee_node
+                .as_ref()
+                .and_then(|callee| {
+                    callee
+                        .descendants_with_tokens()
+                        .filter_map(|el| el.into_token())
+                        .filter(|tok| tok.kind().is_identifier_like())
+                        .last()
+                })
+                .or_else(|| name_token.clone())
+                .map(|tok| {
+                    ast::Expr::Name(ast::NameExpr {
+                        name: tok.text().to_string(),
+                        range: self.spans.map_token(&tok),
+                    })
+                })
+                .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)))
+        } else if let Some(expr) = callee_node.as_ref() {
             self.lower_expr(expr)
         } else if let Some(tok) = name_token.as_ref() {
             // `MethodCallExpression` nodes don't always contain the callee as a child expression

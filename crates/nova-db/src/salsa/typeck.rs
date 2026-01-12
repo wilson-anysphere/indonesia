@@ -7712,12 +7712,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::Ambiguous(amb) => {
-                                self.diagnostics.push(self.ambiguous_call_diag(
-                                    env_ro,
-                                    name.as_str(),
-                                    &amb.candidates,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.ambiguous_call_diag(
+                                        env_ro,
+                                        name.as_str(),
+                                        &amb.candidates,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 if let Some(first) = amb.candidates.first() {
                                     self.call_resolutions[expr.idx()] = Some(first.clone());
                                     apply_arg_targets(self, loader, first);
@@ -7733,11 +7735,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::NotFound(not_found) => {
-                                self.diagnostics.push(self.unresolved_method_diag(
-                                    env_ro,
-                                    &not_found,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.unresolved_method_diag(
+                                        env_ro,
+                                        &not_found,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 ExprInfo {
                                     ty: Type::Error,
                                     is_type_ref: false,
