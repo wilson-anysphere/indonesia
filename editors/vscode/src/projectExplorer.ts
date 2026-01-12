@@ -3,53 +3,18 @@ import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { formatError } from './safeMode';
-import { ProjectModelCache, type ProjectConfigurationResponse } from './projectModelCache';
+import {
+  ProjectModelCache,
+  type JavaLanguageLevel,
+  type ProjectConfigurationResponse,
+  type ProjectModelResult,
+  type ProjectModelUnit,
+} from './projectModelCache';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 export type NovaProjectExplorerController = { refresh(): void };
 
-type BuildSystemKind = 'maven' | 'gradle' | 'bazel' | 'simple';
-
-interface JavaLanguageLevel {
-  source: string;
-  target: string;
-  release: string | null;
-}
-
-interface BaseProjectModelUnit {
-  kind: BuildSystemKind;
-  compileClasspath: string[];
-  modulePath: string[];
-  sourceRoots: string[];
-  languageLevel: JavaLanguageLevel;
-}
-
-interface MavenProjectModelUnit extends BaseProjectModelUnit {
-  kind: 'maven';
-  module: string;
-}
-
-interface GradleProjectModelUnit extends BaseProjectModelUnit {
-  kind: 'gradle';
-  projectPath: string;
-}
-
-interface BazelProjectModelUnit extends BaseProjectModelUnit {
-  kind: 'bazel';
-  target: string;
-}
-
-interface SimpleProjectModelUnit extends BaseProjectModelUnit {
-  kind: 'simple';
-  module: string;
-}
-
-type ProjectModelUnit = MavenProjectModelUnit | GradleProjectModelUnit | BazelProjectModelUnit | SimpleProjectModelUnit;
-
-interface ProjectModelResult {
-  projectRoot: string;
-  units: ProjectModelUnit[];
-}
+type BuildSystemKind = ProjectModelUnit['kind'];
 
 type ListKind = 'sourceRoots' | 'classpath' | 'modulePath';
 
@@ -285,7 +250,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         }
 
         const snapshot = this.cache.peekProjectModel(workspace);
-        const model = snapshot.value as unknown as ProjectModelResult | undefined;
+        const model = snapshot.value;
 
         if (!model) {
           if (snapshot.inFlight) {
