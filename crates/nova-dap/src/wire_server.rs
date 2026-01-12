@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::IpAddr,
     path::PathBuf,
     process::Stdio,
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    net::TcpListener,
+    net::{lookup_host, TcpListener},
     process::{Child, Command},
     sync::{broadcast, mpsc, watch, Mutex},
     task::JoinSet,
@@ -655,9 +655,24 @@ async fn handle_request_inner(
                         return;
                     };
 
+                    let port = args.port.unwrap_or(5005);
                     let host = args.host.as_deref().unwrap_or("127.0.0.1");
-                    let host: IpAddr = match host.parse() {
-                        Ok(host) => host,
+                    let host_label = host.to_string();
+                    let resolved_hosts = match resolve_host_candidates(host, port).await {
+                        Ok(hosts) if !hosts.is_empty() => hosts,
+                        Ok(_) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!(
+                                    "failed to resolve host {host_label:?}: no addresses found"
+                                )),
+                            );
+                            return;
+                        }
                         Err(err) => {
                             send_response(
                                 out_tx,
@@ -665,12 +680,16 @@ async fn handle_request_inner(
                                 request,
                                 false,
                                 None,
-                                Some(format!("invalid host {host:?}: {err}")),
+                                Some(format!("invalid host {host_label:?}: {err}")),
                             );
                             return;
                         }
                     };
-                    let port = args.port.unwrap_or(5005);
+
+                    // Prefer IPv4 when available (e.g. `localhost` resolving to `::1` before
+                    // `127.0.0.1`), since some debug targets (and our mock JDWP server) bind only to
+                    // IPv4.
+                    let host = resolved_hosts[0];
 
                     let mut cmd = Command::new(command);
                     cmd.args(&args.args);
@@ -1057,6 +1076,7 @@ async fn handle_request_inner(
                 .get("host")
                 .and_then(|v| v.as_str())
                 .unwrap_or("127.0.0.1");
+            let host_label = host.to_string();
             let Some(port) = request.arguments.get("port").and_then(|v| v.as_u64()) else {
                 send_response(
                     out_tx,
@@ -1082,8 +1102,19 @@ async fn handle_request_inner(
                     return;
                 }
             };
-            let host: IpAddr = match host.parse() {
-                Ok(host) => host,
+            let resolved_hosts = match resolve_host_candidates(host, port).await {
+                Ok(hosts) if !hosts.is_empty() => hosts,
+                Ok(_) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("failed to resolve host {host_label:?}: no addresses found")),
+                    );
+                    return;
+                }
                 Err(err) => {
                     send_response(
                         out_tx,
@@ -1091,7 +1122,7 @@ async fn handle_request_inner(
                         request,
                         false,
                         None,
-                        Some(format!("invalid host {host:?}: {err}")),
+                        Some(format!("invalid host {host_label:?}: {err}")),
                     );
                     return;
                 }
@@ -1122,18 +1153,34 @@ async fn handle_request_inner(
                 };
             let project_root = parse_project_root(&request.arguments);
 
-            let dbg = match Debugger::attach(AttachArgs {
-                host,
-                port,
-                source_roots,
-            })
-            .await
-            {
-                Ok(dbg) => dbg,
-                Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
-                    return;
+            let mut last_err: Option<DebuggerError> = None;
+            let mut dbg: Option<Debugger> = None;
+            for host in resolved_hosts {
+                match Debugger::attach(AttachArgs {
+                    host,
+                    port,
+                    source_roots: source_roots.clone(),
+                })
+                .await
+                {
+                    Ok(attached) => {
+                        dbg = Some(attached);
+                        break;
+                    }
+                    Err(err) => {
+                        last_err = Some(err);
+                    }
                 }
+            }
+
+            let Some(dbg) = dbg else {
+                let msg = last_err
+                    .map(|err| format!("failed to attach to {host_label}:{port}: {err}"))
+                    .unwrap_or_else(|| {
+                        format!("failed to attach to {host_label}:{port}: no addresses resolved")
+                    });
+                send_response(out_tx, seq, request, false, None, Some(msg));
+                return;
             };
 
             {
@@ -3367,6 +3414,21 @@ fn join_classpath(classpath: &Classpath) -> std::result::Result<std::ffi::OsStri
         .map(std::ffi::OsString::from)
         .collect();
     std::env::join_paths(parts.iter()).map_err(|err| format!("launch.classpath is invalid: {err}"))
+}
+
+async fn resolve_host_candidates(host: &str, port: u16) -> std::io::Result<Vec<IpAddr>> {
+    if let Ok(host) = host.parse::<IpAddr>() {
+        return Ok(vec![host]);
+    }
+
+    let addrs = lookup_host((host, port)).await?;
+    let mut unique = BTreeSet::new();
+    for addr in addrs {
+        unique.insert(addr.ip());
+    }
+
+    // `IpAddr` sorts IPv4 before IPv6, which ensures `localhost` prefers `127.0.0.1` over `::1`.
+    Ok(unique.into_iter().collect())
 }
 
 async fn pick_free_port() -> std::io::Result<u16> {
