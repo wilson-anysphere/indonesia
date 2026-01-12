@@ -344,6 +344,7 @@ impl WorkspaceEngine {
 
         let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
         query_db.register_salsa_memo_evictor(&memory);
+        query_db.register_salsa_cancellation_on_memory_pressure(&memory);
         query_db.attach_item_tree_store(&memory, open_docs);
         query_db.set_syntax_tree_store(syntax_trees);
 
@@ -2680,6 +2681,8 @@ mod tests {
             memory: memory.clone(),
         });
 
+        // `MemoryCategory::Other` contains multiple components (e.g. salsa input tracking),
+        // so use the detailed report to validate the overlay tracker specifically.
         fn overlay_bytes(memory: &MemoryManager) -> u64 {
             let (_report, components) = memory.report_detailed();
             components

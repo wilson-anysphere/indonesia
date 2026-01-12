@@ -998,6 +998,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             inner: self.db.clone(),
             inputs: self.inputs.clone(),
             memo_evictor: Arc::new(OnceLock::new()),
+            cancellation_on_memory_pressure: Arc::new(OnceLock::new()),
             memo_footprint: self.footprint.clone(),
             input_footprint: Arc::new(SalsaInputFootprint::default()),
             jdk_index_tracker: Arc::new(InputIndexTracker::new("jdk_index")),
@@ -1096,6 +1097,7 @@ pub struct Database {
     inner: Arc<ParkingMutex<RootDatabase>>,
     inputs: Arc<ParkingMutex<SalsaInputs>>,
     memo_evictor: Arc<OnceLock<Arc<SalsaMemoEvictor>>>,
+    cancellation_on_memory_pressure: Arc<OnceLock<()>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
     input_footprint: Arc<SalsaInputFootprint>,
     jdk_index_tracker: Arc<InputIndexTracker>,
@@ -1121,6 +1123,7 @@ impl Default for Database {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
+            cancellation_on_memory_pressure: Arc::new(OnceLock::new()),
             memo_footprint,
             input_footprint,
             jdk_index_tracker,
@@ -1242,6 +1245,7 @@ impl Database {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
+            cancellation_on_memory_pressure: Arc::new(OnceLock::new()),
             memo_footprint,
             input_footprint,
             jdk_index_tracker,
@@ -1870,6 +1874,41 @@ impl Database {
         cache.register(manager);
     }
 
+    /// Subscribe to memory pressure events and request Salsa cancellation when the
+    /// process enters `High` or `Critical` pressure.
+    ///
+    /// This is best-effort and deliberately avoids deadlocking if memory
+    /// enforcement is invoked while holding the database write lock: we only
+    /// request cancellation if we can acquire the lock without blocking.
+    pub fn register_salsa_cancellation_on_memory_pressure(&self, manager: &MemoryManager) {
+        // Only subscribe once per database instance to avoid accumulating duplicate listeners.
+        if self.cancellation_on_memory_pressure.set(()).is_err() {
+            return;
+        }
+
+        let db = Arc::downgrade(&self.inner);
+        manager.subscribe(Arc::new(move |event: nova_memory::MemoryEvent| {
+            // Only cancel on rising pressure into High/Critical.
+            if !matches!(event.pressure, MemoryPressure::High | MemoryPressure::Critical) {
+                return;
+            }
+            if event.pressure <= event.previous_pressure {
+                return;
+            }
+
+            let Some(db) = db.upgrade() else {
+                return;
+            };
+
+            // Avoid blocking in the listener: the current thread may already be holding
+            // the DB lock (e.g. if enforcement is called while writing inputs), in
+            // which case blocking would deadlock.
+            if let Some(mut guard) = db.try_lock() {
+                guard.request_cancellation();
+            };
+        }));
+    }
+
     pub fn persist_project_indexes(
         &self,
         project: ProjectId,
@@ -2170,7 +2209,7 @@ mod tests {
     use super::*;
     use nova_cache::{CacheConfig, Fingerprint};
     use nova_hir::hir::{Body, Expr, ExprId};
-    use nova_memory::{MemoryBudget, MemoryPressure};
+    use nova_memory::{MemoryBudget, MemoryCategory, MemoryPressure, GB};
     use nova_syntax::SyntaxTreeStore;
     use nova_vfs::OpenDocuments;
     use std::collections::BTreeMap;
@@ -2199,6 +2238,82 @@ mod tests {
                 Some(path)
             }
             _ => None,
+        }
+    }
+
+    fn assert_query_is_cancelled_by_memory_pressure<T, F>(
+        manager: MemoryManager,
+        db: Database,
+        run_query: F,
+    ) where
+        T: Send + 'static,
+        F: FnOnce(&Snapshot) -> T + Send + 'static,
+    {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        const ENTER_TIMEOUT: Duration = Duration::from_secs(5);
+        const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+        const HARNESS_TIMEOUT: Duration = Duration::from_secs(10);
+
+        let harness = std::thread::spawn(move || -> Result<(), String> {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let snap = db.snapshot();
+
+            let worker = std::thread::spawn(move || {
+                let _guard =
+                    cancellation::test_support::install_entered_long_running_region_sender(
+                        entered_tx,
+                    );
+                catch_cancelled(|| run_query(&snap))
+            });
+
+            entered_rx.recv_timeout(ENTER_TIMEOUT).map_err(|_| {
+                "query never hit a cancellation checkpoint (missing checkpoint_cancelled?)"
+                    .to_string()
+            })?;
+
+            // Synthesize memory pressure and drive an enforcement pass to emit a MemoryEvent.
+            let budget = manager.budget();
+            let registration = manager.register_tracker("pressure_test", MemoryCategory::Other);
+            registration.tracker().set_bytes(budget.total.saturating_mul(2));
+            manager.enforce();
+
+            let deadline = Instant::now() + CANCEL_TIMEOUT;
+            while !worker.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !worker.is_finished() {
+                return Err(format!(
+                    "query did not unwind with ra_salsa::Cancelled within {CANCEL_TIMEOUT:?} after memory pressure event"
+                ));
+            }
+
+            let result = worker
+                .join()
+                .map_err(|_| "worker thread panicked".to_string())?;
+            if result.is_ok() {
+                return Err(
+                    "expected salsa query to unwind with Cancelled after memory pressure event"
+                        .to_string(),
+                );
+            }
+
+            Ok(())
+        });
+
+        let deadline = Instant::now() + HARNESS_TIMEOUT;
+        while !harness.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            harness.is_finished(),
+            "cancellation harness did not complete within {HARNESS_TIMEOUT:?}"
+        );
+
+        match harness.join().expect("cancellation harness panicked") {
+            Ok(()) => {}
+            Err(message) => panic!("{message}"),
         }
     }
 
@@ -2652,6 +2767,20 @@ class Foo {
         db.set_file_content(file, Arc::new("class Foo {}".to_string()));
 
         assert_query_is_cancelled(db, move |snap| snap.interruptible_work(file, 5_000_000));
+    }
+
+    #[test]
+    fn memory_pressure_event_requests_salsa_cancellation() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(8 * GB));
+        let db = Database::new();
+        db.register_salsa_cancellation_on_memory_pressure(&manager);
+
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "class Foo {}");
+
+        assert_query_is_cancelled_by_memory_pressure(manager, db, move |snap| {
+            snap.interruptible_work(file, 5_000_000)
+        });
     }
 
     #[test]
