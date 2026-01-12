@@ -635,7 +635,9 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
 }
 
 fn is_java_file(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("java")
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
 }
 
 fn looks_like_java_source(text: &str) -> bool {
@@ -649,7 +651,11 @@ fn looks_like_java_source(text: &str) -> bool {
 
 fn is_application_properties(path: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with("application") && path.extension().and_then(|e| e.to_str()) == Some("properties")
+    name.starts_with("application")
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("properties"))
 }
 
 fn is_application_yaml(path: &Path) -> bool {
@@ -657,7 +663,10 @@ fn is_application_yaml(path: &Path) -> bool {
     if !name.starts_with("application") {
         return false;
     }
-    matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some(ext) if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+    )
 }
 
 fn is_application_config_file(path: &Path) -> bool {
