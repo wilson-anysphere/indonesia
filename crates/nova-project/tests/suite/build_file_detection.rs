@@ -76,6 +76,13 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "build/deps.versions.toml",
         "target/deps.versions.toml",
         ".nova/deps.versions.toml",
+        // Ignore common non-source trees even if they contain build-looking markers.
+        "node_modules/build.gradle",
+        ".gradle/build.gradle",
+        "bazel-out/build.gradle",
+        "bazel-bin/build.gradle",
+        "bazel-testlogs/build.gradle",
+        "bazel-out/deps.versions.toml",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
         // Dependency locks must use the `.lockfile` extension.
@@ -131,6 +138,10 @@ fn maven_is_build_file_recognizes_expected_paths() {
         "jvm.config",
         "extensions.xml",
         ".mvn/wrapper/maven.config",
+        // Ignore common non-source trees even if they contain build-looking markers.
+        "node_modules/pom.xml",
+        "target/pom.xml",
+        "bazel-out/pom.xml",
     ];
     for rel in negatives {
         let path = join(root, rel);
