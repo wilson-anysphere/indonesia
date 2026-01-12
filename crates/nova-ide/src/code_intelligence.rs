@@ -3772,6 +3772,46 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
+    // MapStruct `@Mapping(source="...")` / `@Mapping(target="...")` completions inside Java source.
+    if is_java
+        && (text.contains("@Mapper") || text.contains("@Mapping") || text.contains("org.mapstruct"))
+    {
+        if let Some(path) = db.file_path(file) {
+            let root = crate::framework_cache::project_root_for_path(path);
+            if let Ok(items) = nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
+            {
+                if !items.is_empty() {
+                    let items = items
+                        .into_iter()
+                        .map(|item| {
+                            let label = item.label;
+                            let mut out = CompletionItem {
+                                label: label.clone(),
+                                kind: Some(CompletionItemKind::FIELD),
+                                detail: item.detail,
+                                ..Default::default()
+                            };
+
+                            if let Some(span) = item.replace_span {
+                                out.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
+                                    range: Range::new(
+                                        text_index.offset_to_position(span.start),
+                                        text_index.offset_to_position(span.end),
+                                    ),
+                                    new_text: label.clone(),
+                                }));
+                            }
+
+                            out
+                        })
+                        .collect::<Vec<_>>();
+
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+        }
+    }
+
     // Suppress non-framework completions inside string-like literals (strings, text blocks, and
     // char literals). Framework-aware string completion providers
     // (Spring/Micronaut/Quarkus/JPQL) run above and may return early.
