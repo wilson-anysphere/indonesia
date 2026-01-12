@@ -771,6 +771,8 @@ Notes:
 - `line` is **1-based** (matches `nova-framework-web`).
 - `file` is a best-effort relative path when `projectRoot` is provided, but it may be `null` (or
   missing) when the extractor cannot determine a source location.
+  - Current `nova-lsp` behavior: the `file` field is present and set to `null` when unavailable.
+    Clients should still treat a missing `file` field as “unavailable” for forward compatibility.
   - Clients should still display the endpoint, but disable navigation (or show “location
     unavailable”) when `file` is unavailable.
 
