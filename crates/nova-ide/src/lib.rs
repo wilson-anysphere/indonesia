@@ -74,6 +74,7 @@ pub mod micronaut {
 mod dagger_intel;
 mod db;
 mod lombok_intel;
+mod nav_core;
 mod navigation;
 mod nav_resolve;
 mod parse;
