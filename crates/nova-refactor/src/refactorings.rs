@@ -1155,6 +1155,14 @@ pub fn inline_variable(
         }
     }
 
+    // Even "pure" initializers can be order-sensitive because they may throw (NPE/AIOOBE/ClassCast)
+    // at a different time if moved across intervening statements. When we delete the declaration,
+    // require the earliest inlined usage statement to be the immediately following statement in
+    // the same block statement list.
+    if remove_decl && init_is_order_sensitive {
+        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+    }
+
     let mut edits: Vec<TextEdit> = targets
         .into_iter()
         .map(|usage| TextEdit::replace(usage.file, usage.range, init_replacement.clone()))
@@ -3700,10 +3708,12 @@ fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
         .any(|el| matches!(el.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
 }
 
+/// Conservative predicate for whether an initializer expression is "order sensitive".
+///
+/// Even expressions that are otherwise side-effect-free can still be order-sensitive because they
+/// may throw exceptions (e.g. NPE, AIOOBE, ClassCastException). When inlining deletes the
+/// declaration, the initializer can be moved later in the block, changing when (or if) it throws.
 fn initializer_is_order_sensitive(expr: &nova_syntax::SyntaxNode) -> bool {
-    // Order-sensitive expressions (Task 139):
-    // - side effects: calls, `new`, assignments, ++/--
-    // - potentially-throwing: field/array access, casts
     fn node_is_order_sensitive(node: &nova_syntax::SyntaxNode) -> bool {
         matches!(
             node.kind(),
@@ -3713,6 +3723,7 @@ fn initializer_is_order_sensitive(expr: &nova_syntax::SyntaxNode) -> bool {
                 | SyntaxKind::FieldAccessExpression
                 | SyntaxKind::ArrayAccessExpression
                 | SyntaxKind::CastExpression
+                | SyntaxKind::ArrayCreationExpression
         )
     }
 
@@ -3724,6 +3735,7 @@ fn initializer_is_order_sensitive(expr: &nova_syntax::SyntaxNode) -> bool {
         return true;
     }
 
+    // `++`/`--` are always order sensitive.
     expr.descendants_with_tokens()
         .any(|el| matches!(el.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
 }
@@ -3928,6 +3940,54 @@ fn check_side_effectful_inline_order(
     match decl_index.checked_add(1) {
         Some(expected) if expected == earliest => Ok(()),
         _ => Err(RefactorError::InlineSideEffects),
+    }
+}
+
+fn check_order_sensitive_inline_order(
+    root: &nova_syntax::SyntaxNode,
+    decl_stmt: &ast::LocalVariableDeclarationStatement,
+    targets: &[crate::semantic::Reference],
+    decl_file: &FileId,
+) -> Result<(), RefactorError> {
+    let decl_block = decl_stmt
+        .syntax()
+        .parent()
+        .and_then(ast::Block::cast)
+        .ok_or(RefactorError::InlineNotSupported)?;
+    let decl_index = decl_block
+        .statements()
+        .position(|stmt| stmt.syntax() == decl_stmt.syntax())
+        .ok_or(RefactorError::InlineNotSupported)?;
+
+    let mut earliest_usage_index: Option<usize> = None;
+    for target in targets {
+        // The statement-order check only supports analyzing the declaration file.
+        if &target.file != decl_file {
+            return Err(RefactorError::InlineNotSupported);
+        }
+
+        let usage_stmt = find_innermost_statement_containing_range(root, target.range)
+            .ok_or(RefactorError::InlineNotSupported)?;
+        let (usage_block, usage_index) =
+            statement_block_and_index(&usage_stmt).ok_or(RefactorError::InlineNotSupported)?;
+
+        if usage_block.syntax() != decl_block.syntax() {
+            return Err(RefactorError::InlineNotSupported);
+        }
+
+        earliest_usage_index = Some(match earliest_usage_index {
+            Some(existing) => existing.min(usage_index),
+            None => usage_index,
+        });
+    }
+
+    let Some(earliest) = earliest_usage_index else {
+        return Err(RefactorError::InlineNotSupported);
+    };
+
+    match decl_index.checked_add(1) {
+        Some(expected) if expected == earliest => Ok(()),
+        _ => Err(RefactorError::InlineNotSupported),
     }
 }
 #[derive(Clone, Debug)]

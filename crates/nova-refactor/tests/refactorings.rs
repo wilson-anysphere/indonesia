@@ -3954,6 +3954,100 @@ fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializ
 }
 
 #[test]
+fn inline_variable_rejects_array_access_with_intervening_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int[] arr, int i) {
+    int a = arr[i];
+    foo();
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineNotSupported),
+        "expected InlineNotSupported, got {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_allows_array_access_when_usage_is_next_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int[] arr, int i) {
+    int a = arr[i];
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m(int[] arr, int i) {
+    System.out.println(arr[i]);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_rejects_cast_with_intervening_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(Object o) {
+    String s = (String) o;
+    foo();
+    System.out.println(s);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("String s").unwrap() + "String ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at s");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::InlineNotSupported),
+        "expected InlineNotSupported, got {err:?}"
+    );
+}
+
+#[test]
 fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
