@@ -243,6 +243,20 @@ fn extract_vscode_methods(root: &Path) -> anyhow::Result<BTreeSet<String>> {
 
     let mut methods = BTreeSet::new();
     for path in collect_files_with_extension(root, "ts")? {
+        // Avoid false positives from unit tests / fixtures (these often contain placeholder
+        // `nova/*` strings that are not real protocol methods).
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::Normal(p) if p == "__tests__"))
+        {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            if name.ends_with(".test.ts") || name.ends_with(".node-test.ts") {
+                continue;
+            }
+        }
+
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         for method in extract_ts_string_literals(&text) {
@@ -282,7 +296,12 @@ fn extract_ts_string_literals(text: &str) -> Vec<String> {
         }
 
         let literal = &text[start..j];
-        if literal.starts_with("nova/") && literal.len() > "nova/".len() {
+        if literal.starts_with("nova/")
+            && literal.len() > "nova/".len()
+            // Protocol methods never contain whitespace; this filters out human-readable messages
+            // that start with `nova/...`.
+            && !literal.chars().any(|c| c.is_whitespace())
+        {
             out.push(literal.to_string());
         }
 

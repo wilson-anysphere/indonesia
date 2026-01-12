@@ -112,8 +112,17 @@ def extract_vscode_methods() -> set[str]:
     methods: set[str] = set()
     vscode_src = REPO_ROOT / "editors" / "vscode" / "src"
     for path in vscode_src.rglob("*.ts"):
+        # Don't treat test-only strings as protocol methods (these often contain negative/placeholder cases).
+        if (
+            "__tests__" in path.parts
+            or path.name.endswith(".test.ts")
+            or path.name.endswith(".node-test.ts")
+        ):
+            continue
         text = read_text(path)
-        for m in re.findall(r"""['"](nova/[^'"]+)['"]""", text):
+        # Only match plausible method names. This avoids false positives like human-readable
+        # error messages that begin with `nova/...`.
+        for m in re.findall(r"""['"](nova/[A-Za-z0-9_./-]+)['"]""", text):
             if m not in ignore:
                 methods.add(m)
     return methods
