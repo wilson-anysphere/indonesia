@@ -1,5 +1,7 @@
 use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
+mod suite;
+
 /// Differential test harness smoke check.
 ///
 /// These tests are `#[ignore]` by default so the default `cargo test` suite (and `.github/workflows/ci.yml`)

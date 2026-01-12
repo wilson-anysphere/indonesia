@@ -1,0 +1,10 @@
+mod class_members;
+mod java_format;
+mod jls_conversions;
+mod jls_generics;
+mod jls_inference;
+mod lub;
+mod minimal_jdk_subtyping;
+mod overload_resolution;
+mod type_loader;
+mod type_store_upsert;
