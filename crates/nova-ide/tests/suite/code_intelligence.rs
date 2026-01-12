@@ -885,6 +885,81 @@ fn completion_in_module_info_exports_suggests_workspace_package_segment() {
 }
 
 #[test]
+fn completion_in_module_info_body_suggests_directive_snippets() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(module_path, "module my.mod { <|> }", vec![]);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "requires")
+        .expect("expected requires snippet completion");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected requires completion to be a snippet; got {item:#?}"
+    );
+    assert!(
+        item.insert_text
+            .as_deref()
+            .is_some_and(|t| t.contains("requires ${1:module};")),
+        "expected requires snippet to contain placeholder text; got {item:#?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_requires_suggests_modifiers() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(module_path, "module my.mod { requires <|> }", vec![]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"static"),
+        "expected requires completion to suggest `static`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"transitive"),
+        "expected requires completion to suggest `transitive`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_exports_suggests_to_keyword() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(
+        module_path,
+        "module my.mod { exports com.example.api <|> }",
+        vec![],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"to"),
+        "expected exports completion to suggest `to`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_provides_suggests_with_keyword() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(
+        module_path,
+        "module my.mod { provides com.example.Service <|> }",
+        vec![],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"with"),
+        "expected provides completion to suggest `with`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ new Arr<|> } }");
 

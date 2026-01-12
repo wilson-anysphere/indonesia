@@ -1,4 +1,5 @@
 mod framework_harness;
+mod text_fixture;
 
 use std::sync::Arc;
 
