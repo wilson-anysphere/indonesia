@@ -4,10 +4,10 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
-    FileChangeType as LspFileChangeType, Location as LspLocation, Position as LspTypesPosition,
-    Range as LspTypesRange, RenameParams as LspRenameParams, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit, Uri as LspUri,
-    WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
+    DocumentSymbolParams, FileChangeType as LspFileChangeType, Location as LspLocation,
+    Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit,
+    Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
@@ -386,11 +386,12 @@ fn initialize_result_json() -> serde_json::Value {
                 "interFileDependencies": false,
                 "workspaceDiagnostics": false
             },
-             "renameProvider": { "prepareProvider": true },
-             "workspaceSymbolProvider": true,
-             "codeActionProvider": {
-                 "resolveProvider": true,
-                 "codeActionKinds": [
+            "renameProvider": { "prepareProvider": true },
+            "workspaceSymbolProvider": true,
+            "documentSymbolProvider": true,
+            "codeActionProvider": {
+                "resolveProvider": true,
+                "codeActionKinds": [
                     CODE_ACTION_KIND_EXPLAIN,
                     CODE_ACTION_KIND_AI_GENERATE,
                     CODE_ACTION_KIND_AI_TESTS,
@@ -1214,6 +1215,18 @@ fn handle_request_json(
                 return Ok(server_shutting_down_error(id));
             }
             let result = handle_document_diagnostic(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/documentSymbol" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_document_symbol(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -2452,11 +2465,27 @@ fn handle_document_diagnostic(
     }))
 }
 
+fn handle_document_symbol(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: DocumentSymbolParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let symbols = nova_ide::document_symbols(&state.analysis, file_id);
+    serde_json::to_value(symbols).map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CodeLensParams {
     text_document: TextDocumentIdentifier,
-}
+} 
 
 fn handle_code_lens(
     params: serde_json::Value,
