@@ -207,12 +207,16 @@ These must be true once this ADR is implemented:
 
 ### Required tests (regressions)
 
-Add tests that encode these invariants (location TBD, likely under `crates/nova-db`):
+Regression coverage should encode these invariants. **Implementation note (current repo):** tests
+exist under `crates/nova-db/tests/`:
 
 - **Order-independence test:** type-check two bodies in opposite orders and assert that
   `ClassId(java.lang.String)` (and at least one workspace type) is identical in both results.
 - **Multi-file test:** type-check bodies from two different files in the same project and assert that
   shared referenced classes resolve to the same `ClassId`.
+
+See `crates/nova-db/tests/class_id_stability.rs` for representative cases (workspace + external
+classpath types).
 
 ### Migration notes
 
