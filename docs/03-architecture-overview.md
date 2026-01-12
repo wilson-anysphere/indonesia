@@ -452,19 +452,29 @@ User triggers completion at position
 ### Database Trait
 
 ```rust
-/// Core database trait that all queries use
+use std::path::Path;
+
+use nova_db::FileId;
+
+/// In code, Nova’s incremental query engine lives in `crates/nova-db/src/salsa/` as
+/// `nova_db::salsa::RootDatabase` (ADR 0001).
 ///
-/// Note: in this repository Salsa is provided via `ra_ap_salsa` and commonly
-/// imported as `ra_salsa`.
-pub trait NovaDatabase: ra_salsa::Database {
-    /// Access to file system abstraction
-    fn files(&self) -> &dyn FileSystem;
-    
-    /// Access to project configuration
-    fn config(&self) -> &ProjectConfig;
-    
-    /// Access to persistent indexes
-    fn indexes(&self) -> &dyn IndexSystem;
+/// For consumers that only need file text, `nova-db` also exposes a lightweight
+/// trait:
+pub trait Database {
+    fn file_content(&self, file_id: FileId) -> &str;
+
+    fn file_path(&self, _file_id: FileId) -> Option<&Path> {
+        None
+    }
+
+    fn all_file_ids(&self) -> Vec<FileId> {
+        Vec::new()
+    }
+
+    fn file_id(&self, _path: &Path) -> Option<FileId> {
+        None
+    }
 }
 ```
 
@@ -590,13 +600,56 @@ async fn handle_request(&self, request: LspRequest) -> LspResponse {
 ### Extension Interface
 
 ```rust
+use nova_core::ProjectId;
+use nova_framework::{
+    CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
+};
+use nova_types::{ClassId, CompletionItem, Diagnostic};
+use nova_vfs::FileId;
+
 /// Extension point for framework analyzers (see `crates/nova-framework/src/lib.rs`).
 pub trait FrameworkAnalyzer: Send + Sync {
-    /// Required: identify if this analyzer applies to a project.
-    fn applies_to(&self, db: &dyn nova_framework::Database, project: nova_core::ProjectId) -> bool;
+    fn applies_to(&self, db: &dyn nova_framework::Database, project: ProjectId) -> bool;
 
-    /// Optional hooks (default no-ops): analyze_file, diagnostics, completions,
-    /// navigation, virtual_members, inlay_hints.
+    fn analyze_file(
+        &self,
+        _db: &dyn nova_framework::Database,
+        _file: FileId,
+    ) -> Option<FrameworkData> {
+        None
+    }
+
+    fn diagnostics(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+
+    fn completions(
+        &self,
+        _db: &dyn nova_framework::Database,
+        _ctx: &CompletionContext,
+    ) -> Vec<CompletionItem> {
+        Vec::new()
+    }
+
+    fn navigation(
+        &self,
+        _db: &dyn nova_framework::Database,
+        _symbol: &Symbol,
+    ) -> Vec<NavigationTarget> {
+        Vec::new()
+    }
+
+    fn virtual_members(
+        &self,
+        _db: &dyn nova_framework::Database,
+        _class: ClassId,
+    ) -> Vec<VirtualMember> {
+        Vec::new()
+    }
+
+    fn inlay_hints(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<InlayHint> {
+        Vec::new()
+    }
 }
 ```
 

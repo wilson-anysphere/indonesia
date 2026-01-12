@@ -37,6 +37,55 @@ This workstream owns framework-specific intelligence - understanding Spring, Lom
 ### Plugin Interface
 
 ```rust
+use std::path::Path;
+
+use nova_core::ProjectId;
+use nova_framework::{
+    CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
+};
+use nova_hir::framework::ClassData;
+use nova_types::{ClassId, CompletionItem, Diagnostic};
+use nova_vfs::FileId;
+
+/// Query surface a host must provide for `nova-framework` analyzers.
+///
+/// Notes:
+/// - `file_text`, `file_path`, `file_id`, `all_files`, and `all_classes` are *optional* and
+///   default to `None`/empty. Analyzers must degrade gracefully when they are unavailable.
+pub trait Database {
+    fn class(&self, class: ClassId) -> &ClassData;
+    fn project_of_class(&self, class: ClassId) -> ProjectId;
+    fn project_of_file(&self, file: FileId) -> ProjectId;
+
+    fn file_text(&self, _file: FileId) -> Option<&str> {
+        None
+    }
+
+    fn file_path(&self, _file: FileId) -> Option<&Path> {
+        None
+    }
+
+    fn file_id(&self, _path: &Path) -> Option<FileId> {
+        None
+    }
+
+    fn all_files(&self, _project: ProjectId) -> Vec<FileId> {
+        Vec::new()
+    }
+
+    fn all_classes(&self, _project: ProjectId) -> Vec<ClassId> {
+        Vec::new()
+    }
+
+    fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool;
+    fn has_class_on_classpath(&self, project: ProjectId, binary_name: &str) -> bool;
+    fn has_class_on_classpath_prefix(&self, project: ProjectId, prefix: &str) -> bool;
+}
+
+/// Extension point for framework analyzers.
+///
+/// All hooks except `applies_to` are optional (default to no-op) so analyzers can
+/// focus on the behavior they care about (e.g. Lombok implements `virtual_members`).
 pub trait FrameworkAnalyzer: Send + Sync {
     /// Check if this analyzer applies to `project`.
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool;
@@ -185,6 +234,12 @@ List<User> findByName(@Param("name") String name);
 ### Virtual Member Generation
 
 ```rust
+use nova_core::ProjectId;
+use nova_framework::{Database, FrameworkAnalyzer, VirtualMember, VirtualMethod};
+use nova_types::ClassId;
+
+pub struct LombokAnalyzer;
+
 impl FrameworkAnalyzer for LombokAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
         db.has_dependency(project, "org.projectlombok", "lombok")
@@ -192,12 +247,24 @@ impl FrameworkAnalyzer for LombokAnalyzer {
 
     fn virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember> {
         let class_data = db.class(class);
-        if !class_data.has_annotation("Data") {
+        if !class_data.has_annotation("Getter") {
             return Vec::new();
         }
 
-        // Generate `VirtualMember::{Field,Method,Constructor,InnerClass}` values.
-        Vec::new()
+        class_data
+            .fields
+            .iter()
+            .filter(|field| !field.is_static)
+            .map(|field| {
+                VirtualMember::Method(VirtualMethod {
+                    name: format!("get{}", field.name),
+                    return_type: field.ty.clone(),
+                    params: Vec::new(),
+                    is_static: false,
+                    span: class_data.annotation_span("Getter"),
+                })
+            })
+            .collect()
     }
 }
 ```

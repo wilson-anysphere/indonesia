@@ -43,6 +43,133 @@ Modern Java development is dominated by frameworks like Spring, Jakarta EE, and 
 
 ---
 
+## `nova-framework`: shared analyzer API
+
+Framework crates that want to integrate with Nova’s generic “framework hooks” target the API in
+`crates/nova-framework/src/lib.rs`.
+
+It consists of:
+
+- `nova_framework::Database`: minimal query surface a host must provide.
+- `nova_framework::FrameworkAnalyzer`: optional hooks (virtual members, diagnostics, completions, …).
+- `nova_framework::AnalyzerRegistry` (aka `FrameworkRegistry`): runs all applicable analyzers and
+  aggregates their results.
+
+### `nova_framework::Database` (real signature)
+
+```rust
+use std::path::Path;
+
+use nova_core::ProjectId;
+use nova_hir::framework::ClassData;
+use nova_types::ClassId;
+use nova_vfs::FileId;
+
+pub trait Database {
+    fn class(&self, class: ClassId) -> &ClassData;
+    fn project_of_class(&self, class: ClassId) -> ProjectId;
+    fn project_of_file(&self, file: FileId) -> ProjectId;
+
+    fn file_text(&self, _file: FileId) -> Option<&str> {
+        None
+    }
+
+    fn file_path(&self, _file: FileId) -> Option<&Path> {
+        None
+    }
+
+    fn file_id(&self, _path: &Path) -> Option<FileId> {
+        None
+    }
+
+    fn all_files(&self, _project: ProjectId) -> Vec<FileId> {
+        Vec::new()
+    }
+
+    fn all_classes(&self, _project: ProjectId) -> Vec<ClassId> {
+        Vec::new()
+    }
+
+    fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool;
+    fn has_class_on_classpath(&self, project: ProjectId, binary_name: &str) -> bool;
+    fn has_class_on_classpath_prefix(&self, project: ProjectId, prefix: &str) -> bool;
+}
+```
+
+Optional methods (`file_text`, `file_path`, `file_id`, `all_files`, `all_classes`) may be
+unimplemented by a host DB; analyzers should treat `None` / empty vectors as “information not
+available” and skip cross-file scanning or file-text based features.
+
+### `nova_framework::FrameworkAnalyzer` (real signature)
+
+```rust
+use nova_core::ProjectId;
+use nova_framework::{
+    CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
+};
+use nova_types::{ClassId, CompletionItem, Diagnostic};
+use nova_vfs::FileId;
+
+pub trait FrameworkAnalyzer: Send + Sync {
+    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool;
+
+    fn analyze_file(&self, _db: &dyn Database, _file: FileId) -> Option<FrameworkData> {
+        None
+    }
+
+    fn diagnostics(&self, _db: &dyn Database, _file: FileId) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+
+    fn completions(&self, _db: &dyn Database, _ctx: &CompletionContext) -> Vec<CompletionItem> {
+        Vec::new()
+    }
+
+    fn navigation(&self, _db: &dyn Database, _symbol: &Symbol) -> Vec<NavigationTarget> {
+        Vec::new()
+    }
+
+    fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
+        Vec::new()
+    }
+
+    fn inlay_hints(&self, _db: &dyn Database, _file: FileId) -> Vec<InlayHint> {
+        Vec::new()
+    }
+}
+```
+
+### `AnalyzerRegistry` aggregation methods
+
+```rust
+use nova_framework::{
+    AnalyzerRegistry, CompletionContext, Database, FrameworkData, InlayHint, NavigationTarget,
+    Symbol, VirtualMember,
+};
+use nova_types::{ClassId, CompletionItem, Diagnostic};
+use nova_vfs::FileId;
+
+impl AnalyzerRegistry {
+    pub fn framework_data(&self, db: &dyn Database, file: FileId) -> Vec<FrameworkData>;
+    pub fn framework_diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic>;
+    pub fn framework_completions(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+    ) -> Vec<CompletionItem>;
+    pub fn framework_navigation_targets(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+    ) -> Vec<NavigationTarget>;
+    pub fn framework_virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember>;
+    pub fn virtual_members_for_class(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember>;
+    pub fn framework_inlay_hints(&self, db: &dyn Database, file: FileId) -> Vec<InlayHint>;
+}
+```
+
+---
+
 ## Spring Framework Support
 
 ### Bean Model
@@ -74,14 +201,18 @@ Modern Java development is dominated by frameworks like Spring, Jakarta EE, and 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Spring Analyzer Implementation
+### Implementation status in this repo
 
 Spring support ships as a `nova-framework` analyzer (`nova_framework_spring::SpringAnalyzer`) plus
 supporting helpers (config parsing/indexing, DI analysis).
 
-In the IDE, analyzers are executed via a `nova_db::Database` → `nova_framework::Database` adapter
-(`crates/nova-ide/src/framework_db.rs`) and the default `AnalyzerRegistry` registered by `nova-ide`
-(see `crates/nova-ide/src/extensions.rs`). See "Plugin integration constraint" below.
+In the IDE there are currently two integration paths:
+
+- `crates/nova-ide/src/framework_cache.rs` provides cache-backed Spring diagnostics/completions for
+  config files and `@Value("${...}")` placeholders.
+- `crates/nova-ide/src/framework_db.rs` provides a `nova_db::Database` → `nova_framework::Database`
+  adapter so `AnalyzerRegistry`-based analyzers can run in-process (see
+  `FrameworkAnalyzerRegistryProvider` in `crates/nova-ide/src/extensions.rs`).
 
 ---
 
@@ -126,18 +257,40 @@ Lombok is the primary consumer of the `nova_framework::FrameworkAnalyzer::virtua
 - End-to-end IDE wiring example: `crates/nova-ide/src/lombok_intel.rs`
 
 ```rust
+use nova_core::ProjectId;
+use nova_framework::{Database, FrameworkAnalyzer, VirtualMember, VirtualMethod};
+use nova_types::ClassId;
+
 pub struct LombokAnalyzer;
 
 impl FrameworkAnalyzer for LombokAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
         db.has_dependency(project, "org.projectlombok", "lombok")
+            || db.has_class_on_classpath_prefix(project, "lombok.")
+            || db.has_class_on_classpath_prefix(project, "lombok/")
     }
 
     fn virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember> {
         let class_data = db.class(class);
-        let _ = class_data;
-        // Produce `VirtualMember::{Field,Method,Constructor,InnerClass}` values.
-        Vec::new()
+
+        if !class_data.has_annotation("Getter") {
+            return Vec::new();
+        }
+
+        class_data
+            .fields
+            .iter()
+            .filter(|f| !f.is_static)
+            .map(|f| {
+                VirtualMember::Method(VirtualMethod {
+                    name: format!("get{}", f.name),
+                    return_type: f.ty.clone(),
+                    params: Vec::new(),
+                    is_static: false,
+                    span: class_data.annotation_span("Getter"),
+                })
+            })
+            .collect()
     }
 }
 ```
@@ -147,8 +300,11 @@ impl FrameworkAnalyzer for LombokAnalyzer {
 ## Jakarta EE / JPA Support
 
 JPA support is implemented in `crates/nova-framework-jpa` and exposed as a `nova-framework` analyzer
-(`nova_framework_jpa::JpaAnalyzer`) for diagnostics and JPQL completions inside query strings. The
-underlying model is best-effort and mostly text-based.
+(`nova_framework_jpa::JpaAnalyzer`) for diagnostics, JPQL completions inside query strings, and
+per-file `FrameworkData`.
+
+The underlying model is best-effort and mostly text-based: it parses Java sources with
+`nova-syntax`, extracts `@Entity`/relationships, and inspects JPQL strings in annotations.
 
 ---
 
@@ -191,43 +347,50 @@ underlying model is best-effort and mostly text-based.
 
 ---
 
-## Framework Plugin System
+## Integration reality (today)
 
-The `nova-framework` crate provides a minimal plugin API used by resolution and (optionally) the
-IDE.
+The framework-analyzer API (`nova_framework::Database`/`FrameworkAnalyzer`) is intentionally *not*
+the same as Nova’s “file-text database” API (`nova_db::Database`):
 
-### `FrameworkAnalyzer`
+- `nova_db::Database` is centered on `file_content(file_id) -> &str` and optional file-path
+  enumeration.
+- `nova_framework::Database` is centered on `class(ClassId) -> &ClassData` (a class model suitable
+  for virtual-member synthesis) plus project mapping and dependency/classpath checks.
 
-`applies_to` is required; all other hooks are optional and default to no-ops.
+That mismatch means IDE/editor integration typically needs an **adapter**:
+
+- Build or reuse an index of classes (often using `nova-syntax`/HIR).
+- Populate a `nova_framework::MemoryDatabase` (or another `nova_framework::Database`
+  implementation).
+- Run analyzers through `nova_framework::AnalyzerRegistry`.
+
+Concrete example: `crates/nova-ide/src/lombok_intel.rs` builds a best-effort workspace index,
+feeds it into `MemoryDatabase`, and uses the Lombok analyzer to provide framework-backed member
+completion/navigation.
+
+Also note that optional `nova_framework::Database` methods may not be implemented by a host DB:
+
+- `file_text` may return `None`
+- `all_files`/`all_classes` may return empty vectors
+
+Analyzers are expected to degrade gracefully by skipping file-text parsing and cross-file scanning
+when that information is unavailable.
 
 ```rust
-pub trait FrameworkAnalyzer: Send + Sync {
-    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool;
+use nova_framework::{AnalyzerRegistry, MemoryDatabase};
+use nova_framework_lombok::LombokAnalyzer;
+use nova_hir::framework::ClassData;
 
-    fn analyze_file(&self, _db: &dyn Database, _file: FileId) -> Option<FrameworkData> {
-        None
-    }
+let mut db = MemoryDatabase::new();
+let project = db.add_project();
+db.add_dependency(project, "org.projectlombok", "lombok");
 
-    fn diagnostics(&self, _db: &dyn Database, _file: FileId) -> Vec<Diagnostic> {
-        Vec::new()
-    }
+let class = db.add_class(project, ClassData::default());
 
-    fn completions(&self, _db: &dyn Database, _ctx: &CompletionContext) -> Vec<CompletionItem> {
-        Vec::new()
-    }
+let mut registry = AnalyzerRegistry::new();
+registry.register(Box::new(LombokAnalyzer::new()));
 
-    fn navigation(&self, _db: &dyn Database, _symbol: &Symbol) -> Vec<NavigationTarget> {
-        Vec::new()
-    }
-
-    fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
-        Vec::new()
-    }
-
-    fn inlay_hints(&self, _db: &dyn Database, _file: FileId) -> Vec<InlayHint> {
-        Vec::new()
-    }
-}
+let _virtuals = registry.framework_virtual_members(&db, class);
 ```
 
 ### Key data types
