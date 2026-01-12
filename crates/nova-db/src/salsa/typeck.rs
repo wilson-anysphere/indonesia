@@ -2510,6 +2510,23 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     Some(field.ty_range),
                 );
                 extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
+                if resolved.ty == Type::Void {
+                    let diag_span = if field.ty_range.is_empty() {
+                        field.range
+                    } else {
+                        field.ty_range
+                    };
+                    out.push(Diagnostic::error(
+                        "void-variable-type",
+                        "`void` is not a valid type for variables",
+                        Some(diag_span),
+                    ));
+                    out.push(Diagnostic::error(
+                        "invalid-void-type",
+                        "`void` is not a valid type for variables",
+                        Some(diag_span),
+                    ));
+                }
             }
             Member::Method(mid) => {
                 let method = tree.method(mid);
@@ -2594,6 +2611,11 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     if resolved.ty == Type::Void {
                         out.push(Diagnostic::error(
                             "void-parameter-type",
+                            "`void` is not a valid parameter type",
+                            Some(param.ty_range),
+                        ));
+                        out.push(Diagnostic::error(
+                            "invalid-void-type",
                             "`void` is not a valid parameter type",
                             Some(param.ty_range),
                         ));

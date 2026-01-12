@@ -9712,6 +9712,27 @@ class C {
 }
 
 #[test]
+fn void_record_component_type_is_error() {
+    let src = r#"
+record R(void x) {
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "void-variable-type"),
+        "expected void-variable-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-void-type"),
+        "expected invalid-void-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn void_parameter_type_is_error() {
     let src = r#"
 class C {
@@ -9748,6 +9769,10 @@ interface I {
             .iter()
             .any(|d| d.code.as_ref() == "void-parameter-type"),
         "expected void-parameter-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-void-type"),
+        "expected invalid-void-type diagnostic; got {diags:?}"
     );
 }
 
