@@ -1833,6 +1833,7 @@ fn parse_gradle_local_classpath_entries_from_text(
     static FILES_RE: OnceLock<Regex> = OnceLock::new();
     static FILE_TREE_DIR_RE: OnceLock<Regex> = OnceLock::new();
     static FILE_TREE_POSITIONAL_RE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TREE_MAP_RE: OnceLock<Regex> = OnceLock::new();
 
     // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
     // parseable without a real Groovy/Kotlin parser. We rely on "exists on disk" checks to
@@ -1845,6 +1846,14 @@ fn parse_gradle_local_classpath_entries_from_text(
     });
     let file_tree_positional_re = FILE_TREE_POSITIONAL_RE.get_or_init(|| {
         Regex::new(r#"(?s)\bfileTree\s*\(\s*['"](?P<dir>[^'"]+)['"]"#).expect("valid regex")
+    });
+    let file_tree_map_re = FILE_TREE_MAP_RE.get_or_init(|| {
+        // Kotlin DSL also supports `fileTree(mapOf("dir" to "libs", ...))` style configuration.
+        // We only extract the `"dir" to "..."` value and then add all `*.jar` entries under it.
+        Regex::new(
+            r#"(?s)\bfileTree\s*\(\s*mapOf\s*\(\s*.*?['"]dir['"]\s*to\s*(?:file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#,
+        )
+        .expect("valid regex")
     });
 
     let mut out = Vec::new();
@@ -1928,6 +1937,12 @@ fn parse_gradle_local_classpath_entries_from_text(
     }
 
     for caps in file_tree_positional_re.captures_iter(contents) {
+        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
+            add_file_tree_dir(dir);
+        }
+    }
+
+    for caps in file_tree_map_re.captures_iter(contents) {
         if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
             add_file_tree_dir(dir);
         }

@@ -650,6 +650,18 @@ fn loads_gradle_local_jar_dependencies_kotlin_dsl_filetree() {
         }),
         "expected Kotlin DSL fileTree(\"libs\") to contribute jars on the resolved classpath"
     );
+
+    assert!(
+        config.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&config.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("other-libs/map-only.jar"))
+        }),
+        "expected Kotlin DSL fileTree(mapOf(\"dir\" to ...)) to contribute jars on the resolved classpath"
+    );
 }
 
 #[test]
@@ -1181,6 +1193,18 @@ fn loads_gradle_local_jar_dependencies_kotlin_dsl_filetree_into_workspace_model(
                     .is_some_and(|p| p == std::path::Path::new("libs/tree-only.jar"))
         }),
         "expected Kotlin DSL fileTree(\"libs\") to contribute jars on the module classpath"
+    );
+
+    assert!(
+        root_module.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&model.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("other-libs/map-only.jar"))
+        }),
+        "expected Kotlin DSL fileTree(mapOf(\"dir\" to ...)) to contribute jars on the module classpath"
     );
 }
 
