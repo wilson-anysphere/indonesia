@@ -42,10 +42,16 @@ bash scripts/cargo_agent.sh run -p nova-dap -- --version
 
 ```bash
 # CI-equivalent default suite (fast, no network)
-cargo test
+# Install nextest first if needed: cargo install cargo-nextest --locked
+cargo nextest run --workspace --profile ci
+
+# Nextest does not run doctests; CI runs these separately.
+cargo test --workspace --doc
 
 # Exercise feature-gated code paths (slower, enables all optional integrations)
-cargo test --workspace --all-features
+cargo nextest run --workspace --profile ci --all-features
+# or:
+# cargo test --workspace --all-features
 ```
 
 More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives in:
