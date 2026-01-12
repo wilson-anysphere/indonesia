@@ -67,6 +67,25 @@ fn type_store_clone_preserves_ids_and_is_independent() {
         cloned.well_known().serializable
     );
 
+    // `well_known` ids should still point at the expected class definitions in both stores.
+    let wk = store.well_known().clone();
+    for (id, expected_name) in [
+        (wk.object, "java.lang.Object"),
+        (wk.string, "java.lang.String"),
+        (wk.integer, "java.lang.Integer"),
+        (wk.cloneable, "java.lang.Cloneable"),
+        (wk.serializable, "java.io.Serializable"),
+    ] {
+        assert_eq!(
+            store.class(id).expect("well-known class missing").name,
+            expected_name
+        );
+        assert_eq!(
+            cloned.class(id).expect("well-known class missing in clone").name,
+            expected_name
+        );
+    }
+
     // `type_params` should be preserved (these are populated by `with_minimal_jdk`).
     assert_eq!(store.type_param_count(), cloned.type_param_count());
     for idx in 0..store.type_param_count() {
@@ -117,4 +136,3 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     assert_eq!(cloned.lookup_class("com.example.Foo"), Some(foo_id));
     assert_eq!(cloned.class(foo_id).unwrap().methods[0].name, "foo");
 }
-
