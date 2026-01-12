@@ -44,6 +44,9 @@ jobs:
       - name: Run javac smoke tests
         run: cargo test --locked -p nova-types --test harness javac_differential -- --ignored
 
+      - name: Run javac refactor tests
+        run: cargo test --locked -p nova-refactor --test javac_refactors -- --ignored
+
       - name: Cargo.lock unchanged
         shell: bash
         run: |
