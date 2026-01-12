@@ -170,6 +170,63 @@ class C { void m(String[] arr){ for (int x : arr) {} } }
 }
 
 #[test]
+fn compound_assign_allows_narrowing_like_javac() {
+    let src = r#"
+class C {
+    void m() {
+        byte b = 0;
+        b += 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn compound_assign_rejects_non_numeric() {
+    let src = r#"
+class C {
+    void m() {
+        boolean b = true;
+        b += 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected a diagnostic for invalid compound assignment; got {diags:?}"
+    );
+}
+
+#[test]
+fn inc_requires_numeric() {
+    let src = r#"
+class C {
+    void m() {
+        boolean b = true;
+        b++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-inc-dec"),
+        "expected invalid-inc-dec diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_condition_not_boolean_for_if() {
     let src = r#"
 class C {
