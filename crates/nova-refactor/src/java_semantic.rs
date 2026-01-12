@@ -5809,11 +5809,6 @@ fn collect_switch_contexts(
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
             }
-            hir::Stmt::Yield { expr, .. } => {
-                if let Some(expr) = expr {
-                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
-                }
-            }
             hir::Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
@@ -7217,21 +7212,6 @@ fn record_lightweight_stmt(
                 );
             }
         }
-        Stmt::Yield(stmt) => {
-            if let Some(expr) = &stmt.expr {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    expr,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Block(block) => record_lightweight_block(
             file,
             text,
@@ -7832,30 +7812,6 @@ fn record_lightweight_expr(
                 file,
                 text,
                 &expr.else_expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
-        Expr::Cast(expr) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(expr.ty.range.start, expr.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &expr.expr,
                 type_scopes,
                 scope_result,
                 resolver,

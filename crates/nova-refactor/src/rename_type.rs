@@ -683,14 +683,6 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt)
                 }
             },
-            Expr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
-                visit_expr(body, *selector, offset, best_expr, best_stmt);
-                visit_stmt(body, *switch_body, offset, best_expr, best_stmt);
-            }
             Expr::Invalid { children, .. } => {
                 for child in children {
                     visit_expr(body, *child, offset, best_expr, best_stmt);
