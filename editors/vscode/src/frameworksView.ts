@@ -11,6 +11,8 @@ import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNaviga
 import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
+
+const NOT_SUPPORTED_MESSAGE = 'Not supported by this Nova version';
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
@@ -340,6 +342,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   private async loadCategoryChildren(element: CategoryNode): Promise<FrameworkNode[]> {
+    if (!isFrameworkCategorySupported(element)) {
+      return [messageNode(NOT_SUPPORTED_MESSAGE, undefined, new vscode.ThemeIcon('warning'))];
+    }
+
     switch (element.category) {
       case 'web-endpoints':
         return await this.loadWebEndpoints(element);
@@ -507,6 +513,23 @@ function categoryNodesForWorkspace(workspaceFolder: vscode.WorkspaceFolder): Cat
   ];
 }
 
+function isFrameworkCategorySupported(element: CategoryNode): boolean {
+  const workspaceKey = element.workspaceFolder.uri.toString();
+  switch (element.category) {
+    case 'web-endpoints': {
+      const web = isNovaRequestSupported(workspaceKey, 'nova/web/endpoints');
+      const alias = isNovaRequestSupported(workspaceKey, 'nova/quarkus/endpoints');
+      // Only treat the category as unsupported when the server has explicitly advertised that it
+      // does not support both the canonical method and the legacy alias.
+      return !(web === false && alias === false);
+    }
+    case 'micronaut-endpoints':
+      return isNovaRequestSupported(workspaceKey, 'nova/micronaut/endpoints') !== false;
+    case 'micronaut-beans':
+      return isNovaRequestSupported(workspaceKey, 'nova/micronaut/beans') !== false;
+  }
+}
+
 function categoryLabel(category: FrameworkCategory): string {
   switch (category) {
     case 'web-endpoints':
@@ -534,7 +557,7 @@ function messageNode(label: string, description?: string, icon: vscode.ThemeIcon
 }
 
 function unsupportedMethodNode(method: string): MessageNode {
-  return messageNode('Not supported by this server.', method, new vscode.ThemeIcon('warning'));
+  return messageNode(NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
 }
 
 function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
