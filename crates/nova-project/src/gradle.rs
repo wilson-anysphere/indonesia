@@ -2911,13 +2911,11 @@ fn parse_gradle_version_catalog_library(
                             resolve_gradle_properties_placeholder(v, gradle_properties)
                                 .unwrap_or_else(|| v.to_string()),
                         )
-                    } else if let Some(v) = version_table.get("prefer").and_then(Value::as_str) {
-                        Some(
-                            resolve_gradle_properties_placeholder(v, gradle_properties)
-                                .unwrap_or_else(|| v.to_string()),
-                        )
                     } else {
-                        None
+                        version_table.get("prefer").and_then(Value::as_str).map(|v| {
+                            resolve_gradle_properties_placeholder(v, gradle_properties)
+                                .unwrap_or_else(|| v.to_string())
+                        })
                     }
                 }
                 _ => None,
