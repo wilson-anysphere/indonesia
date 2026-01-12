@@ -218,6 +218,15 @@ fn subsequence_score_alloc(query: &[u8], candidate: &[u8]) -> Option<i32> {
 }
 
 #[cfg(feature = "unicode")]
+/// Unicode-aware scoring helpers.
+///
+/// Invariants / semantics:
+/// - Inputs are normalized with NFKC and then Unicode case folded before matching.
+/// - Matching operates on extended grapheme clusters (as produced by
+///   `unicode_segmentation::UnicodeSegmentation::grapheme_indices(true)`), not on
+///   UTF-8 bytes or scalar values.
+/// - The public APIs keep an ASCII fast path; this module is only used when either
+///   the query or candidate contains non-ASCII.
 mod unicode_impl {
     use super::MIN_SCORE;
     use unicode_casefold::UnicodeCaseFold;

@@ -129,6 +129,14 @@ fn trigrams(text: &str, out: &mut Vec<Trigram>) {
 }
 
 #[cfg(feature = "unicode")]
+/// Unicode-aware trigram extraction.
+///
+/// This function mirrors the scorer's Unicode preprocessing:
+/// - For non-ASCII text, it applies NFKC normalization and Unicode case folding.
+/// - If the folded result is ASCII, it keeps the packed 3-byte trigram representation.
+/// - Otherwise it produces trigrams over Unicode scalar values (`char`) and hashes any
+///   non-ASCII trigram into a `u32` (with the high bit set so hashed trigrams never
+///   collide with packed ASCII trigrams).
 fn trigrams_with_unicode_buf(text: &str, out: &mut Vec<Trigram>, buf: &mut String) {
     // Fast path: preserve the existing packed-3-byte trigram behavior for ASCII.
     if text.is_ascii() {
