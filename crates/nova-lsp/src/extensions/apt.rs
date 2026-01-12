@@ -134,7 +134,10 @@ pub fn handle_generated_sources(
         super::build_manager_for_root_with_cancel(&root, Duration::from_secs(60), Some(cancel));
     let (project, config) = load_project_with_workspace_config(&root)?;
     let mut apt = AptManager::new(project, config);
-    let mut status = apt.status_with_build(&build).map_err(map_io_error)?;
+    let mut status_guard = BuildStatusGuard::new(&root);
+    let status_result: Result<_> = apt.status_with_build(&build).map_err(map_io_error);
+    status_guard.finish_from_result(&status_result);
+    let mut status = status_result?;
 
     if let Some(module_root) = selected_module_root(apt.project(), &params) {
         status
