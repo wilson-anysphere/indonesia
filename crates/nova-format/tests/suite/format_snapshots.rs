@@ -676,6 +676,7 @@ fn ast_formatting_is_idempotent_on_selected_fixtures() {
         include_str!("../fixtures/wildcards_and_varargs.java"),
         include_str!("../fixtures/qualified_generics.java"),
         include_str!("../fixtures/diamond_operator.java"),
+        include_str!("../fixtures/string_templates.java"),
     ];
 
     for fixture in fixtures {

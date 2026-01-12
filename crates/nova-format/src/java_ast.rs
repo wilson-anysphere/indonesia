@@ -658,7 +658,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
-            _ if text == "{" => {
+            SyntaxKind::LBrace => {
                 self.write_indent(out);
                 if needs_space_before(self.last_sig.as_ref(), text) {
                     self.ensure_space(out);
@@ -670,7 +670,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = None;
                 self.pending_for = false;
             }
-            _ if text == "}" => {
+            SyntaxKind::RBrace => {
                 self.indent_level = self.indent_level.saturating_sub(1);
                 self.ensure_newline(out);
                 self.write_indent(out);
@@ -719,7 +719,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
-            _ if text == ";" => {
+            SyntaxKind::Semicolon => {
                 self.write_indent(out);
                 out.push(';');
 
@@ -755,7 +755,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
-            _ if text == "," => {
+            SyntaxKind::Comma => {
                 self.write_indent(out);
                 out.push(',');
                 if next.is_some()
@@ -771,7 +771,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
-            _ if text == "(" => {
+            SyntaxKind::LParen => {
                 self.write_indent(out);
                 if needs_space_before(self.last_sig.as_ref(), text) {
                     self.ensure_space(out);
@@ -789,7 +789,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_sig = Some(sig.clone());
                 self.last_code_sig = Some(sig);
             }
-            _ if text == ")" => {
+            SyntaxKind::RParen => {
                 self.write_indent(out);
                 out.push(')');
                 if let Some(depth) = self.for_paren_depth {
@@ -806,7 +806,7 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
-            _ if text == "for" => {
+            SyntaxKind::ForKw => {
                 self.write_indent(out);
                 if needs_space_between(self.last_sig.as_ref(), kind, text) {
                     self.ensure_space(out);
