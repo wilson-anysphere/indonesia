@@ -769,16 +769,167 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
             .expression()
             .map(|inner| infer_expr_type(&inner))
             .unwrap_or_else(|| "Object".to_string()),
+        ast::Expression::InstanceofExpression(_) => "boolean".to_string(),
+        ast::Expression::UnaryExpression(unary) => infer_type_from_unary_expr(unary),
+        ast::Expression::BinaryExpression(binary) => infer_type_from_binary_expr(binary),
         ast::Expression::ThisExpression(_)
         | ast::Expression::SuperExpression(_)
         | ast::Expression::NameExpression(_)
         | ast::Expression::ArrayInitializer(_) => "Object".to_string(),
-        ast::Expression::BinaryExpression(_) | ast::Expression::UnaryExpression(_) => {
-            if expr_contains_string_literal(expr) {
-                "String".to_string()
-            } else {
-                "int".to_string()
+        _ => "Object".to_string(),
+    }
+}
+
+fn first_non_trivia_child_token_kind(node: &nova_syntax::SyntaxNode) -> Option<SyntaxKind> {
+    node.children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+        .map(|tok| tok.kind())
+}
+
+fn numeric_rank(ty: &str) -> Option<u8> {
+    match ty {
+        "double" => Some(4),
+        "float" => Some(3),
+        "long" => Some(2),
+        "int" | "char" => Some(1),
+        _ => None,
+    }
+}
+
+fn numeric_type_for_rank(rank: u8) -> &'static str {
+    match rank {
+        4 => "double",
+        3 => "float",
+        2 => "long",
+        _ => "int",
+    }
+}
+
+fn integral_rank(ty: &str) -> Option<u8> {
+    match ty {
+        "long" => Some(2),
+        "int" | "char" => Some(1),
+        _ => None,
+    }
+}
+
+fn integral_type_for_rank(rank: u8) -> &'static str {
+    match rank {
+        2 => "long",
+        _ => "int",
+    }
+}
+
+fn infer_type_from_unary_expr(unary: &ast::UnaryExpression) -> String {
+    let Some(op) = first_non_trivia_child_token_kind(unary.syntax()) else {
+        return "Object".to_string();
+    };
+
+    match op {
+        SyntaxKind::Bang => "boolean".to_string(),
+        SyntaxKind::Plus | SyntaxKind::Minus => {
+            let Some(operand) = unary.operand() else {
+                return "Object".to_string();
+            };
+            let operand_ty = infer_expr_type(&operand);
+            let Some(rank) = numeric_rank(&operand_ty) else {
+                return "Object".to_string();
+            };
+            numeric_type_for_rank(rank).to_string()
+        }
+        SyntaxKind::Tilde => {
+            let Some(operand) = unary.operand() else {
+                return "Object".to_string();
+            };
+            let operand_ty = infer_expr_type(&operand);
+            let Some(rank) = integral_rank(&operand_ty) else {
+                return "Object".to_string();
+            };
+            integral_type_for_rank(rank).to_string()
+        }
+        // We don't know the operand type without typeck, and returning an incorrect primitive type
+        // here would make the extracted code not compile. Default to Object (boxing).
+        SyntaxKind::PlusPlus | SyntaxKind::MinusMinus => "Object".to_string(),
+        _ => "Object".to_string(),
+    }
+}
+
+fn infer_type_from_binary_expr(binary: &ast::BinaryExpression) -> String {
+    let Some(op) = first_non_trivia_child_token_kind(binary.syntax()) else {
+        return "Object".to_string();
+    };
+
+    match op {
+        SyntaxKind::Less
+        | SyntaxKind::LessEq
+        | SyntaxKind::Greater
+        | SyntaxKind::GreaterEq
+        | SyntaxKind::EqEq
+        | SyntaxKind::BangEq
+        | SyntaxKind::AmpAmp
+        | SyntaxKind::PipePipe => return "boolean".to_string(),
+        _ => {}
+    }
+
+    let lhs_ty = binary.lhs().map(|lhs| infer_expr_type(&lhs));
+    let rhs_ty = binary.rhs().map(|rhs| infer_expr_type(&rhs));
+
+    match op {
+        SyntaxKind::Plus => {
+            // The parser doesn't know if a name refers to a `String`, so we fall back to checking
+            // for a string literal somewhere in the expression. We also respect cases like
+            // `new String()`/casts.
+            if syntax_contains_string_literal(binary.syntax())
+                || lhs_ty.as_deref() == Some("String")
+                || rhs_ty.as_deref() == Some("String")
+            {
+                return "String".to_string();
             }
+
+            let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
+                return "Object".to_string();
+            };
+            let (Some(lhs_rank), Some(rhs_rank)) = (numeric_rank(&lhs_ty), numeric_rank(&rhs_ty))
+            else {
+                return "Object".to_string();
+            };
+            numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string()
+        }
+        SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => {
+            let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
+                return "Object".to_string();
+            };
+            let (Some(lhs_rank), Some(rhs_rank)) = (numeric_rank(&lhs_ty), numeric_rank(&rhs_ty))
+            else {
+                return "Object".to_string();
+            };
+            numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string()
+        }
+        SyntaxKind::LeftShift | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
+            let Some(lhs_ty) = lhs_ty else {
+                return "Object".to_string();
+            };
+            let Some(rank) = integral_rank(&lhs_ty) else {
+                return "Object".to_string();
+            };
+            integral_type_for_rank(rank).to_string()
+        }
+        SyntaxKind::Amp | SyntaxKind::Pipe | SyntaxKind::Caret => {
+            let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
+                return "Object".to_string();
+            };
+
+            if lhs_ty == "boolean" && rhs_ty == "boolean" {
+                return "boolean".to_string();
+            }
+
+            let (Some(lhs_rank), Some(rhs_rank)) =
+                (integral_rank(&lhs_ty), integral_rank(&rhs_ty))
+            else {
+                return "Object".to_string();
+            };
+            integral_type_for_rank(lhs_rank.max(rhs_rank)).to_string()
         }
         _ => "Object".to_string(),
     }
@@ -807,9 +958,8 @@ fn infer_type_from_literal(lit: &ast::LiteralExpression) -> String {
     }
 }
 
-fn expr_contains_string_literal(expr: &ast::Expression) -> bool {
-    expr.syntax()
-        .descendants_with_tokens()
+fn syntax_contains_string_literal(node: &nova_syntax::SyntaxNode) -> bool {
+    node.descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .any(|tok| {
             matches!(

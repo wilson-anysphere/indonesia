@@ -436,6 +436,36 @@ class Test {
 }
 "#,
         ),
+        (
+            r#"class Test {
+  void m() {
+    boolean x = /*select*/1 < 2/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    boolean value = 1 < 2;
+    boolean x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Test {
+  void m() {
+    boolean x = /*select*/!true/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    boolean value = !true;
+    boolean x = value;
+  }
+}
+"#,
+        ),
     ];
 
     for (src, expected) in cases {
