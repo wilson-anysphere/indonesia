@@ -617,7 +617,11 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 let store = DependencyIndexStore::from_env()?;
                 let stats = nova_classpath::IndexingStats::default();
 
-                let entry = if jar.extension().and_then(|e| e.to_str()) == Some("jmod") {
+                let entry = if jar
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jmod"))
+                {
                     nova_classpath::ClasspathEntry::Jmod(jar.clone())
                 } else {
                     nova_classpath::ClasspathEntry::Jar(jar.clone())
