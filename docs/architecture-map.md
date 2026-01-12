@@ -214,7 +214,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-flow/src/lib.rs` (`analyze`, `ControlFlowGraph`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Not yet wired into the diagnostics pipeline (`nova-ide` / `nova-lsp`) as described in `docs/06-*`.
+  - Wired into the diagnostics pipeline (`nova-db` Salsa queries → `nova-ide` → `nova-lsp`) for reachability, definite assignment, and basic nullability diagnostics. Still best-effort and incomplete vs full Java semantics (exceptions, full HIR coverage).
 
 ### `nova-format`
 - **Purpose:** best-effort Java formatter and formatting edit helpers.
