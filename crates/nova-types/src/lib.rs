@@ -2748,6 +2748,10 @@ pub fn resolve_field(
         for iface in &class_def.interfaces {
             queue.push_back(substitute(iface, &subst));
         }
+        // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
+        if class_def.kind == ClassKind::Interface {
+            queue.push_back(Type::class(env.well_known().object, vec![]));
+        }
     }
 
     None
@@ -3161,6 +3165,10 @@ fn collect_method_candidates(
         }
         for iface in &class_def.interfaces {
             queue.push_back(substitute(iface, &subst));
+        }
+        // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
+        if class_def.kind == ClassKind::Interface {
+            queue.push_back(Type::class(env.well_known().object, vec![]));
         }
     }
 
