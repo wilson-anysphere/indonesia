@@ -100,3 +100,49 @@ class A {
     assert_eq!(edit.new_text, "(String) o");
 }
 
+#[test]
+fn type_mismatch_offers_string_value_of_quickfix_for_primitive() {
+    let source = r#"
+class A {
+  void m() {
+    int i = 42;
+    String s = i;
+  }
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(path);
+    db.set_file_text(file, source.to_string());
+
+    let needle = "String s = i;";
+    let stmt_start = source.find(needle).expect("expected assignment in fixture");
+    let expr_start = stmt_start + "String s = ".len();
+    let expr_end = expr_start + "i".len();
+    let selection = Span::new(expr_start, expr_end);
+
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    let string_fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Convert to String" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let string_fix = string_fix.expect("expected Convert to String quickfix");
+    assert_eq!(string_fix.is_preferred, Some(true));
+    let (_uri, edit) = first_edit(string_fix);
+    assert_eq!(edit.new_text, "String.valueOf(i)");
+
+    let updated = apply_lsp_edits(source, std::slice::from_ref(edit));
+    assert!(
+        updated.contains("String s = String.valueOf(i);"),
+        "expected assignment to be rewritten; got:\n{updated}"
+    );
+}
