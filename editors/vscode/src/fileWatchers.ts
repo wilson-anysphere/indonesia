@@ -6,6 +6,14 @@
  * that can affect Nova's project model and diagnostics.
  */
 
+export const NOVA_CONFIG_REL_PATH = '.nova/config.toml' as const;
+export const NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH = '.nova/apt-cache/generated-roots.json' as const;
+export const NOVA_GRADLE_SNAPSHOT_REL_PATH = '.nova/queries/gradle.json' as const;
+
+export const NOVA_CONFIG_GLOB = `**/${NOVA_CONFIG_REL_PATH}` as const;
+export const NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB = `**/${NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH}` as const;
+export const NOVA_GRADLE_SNAPSHOT_GLOB = `**/${NOVA_GRADLE_SNAPSHOT_REL_PATH}` as const;
+
 const BUILD_SYSTEM_GLOB_PATTERNS = [
   // Maven build configuration / wrapper.
   '**/pom.xml',
@@ -76,11 +84,11 @@ const NOVA_CONFIG_GLOB_PATTERNS = [
   '**/nova.toml',
   '**/.nova.toml',
   '**/nova.config.toml',
-  '**/.nova/apt-cache/generated-roots.json',
+  NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB,
   // `nova-build` -> `nova-project` file-based Gradle snapshot handoff.
-  '**/.nova/queries/gradle.json',
+  NOVA_GRADLE_SNAPSHOT_GLOB,
   // Legacy workspace-local config (kept for backwards compatibility).
-  '**/.nova/config.toml',
+  NOVA_CONFIG_GLOB,
 ] as const;
 
 const WATCHED_FILE_GLOB_PATTERNS = [

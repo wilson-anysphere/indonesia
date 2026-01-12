@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import { getNovaBuildFileGlobPatterns } from './fileWatchers';
+import {
+  getNovaBuildFileGlobPatterns,
+  NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH,
+  NOVA_CONFIG_REL_PATH,
+  NOVA_GRADLE_SNAPSHOT_REL_PATH,
+} from './fileWatchers';
 import { resolveNovaConfigPath } from './lspArgs';
 
 export type NovaRequestOptions = {
@@ -137,9 +142,9 @@ export function registerNovaBuildFileWatchers(
     const rel = path.relative(folder.uri.fsPath, uri.fsPath);
     const normalizedRel = rel.replace(/\\/g, '/');
     if (
-      normalizedRel === '.nova/config.toml' ||
-      normalizedRel === '.nova/apt-cache/generated-roots.json' ||
-      normalizedRel === '.nova/queries/gradle.json'
+      normalizedRel === NOVA_CONFIG_REL_PATH ||
+      normalizedRel === NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH ||
+      normalizedRel === NOVA_GRADLE_SNAPSHOT_REL_PATH
     ) {
       // Allowlisted `.nova/` inputs that genuinely affect project configuration.
     } else {
