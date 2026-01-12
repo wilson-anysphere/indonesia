@@ -14,6 +14,33 @@ use nova_scheduler::CancellationToken;
 
 use crate::framework_cache;
 
+pub(crate) fn may_have_micronaut_diagnostics(text: &str) -> bool {
+    // Avoid computing the full workspace Micronaut analysis for Java files that cannot possibly
+    // produce Micronaut diagnostics. Today the Micronaut analyzer only emits:
+    // - DI diagnostics on `@Inject` injection points and `@Bean` factory method parameters.
+    // - Validation diagnostics on common Bean Validation annotations (e.g. `@NotNull`).
+    const NEEDLES: &[&str] = &[
+        // Dependency injection.
+        "Inject",
+        "Bean",
+        "Factory",
+        // Bean Validation (see `nova-framework-micronaut/src/validation.rs`).
+        "NotNull",
+        "NotBlank",
+        "Email",
+        "Min",
+        "Max",
+        "Positive",
+        "PositiveOrZero",
+        "Negative",
+        "NegativeOrZero",
+        "DecimalMin",
+        "DecimalMax",
+    ];
+
+    NEEDLES.iter().any(|needle| text.contains(needle))
+}
+
 #[derive(Clone)]
 struct CachedAnalysis {
     signature: u64,

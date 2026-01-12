@@ -188,7 +188,7 @@ pub fn framework_diagnostics(
     diagnostics.extend(quarkus_diagnostics_for_file(db, file, text, cancel));
 
     // Micronaut diagnostics (DI + validation).
-    diagnostics.extend(micronaut_diagnostics_for_file(db, file, cancel));
+    diagnostics.extend(micronaut_diagnostics_for_file(db, file, text, cancel));
 
     // MapStruct diagnostics (best-effort, file-scoped + light filesystem reads).
     //
@@ -1172,6 +1172,7 @@ fn quarkus_diagnostics_for_file(
 fn micronaut_diagnostics_for_file(
     db: &dyn Database,
     file: FileId,
+    java_source: &str,
     cancel: &CancellationToken,
 ) -> Vec<Diagnostic> {
     if cancel.is_cancelled() {
@@ -1182,6 +1183,9 @@ fn micronaut_diagnostics_for_file(
         return Vec::new();
     };
     if path.extension().and_then(|e| e.to_str()) != Some("java") {
+        return Vec::new();
+    }
+    if !crate::micronaut_intel::may_have_micronaut_diagnostics(java_source) {
         return Vec::new();
     }
 

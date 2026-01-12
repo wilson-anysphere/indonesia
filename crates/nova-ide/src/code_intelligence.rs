@@ -1529,15 +1529,17 @@ pub fn file_diagnostics_with_semantic_db(
         .file_path(file)
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
-        if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
-            let path = path.to_string_lossy();
-            diagnostics.extend(
-                analysis
-                    .file_diagnostics
-                    .iter()
-                    .filter(|d| d.file == path.as_ref())
-                    .map(|d| d.diagnostic.clone()),
-            );
+        if micronaut_intel::may_have_micronaut_diagnostics(text) {
+            if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
+                let path = path.to_string_lossy();
+                diagnostics.extend(
+                    analysis
+                        .file_diagnostics
+                        .iter()
+                        .filter(|d| d.file == path.as_ref())
+                        .map(|d| d.diagnostic.clone()),
+                );
+            }
         }
     }
 
