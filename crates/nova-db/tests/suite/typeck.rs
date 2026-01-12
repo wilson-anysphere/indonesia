@@ -254,6 +254,39 @@ class C {
 }
 
 #[test]
+fn cast_expression_provides_target_type_for_var_and_method_reference() {
+    let src = r#"
+import java.util.function.Function;
+
+class C {
+    void m() {
+        var f = (Function<String, Integer>) String::length;
+        f.apply("hi");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        "expected cast to provide a target type for method reference/var inference; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected cast to provide a target type for method references; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inferred Function var to resolve apply(); got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
+        "expected no invalid-cast diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn explicit_type_args_affect_return_type() {
     let src = r#"
 import java.util.List;
