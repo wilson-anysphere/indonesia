@@ -492,7 +492,8 @@ These knobs can be overridden independently under `[ai.privacy]`.
 Depending on the editor integration, these may be surfaced as settings prefixed with `nova.`
 (for example: `nova.ai.privacy.allow_cloud_code_edits`).
 
-Explain-only actions are always allowed regardless of these settings.
+Explain-only actions are always allowed regardless of these **code-edit gating** settings (but they
+are still subject to `ai.privacy.excluded_paths`).
 
 ### Cloud multi-token completion policy (method-chain suggestions)
 
