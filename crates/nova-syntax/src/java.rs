@@ -4131,16 +4131,13 @@ mod tests {
         };
 
         assert!(
-            rule_body
-                .statements
-                .iter()
-                .any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
+            rule_body.statements.iter().any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
             "expected rule body block to contain a yield statement"
         );
     }
 
     #[test]
-    fn parse_block_lowers_switch_expression_rule_expression_body_as_yield() {
+    fn parse_block_lowers_switch_expression_rule_expression_body() {
         let text = "{ int x = switch (n) { default -> 1; }; }";
         let block = parse_block(text, 0);
 
