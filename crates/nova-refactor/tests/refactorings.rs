@@ -4118,6 +4118,49 @@ fn extract_variable_allows_extraction_from_switch_expression_selector_with_side_
 }
 
 #[test]
+fn extract_variable_rejects_switch_expression_selector_extraction_when_it_would_reorder_other_side_effects(
+) {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int foo() { return 0; }
+  void bar() {}
+
+  int m(int x) {
+    int y = foo() + switch (/*select*/x + 1/*end*/) {
+      case 1 -> { bar(); yield 1; }
+      default -> 0;
+    };
+    return y;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "selector".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract because it may change evaluation order"
+        ),
+        "expected eval-order rejection, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejected_in_annotation_value() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
