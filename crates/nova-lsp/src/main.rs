@@ -3937,6 +3937,8 @@ struct CodeActionContext {
 #[serde(rename_all = "camelCase")]
 struct Diagnostic {
     range: Range,
+    #[serde(default)]
+    code: Option<lsp_types::NumberOrString>,
     message: String,
 }
 
@@ -4116,6 +4118,32 @@ fn handle_code_action(
     if let Some(text) = text {
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
             if let Some(action) = organize_imports_code_action(state, &uri, text) {
+                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+            }
+        }
+    }
+
+    // Diagnostic-driven quick fixes.
+    if let Some(text) = text {
+        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+            let range = to_lsp_types_range(&params.range);
+            let lsp_diags: Vec<lsp_types::Diagnostic> = params
+                .context
+                .diagnostics
+                .iter()
+                .map(|diag| lsp_types::Diagnostic {
+                    range: to_lsp_types_range(&diag.range),
+                    code: diag.code.clone(),
+                    message: diag.message.clone(),
+                    ..lsp_types::Diagnostic::default()
+                })
+                .collect();
+            for action in nova_ide::code_action::diagnostic_quick_fixes(
+                text,
+                Some(uri.clone()),
+                range,
+                &lsp_diags,
+            ) {
                 actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
             }
         }
