@@ -81,10 +81,10 @@ fn spans_intersect(a: Span, b: Span) -> bool {
 
     // Treat zero-length spans as a point (useful for cursor-based LSP code action requests).
     if a_start == a_end {
-        return b_start <= a_start && a_start < b_end;
+        return b_start <= a_start && a_start <= b_end;
     }
     if b_start == b_end {
-        return a_start <= b_start && b_start < a_end;
+        return a_start <= b_start && b_start <= a_end;
     }
 
     a_start < b_end && b_start < a_end

@@ -213,13 +213,28 @@ pub(crate) fn quick_fixes_for_diagnostics(
 }
 
 pub(crate) fn spans_intersect(a: Span, b: Span) -> bool {
-    if a.start == a.end {
-        return b.start <= a.start && a.start < b.end;
+    let (a_start, a_end) = if a.start <= a.end {
+        (a.start, a.end)
+    } else {
+        (a.end, a.start)
+    };
+    let (b_start, b_end) = if b.start <= b.end {
+        (b.start, b.end)
+    } else {
+        (b.end, b.start)
+    };
+
+    // For cursor-based selections (zero-length spans), treat "touching" either end of a diagnostic
+    // span as intersecting. This mirrors common LSP client behavior (cursor is often positioned
+    // *after* the token) and avoids missing quick fixes at span boundaries.
+    if a_start == a_end {
+        return b_start <= a_start && a_start <= b_end;
     }
-    if b.start == b.end {
-        return a.start <= b.start && b.start < a.end;
+    if b_start == b_end {
+        return a_start <= b_start && b_start <= a_end;
     }
-    a.start < b.end && b.start < a.end
+
+    a_start < b_end && b_start < a_end
 }
 
 fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
