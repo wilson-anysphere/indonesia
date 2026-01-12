@@ -109,6 +109,19 @@ test('isNovaNotificationSupported returns true/false when capability list is kno
   assert.equal(isNovaNotificationSupported('workspace-a', 'textDocument/didOpen'), 'unknown');
 });
 
+test('default-key wrappers preserve single-root behaviour', () => {
+  resetNovaExperimentalCapabilities();
+  setNovaExperimentalCapabilities({
+    capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: ['nova/safeModeChanged'] } } },
+  });
+
+  assert.equal(isNovaRequestSupported('nova/test/run'), true);
+  assert.equal(isNovaNotificationSupported('nova/safeModeChanged'), true);
+
+  resetNovaExperimentalCapabilities();
+  assert.equal(isNovaRequestSupported('nova/test/run'), 'unknown');
+});
+
 test('isNovaMethodNotFoundError detects nova-lsp method-not-found patterns', () => {
   assert.equal(isNovaMethodNotFoundError({ code: -32601, message: 'Method not found' }), true);
   assert.equal(
