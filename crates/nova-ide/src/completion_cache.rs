@@ -295,15 +295,30 @@ impl WorkspaceTypeIndexBuilder {
 
 fn parse_package_name(text: &str) -> Option<String> {
     for line in text.lines() {
-        let line = line.trim();
+        let line = line.trim_start();
         let Some(rest) = line.strip_prefix("package") else {
             continue;
         };
+        // Ensure `package` is a standalone keyword (`packagex` should not match).
+        if rest
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_ascii_whitespace())
+        {
+            continue;
+        }
         let rest = rest.trim_start();
         if rest.is_empty() {
             continue;
         }
-        return Some(rest.trim_end_matches(';').trim().to_string());
+        // `package` declarations terminate at the first `;` (but some fixtures keep the declaration
+        // and the first type on the same line: `package com.foo; class A {}`).
+        let end = rest.find(';').unwrap_or(rest.len());
+        let pkg = rest[..end].trim();
+        if pkg.is_empty() {
+            continue;
+        }
+        return Some(pkg.to_string());
     }
     None
 }
@@ -422,4 +437,3 @@ fn normalize_root_for_cache(root: &Path) -> PathBuf {
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
-

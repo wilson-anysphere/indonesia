@@ -1877,73 +1877,6 @@ fn package_decl_completion_context(
     })
 }
 
-fn parse_package_declaration(text: &str) -> Option<String> {
-    for line in text.lines() {
-        let trimmed = line.trim_start_matches(|c: char| c.is_ascii_whitespace());
-        if !trimmed.starts_with("package") {
-            continue;
-        }
-        let after_kw = trimmed.get("package".len()..)?;
-        if after_kw
-            .chars()
-            .next()
-            .is_some_and(|ch| !ch.is_ascii_whitespace())
-        {
-            continue;
-        }
-        let after_kw = after_kw.trim_start_matches(|c: char| c.is_ascii_whitespace());
-
-        let mut end = 0usize;
-        for (idx, ch) in after_kw.char_indices() {
-            if ch.is_ascii_whitespace() {
-                break;
-            }
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' || ch == ';' {
-                end = idx + ch.len_utf8();
-                if ch == ';' {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        if end == 0 {
-            continue;
-        }
-
-        let raw = after_kw[..end].trim_start();
-        let pkg = raw.trim_end_matches(';').trim();
-        if pkg.is_empty() {
-            continue;
-        }
-        return Some(pkg.to_string());
-    }
-    None
-}
-
-fn workspace_packages(db: &dyn Database, root: Option<&Path>) -> Vec<String> {
-    let mut out = HashSet::<String>::new();
-    for id in db.all_file_ids() {
-        let Some(path) = db.file_path(id) else {
-            continue;
-        };
-        if let Some(root) = root {
-            if !path.starts_with(root) {
-                continue;
-            }
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
-            continue;
-        }
-        if let Some(pkg) = parse_package_declaration(db.file_content(id)) {
-            out.insert(pkg);
-        }
-    }
-    let mut out: Vec<String> = out.into_iter().collect();
-    out.sort();
-    out
-}
-
 fn add_package_segment_candidates(
     candidates: &mut HashMap<String, bool>,
     package: &str,
@@ -1986,20 +1919,18 @@ fn package_decl_completions(
         ctx.parent_prefix.split('.').collect()
     };
 
-    let root = db
-        .file_path(file)
-        .map(|path| framework_cache::project_root_for_path(path));
-
     let mut candidates: HashMap<String, bool> = HashMap::new();
 
     // 1) Workspace packages (primary).
-    for pkg in workspace_packages(db, root.as_deref()) {
-        add_package_segment_candidates(
-            &mut candidates,
-            &pkg,
-            &parent_segments,
-            &ctx.segment_prefix,
-        );
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        for pkg in env.workspace_index().packages() {
+            add_package_segment_candidates(
+                &mut candidates,
+                pkg,
+                &parent_segments,
+                &ctx.segment_prefix,
+            );
+        }
     }
 
     // 2) JDK packages (bounded).
