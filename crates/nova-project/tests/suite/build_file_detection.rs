@@ -6,10 +6,10 @@ use nova_project::{
     is_build_file, load_project_with_options, reload_project, BuildSystem, LoadOptions,
 };
 
-fn join(root: &Path, rel: &str) -> PathBuf {
+fn join(rel: &str) -> PathBuf {
     rel.split('/')
         .filter(|part| !part.is_empty())
-        .fold(root.to_path_buf(), |p, part| p.join(part))
+        .fold(PathBuf::new(), |p, part| p.join(part))
 }
 
 fn write(path: &Path, contents: &str) {
@@ -21,9 +21,6 @@ fn write(path: &Path, contents: &str) {
 
 #[test]
 fn gradle_is_build_file_recognizes_expected_paths() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
-
     let positives = [
         "gradlew",
         "gradlew.bat",
@@ -44,7 +41,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         GRADLE_SNAPSHOT_REL_PATH,
     ];
     for rel in positives {
-        let path = join(root, rel);
+        let path = join(rel);
         assert!(
             is_build_file(BuildSystem::Gradle, &path),
             "expected Gradle build file: {rel}"
@@ -89,7 +86,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle/dependency-locks/compileClasspath.lock",
     ];
     for rel in negatives {
-        let path = join(root, rel);
+        let path = join(rel);
         assert!(
             !is_build_file(BuildSystem::Gradle, &path),
             "unexpected Gradle build file match: {rel}"
@@ -99,9 +96,6 @@ fn gradle_is_build_file_recognizes_expected_paths() {
 
 #[test]
 fn maven_is_build_file_recognizes_expected_paths() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
-
     let positives = [
         "mvnw",
         "mvnw.cmd",
@@ -112,7 +106,7 @@ fn maven_is_build_file_recognizes_expected_paths() {
         ".mvn/extensions.xml",
     ];
     for rel in positives {
-        let path = join(root, rel);
+        let path = join(rel);
         assert!(
             is_build_file(BuildSystem::Maven, &path),
             "expected Maven build file: {rel}"
@@ -144,7 +138,7 @@ fn maven_is_build_file_recognizes_expected_paths() {
         "bazel-out/pom.xml",
     ];
     for rel in negatives {
-        let path = join(root, rel);
+        let path = join(rel);
         assert!(
             !is_build_file(BuildSystem::Maven, &path),
             "unexpected Maven build file match: {rel}"
