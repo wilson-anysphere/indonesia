@@ -1944,6 +1944,14 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn exists_as_jar(path: &Path) -> bool {
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return false;
+    }
+
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
     //
