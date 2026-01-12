@@ -1863,6 +1863,31 @@ toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
     }
 
     #[test]
+    fn toml_jdk_toolchains_table_accepts_bare_numeric_keys() {
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+toolchains = { 8 = "/opt/jdks/jdk8", 17 = "/opt/jdks/jdk-17" }
+"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            config.jdk_config().toolchains,
+            vec![
+                nova_core::JdkToolchain {
+                    release: 8,
+                    home: PathBuf::from("/opt/jdks/jdk8")
+                },
+                nova_core::JdkToolchain {
+                    release: 17,
+                    home: PathBuf::from("/opt/jdks/jdk-17")
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn toml_jdk_toolchains_invalid_key_is_ignored() {
         let config: NovaConfig = toml::from_str(
             r#"
