@@ -303,9 +303,6 @@ bash scripts/cargo_agent.sh test -p nova-ai --test tests suite::ai_eval
 
 # Code generation tests
 bash scripts/cargo_agent.sh test -p nova-ai-codegen --lib
-
-# LSP integration tests for AI features (code actions / completion wiring)
-bash scripts/cargo_agent.sh test -p nova-lsp --lib
 ```
 
 ### Mock Models
