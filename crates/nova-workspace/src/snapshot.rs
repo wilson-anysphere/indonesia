@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nova_core::ProjectDatabase;
-use nova_db::{Database, FileId, NovaInputs};
+use nova_db::{Database, FileId, NovaInputs, SalsaDatabase};
 use nova_vfs::FileSystem;
 use nova_vfs::VfsPath;
 
@@ -14,7 +15,7 @@ use crate::engine::WorkspaceEngine;
 /// This is designed as a lightweight adapter for running `nova_ide::code_intelligence`
 /// on top of the `nova_db::Database` trait while preserving the `FileId`s allocated
 /// by the workspace VFS.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct WorkspaceSnapshot {
     /// Best-effort local path for each file.
     ///
@@ -27,6 +28,19 @@ pub struct WorkspaceSnapshot {
     pub all_file_ids: Vec<FileId>,
     /// Reverse lookup for local filesystem paths.
     pub path_to_id: HashMap<PathBuf, FileId>,
+    salsa_db: Option<SalsaDatabase>,
+}
+
+impl fmt::Debug for WorkspaceSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkspaceSnapshot")
+            .field("file_paths", &self.file_paths)
+            .field("file_contents", &self.file_contents)
+            .field("all_file_ids", &self.all_file_ids)
+            .field("path_to_id", &self.path_to_id)
+            .field("has_salsa_db", &self.salsa_db.is_some())
+            .finish()
+    }
 }
 
 impl WorkspaceSnapshot {
@@ -98,6 +112,7 @@ impl WorkspaceSnapshot {
             file_contents,
             all_file_ids,
             path_to_id,
+            salsa_db: Some(engine.query_db.clone()),
         }
     }
 
@@ -147,6 +162,7 @@ impl WorkspaceSnapshot {
             file_contents,
             all_file_ids,
             path_to_id,
+            salsa_db: None,
         }
     }
 }
@@ -169,6 +185,10 @@ impl Database for WorkspaceSnapshot {
 
     fn file_id(&self, path: &Path) -> Option<FileId> {
         self.path_to_id.get(path).copied()
+    }
+
+    fn salsa_db(&self) -> Option<nova_db::SalsaDatabase> {
+        self.salsa_db.clone()
     }
 }
 
@@ -196,6 +216,7 @@ mod tests {
 
     use nova_core::AbsPathBuf;
     use nova_db::NovaInputs;
+    use nova_db::NovaSyntax;
     use std::fs;
 
     #[test]
@@ -243,6 +264,25 @@ mod tests {
         assert_eq!(snapshot.file_id(abs.as_path()), Some(file_id));
         assert!(snapshot.all_file_ids().contains(&file_id));
         assert_eq!(snapshot.file_content(file_id), "class Main {}");
+    }
+
+    #[test]
+    fn from_engine_exposes_workspace_salsa_db() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path, "class Main {}".to_string(), 1);
+
+        let snapshot = workspace.snapshot();
+        let salsa = snapshot.salsa_db().expect("snapshot should expose workspace salsa db");
+
+        // Basic smoke test: the DB should be usable for Salsa-backed queries without panicking.
+        salsa.with_snapshot(|snap| {
+            let _ = snap.parse_java(file_id);
+        });
     }
 
     #[test]

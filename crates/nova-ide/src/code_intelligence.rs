@@ -1010,81 +1010,75 @@ fn ensure_salsa_inputs_for_single_file(
     text: &str,
 ) {
     // IMPORTANT: When reusing a caller-provided Salsa DB, treat it as authoritative.
-    // Only seed *missing* inputs (i.e. ones that would otherwise panic) to keep
-    // `nova-ide` from clobbering workspace-engine configuration like classpath/JDK.
+    // Only seed *missing* inputs (i.e. ones that would otherwise panic) so `nova-ide` does not
+    // clobber workspace-engine configuration like classpath/JDK/project_files/file_exists.
 
-    let should_seed_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.jdk_index(project))
     }))
     .is_err();
-    if should_seed_jdk {
+    if needs_jdk {
         salsa.set_jdk_index(project, Arc::clone(jdk));
     }
 
-    let should_seed_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.classpath_index(project))
     }))
     .is_err();
-    if should_seed_classpath {
+    if needs_classpath {
         salsa.set_classpath_index(project, None);
     }
 
-    let should_seed_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_project(file))
     }))
     .is_err();
-    if should_seed_file_project {
+    if needs_file_project {
         salsa.set_file_project(file, project);
     }
 
-    let should_seed_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.source_root(file))
     }))
     .is_err();
-    if should_seed_source_root {
+    if needs_source_root {
         salsa.set_source_root(file, nova_db::SourceRootId::from_raw(0));
     }
 
-    let should_seed_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_rel_path(file))
     }))
     .is_err();
-    if should_seed_file_rel_path {
+    if needs_file_rel_path {
         salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
     }
 
-    let project_files = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let needs_project_files = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.project_files(project))
     }))
-    .ok();
-
-    match project_files {
-        Some(current) => {
-            // Preserve host ordering: only append the file when missing.
-            if !current.iter().any(|id| *id == file) {
-                let mut files = current.as_ref().clone();
-                files.push(file);
-                salsa.set_project_files(project, Arc::new(files));
-            }
-        }
-        None => {
-            salsa.set_project_files(project, Arc::new(vec![file]));
-        }
+    .is_err();
+    if needs_project_files {
+        salsa.set_project_files(project, Arc::new(vec![file]));
     }
 
-    let file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // Preserve `file_exists=false` for deleted/filtered-out files; only seed when uninitialized.
+    let needs_file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_exists(file))
     }))
-    .ok();
-    if file_exists.is_none_or(|current| !current) {
+    .is_err();
+    if needs_file_exists {
         salsa.set_file_exists(file, true);
     }
 
-    let file_text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // If the caller-provided Salsa DB is missing file content or is stale (e.g. doesn't reflect an
+    // editor overlay), update *only* `file_content` to match the `Database` view. Avoid
+    // `set_file_text`, which also mutates other workspace inputs (project_files, file_exists, etc).
+    let should_set_file_content = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_content(file))
     }))
-    .ok();
-    if file_text.is_none_or(|current| current.as_str() != text) {
+    .map(|current| current.as_str() != text)
+    .unwrap_or(true);
+    if should_set_file_content {
         salsa.set_file_content(file, Arc::new(text.to_string()));
     }
 }
