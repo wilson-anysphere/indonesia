@@ -567,6 +567,47 @@ fn lexer_string_templates_do_not_start_interpolation_when_backslash_is_escaped()
 }
 
 #[test]
+fn lexer_string_templates_track_brace_depth_in_interpolation() {
+    // The `}` that closes a string-template interpolation is distinct from a `}` that appears
+    // inside the embedded expression (e.g. array initializers, lambdas, etc). Ensure the lexer
+    // doesn't terminate the interpolation early.
+    let input = r#"STR."x=\{new int[] {1,2}}""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        non_trivia,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, "x=".into()),
+            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
+            (SyntaxKind::NewKw, "new".into()),
+            (SyntaxKind::IntKw, "int".into()),
+            (SyntaxKind::LBracket, "[".into()),
+            (SyntaxKind::RBracket, "]".into()),
+            (SyntaxKind::LBrace, "{".into()),
+            (SyntaxKind::IntLiteral, "1".into()),
+            (SyntaxKind::Comma, ",".into()),
+            (SyntaxKind::IntLiteral, "2".into()),
+            // Closes the array initializer inside the expression.
+            (SyntaxKind::RBrace, "}".into()),
+            // Closes the interpolation itself.
+            (SyntaxKind::StringTemplateExprEnd, "}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
 fn lexer_text_block_templates_lex_without_error_tokens() {
     let input = "STR.\"\"\"\nhello \\{name}\n\"\"\"";
     let (tokens, errors) = lex_with_errors(input);
