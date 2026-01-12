@@ -608,6 +608,26 @@ class Main { void test(){ Foo a, b = new Foo(); b.$0bar(); } }
 }
 
 #[test]
+fn go_to_implementation_on_second_var_local_receiver_in_comma_separated_decl() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo { void $1bar(){} }
+//- /Main.java
+class Main { void test(){ var a = new Foo(), b = new Foo(); b.$0bar(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_second_field_receiver_in_comma_separated_decl() {
     let fixture = FileIdFixture::parse(
         r#"
