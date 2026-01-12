@@ -6865,10 +6865,29 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         let mut resolved_explicit_type_args = Vec::with_capacity(explicit_type_args.len());
         let mut explicit_type_args_errorish = false;
+        let mut explicit_type_args_span: Option<Span> = None;
         for (text, span) in explicit_type_args {
             let ty = self.resolve_source_type(loader, text.as_str(), Some(*span));
             explicit_type_args_errorish |= ty.is_errorish();
             resolved_explicit_type_args.push(ty);
+            explicit_type_args_span = Some(match explicit_type_args_span {
+                Some(existing) => Span::new(
+                    existing.start.min(span.start),
+                    existing.end.max(span.end),
+                ),
+                None => *span,
+            });
+        }
+
+        if explicit_type_args_errorish {
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-type-args",
+                "invalid explicit type arguments",
+                explicit_type_args_span,
+            ));
+            resolved_explicit_type_args.clear();
+            // Treat invalid type arguments as absent so we can recover via inference.
+            explicit_type_args_errorish = false;
         }
 
         match &self.body.exprs[callee] {
@@ -7219,7 +7238,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             name: name.as_str(),
                             args: arg_types,
                             expected_return: expected.cloned(),
-                            explicit_type_args: Vec::new(),
+                            explicit_type_args: resolved_explicit_type_args.clone(),
                         };
 
                         let env_ro: &dyn TypeEnv = &*loader.store;

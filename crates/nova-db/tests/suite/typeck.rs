@@ -4186,6 +4186,28 @@ class C {
 }
 
 #[test]
+fn explicit_method_type_args_infer_generic_return_without_target_type() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m() {
+        Collections.<String>emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn diamond_inference_uses_target_type_from_return() {
     let src = r#"
  import java.util.*;
