@@ -230,17 +230,15 @@ pub fn reload_project(
         return load_project_from_workspace_root(workspace_root, options);
     }
 
-    // Module-info changes affect the JPMS module root list + workspace graph; update it without
-    // re-loading the module list.
+    // `module-info.java` changes can toggle JPMS enablement for the entire workspace, which in
+    // turn affects dependency classification (module-path vs classpath). Treat it like a build
+    // file change and reload the full config to ensure `module_path`, `classpath`, and
+    // `jpms_workspace` stay consistent.
     if changed_files.iter().any(|path| {
         path.file_name()
             .is_some_and(|name| name == "module-info.java")
     }) {
-        let mut next = config.clone();
-        next.jpms_modules = crate::jpms::discover_jpms_modules(&next.modules);
-        next.jpms_workspace =
-            crate::jpms::build_jpms_workspace(&next.jpms_modules, &next.module_path);
-        return Ok(next);
+        return load_project_from_workspace_root(workspace_root, options);
     }
 
     // Source-only changes: keep the config stable.
@@ -584,6 +582,9 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ClasspathEntryKind;
+    use nova_modules::ModuleName;
+    use tempfile::tempdir;
 
     #[test]
     fn maven_build_file_detection_includes_mvn_wrapper_and_mvn_config() {
@@ -611,5 +612,210 @@ mod tests {
             !is_build_file(BuildSystem::Maven, Path::new("maven-wrapper.properties")),
             "misplaced maven-wrapper.properties at workspace root should not be treated as a build file"
         );
+    }
+
+    #[test]
+    fn reload_project_reclassifies_dependencies_when_module_info_changes() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Make this a simple workspace.
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(root.join("src/Main.java"), "class Main {}").expect("write Main.java");
+
+        // Dependency override entry (directory) containing `module-info.class`.
+        let dep_dir = root.join("deps/mod-b");
+        std::fs::create_dir_all(&dep_dir).expect("mkdir dep");
+        std::fs::write(dep_dir.join("module-info.class"), make_module_info_class())
+            .expect("write module-info.class");
+
+        let mut options = LoadOptions::default();
+        options.classpath_overrides.push(dep_dir.clone());
+
+        // No `module-info.java` => JPMS disabled => dependency stays on classpath.
+        let cfg = load_project_with_options(root, &options).expect("load project");
+        assert_eq!(cfg.build_system, BuildSystem::Simple);
+        assert!(
+            cfg.jpms_modules.is_empty(),
+            "without module-info.java, workspace should not use JPMS"
+        );
+        assert!(cfg.jpms_workspace.is_none());
+        assert!(cfg.module_path.is_empty());
+        assert!(
+            cfg.classpath
+                .iter()
+                .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+            "dependency should be on classpath when JPMS is disabled"
+        );
+
+        // Add `module-info.java` to enable JPMS and trigger reload.
+        let module_info_path = root.join("module-info.java");
+        std::fs::write(
+            &module_info_path,
+            "module mod.a { requires mod.b; }",
+        )
+        .expect("write module-info.java");
+
+        let mut options_reload = options.clone();
+        let cfg = reload_project(&cfg, &mut options_reload, &[module_info_path.clone()])
+            .expect("reload with module-info.java added");
+
+        assert!(
+            !cfg.jpms_modules.is_empty(),
+            "adding module-info.java should enable JPMS"
+        );
+        assert!(cfg.jpms_workspace.is_some());
+        assert!(
+            cfg.module_path
+                .iter()
+                .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+            "dependency should move to module-path when JPMS is enabled"
+        );
+        assert!(
+            !cfg.classpath
+                .iter()
+                .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+            "dependency should no longer be on classpath when JPMS is enabled"
+        );
+
+        let graph = cfg.module_graph().expect("module graph");
+        let mod_a = ModuleName::new("mod.a");
+        let mod_b = ModuleName::new("mod.b");
+        assert!(graph.get(&mod_a).is_some(), "graph should contain workspace module");
+        assert!(
+            graph.get(&mod_b).is_some(),
+            "graph should contain dependency module from module-path"
+        );
+
+        // Remove `module-info.java` to disable JPMS and reload again.
+        std::fs::remove_file(&module_info_path).expect("delete module-info.java");
+        let cfg = reload_project(&cfg, &mut options_reload, &[module_info_path.clone()])
+            .expect("reload with module-info.java removed");
+
+        assert!(
+            cfg.jpms_modules.is_empty(),
+            "removing module-info.java should disable JPMS"
+        );
+        assert!(cfg.jpms_workspace.is_none());
+        assert!(cfg.module_path.is_empty(), "module-path should be cleared");
+        assert!(
+            cfg.classpath
+                .iter()
+                .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+            "dependency should return to classpath when JPMS is disabled"
+        );
+    }
+
+    fn make_module_info_class() -> Vec<u8> {
+        fn push_u2(out: &mut Vec<u8>, v: u16) {
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn push_u4(out: &mut Vec<u8>, v: u32) {
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+
+        #[derive(Clone)]
+        enum CpEntry {
+            Utf8(String),
+            Module { name_index: u16 },
+            Package { name_index: u16 },
+        }
+
+        struct Cp {
+            entries: Vec<CpEntry>,
+        }
+
+        impl Cp {
+            fn new() -> Self {
+                Self { entries: Vec::new() }
+            }
+
+            fn push(&mut self, entry: CpEntry) -> u16 {
+                self.entries.push(entry);
+                self.entries.len() as u16
+            }
+
+            fn utf8(&mut self, s: &str) -> u16 {
+                self.push(CpEntry::Utf8(s.to_string()))
+            }
+
+            fn module(&mut self, name: &str) -> u16 {
+                let name_index = self.utf8(name);
+                self.push(CpEntry::Module { name_index })
+            }
+
+            fn package(&mut self, name: &str) -> u16 {
+                let name_index = self.utf8(name);
+                self.push(CpEntry::Package { name_index })
+            }
+
+            fn write(&self, out: &mut Vec<u8>) {
+                push_u2(out, (self.entries.len() as u16) + 1);
+                for entry in &self.entries {
+                    match entry {
+                        CpEntry::Utf8(s) => {
+                            out.push(1);
+                            push_u2(out, s.len() as u16);
+                            out.extend_from_slice(s.as_bytes());
+                        }
+                        CpEntry::Module { name_index } => {
+                            out.push(19);
+                            push_u2(out, *name_index);
+                        }
+                        CpEntry::Package { name_index } => {
+                            out.push(20);
+                            push_u2(out, *name_index);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut cp = Cp::new();
+        let module_attr_name = cp.utf8("Module");
+        let self_module = cp.module("mod.b");
+        let api_pkg = cp.package("com/example/b/api");
+        let _internal_pkg = cp.package("com/example/b/internal");
+        let target_mod = cp.module("mod.a");
+
+        let mut module_attr = Vec::new();
+        push_u2(&mut module_attr, self_module); // module_name_index
+        push_u2(&mut module_attr, 0); // module_flags
+        push_u2(&mut module_attr, 0); // module_version_index
+        push_u2(&mut module_attr, 0); // requires_count
+        push_u2(&mut module_attr, 1); // exports_count
+                                          // exports
+        push_u2(&mut module_attr, api_pkg); // exports_index (Package)
+        push_u2(&mut module_attr, 0); // exports_flags
+        push_u2(&mut module_attr, 1); // exports_to_count
+        push_u2(&mut module_attr, target_mod); // exports_to_index (Module)
+        push_u2(&mut module_attr, 0); // opens_count
+        push_u2(&mut module_attr, 0); // uses_count
+        push_u2(&mut module_attr, 0); // provides_count
+
+        let mut out = Vec::new();
+        push_u4(&mut out, 0xCAFEBABE);
+        push_u2(&mut out, 0); // minor
+        push_u2(&mut out, 53); // major (Java 9)
+        cp.write(&mut out);
+
+        push_u2(&mut out, 0); // access_flags
+        push_u2(&mut out, 0); // this_class
+        push_u2(&mut out, 0); // super_class
+        push_u2(&mut out, 0); // interfaces_count
+        push_u2(&mut out, 0); // fields_count
+        push_u2(&mut out, 0); // methods_count
+
+        push_u2(&mut out, 1); // attributes_count
+        push_u2(&mut out, module_attr_name);
+        push_u4(&mut out, module_attr.len() as u32);
+        out.extend_from_slice(&module_attr);
+
+        // Sanity check: ensure the fixture parses.
+        let info = nova_classfile::parse_module_info_class(&out).expect("parse module-info.class");
+        assert_eq!(info.name.as_str(), "mod.b");
+        assert!(info.exports_package_to("com.example.b.api", &ModuleName::new("mod.a")));
+
+        out
     }
 }
