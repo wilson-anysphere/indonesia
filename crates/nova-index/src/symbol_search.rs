@@ -300,23 +300,39 @@ impl SymbolSearchIndex {
                 BinaryHeap::with_capacity(limit);
             let mut matcher = FuzzyMatcher::new(query);
 
-            let mut push_scored = |id: SymbolId, score: MatchScore| {
+            #[inline]
+            fn build_candidate_key<'a>(
+                id: SymbolId,
+                sym: &'a Symbol,
+                score: MatchScore,
+                score_key: RankKey,
+            ) -> CandidateKey<'a> {
+                CandidateKey {
+                    id,
+                    score,
+                    rank_key: score_key,
+                    name: sym.name.as_str(),
+                    qualified_name: sym.qualified_name.as_str(),
+                    location_file: sym.location.file.as_str(),
+                    location_line: sym.location.line,
+                    location_column: sym.location.column,
+                    ast_id: sym.ast_id,
+                }
+            }
+
+            #[inline]
+            fn push_scored<'a>(
+                scored: &mut BinaryHeap<Reverse<CandidateKey<'a>>>,
+                limit: usize,
+                id: SymbolId,
+                sym: &'a Symbol,
+                score: MatchScore,
+            ) {
                 let score_key = score.rank_key();
 
                 // Until the heap is full we can push unconditionally.
                 if scored.len() < limit {
-                    let sym = &self.symbols[id as usize].symbol;
-                    scored.push(Reverse(CandidateKey {
-                        id,
-                        score,
-                        rank_key: score_key,
-                        name: sym.name.as_str(),
-                        qualified_name: sym.qualified_name.as_str(),
-                        location_file: sym.location.file.as_str(),
-                        location_line: sym.location.line,
-                        location_column: sym.location.column,
-                        ast_id: sym.ast_id,
-                    }));
+                    scored.push(Reverse(build_candidate_key(id, sym, score, score_key)));
                     return;
                 }
 
@@ -332,23 +348,10 @@ impl SymbolSearchIndex {
                 match score_key.cmp(&worst.rank_key) {
                     Ordering::Less => return,
                     Ordering::Greater => {
-                        let sym = &self.symbols[id as usize].symbol;
-                        let key = CandidateKey {
-                            id,
-                            score,
-                            rank_key: score_key,
-                            name: sym.name.as_str(),
-                            qualified_name: sym.qualified_name.as_str(),
-                            location_file: sym.location.file.as_str(),
-                            location_line: sym.location.line,
-                            location_column: sym.location.column,
-                            ast_id: sym.ast_id,
-                        };
-
                         let mut worst_mut = scored
                             .peek_mut()
                             .expect("peek_mut should succeed when peek succeeds");
-                        *worst_mut = Reverse(key);
+                        *worst_mut = Reverse(build_candidate_key(id, sym, score, score_key));
                         return;
                     }
                     Ordering::Equal => {
@@ -356,18 +359,7 @@ impl SymbolSearchIndex {
                     }
                 }
 
-                let sym = &self.symbols[id as usize].symbol;
-                let key = CandidateKey {
-                    id,
-                    score,
-                    rank_key: score_key,
-                    name: sym.name.as_str(),
-                    qualified_name: sym.qualified_name.as_str(),
-                    location_file: sym.location.file.as_str(),
-                    location_line: sym.location.line,
-                    location_column: sym.location.column,
-                    ast_id: sym.ast_id,
-                };
+                let key = build_candidate_key(id, sym, score, score_key);
 
                 if key > worst {
                     // Replace the current worst candidate with this better one.
@@ -376,21 +368,23 @@ impl SymbolSearchIndex {
                         .expect("peek_mut should succeed when peek succeeds");
                     *worst_mut = Reverse(key);
                 }
-            };
+            }
 
             match candidates {
                 CandidateSource::Ids(ids) => {
                     for &id in ids {
-                        if let Some(score) = self.score_candidate(id, q_bytes, &mut matcher) {
-                            push_scored(id, score);
+                        let entry = &self.symbols[id as usize];
+                        if let Some(score) = self.score_candidate(entry, q_bytes, &mut matcher) {
+                            push_scored(&mut scored, limit, id, &entry.symbol, score);
                         }
                     }
                 }
                 CandidateSource::FullScan(scan_limit) => {
                     for id in 0..scan_limit {
                         let id = id as SymbolId;
-                        if let Some(score) = self.score_candidate(id, q_bytes, &mut matcher) {
-                            push_scored(id, score);
+                        let entry = &self.symbols[id as usize];
+                        if let Some(score) = self.score_candidate(entry, q_bytes, &mut matcher) {
+                            push_scored(&mut scored, limit, id, &entry.symbol, score);
                         }
                     }
                 }
@@ -424,11 +418,10 @@ impl SymbolSearchIndex {
 
     fn score_candidate(
         &self,
-        id: SymbolId,
+        entry: &SymbolEntry,
         q_bytes: &[u8],
         matcher: &mut FuzzyMatcher,
     ) -> Option<MatchScore> {
-        let entry = &self.symbols[id as usize];
 
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
@@ -823,7 +816,8 @@ mod tests {
         match candidates {
             CandidateSource::Ids(ids) => {
                 for &id in ids {
-                    if let Some(score) = index.score_candidate(id, q_bytes, &mut matcher) {
+                    let entry = &index.symbols[id as usize];
+                    if let Some(score) = index.score_candidate(entry, q_bytes, &mut matcher) {
                         push_scored(id, score);
                     }
                 }
@@ -831,7 +825,8 @@ mod tests {
             CandidateSource::FullScan(scan_limit) => {
                 for id in 0..scan_limit {
                     let id = id as SymbolId;
-                    if let Some(score) = index.score_candidate(id, q_bytes, &mut matcher) {
+                    let entry = &index.symbols[id as usize];
+                    if let Some(score) = index.score_candidate(entry, q_bytes, &mut matcher) {
                         push_scored(id, score);
                     }
                 }
