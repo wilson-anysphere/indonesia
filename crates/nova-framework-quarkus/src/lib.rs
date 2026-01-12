@@ -476,10 +476,41 @@ fn find_previous_at_outside_literals(source: &str, before: usize) -> Option<usiz
     let bytes = source.as_bytes();
     let mut in_string = false;
     let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
 
     let mut i = before.min(bytes.len());
     while i > 0 {
         i -= 1;
+
+        if in_line_comment {
+            if bytes[i] == b'\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if i >= 1 && bytes[i - 1] == b'/' && bytes[i] == b'*' {
+                in_block_comment = false;
+                i -= 1;
+            }
+            continue;
+        }
+
+        // Comment detection (only when we're not inside a string/char literal).
+        if !in_string && !in_char {
+            if i >= 1 && bytes[i - 1] == b'/' && bytes[i] == b'/' {
+                in_line_comment = true;
+                i -= 1;
+                continue;
+            }
+            if i >= 1 && bytes[i - 1] == b'*' && bytes[i] == b'/' {
+                in_block_comment = true;
+                i -= 1;
+                continue;
+            }
+        }
+
         match bytes[i] {
             b'"' if !is_escaped_quote(bytes, i) && !in_char => {
                 in_string = !in_string;
