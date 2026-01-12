@@ -1002,6 +1002,13 @@ fn with_salsa_snapshot_for_single_file<T>(
     text: &str,
     f: impl FnOnce(&nova_db::Snapshot) -> T,
 ) -> T {
+    // Fast-path: if the host provides a shared `SalsaDatabase`, treat it as the
+    // authoritative incremental state and keep this helper strictly read-only.
+    if let Some(salsa) = db.salsa_db() {
+        let snap = salsa.snapshot();
+        return f(&snap);
+    }
+
     let project = nova_db::ProjectId::from_raw(0);
     let jdk = JDK_INDEX
         .as_ref()
@@ -1009,34 +1016,16 @@ fn with_salsa_snapshot_for_single_file<T>(
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
     let (file_rel_path, project_config) = salsa_inputs_for_single_file(db, file);
-
-    let salsa = match db.salsa_db() {
-        Some(salsa) => {
-            ensure_salsa_inputs_for_single_file(
-                &salsa,
-                project,
-                &jdk,
-                file,
-                text,
-                &file_rel_path,
-                project_config.as_ref(),
-            );
-            salsa
-        }
-        None => {
-            let salsa = SalsaDatabase::new();
-            seed_salsa_inputs_for_single_file(
-                &salsa,
-                project,
-                &jdk,
-                file,
-                text,
-                &file_rel_path,
-                project_config.as_ref(),
-            );
-            salsa
-        }
-    };
+    let salsa = SalsaDatabase::new();
+    seed_salsa_inputs_for_single_file(
+        &salsa,
+        project,
+        &jdk,
+        file,
+        text,
+        &file_rel_path,
+        project_config.as_ref(),
+    );
 
     let snap = salsa.snapshot();
     f(&snap)
@@ -1060,99 +1049,6 @@ fn seed_salsa_inputs_for_single_file(
     salsa.set_file_text(file, text.to_string());
     salsa.set_file_rel_path(file, Arc::clone(file_rel_path));
     salsa.set_project_files(project, Arc::new(vec![file]));
-}
-
-fn ensure_salsa_inputs_for_single_file(
-    salsa: &SalsaDatabase,
-    project: nova_db::ProjectId,
-    jdk: &Arc<JdkIndex>,
-    file: FileId,
-    text: &str,
-    file_rel_path: &Arc<String>,
-    project_config: Option<&Arc<nova_project::ProjectConfig>>,
-) {
-    // IMPORTANT: When reusing a caller-provided Salsa DB, treat it as authoritative.
-    // Only seed *missing* inputs (i.e. ones that would otherwise panic) so `nova-ide` does not
-    // clobber workspace-engine configuration like classpath/JDK/project_files/file_exists.
-
-    let needs_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.jdk_index(project))
-    }))
-    .is_err();
-    if needs_jdk {
-        salsa.set_jdk_index(project, Arc::clone(jdk));
-    }
-
-    let needs_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.classpath_index(project))
-    }))
-    .is_err();
-    if needs_classpath {
-        salsa.set_classpath_index(project, None);
-    }
-
-    if let Some(cfg) = project_config {
-        let needs_project_config = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            salsa.with_snapshot(|snap| snap.project_config(project))
-        }))
-        .is_err();
-        if needs_project_config {
-            salsa.set_project_config(project, Arc::clone(cfg));
-        }
-    }
-
-    let needs_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.file_project(file))
-    }))
-    .is_err();
-    if needs_file_project {
-        salsa.set_file_project(file, project);
-    }
-
-    let needs_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.source_root(file))
-    }))
-    .is_err();
-    if needs_source_root {
-        salsa.set_source_root(file, nova_db::SourceRootId::from_raw(0));
-    }
-
-    let needs_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.file_rel_path(file))
-    }))
-    .is_err();
-    if needs_file_rel_path {
-        salsa.set_file_rel_path(file, Arc::clone(file_rel_path));
-    }
-
-    let needs_project_files = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.project_files(project))
-    }))
-    .is_err();
-    if needs_project_files {
-        salsa.set_project_files(project, Arc::new(vec![file]));
-    }
-
-    // Preserve `file_exists=false` for deleted/filtered-out files; only seed when uninitialized.
-    let needs_file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.file_exists(file))
-    }))
-    .is_err();
-    if needs_file_exists {
-        salsa.set_file_exists(file, true);
-    }
-
-    // If the caller-provided Salsa DB is missing file content or is stale (e.g. doesn't reflect an
-    // editor overlay), update *only* `file_content` to match the `Database` view. Avoid
-    // `set_file_text`, which also mutates other workspace inputs (project_files, file_exists, etc).
-    let should_set_file_content = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.file_content(file))
-    }))
-    .map(|current| current.as_str() != text)
-    .unwrap_or(true);
-    if should_set_file_content {
-        salsa.set_file_content(file, Arc::new(text.to_string()));
-    }
 }
 
 fn severity_rank(severity: Severity) -> u8 {
