@@ -13,7 +13,9 @@ This document is validated in CI by `nova-devtools check-protocol-extensions` to
 sync with both server + client code.
 
 > Note: Nova also uses standard LSP requests (e.g. `textDocument/formatting`) and standard command /
-> code action wiring. Those are intentionally *not* covered here.
+> code action wiring. Those are intentionally *not* covered here **except** for a small set of
+> `workspace/executeCommand` command IDs that have important cross-editor interoperability
+> requirements (notably when the server drives `workspace/applyEdit`).
 
 ## Capability gating (how clients detect support)
 
@@ -1781,6 +1783,9 @@ The server advertises these command IDs via the standard LSP capability:
 These commands are intended to support **patch-based code edits**. When patch edits are allowed by
 privacy policy, the server returns a `WorkspaceEdit` and also asks the client to apply it via
 `workspace/applyEdit` (similar to Safe Delete / Organize Imports).
+
+Like other AI endpoints, these commands accept an optional `workDoneToken` (standard LSP work-done
+progress token). When present, the server emits `$/progress` notifications for user-visible progress.
 
 Clients should support both:
 
