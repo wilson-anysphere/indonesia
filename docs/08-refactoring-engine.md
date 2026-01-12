@@ -644,12 +644,21 @@ pub fn refactoring_code_actions(
     let mut actions = Vec::new();
     
     // Context-sensitive refactorings
-    if let Some(expr) = db.expression_at(file, range) {
-        // Extract variable available for expressions
+    //
+    // Extract Variable typically needs user input (the new variable name), so
+    // it is commonly offered as an unresolved code action that stores the
+    // selected expression range + options in `data`. The client later resolves
+    // the action (e.g. via `codeAction/resolve`) after prompting for a name.
+    if let Some(expr_range) = db.expression_range_at(file, range) {
         actions.push(CodeAction {
-            title: "Extract variable".into(),
+            title: "Extract variable…".into(),
             kind: CodeActionKind::RefactorExtract,
-            command: Some(command("extract_variable", [expr.into()])),
+            data: Some(json!({
+                "kind": "extractVariable",
+                "exprRange": expr_range,
+                "useVar": true,
+            })),
+            ..CodeAction::default()
         });
     }
     
@@ -670,12 +679,30 @@ pub fn refactoring_code_actions(
             command: Some(command("rename", [symbol.into()])),
         });
         
-        // Inline available for variables, methods
-        if db.can_inline(symbol) {
+        // Inline Variable is surfaced as two actions:
+        // - inline at cursor (requires a usage selection)
+        // - inline all usages
+        if let Some(usage_range) = db.local_usage_range_at(file, range.start()) {
             actions.push(CodeAction {
-                title: "Inline".into(),
+                title: "Inline variable".into(),
                 kind: CodeActionKind::RefactorInline,
-                command: Some(command("inline", [symbol.into()])),
+                data: Some(json!({
+                    "kind": "inlineVariable",
+                    "symbol": symbol,
+                    "inlineAll": false,
+                    "usageRange": usage_range,
+                })),
+                ..CodeAction::default()
+            });
+            actions.push(CodeAction {
+                title: "Inline variable (all usages)".into(),
+                kind: CodeActionKind::RefactorInline,
+                data: Some(json!({
+                    "kind": "inlineVariable",
+                    "symbol": symbol,
+                    "inlineAll": true,
+                })),
+                ..CodeAction::default()
             });
         }
     }
