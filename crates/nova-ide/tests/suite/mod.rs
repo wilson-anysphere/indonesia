@@ -17,6 +17,7 @@ mod dagger_intel;
 mod decompile;
 mod file_diagnostics;
 mod file_navigation;
+mod file_navigation_cache;
 mod flow_quick_fixes;
 mod framework_analyzer_adapter;
 mod framework_analyzer_adapter_on_framework_ide_database;
