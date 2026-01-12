@@ -11,7 +11,7 @@ use nova_types::Span;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractMethodCommandArgs {
@@ -97,8 +97,6 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `type-mismatch` → `Cast to <expected>` / `Convert to String`
 /// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
-/// - `unresolved-method` → `Create method '<name>'`
-/// - `unresolved-field` → `Create field '<name>'`
 pub fn diagnostic_quick_fixes(
     source: &str,
     uri: Option<Uri>,
@@ -109,28 +107,47 @@ pub fn diagnostic_quick_fixes(
         return Vec::new();
     };
 
-    diagnostics
-        .iter()
-        .flat_map(|diag| {
-            create_class_quick_fix(source, &uri, &selection, diag)
-                .into_iter()
-                .chain(create_symbol_quick_fixes(source, &uri, &selection, diag).into_iter())
-                .chain(
-                    remove_unreachable_code_quick_fix(source, &uri, &selection, diag).into_iter(),
-                )
-                .chain(
-                    initialize_unassigned_local_quick_fix(source, &uri, &selection, diag)
-                        .into_iter(),
-                )
-                .chain(remove_unused_import_quick_fix(source, &uri, &selection, diag).into_iter())
-                .chain(
-                    remove_unresolved_import_quick_fix(source, &uri, &selection, diag).into_iter(),
-                )
-                .chain(type_mismatch_quick_fixes(source, &uri, &selection, diag).into_iter())
-                .chain(create_method_quick_fix(source, &uri, &selection, diag).into_iter())
-                .chain(create_field_quick_fix(source, &uri, &selection, diag).into_iter())
-        })
-        .collect()
+    let mut actions = Vec::new();
+    let mut seen_create_symbol_titles: HashSet<String> = HashSet::new();
+
+    for diag in diagnostics {
+        if let Some(action) = create_class_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
+        for action in create_symbol_quick_fixes(source, &uri, &selection, diag) {
+            if !seen_create_symbol_titles.insert(action.title.clone()) {
+                continue;
+            }
+            actions.push(action);
+        }
+        if let Some(action) = create_method_quick_fix(source, &uri, &selection, diag) {
+            if seen_create_symbol_titles.insert(action.title.clone()) {
+                actions.push(action);
+            }
+        }
+        if let Some(action) = create_field_quick_fix(source, &uri, &selection, diag) {
+            if seen_create_symbol_titles.insert(action.title.clone()) {
+                actions.push(action);
+            }
+        }
+        if let Some(action) = remove_unreachable_code_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
+        if let Some(action) =
+            initialize_unassigned_local_quick_fix(source, &uri, &selection, diag)
+        {
+            actions.push(action);
+        }
+        if let Some(action) = remove_unused_import_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
+        if let Some(action) = remove_unresolved_import_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
+        actions.extend(type_mismatch_quick_fixes(source, &uri, &selection, diag));
+    }
+
+    actions
 }
 
 fn create_symbol_quick_fixes(

@@ -195,7 +195,9 @@ pub(crate) fn field_stub(name: &str, indent: &str, is_static: bool) -> String {
 }
 
 pub(crate) fn unresolved_member_name(message: &str, source: &str, span: Span) -> Option<String> {
-    extract_backticked_ident(message).or_else(|| {
+    extract_backticked_ident(message)
+        .or_else(|| extract_quoted_ident(message, '\''))
+        .or_else(|| {
         let snippet = source.get(span.start..span.end)?;
         extract_identifier_from_snippet(snippet)
     })
@@ -205,6 +207,18 @@ fn extract_backticked_ident(message: &str) -> Option<String> {
     let start = message.find('`')?;
     let rest = message.get(start + 1..)?;
     let end_rel = rest.find('`')?;
+    let candidate = rest[..end_rel].trim();
+    if is_java_identifier(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_quoted_ident(message: &str, quote: char) -> Option<String> {
+    let start = message.find(quote)?;
+    let rest = message.get(start + quote.len_utf8()..)?;
+    let end_rel = rest.find(quote)?;
     let candidate = rest[..end_rel].trim();
     if is_java_identifier(candidate) {
         Some(candidate.to_string())

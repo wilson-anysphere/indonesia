@@ -98,6 +98,8 @@ fn unresolved_method_in_static_context_creates_static_method_stub() {
         offset_to_position(source, foo_end),
     );
 
+    // Use the `unresolved-method` code (what Nova emits for missing methods), but include
+    // the `static context` phrasing to exercise the static stub path.
     let diagnostic = Diagnostic {
         range: range.clone(),
         severity: Some(DiagnosticSeverity::ERROR),
@@ -178,3 +180,86 @@ fn unresolved_field_offers_create_field_quick_fix() {
     let final_brace = updated.rfind('}').expect("updated closing brace");
     assert!(stub_idx < final_brace, "expected stub before final brace");
 }
+
+#[test]
+fn unresolved_reference_offers_create_method_quick_fix() {
+    let source = r#"class A {
+  void m() {
+    foo();
+  }
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("foo").expect("expected `foo` in fixture");
+    let foo_end = foo_start + "foo".len();
+    let range = Range::new(
+        offset_to_position(source, foo_start),
+        offset_to_position(source, foo_end),
+    );
+
+    let diagnostic = Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("UNRESOLVED_REFERENCE".to_string())),
+        message: "Cannot resolve symbol 'foo'".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), range, &[diagnostic]);
+    let action = actions
+        .iter()
+        .find(|action| action.title == "Create method 'foo'")
+        .expect("expected Create method quick fix");
+
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes");
+    let edits = changes.get(&uri).expect("expected edit for file");
+    assert_eq!(edits.len(), 1);
+
+    let updated = apply_lsp_text_edits(source, edits);
+    assert!(
+        updated.contains("private Object foo(Object... args)"),
+        "expected stub insertion; got {updated:?}"
+    );
+}
+
+#[test]
+fn create_symbol_quick_fix_is_filtered_by_selection_range() {
+    let source = "class A { void m() { foo(); } void n() {} }";
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("foo").expect("expected `foo` in fixture");
+    let foo_end = foo_start + "foo".len();
+    let diag_range = Range::new(
+        offset_to_position(source, foo_start),
+        offset_to_position(source, foo_end),
+    );
+
+    let diagnostic = Diagnostic {
+        range: diag_range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-method".to_string())),
+        message: "unresolved method `foo`".to_string(),
+        ..Diagnostic::default()
+    };
+
+    // Selection does not intersect the diagnostic range.
+    let n_start = source.find("n").expect("expected `n` in fixture");
+    let n_end = n_start + "n".len();
+    let selection = Range::new(
+        offset_to_position(source, n_start),
+        offset_to_position(source, n_end),
+    );
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), selection, &[diagnostic]);
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.title == "Create method 'foo'"),
+        "expected Create method quick fix to be filtered out; got {actions:#?}"
+    );
+}
+
