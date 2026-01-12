@@ -50,6 +50,10 @@ jobs:
         with:
           tool: cargo-binstall
 
+      - name: cargo-binstall version
+        run: cargo-binstall -V
+        timeout-minutes: 1
+
       - name: Install cargo-fuzz
         run: cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
         timeout-minutes: 5
