@@ -696,10 +696,12 @@ fn fingerprint_changes_on_gradle_version_catalog_edit() {
     std::fs::create_dir_all(&gradle_dir).unwrap();
     let catalog = gradle_dir.join("libs.versions.toml");
     std::fs::write(&catalog, "[versions]\nfoo = \"1.0\"\n").unwrap();
+    let extra_catalog = gradle_dir.join("extra.versions.toml");
+    std::fs::write(&extra_catalog, "[versions]\nbar = \"2.0\"\n").unwrap();
 
     let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
         .unwrap();
-    std::fs::write(&catalog, "[versions]\nfoo = \"1.1\"\n").unwrap();
+    std::fs::write(&extra_catalog, "[versions]\nbar = \"2.1\"\n").unwrap();
     let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
         .unwrap();
 

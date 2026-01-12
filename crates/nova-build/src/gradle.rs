@@ -2299,8 +2299,8 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         if name.ends_with(".versions.toml")
             && path
                 .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|p| p == std::ffi::OsStr::new("gradle"))
+                .and_then(|parent| parent.file_name())
+                .is_some_and(|dir| dir == "gradle")
         {
             out.push(path);
             continue;
