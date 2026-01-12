@@ -774,6 +774,30 @@ fn collect_declared_types(
         }
     }
 
+    // Try-with-resources variables are declared in `ResourceSpecification`, not in ordinary local
+    // variable declaration statements.
+    for try_stmt in method_body.syntax().descendants().filter_map(ast::TryStatement::cast) {
+        let Some(resources) = try_stmt.resources() else {
+            continue;
+        };
+        for resource in resources.resources() {
+            // Local variable declaration form: `Type name = initializer`.
+            let ty = resource.syntax().children().find_map(ast::Type::cast);
+            let decl = resource
+                .syntax()
+                .children()
+                .find_map(ast::VariableDeclarator::cast);
+            let (Some(ty), Some(decl)) = (ty, decl) else {
+                continue;
+            };
+            let Some(name_tok) = decl.name_token() else {
+                continue;
+            };
+
+            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            out.insert(span_of_token(&name_tok), ty_text);
+        }
+    }
     out
 }
 

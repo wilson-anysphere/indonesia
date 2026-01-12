@@ -413,6 +413,48 @@ class C {
 }
 
 #[test]
+fn extract_method_uses_try_with_resources_variable_as_parameter() {
+    let fixture = r#"
+class C {
+    void m() {
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(new byte[0])) {
+            /*start*/System.out.println(in);/*end*/
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(new byte[0])) {
+            extracted(in);
+        }
+    }
+
+    private void extracted(java.io.ByteArrayInputStream in) {
+        System.out.println(in);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_keyword_method_name() {
     let fixture = r#"
 class C {

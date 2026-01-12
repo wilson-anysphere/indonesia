@@ -715,6 +715,101 @@ impl<'a> FlowBodyLower<'a> {
 
     fn lower_try_statement(&mut self, try_stmt: &ast::TryStatement) -> Vec<StmtId> {
         self.check_cancelled();
+        let span = span_of_node(try_stmt.syntax());
+
+        // Try-with-resources introduces resource variables scoped to the try statement.
+        // Model this best-effort as:
+        //   {
+        //     <resource let stmts>
+        //     try { ... } catch ... finally ...
+        //   }
+        //
+        // This ensures resource vars are visible inside the try/catch/finally bodies but not after
+        // the statement.
+        if let Some(resource_spec) = try_stmt.resources() {
+            self.push_scope();
+            let mut block_stmts = Vec::new();
+
+            for resource in resource_spec.resources() {
+                self.check_cancelled();
+
+                // `Resource` can be either a local-var declaration (modifiers + type + declarator)
+                // or an expression (Java 9+).
+                //
+                // We only model the declaration form as a local because that's what makes the
+                // resource name resolvable inside the try body.
+                let ty = resource.syntax().children().find_map(ast::Type::cast);
+                let decl = resource
+                    .syntax()
+                    .children()
+                    .find_map(ast::VariableDeclarator::cast);
+
+                if let (Some(_ty), Some(decl)) = (ty, decl) {
+                    let Some(name_tok) = decl.name_token() else {
+                        continue;
+                    };
+
+                    let name = Name::new(name_tok.text().to_string());
+                    let local_id =
+                        self.declare_local(name, LocalKind::Local, span_of_token(&name_tok));
+
+                    // Resource variable declarations are definitely assigned (initializer required
+                    // by the grammar); use an invalid expr for partial code.
+                    let init_expr = decl
+                        .initializer()
+                        .map(|expr| self.lower_expr(expr))
+                        .unwrap_or_else(|| self.alloc_invalid_expr(span_of_node(resource.syntax())));
+
+                    block_stmts.push(self.builder.stmt_with_span(
+                        StmtKind::Let {
+                            local: local_id,
+                            initializer: Some(init_expr),
+                        },
+                        span_of_node(resource.syntax()),
+                    ));
+                }
+            }
+
+            let body_block = try_stmt.body();
+            let body = body_block.as_ref().map(|block| self.lower_block(block)).unwrap_or_else(|| {
+                self.builder
+                    .stmt_with_span(StmtKind::Nop, span_of_node(try_stmt.syntax()))
+            });
+
+            let mut catches = Vec::new();
+            for catch in try_stmt.catches() {
+                self.check_cancelled();
+                self.push_scope();
+                // Catch parameter is definitely assigned.
+                if let Some(param_name) = catch_param_ident(&catch) {
+                    let name = Name::new(param_name.text().to_string());
+                    self.declare_local(name, LocalKind::Param, span_of_token(&param_name));
+                }
+                if let Some(block) = catch.body() {
+                    catches.push(self.lower_block(&block));
+                }
+                self.pop_scope();
+            }
+
+            let finally = try_stmt
+                .finally_clause()
+                .and_then(|fin| fin.body())
+                .map(|block| self.lower_block(&block));
+
+            block_stmts.push(self.builder.stmt_with_span(
+                StmtKind::Try {
+                    body,
+                    catches,
+                    finally,
+                },
+                span,
+            ));
+
+            self.pop_scope();
+
+            return vec![self.builder.stmt_with_span(StmtKind::Block(block_stmts), span)];
+        }
+
         let body_block = try_stmt.body();
         let body = body_block
             .as_ref()
@@ -750,7 +845,7 @@ impl<'a> FlowBodyLower<'a> {
                 catches,
                 finally,
             },
-            span_of_node(try_stmt.syntax()),
+            span,
         )]
     }
 
