@@ -158,6 +158,10 @@ and **skipping** these directories:
 - `.nova/`
 - `.idea/`
 
+For **Gradle composite builds**, Nova also includes build inputs from any `includeBuild(...)` roots
+referenced in `settings.gradle(.kts)` (best-effort parse). This ensures changes in included builds
+can invalidate the snapshot.
+
 Included inputs (current implementation, shared via `nova-build-model`):
 
 - `build.gradle*` (e.g. `build.gradle`, `build.gradle.kts`)
