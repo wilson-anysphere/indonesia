@@ -3746,6 +3746,108 @@ class A {
 }
 
 #[test]
+fn completion_includes_static_single_imported_workspace_method_in_expression() {
+    let outer_path = PathBuf::from("/workspace/src/main/java/p/Outer.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let outer_text = "package p; public class Outer { public static void foo() {} }".to_string();
+    let main_text = r#"
+package q;
+import static p.Outer.foo;
+
+class A {
+  void m() {
+    fo<|>
+  }
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(outer_path, outer_text)]);
+    let items = completions(&db, file, pos);
+    let foo = items
+        .iter()
+        .find(|i| i.label == "foo")
+        .expect("expected foo completion item");
+    assert_eq!(
+        foo.kind,
+        Some(lsp_types::CompletionItemKind::METHOD),
+        "expected Outer.foo to be classified as a method; got {foo:#?}"
+    );
+    assert_eq!(
+        foo.insert_text.as_deref(),
+        Some("foo($0)"),
+        "expected Outer.foo to insert with parens; got {foo:#?}"
+    );
+    assert_eq!(
+        foo.insert_text_format,
+        Some(lsp_types::InsertTextFormat::SNIPPET),
+        "expected Outer.foo to use snippet insertion; got {foo:#?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_star_imported_workspace_field_in_expression() {
+    let outer_path = PathBuf::from("/workspace/src/main/java/p/Outer.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let outer_text = "package p; public class Outer { public static int bar = 0; }".to_string();
+    let main_text = r#"
+package q;
+import static p.Outer.*;
+
+class A {
+  void m() {
+    ba<|>
+  }
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(outer_path, outer_text)]);
+    let items = completions(&db, file, pos);
+    let bar = items
+        .iter()
+        .find(|i| i.label == "bar")
+        .expect("expected bar completion item");
+    assert_eq!(
+        bar.kind,
+        Some(lsp_types::CompletionItemKind::FIELD),
+        "expected Outer.bar to be classified as a field; got {bar:#?}"
+    );
+    assert_eq!(
+        bar.insert_text.as_deref(),
+        Some("bar"),
+        "expected Outer.bar to insert without parens; got {bar:#?}"
+    );
+    assert_eq!(
+        bar.insert_text_format,
+        None,
+        "expected Outer.bar to not use snippet insertion; got {bar:#?}"
+    );
+}
+
+#[test]
+fn completion_does_not_suggest_static_imported_nested_type_in_expression() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.util.Map.Entry;
+
+class A {
+  void m() {
+    Object x = En<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.iter().any(|i| i.label == "Entry"),
+        "expected completion list to not include statically imported nested type Entry as an expression completion; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn static_import_completion_replaces_only_member_segment() {
     let text_with_caret = r#"
  import static java.lang.Math.ma<|>;

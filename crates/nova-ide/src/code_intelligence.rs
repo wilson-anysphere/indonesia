@@ -11976,54 +11976,125 @@ fn general_completions(
     let static_imports = parse_static_imports(&analysis.tokens, jdk.as_ref());
     if !static_imports.is_empty() {
         let mut matcher = FuzzyMatcher::new(prefix);
+        let completion_env = completion_cache::completion_env_for_file(db, file);
+
+        #[derive(Clone, Debug)]
+        struct WorkspaceStaticImportOwner {
+            id: ClassId,
+            binary_name: String,
+        }
+
+        // Cache per-owner workspace type resolution so we don't repeatedly scan the workspace type
+        // environment for the same imported owner.
+        let mut workspace_owners: HashMap<String, Option<WorkspaceStaticImportOwner>> =
+            HashMap::new();
+
         // Cache per-owner static member info so we only hit the JDK index once per
         // imported type.
         let mut static_members_cache: HashMap<String, Vec<StaticMemberInfo>> = HashMap::new();
         for import in static_imports {
-            let static_members = static_members_cache
-                .entry(import.owner.clone())
-                .or_insert_with(|| {
-                    let owner_ty = TypeName::from(import.owner.as_str());
-                    TypeIndex::static_members(jdk.as_ref(), &owner_ty)
-                });
+            let owner_is_jdk = jdk
+                .resolve_type(&QualifiedName::from_dotted(&import.owner))
+                .is_some();
             match import.member.as_str() {
                 "*" => {
-                    if static_members.is_empty() {
-                        // If we can't recover static member kinds, fall back to best-effort name
-                        // enumeration and heuristic item shaping.
-                        let Ok(members) = jdk.static_member_names_with_prefix(&import.owner, "")
-                        else {
+                    if owner_is_jdk {
+                        let static_members = static_members_cache
+                            .entry(import.owner.clone())
+                            .or_insert_with(|| {
+                                let owner_ty = TypeName::from(import.owner.as_str());
+                                TypeIndex::static_members(jdk.as_ref(), &owner_ty)
+                            });
+                        if static_members.is_empty() {
+                            // If we can't recover static member kinds, fall back to best-effort name
+                            // enumeration and heuristic item shaping.
+                            let Ok(members) =
+                                jdk.static_member_names_with_prefix(&import.owner, "")
+                            else {
+                                continue;
+                            };
+                            for name in members {
+                                if matcher.score(&name).is_none() {
+                                    continue;
+                                }
+                                let all_caps = name.chars().any(|c| c.is_ascii_uppercase())
+                                    && !name.chars().any(|c| c.is_ascii_lowercase());
+                                let kind = if all_caps {
+                                    StaticMemberKind::Field
+                                } else {
+                                    StaticMemberKind::Method
+                                };
+                                items.push(static_import_completion_item_from_kind(
+                                    &import.owner,
+                                    &name,
+                                    kind,
+                                ));
+                            }
                             continue;
-                        };
-                        for name in members {
-                            if matcher.score(&name).is_none() {
+                        }
+
+                        for StaticMemberInfo { name, kind } in static_members.iter() {
+                            let name = name.as_str();
+                            if matcher.score(name).is_none() {
                                 continue;
                             }
-                            let all_caps = name.chars().any(|c| c.is_ascii_uppercase())
-                                && !name.chars().any(|c| c.is_ascii_lowercase());
-                            let kind = if all_caps {
-                                StaticMemberKind::Field
-                            } else {
-                                StaticMemberKind::Method
-                            };
                             items.push(static_import_completion_item_from_kind(
                                 &import.owner,
-                                &name,
-                                kind,
+                                name,
+                                *kind,
                             ));
                         }
                         continue;
                     }
 
-                    for StaticMemberInfo { name, kind } in static_members.iter() {
-                        let name = name.as_str();
-                        if matcher.score(name).is_none() {
+                    // Workspace (source) types: use the cached completion environment to surface
+                    // statically imported members.
+                    let Some(env) = completion_env.as_deref() else {
+                        continue;
+                    };
+                    let owner = workspace_owners
+                        .entry(import.owner.clone())
+                        .or_insert_with(|| {
+                            let id = env.types().lookup_class_by_source_name(&import.owner)?;
+                            let class_def = env.types().class(id)?;
+                            Some(WorkspaceStaticImportOwner {
+                                id,
+                                binary_name: class_def.name.clone(),
+                            })
+                        });
+                    let Some(owner) = owner.clone() else {
+                        continue;
+                    };
+                    let Some(class_def) = env.types().class(owner.id) else {
+                        continue;
+                    };
+
+                    let mut seen_names: HashSet<String> = HashSet::new();
+                    let mut members: Vec<(String, CompletionItemKind)> = Vec::new();
+                    for field in class_def.fields.iter().filter(|f| f.is_static) {
+                        if seen_names.insert(field.name.clone()) {
+                            let kind = if field.is_final {
+                                CompletionItemKind::CONSTANT
+                            } else {
+                                CompletionItemKind::FIELD
+                            };
+                            members.push((field.name.clone(), kind));
+                        }
+                    }
+                    for method in class_def.methods.iter().filter(|m| m.is_static) {
+                        if seen_names.insert(method.name.clone()) {
+                            members.push((method.name.clone(), CompletionItemKind::METHOD));
+                        }
+                    }
+                    members.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    for (name, kind) in members {
+                        if matcher.score(&name).is_none() {
                             continue;
                         }
-                        items.push(static_import_completion_item_from_kind(
-                            &import.owner,
-                            name,
-                            *kind,
+                        items.push(static_import_completion_item_from_completion_kind(
+                            &owner.binary_name,
+                            &name,
+                            kind,
                         ));
                     }
                 }
@@ -12031,17 +12102,90 @@ fn general_completions(
                     if matcher.score(name).is_none() {
                         continue;
                     }
-                    let kind_hint = static_members
+
+                    // Avoid suggesting nested types (e.g. `import static java.util.Map.Entry;`) as
+                    // expression completions. Static imports can bring nested types into scope, but
+                    // those are primarily useful in type positions.
+                    if owner_is_jdk {
+                        let nested_candidate = format!("{}${name}", import.owner);
+                        if jdk
+                            .resolve_type(&QualifiedName::from_dotted(&nested_candidate))
+                            .is_some()
+                        {
+                            continue;
+                        }
+
+                        let static_members = static_members_cache
+                            .entry(import.owner.clone())
+                            .or_insert_with(|| {
+                                let owner_ty = TypeName::from(import.owner.as_str());
+                                TypeIndex::static_members(jdk.as_ref(), &owner_ty)
+                            });
+                        let kind_hint = static_members
+                            .iter()
+                            .find(|m| m.name.as_str() == name)
+                            .map(|m| m.kind);
+                        items.push(static_import_completion_item(
+                            &types,
+                            jdk.as_ref(),
+                            &import.owner,
+                            name,
+                            kind_hint,
+                        ));
+                        continue;
+                    }
+
+                    let Some(env) = completion_env.as_deref() else {
+                        continue;
+                    };
+                    let owner = workspace_owners
+                        .entry(import.owner.clone())
+                        .or_insert_with(|| {
+                            let id = env.types().lookup_class_by_source_name(&import.owner)?;
+                            let class_def = env.types().class(id)?;
+                            Some(WorkspaceStaticImportOwner {
+                                id,
+                                binary_name: class_def.name.clone(),
+                            })
+                        });
+                    let Some(owner) = owner.clone() else {
+                        continue;
+                    };
+                    let Some(class_def) = env.types().class(owner.id) else {
+                        continue;
+                    };
+
+                    let nested_candidate = format!("{}${name}", owner.binary_name);
+                    if env.types().class_id(&nested_candidate).is_some() {
+                        continue;
+                    }
+
+                    if let Some(field) = class_def
+                        .fields
                         .iter()
-                        .find(|m| m.name.as_str() == name)
-                        .map(|m| m.kind);
-                    items.push(static_import_completion_item(
-                        &types,
-                        jdk.as_ref(),
-                        &import.owner,
-                        name,
-                        kind_hint,
-                    ));
+                        .find(|f| f.is_static && f.name == name)
+                    {
+                        let kind = if field.is_final {
+                            CompletionItemKind::CONSTANT
+                        } else {
+                            CompletionItemKind::FIELD
+                        };
+                        items.push(static_import_completion_item_from_completion_kind(
+                            &owner.binary_name,
+                            name,
+                            kind,
+                        ));
+                    } else if class_def
+                        .methods
+                        .iter()
+                        .any(|m| m.is_static && m.name == name)
+                    {
+                        items.push(static_import_completion_item_from_completion_kind(
+                            &owner.binary_name,
+                            name,
+                            CompletionItemKind::METHOD,
+                        ));
+                    }
                 }
             }
         }
@@ -13332,6 +13476,31 @@ fn static_import_completion_item_from_kind(
     CompletionItem {
         label: name.to_string(),
         kind: Some(item_kind),
+        detail: Some(binary_name_to_source_name(owner)),
+        insert_text,
+        insert_text_format,
+        // Mark the completion so we can apply a small ranking bonus.
+        data: Some(json!({ "nova": { "origin": "code_intelligence", "static_import": true } })),
+        ..Default::default()
+    }
+}
+
+fn static_import_completion_item_from_completion_kind(
+    owner: &str,
+    name: &str,
+    kind: CompletionItemKind,
+) -> CompletionItem {
+    let (insert_text, insert_text_format) = match kind {
+        CompletionItemKind::METHOD => (
+            Some(format!("{name}($0)")),
+            Some(InsertTextFormat::SNIPPET),
+        ),
+        _ => (Some(name.to_string()), None),
+    };
+
+    CompletionItem {
+        label: name.to_string(),
+        kind: Some(kind),
         detail: Some(binary_name_to_source_name(owner)),
         insert_text,
         insert_text_format,
