@@ -3053,7 +3053,10 @@ class Foo {
         db.set_file_text(file, "abc");
         assert_eq!(manager.report().usage.other, 3);
 
-        let edit = nova_syntax::TextEdit::new(nova_syntax::TextRange::new(1, 2), "xxxx");
+        let edit = nova_core::TextEdit::new(
+            nova_core::TextRange::new(nova_core::TextSize::from(1), nova_core::TextSize::from(2)),
+            "xxxx",
+        );
         db.apply_file_text_edit(file, edit);
 
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).

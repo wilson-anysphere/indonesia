@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nova_db::{FileId, NovaSyntax as _, SalsaDatabase};
-use nova_syntax::{TextEdit, TextRange};
+use nova_core::{TextEdit, TextRange, TextSize};
 
 fn large_java_source() -> String {
     let mut out = String::from("package bench;\n\npublic class Large {\n");
@@ -17,8 +17,8 @@ fn large_java_source() -> String {
 }
 
 fn apply_edit(source: &str, edit: &TextEdit) -> String {
-    let start = edit.range.start as usize;
-    let end = edit.range.end as usize;
+    let start = u32::from(edit.range.start()) as usize;
+    let end = u32::from(edit.range.end()) as usize;
     assert!(start <= end && end <= source.len());
     assert!(source.is_char_boundary(start) && source.is_char_boundary(end));
 
@@ -45,7 +45,9 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
         .find("x + 0")
         .map(|idx| idx + "x + ".len())
         .expect("large fixture must contain `x + 0`");
-    let range = TextRange::new(edit_offset, edit_offset + 1);
+    let start = TextSize::from(u32::try_from(edit_offset).expect("offset fits in u32"));
+    let end = TextSize::from(u32::try_from(edit_offset + 1).expect("offset fits in u32"));
+    let range = TextRange::new(start, end);
     let edit_to_1 = TextEdit::new(range, "1");
     let edit_to_0 = TextEdit::new(range, "0");
     let src1 = apply_edit(&src0, &edit_to_1);
