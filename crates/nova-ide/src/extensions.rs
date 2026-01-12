@@ -829,10 +829,10 @@ where
 
         if let Some(uri) = uri.clone() {
             if source.contains("import") {
-                let file = RefactorFileId::new(uri.to_string());
-                let db = TextDatabase::new([(file.clone(), source.to_string())]);
+                let refactor_file = RefactorFileId::new(uri.to_string());
+                let db = TextDatabase::new([(refactor_file.clone(), source.to_string())]);
                 if let Ok(edit) =
-                    organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+                    organize_imports(&db, OrganizeImportsParams { file: refactor_file.clone() })
                 {
                     if !edit.is_empty() {
                         if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
@@ -841,6 +841,7 @@ where
                                     title: "Organize imports".to_string(),
                                     kind: Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
                                     edit: Some(lsp_edit),
+                                    is_preferred: Some(true),
                                     ..lsp_types::CodeAction::default()
                                 },
                             ));
