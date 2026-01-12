@@ -391,7 +391,7 @@ bash scripts/cargo_agent.sh test --locked -p nova-lsp --test tests stdio_
 #### 3b) DAP end-to-end tests (in-memory transport)
 
 **Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/real_jvm.rs`,
-run via `cargo test -p nova-dap --test tests`; most tests use in-memory duplex streams + a mock JDWP server).
+run via `cargo test --locked -p nova-dap --test tests`; most tests use in-memory duplex streams + a mock JDWP server).
 
 **Run locally:**
 
@@ -407,7 +407,7 @@ If the tools are missing, the test prints a message and returns early so normal 
 
 **Where:**
 
-- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (run via `cargo test -p nova-dap --test tests suite::real_jvm`)
+- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (run via `cargo test --locked -p nova-dap --test tests suite::real_jvm`)
 - Java fixture: `crates/nova-dap/testdata/java/Main.java`
 
 **Run locally:**

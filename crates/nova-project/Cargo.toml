@@ -41,6 +41,6 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 # Integration test harness.
 #
 # Note: this is explicitly named `harness` so automation can run:
-# `cargo test -p nova-project --test harness`
+# `cargo test --locked -p nova-project --test harness`
 name = "harness"
 path = "tests/real_projects.rs"
