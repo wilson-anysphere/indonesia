@@ -2347,47 +2347,46 @@ impl Lowerer {
 
     fn lower_lambda_expr(&self, node: &SyntaxNode) -> ast::Expr {
         let range = self.spans.map_node(node);
-        let arrow = node
-            .children_with_tokens()
-            .filter_map(|el| el.into_token())
-            .find(|tok| tok.kind() == SyntaxKind::Arrow);
-        let arrow_start = arrow
-            .as_ref()
-            .map(|tok| self.spans.map_token(tok).start)
-            .unwrap_or(range.end);
-
-        let params_region = node
+        // Lambdas are parsed into a structured parameter subtree; lower parameters by walking
+        // `LambdaParameter` nodes instead of splitting on comma tokens.
+        //
+        // This is important for typed lambdas where type arguments may contain commas, e.g.
+        // `(Map<String, Integer> m) -> ...`. A token-based split would incorrectly treat the
+        // type-argument comma as a parameter separator.
+        let params = node
             .children()
             .find(|child| child.kind() == SyntaxKind::LambdaParameters)
-            .unwrap_or_else(|| node.clone());
-
-        let mut segments: Vec<Option<SyntaxToken>> = vec![None];
-        for tok in params_region
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-        {
-            if tok.kind().is_trivia() || tok.kind() == SyntaxKind::Eof {
-                continue;
-            }
-            let span = self.spans.map_token(&tok);
-            if span.start >= arrow_start {
-                break;
-            }
-            if tok.kind() == SyntaxKind::Comma {
-                segments.push(None);
-                continue;
-            }
-            if tok.kind().is_identifier_like() {
-                *segments.last_mut().expect("segments not empty") = Some(tok);
-            }
-        }
-
-        let params = segments
+            .and_then(|params| {
+                if let Some(list) = params
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::LambdaParameterList)
+                {
+                    Some(
+                        list.children()
+                            .filter(|child| child.kind() == SyntaxKind::LambdaParameter)
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    params
+                        .children()
+                        .find(|child| child.kind() == SyntaxKind::LambdaParameter)
+                        .map(|single| vec![single])
+                }
+            })
+            .unwrap_or_default()
             .into_iter()
-            .filter_map(|tok| tok)
-            .map(|tok| ast::LambdaParam {
-                name: tok.text().to_string(),
-                range: self.spans.map_token(&tok),
+            .filter_map(|param| {
+                let name = self.first_ident_like_token(&param).or_else(|| {
+                    param
+                        .children()
+                        .find(|child| child.kind() == SyntaxKind::UnnamedPattern)
+                        .and_then(|pattern| pattern.first_token())
+                })?;
+
+                Some(ast::LambdaParam {
+                    name: name.text().to_string(),
+                    range: self.spans.map_token(&name),
+                })
             })
             .collect();
 

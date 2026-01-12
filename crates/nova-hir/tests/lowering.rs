@@ -798,3 +798,34 @@ class Foo {
     locals.sort();
     assert_eq!(locals, vec!["e", "f", "i", "o", "p", "s"]);
 }
+
+#[test]
+fn lower_lambda_typed_param_with_generic_type_arguments() {
+    let source = r#"
+class Foo {
+    void m() {
+        Object f = (java.util.Map<String, Integer> m) -> m;
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    let method_id = method_id_by_name(&tree, file, "m");
+    let lowered = body(&db, method_id);
+
+    let mut locals: Vec<_> = lowered
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    locals.sort();
+
+    // Regression test: comma-separated type arguments should not be mistaken for additional
+    // lambda parameters (e.g. `String` / `Integer`).
+    assert_eq!(locals, vec!["f", "m"]);
+}
