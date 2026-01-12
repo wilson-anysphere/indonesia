@@ -579,3 +579,43 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
         calls,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn receiverless_calls_are_indexed_as_this() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  void foo() {}
+  void test() { foo(); }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(parsed
+            .calls
+            .iter()
+            .any(|call| call.receiver == "this" && call.method == "foo"));
+    }
+
+    #[test]
+    fn keywords_are_not_indexed_as_receiverless_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  void test(boolean cond) {
+    if (cond) {}
+  }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(!parsed.calls.iter().any(|call| call.method == "if"));
+    }
+}

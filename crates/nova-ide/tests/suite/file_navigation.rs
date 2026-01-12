@@ -157,6 +157,26 @@ class C {
 }
 
 #[test]
+fn go_to_implementation_does_not_trigger_on_if_keyword() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /C.java
+class C {
+  void test(boolean cond) {
+    $0if (cond) {}
+  }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert!(got.is_empty());
+}
+
+#[test]
 fn go_to_type_definition_on_variable_returns_class() {
     let fixture = FileIdFixture::parse(
         r#"
