@@ -36,12 +36,14 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
             .module_path
             .iter()
             .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
-        "dependency override directory should be placed on module-path when JPMS is enabled"
+        "dependency override directory should be placed on module-path when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
 
     assert!(
         !module.classpath.iter().any(|e| e.path == dep_dir),
-        "dependency override directory should not remain on the classpath when JPMS is enabled"
+        "dependency override directory should not remain on the classpath when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
 }
 
@@ -75,11 +77,13 @@ fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_wor
             .module_path
             .iter()
             .any(|e| e.path == jar_path && e.kind == ClasspathEntryKind::Jar),
-        "missing jar override should be placed on module-path when JPMS is enabled"
+        "missing jar override should be placed on module-path when JPMS is enabled (jar_path={})",
+        jar_path.display()
     );
     assert!(
         !module.classpath.iter().any(|e| e.path == jar_path),
-        "missing jar override should not remain on classpath when JPMS is enabled"
+        "missing jar override should not remain on classpath when JPMS is enabled (jar_path={})",
+        jar_path.display()
     );
 }
 
@@ -112,11 +116,13 @@ fn simple_workspace_model_puts_missing_jmod_overrides_on_module_path_for_jpms_wo
             .module_path
             .iter()
             .any(|e| e.path == jmod_path && e.kind == ClasspathEntryKind::Jar),
-        "missing jmod override should be placed on module-path when JPMS is enabled"
+        "missing jmod override should be placed on module-path when JPMS is enabled (jmod_path={})",
+        jmod_path.display()
     );
     assert!(
         !module.classpath.iter().any(|e| e.path == jmod_path),
-        "missing jmod override should not remain on classpath when JPMS is enabled"
+        "missing jmod override should not remain on classpath when JPMS is enabled (jmod_path={})",
+        jmod_path.display()
     );
 }
 
@@ -182,11 +188,13 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
             .module_path
             .iter()
             .any(|e| e.path == jar_path && e.kind == ClasspathEntryKind::Jar),
-        "Maven dependency jar with Automatic-Module-Name should be on module-path when JPMS is enabled"
+        "Maven dependency jar with Automatic-Module-Name should be on module-path when JPMS is enabled (jar_path={})",
+        jar_path.display()
     );
     assert!(
         !module.classpath.iter().any(|e| e.path == jar_path),
-        "Maven dependency jar should not remain on classpath when JPMS is enabled"
+        "Maven dependency jar should not remain on classpath when JPMS is enabled (jar_path={})",
+        jar_path.display()
     );
 }
 
@@ -225,11 +233,13 @@ fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
             .module_path
             .iter()
             .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
-        "override directory should be placed on module-path when JPMS is enabled"
+        "override directory should be placed on module-path when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
     assert!(
         !module.classpath.iter().any(|e| e.path == dep_dir),
-        "override directory should not remain on the classpath when JPMS is enabled"
+        "override directory should not remain on the classpath when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
 
     let main_out = root.join("build/classes/java/main");
@@ -239,14 +249,16 @@ fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
             .classpath
             .iter()
             .any(|e| e.path == main_out && e.kind == ClasspathEntryKind::Directory),
-        "Gradle output dirs should remain on classpath"
+        "Gradle output dirs should remain on classpath (main_out={})",
+        main_out.display()
     );
     assert!(
         module
             .classpath
             .iter()
             .any(|e| e.path == test_out && e.kind == ClasspathEntryKind::Directory),
-        "Gradle output dirs should remain on classpath"
+        "Gradle output dirs should remain on classpath (test_out={})",
+        test_out.display()
     );
 }
 
@@ -285,11 +297,13 @@ fn bazel_workspace_model_populates_module_path_for_jpms_overrides() {
             .module_path
             .iter()
             .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
-        "override directory should be placed on module-path when JPMS is enabled"
+        "override directory should be placed on module-path when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
     assert!(
         !module.classpath.iter().any(|e| e.path == dep_dir),
-        "override directory should not remain on the classpath when JPMS is enabled"
+        "override directory should not remain on the classpath when JPMS is enabled (dep_dir={})",
+        dep_dir.display()
     );
 }
 
