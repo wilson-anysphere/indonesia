@@ -132,8 +132,12 @@ unsupported-feature condition and either ignore them (when safe) or fail the con
 
 Recommended handling:
 
-- **During handshake:** if an unknown/unsupported frame is received, the router SHOULD reject with
-  `Reject(code="invalid_request", ...)` and close the connection.
+- **During handshake:**
+  - If the first frame is not `WireFrame::Hello`, the router SHOULD treat this as an invalid
+    request and close the connection. (Per §4, the router MUST NOT send any frames before it
+    receives `Hello`.)
+  - If the router receives a valid `Hello` but cannot accept it (auth/version/capability/admission
+    failure), it SHOULD send `WireFrame::Reject(...)` and then close the connection.
 - **After handshake:** unknown `WireFrame` variants SHOULD be ignored/dropped.
 - For `RpcPayload::Request(Request::Unknown)`, the responder SHOULD return
   `RpcPayload::Response(RpcResult::Err { error: { code: "invalid_request", .. }})`.
@@ -214,6 +218,9 @@ Worker                                         Router
 
   |<-- Frame: WireFrame::Reject -----------------|  (failure; router closes)
 ```
+
+If the handshake fails *before* the router can decode a valid `Hello` (e.g. invalid framing/CBOR,
+or a first frame that is not `Hello`), the router MAY close the connection without sending `Reject`.
 
 ### 4.2 `Hello` (worker → router)
 
