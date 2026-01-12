@@ -1,13 +1,15 @@
 use crate::indexes::{IndexSymbolKind, SymbolIndex, SymbolLocation};
 use nova_core::SymbolId;
 use nova_fuzzy::{
-    FuzzyMatcher, MatchKind, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder,
+    FuzzyMatcher, MatchKind, MatchScore, RankKey, TrigramCandidateScratch, TrigramIndex,
+    TrigramIndexBuilder,
 };
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 thread_local! {
@@ -58,6 +60,7 @@ pub struct SearchResult {
 struct CandidateKey<'a> {
     id: SymbolId,
     score: MatchScore,
+    rank_key: RankKey,
     name: &'a str,
     qualified_name: &'a str,
     location_file: &'a str,
@@ -71,9 +74,8 @@ impl Ord for CandidateKey<'_> {
         // This ordering is the "best first" ordering used by `search_with_stats`.
         // `BinaryHeap` is a max-heap, so we store `Reverse<CandidateKey>` and pop
         // the worst candidate when maintaining a bounded top-K heap.
-        self.score
-            .rank_key()
-            .cmp(&other.score.rank_key())
+        self.rank_key
+            .cmp(&other.rank_key)
             // Shorter names rank higher for the same fuzzy score.
             .then_with(|| other.name.len().cmp(&self.name.len()))
             // Stable disambiguators.
@@ -287,29 +289,15 @@ impl SymbolSearchIndex {
             let mut matcher = FuzzyMatcher::new(query);
 
             let mut push_scored = |id: SymbolId, score: MatchScore| {
-                // The heap is a max-heap of `Reverse<CandidateKey>`, so the root is the
-                // worst candidate (smallest `CandidateKey`).
-                let Some(&Reverse(worst)) = scored.peek() else {
-                    // Heap is empty (len == 0) → always push.
-                    let sym = &self.symbols[id as usize].symbol;
-                    scored.push(Reverse(CandidateKey {
-                        id,
-                        score,
-                        name: sym.name.as_str(),
-                        qualified_name: sym.qualified_name.as_str(),
-                        location_file: sym.location.file.as_str(),
-                        location_line: sym.location.line,
-                        location_column: sym.location.column,
-                        ast_id: sym.ast_id,
-                    }));
-                    return;
-                };
+                let score_key = score.rank_key();
 
+                // Until the heap is full we can push unconditionally.
                 if scored.len() < limit {
                     let sym = &self.symbols[id as usize].symbol;
                     scored.push(Reverse(CandidateKey {
                         id,
                         score,
+                        rank_key: score_key,
                         name: sym.name.as_str(),
                         qualified_name: sym.qualified_name.as_str(),
                         location_file: sym.location.file.as_str(),
@@ -320,17 +308,47 @@ impl SymbolSearchIndex {
                     return;
                 }
 
+                // The heap is a max-heap of `Reverse<CandidateKey>`, so the root is the
+                // worst candidate (smallest `CandidateKey`).
+                let &Reverse(worst) = scored
+                    .peek()
+                    .expect("scored heap should be non-empty when len() >= limit");
+
                 // Fast path: if the score alone can't beat the current worst, we can
                 // skip building a full `CandidateKey` (saves some memory traffic on
                 // large candidate sets).
-                if score.rank_key() < worst.score.rank_key() {
-                    return;
+                match score_key.cmp(&worst.rank_key) {
+                    Ordering::Less => return,
+                    Ordering::Greater => {
+                        let sym = &self.symbols[id as usize].symbol;
+                        let key = CandidateKey {
+                            id,
+                            score,
+                            rank_key: score_key,
+                            name: sym.name.as_str(),
+                            qualified_name: sym.qualified_name.as_str(),
+                            location_file: sym.location.file.as_str(),
+                            location_line: sym.location.line,
+                            location_column: sym.location.column,
+                            ast_id: sym.ast_id,
+                        };
+
+                        let mut worst_mut = scored
+                            .peek_mut()
+                            .expect("peek_mut should succeed when peek succeeds");
+                        *worst_mut = Reverse(key);
+                        return;
+                    }
+                    Ordering::Equal => {
+                        // Potential tie: build the full key and compare.
+                    }
                 }
 
                 let sym = &self.symbols[id as usize].symbol;
                 let key = CandidateKey {
                     id,
                     score,
+                    rank_key: score_key,
                     name: sym.name.as_str(),
                     qualified_name: sym.qualified_name.as_str(),
                     location_file: sym.location.file.as_str(),
@@ -758,6 +776,7 @@ mod tests {
             scored.push(CandidateKey {
                 id,
                 score,
+                rank_key: score.rank_key(),
                 name: sym.name.as_str(),
                 qualified_name: sym.qualified_name.as_str(),
                 location_file: sym.location.file.as_str(),
