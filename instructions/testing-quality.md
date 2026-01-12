@@ -115,12 +115,24 @@ fn parse_method_declaration() {
 
 **Update snapshots:**
 ```bash
-# `insta` snapshots (e.g. formatter tests)
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests
-
-# Golden / fixture expectations (used by several suites, including the `nova-syntax` golden corpus)
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+# Nova has two snapshot systems:
+# - File-based golden tests (parser snapshots, refactor fixtures): set `BLESS=1`
+# - `insta` snapshots (formatter): set `INSTA_UPDATE=always`
+#
+# Parser golden corpus (`nova-syntax`): writes `crates/nova-syntax/testdata/**/*.tree` + `.errors`
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+#
+# Refactor before/after fixtures (`nova-refactor`): writes `crates/nova-refactor/tests/fixtures/**/after/**`
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test move move_static_method_updates_call_sites
+#
+# Formatter snapshots (`nova-format`): writes `crates/nova-format/tests/snapshots/*.snap`
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
+
+For the canonical “where do fixtures live / how do I bless them” workflow, see
+[14 - Testing Infrastructure](../docs/14-testing-infrastructure.md) (and in agent runs, prefer
+`bash scripts/cargo_agent.sh ...` over raw `cargo ...`).
 
 ### JLS Compliance Tests
 
@@ -351,11 +363,11 @@ bash scripts/cargo_agent.sh test -p nova-types --lib -- test_name
 # With output
 bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
 
-# Update golden / fixture expectations
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
-
-# Update `insta` snapshots
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests
+# Update snapshots
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test move move_static_method_updates_call_sites
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 **NEVER run:**
