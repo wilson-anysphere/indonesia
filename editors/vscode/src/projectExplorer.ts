@@ -170,20 +170,20 @@ export function registerNovaProjectExplorer(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_REFRESH, (arg?: unknown) => {
-      const workspace = getWorkspaceFolderFromCommandArg(arg);
+      const workspace = getWorkspaceFolderFromCommandArg(arg ?? view.selection?.[0]);
       provider.refresh({ forceRefresh: true, workspace });
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_MODEL, async (arg?: unknown) => {
-      await showProjectModel(projectModelCache, arg);
+      await showProjectModel(projectModelCache, arg ?? view.selection?.[0]);
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_CONFIG, async (arg?: unknown) => {
-      await showProjectConfiguration(projectModelCache, arg);
+      await showProjectConfiguration(projectModelCache, arg ?? view.selection?.[0]);
     }),
   );
 
@@ -195,7 +195,7 @@ export function registerNovaProjectExplorer(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_COPY_PATH, async (arg?: unknown) => {
-      await copyPath(arg);
+      await copyPath(arg ?? view.selection?.[0]);
     }),
   );
 
