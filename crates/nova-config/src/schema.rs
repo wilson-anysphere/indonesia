@@ -416,6 +416,62 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // Cloud multi-token completions include identifier-heavy method/import lists, so they require
+    // explicitly disabling identifier anonymization (similar to code-edit opt-in).
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "privacy", "features"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "privacy": {
+                                "required": ["local_only"],
+                                "properties": {
+                                    "local_only": { "const": false }
+                                }
+                            },
+                            "features": {
+                                "required": ["multi_token_completion"],
+                                "properties": {
+                                    "multi_token_completion": { "const": true }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "properties": {
+                            "privacy": {
+                                "anyOf": [
+                                    {
+                                        "required": ["anonymize_identifiers"],
+                                        "properties": {
+                                            "anonymize_identifiers": { "const": false }
+                                        }
+                                    },
+                                    {
+                                        "required": ["anonymize"],
+                                        "properties": {
+                                            "anonymize": { "const": false }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
     disallow_alias_collisions(schema);
 

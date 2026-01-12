@@ -1,5 +1,6 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
+assertion_line: 4
 expression: schema
 ---
 {
@@ -528,6 +529,82 @@ expression: schema
                     "const": true
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "features",
+              "privacy"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "features": {
+                "required": [
+                  "multi_token_completion"
+                ],
+                "properties": {
+                  "multi_token_completion": {
+                    "const": true
+                  }
+                }
+              },
+              "privacy": {
+                "required": [
+                  "local_only"
+                ],
+                "properties": {
+                  "local_only": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "properties": {
+              "privacy": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "anonymize_identifiers"
+                    ],
+                    "properties": {
+                      "anonymize_identifiers": {
+                        "const": false
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "anonymize"
+                    ],
+                    "properties": {
+                      "anonymize": {
+                        "const": false
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
