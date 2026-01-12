@@ -5,9 +5,15 @@ use nova_fuzzy::{
 };
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::{Arc, Mutex, OnceLock};
+
+thread_local! {
+    static TRIGRAM_SCRATCH: RefCell<TrigramCandidateScratch> =
+        RefCell::new(TrigramCandidateScratch::default());
+}
 
 /// A single symbol definition within the workspace.
 ///
@@ -202,38 +208,19 @@ impl SymbolSearchIndex {
             );
         }
 
-        enum CandidateSource<'a> {
-            Ids(&'a [SymbolId]),
-            FullScan(usize),
-        }
+        TRIGRAM_SCRATCH.with(|scratch| {
+            let mut trigram_scratch = scratch.borrow_mut();
 
-        let mut trigram_scratch = TrigramCandidateScratch::default();
-
-        let (strategy, candidates_considered, candidates): (
-            CandidateStrategy,
-            usize,
-            CandidateSource<'_>,
-        ) = if q_bytes.len() < 3 {
-            let key = q_bytes[0].to_ascii_lowercase();
-            let bucket = &self.prefix1[key as usize];
-            if !bucket.is_empty() {
-                (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
-            } else {
-                let scan_limit = 50_000usize.min(self.symbols.len());
-                (
-                    CandidateStrategy::FullScan,
-                    scan_limit,
-                    CandidateSource::FullScan(scan_limit),
-                )
+            enum CandidateSource<'a> {
+                Ids(&'a [SymbolId]),
+                FullScan(usize),
             }
-        } else {
-            let trigram_candidates =
-                self.trigram
-                    .candidates_with_scratch(query, &mut trigram_scratch);
-            if trigram_candidates.is_empty() {
-                // For longer queries, a missing trigram intersection likely means no
-                // substring match exists. Fall back to a (bounded) scan to still
-                // support acronym-style queries.
+
+            let (strategy, candidates_considered, candidates): (
+                CandidateStrategy,
+                usize,
+                CandidateSource<'_>,
+            ) = if q_bytes.len() < 3 {
                 let key = q_bytes[0].to_ascii_lowercase();
                 let bucket = &self.prefix1[key as usize];
                 if !bucket.is_empty() {
@@ -247,83 +234,105 @@ impl SymbolSearchIndex {
                     )
                 }
             } else {
-                (
-                    CandidateStrategy::Trigram,
-                    trigram_candidates.len(),
-                    CandidateSource::Ids(trigram_candidates),
-                )
-            }
-        };
+                let trigram_candidates = self
+                    .trigram
+                    .candidates_with_scratch(query, &mut trigram_scratch);
+                if trigram_candidates.is_empty() {
+                    // For longer queries, a missing trigram intersection likely means no
+                    // substring match exists. Fall back to a (bounded) scan to still
+                    // support acronym-style queries.
+                    let key = q_bytes[0].to_ascii_lowercase();
+                    let bucket = &self.prefix1[key as usize];
+                    if !bucket.is_empty() {
+                        (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                    } else {
+                        let scan_limit = 50_000usize.min(self.symbols.len());
+                        (
+                            CandidateStrategy::FullScan,
+                            scan_limit,
+                            CandidateSource::FullScan(scan_limit),
+                        )
+                    }
+                } else {
+                    (
+                        CandidateStrategy::Trigram,
+                        trigram_candidates.len(),
+                        CandidateSource::Ids(trigram_candidates),
+                    )
+                }
+            };
 
-        if limit == 0 {
-            return (
-                Vec::new(),
+            if limit == 0 {
+                return (
+                    Vec::new(),
+                    SearchStats {
+                        strategy,
+                        candidates_considered,
+                    },
+                );
+            }
+
+            // Keep at most `limit` matches while scoring candidates, to avoid large
+            // allocations and O(n log n) sorts for short queries.
+            let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::new();
+            let mut matcher = FuzzyMatcher::new(query);
+
+            let mut push_scored = |id: SymbolId, score: MatchScore| {
+                let sym = &self.symbols[id as usize].symbol;
+                scored.push(Reverse(CandidateKey {
+                    id,
+                    score,
+                    name: sym.name.as_str(),
+                    qualified_name: sym.qualified_name.as_str(),
+                    location_file: sym.location.file.as_str(),
+                    location_line: sym.location.line,
+                    location_column: sym.location.column,
+                    ast_id: sym.ast_id,
+                }));
+                if scored.len() > limit {
+                    scored.pop();
+                }
+            };
+
+            match candidates {
+                CandidateSource::Ids(ids) => {
+                    for &id in ids {
+                        if let Some(score) = self.score_candidate(id, &mut matcher) {
+                            push_scored(id, score);
+                        }
+                    }
+                }
+                CandidateSource::FullScan(scan_limit) => {
+                    for id in 0..scan_limit {
+                        let id = id as SymbolId;
+                        if let Some(score) = self.score_candidate(id, &mut matcher) {
+                            push_scored(id, score);
+                        }
+                    }
+                }
+            }
+
+            let mut results: Vec<CandidateKey<'_>> =
+                scored.into_iter().map(|Reverse(key)| key).collect();
+            results.sort_by(|a, b| b.cmp(a));
+
+            let results: Vec<SearchResult> = results
+                .into_iter()
+                .map(|res| SearchResult {
+                    id: res.id,
+                    symbol: self.symbols[res.id as usize].symbol.clone(),
+                    score: res.score,
+                })
+                .collect();
+
+            (
+                results,
                 SearchStats {
                     strategy,
                     candidates_considered,
                 },
-            );
-        }
-
-        // Keep at most `limit` matches while scoring candidates, to avoid large
-        // allocations and O(n log n) sorts for short queries.
-        let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::new();
-        let mut matcher = FuzzyMatcher::new(query);
-
-        let mut push_scored = |id: SymbolId, score: MatchScore| {
-            let sym = &self.symbols[id as usize].symbol;
-            scored.push(Reverse(CandidateKey {
-                id,
-                score,
-                name: sym.name.as_str(),
-                qualified_name: sym.qualified_name.as_str(),
-                location_file: sym.location.file.as_str(),
-                location_line: sym.location.line,
-                location_column: sym.location.column,
-                ast_id: sym.ast_id,
-            }));
-            if scored.len() > limit {
-                scored.pop();
-            }
-        };
-
-        match candidates {
-            CandidateSource::Ids(ids) => {
-                for &id in ids {
-                    if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        push_scored(id, score);
-                    }
-                }
-            }
-            CandidateSource::FullScan(scan_limit) => {
-                for id in 0..scan_limit {
-                    let id = id as SymbolId;
-                    if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        push_scored(id, score);
-                    }
-                }
-            }
-        }
-
-        let mut results: Vec<CandidateKey<'_>> = scored.into_iter().map(|Reverse(key)| key).collect();
-        results.sort_by(|a, b| b.cmp(a));
-
-        let results: Vec<SearchResult> = results
-            .into_iter()
-            .map(|res| SearchResult {
-                id: res.id,
-                symbol: self.symbols[res.id as usize].symbol.clone(),
-                score: res.score,
-            })
-            .collect();
-
-        (
-            results,
-            SearchStats {
-                strategy,
-                candidates_considered,
-            },
-        )
+            )
+        })
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchResult> {
