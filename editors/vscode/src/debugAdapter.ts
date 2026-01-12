@@ -22,7 +22,14 @@ export function registerNovaDebugAdapter(
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.installOrUpdateDebugAdapter', async () => {
       try {
-        await manager.installOrUpdateDebugAdapter(vscode.workspace.workspaceFolders?.[0]);
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        const folder = await pickWorkspaceFolderForCommand(
+          'Select the workspace folder to install/update nova-dap settings',
+        );
+        if (folders.length > 1 && !folder) {
+          return;
+        }
+        await manager.installOrUpdateDebugAdapter(folder);
       } catch (err) {
         if (err instanceof Error && err.message === 'cancelled') {
           return;
@@ -42,7 +49,12 @@ export function registerNovaDebugAdapter(
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.showDebugAdapterVersion', async () => {
       try {
-        await manager.showDebugAdapterVersion(vscode.workspace.workspaceFolders?.[0]);
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        const folder = await pickWorkspaceFolderForCommand('Select the workspace folder to resolve nova-dap');
+        if (folders.length > 1 && !folder) {
+          return;
+        }
+        await manager.showDebugAdapterVersion(folder);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         void vscode.window.showErrorMessage(`Nova: failed to run nova-dap --version: ${message}`);
@@ -97,7 +109,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
   async installOrUpdateDebugAdapter(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
     const config = vscode.workspace.getConfiguration('nova', workspaceFolder?.uri);
 
-    const workspaceRoot = workspaceFolder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const workspaceRoot = workspaceFolder?.uri.fsPath ?? singleWorkspaceRoot();
     const rawPath = config.get<string | null>('dap.path', null) ?? config.get<string | null>('debug.adapterPath', null);
     const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
 
@@ -386,6 +398,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     await clearSettingAtAllTargets('dap.path');
     await clearSettingAtAllTargets('debug.adapterPath');
     await config.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
+    // Keep the deprecated alias in sync for older configurations.
     await config.update('debug.adapterPath', pickedPath, vscode.ConfigurationTarget.Global);
     return pickedPath;
   }
@@ -393,7 +406,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
   private async resolveNovaDapCommandForWorkspaceFolder(
     workspaceFolder: vscode.WorkspaceFolder | undefined,
   ): Promise<string> {
-    const workspaceRoot = workspaceFolder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const workspaceRoot = workspaceFolder?.uri.fsPath ?? singleWorkspaceRoot();
     const config = vscode.workspace.getConfiguration('nova', workspaceFolder?.uri);
     const downloadMode = this.readDownloadMode(config);
     const allowMismatch = this.allowVersionMismatch(config);
@@ -527,6 +540,39 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
 }
 
 class UserFacingError extends Error {}
+
+function singleWorkspaceRoot(): string | null {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 1) {
+    return folders[0].uri.fsPath;
+  }
+  return null;
+}
+
+async function pickWorkspaceFolderForCommand(placeHolder: string): Promise<vscode.WorkspaceFolder | undefined> {
+  const activeUri = vscode.window.activeTextEditor?.document?.uri;
+  if (activeUri) {
+    const activeFolder = vscode.workspace.getWorkspaceFolder(activeUri);
+    if (activeFolder) {
+      return activeFolder;
+    }
+  }
+
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length <= 1) {
+    return folders[0];
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    folders.map((folder) => ({
+      label: folder.name,
+      description: folder.uri.fsPath,
+      folder,
+    })),
+    { placeHolder },
+  );
+  return picked?.folder;
+}
 
 async function clearSettingAtAllTargets(key: string): Promise<void> {
   const config = vscode.workspace.getConfiguration('nova');
