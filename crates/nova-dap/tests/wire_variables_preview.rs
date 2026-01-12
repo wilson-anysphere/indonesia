@@ -143,7 +143,7 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .pointer("/body/scopes")
         .and_then(|v| v.as_array())
         .unwrap();
-    assert_eq!(scopes.len(), 2);
+    assert_eq!(scopes.len(), 3);
     assert_eq!(
         scopes[0].get("name").and_then(|v| v.as_str()),
         Some("Locals")
@@ -151,6 +151,10 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     assert_eq!(
         scopes[1].get("name").and_then(|v| v.as_str()),
         Some("Pinned Objects")
+    );
+    assert_eq!(
+        scopes[2].get("name").and_then(|v| v.as_str()),
+        Some("Static")
     );
     assert_eq!(
         scopes[1]["variablesReference"].as_i64().unwrap(),
