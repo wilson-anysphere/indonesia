@@ -57,6 +57,16 @@ use crate::ProjectId;
 /// let interned2 = unsafe { InternedClassKeyId::from_nova_class_id(class_id) };
 /// assert_eq!(interned, interned2);
 /// ```
+///
+/// ## Order dependence
+///
+/// `ra_ap_salsa` assigns intern ids densely as values are first seen. The raw
+/// integer id is therefore **order dependent** across fresh databases:
+/// interning `A` and then `B` yields different raw ids than interning `B` and
+/// then `A`. This is important when evaluating whether interned ids can serve
+/// as a globally stable `nova_ids::ClassId`.
+///
+/// See unit tests in this module (`interned_ids_depend_on_insertion_order_across_fresh_storages`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InternedClassKey {
     pub project: ProjectId,
@@ -196,5 +206,61 @@ mod tests {
         // drops the intern tables. Interning the same key again yields a
         // *different* `InternId`.
         assert_ne!(id_before.as_intern_id(), id_after.as_intern_id());
+    }
+
+    #[test]
+    fn interned_ids_depend_on_insertion_order_across_fresh_storages() {
+        let project = ProjectId::from_raw(0);
+        let a = InternedClassKey {
+            project,
+            name: "A".to_string(),
+        };
+        let b = InternedClassKey {
+            project,
+            name: "B".to_string(),
+        };
+
+        let db1 = SalsaDatabase::new();
+        let a1 = db1.with_write(|db| db.intern_class_key(a.clone()));
+        let b1 = db1.with_write(|db| db.intern_class_key(b.clone()));
+
+        let db2 = SalsaDatabase::new();
+        let b2 = db2.with_write(|db| db.intern_class_key(b.clone()));
+        let a2 = db2.with_write(|db| db.intern_class_key(a.clone()));
+
+        // `ra_ap_salsa` assigns intern ids densely in order of first insertion.
+        // Therefore the raw ids depend on which key was interned first.
+        assert_ne!(a1.as_intern_id(), a2.as_intern_id());
+        assert_ne!(b1.as_intern_id(), b2.as_intern_id());
+    }
+
+    #[test]
+    fn looking_up_a_pre_eviction_id_after_eviction_panics() {
+        let db = SalsaDatabase::new();
+        let project = ProjectId::from_raw(0);
+
+        let _sentinel = db.with_write(|db| {
+            db.intern_class_key(InternedClassKey {
+                project,
+                name: "Sentinel".to_string(),
+            })
+        });
+        let id_before = db.with_write(|db| {
+            db.intern_class_key(InternedClassKey {
+                project,
+                name: "Foo".to_string(),
+            })
+        });
+
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        // After eviction the Salsa storage is rebuilt. The intern tables are
+        // empty, so `id_before` no longer refers to a valid interned entry in
+        // the fresh storage. The auto-generated lookup query will panic (index
+        // out of bounds).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.with_write(|db| db.lookup_intern_class_key(id_before))
+        }));
+        assert!(result.is_err());
     }
 }
