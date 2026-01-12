@@ -571,7 +571,7 @@ impl Debugger {
             )));
         };
 
-        let length = match levels {
+        let mut length = match levels {
             Some(levels) => {
                 if levels < 0 {
                     return Err(DebuggerError::InvalidRequest(format!(
@@ -599,8 +599,42 @@ impl Debugger {
         };
 
         // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
+        // Clamp the requested `levels` against the known frame count when available to avoid
+        // turning a benign DAP stackTrace request into an error.
+        if let Some(total_frames) = total_frames {
+            if start_frame >= total_frames {
+                return Ok((Vec::new(), Some(total_frames)));
+            }
+
+            if length >= 0 {
+                let remaining = (total_frames - start_frame).max(0);
+                // `total_frames` originates from an `i32` in JDWP, so this cast is safe.
+                length = length.min(remaining as i32);
+            }
+        }
+
+        // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
         // JDWP allows `length = -1` to request all frames starting at `start`.
-        let frames = cancellable_jdwp(cancel, self.jdwp.frames(thread, start, length)).await?;
+        let frames = if length == 0 {
+            Vec::new()
+        } else {
+            match cancellable_jdwp(cancel, self.jdwp.frames(thread, start, length)).await {
+                Ok(frames) => frames,
+                Err(err @ JdwpError::VmError(_)) if length >= 0 => {
+                    // Best-effort fallback: if a VM rejects the requested `length`, retry using
+                    // `-1` (all frames) and then truncate locally.
+                    let frames = match cancellable_jdwp(cancel, self.jdwp.frames(thread, start, -1))
+                        .await
+                    {
+                        Ok(frames) => frames,
+                        Err(_) => return Err(err.into()),
+                    };
+
+                    frames.into_iter().take(length as usize).collect()
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
         let mut out = Vec::with_capacity(frames.len());
         for frame in frames {
             check_cancel(cancel)?;

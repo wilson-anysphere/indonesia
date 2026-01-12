@@ -122,6 +122,13 @@ pub struct MockJdwpServerConfig {
     /// When a disconnect event is emitted, the mock closes the underlying socket to
     /// simulate a debuggee terminating unexpectedly.
     pub vm_disconnect_events: usize,
+
+    /// When enabled, `ThreadReference.Frames` fails with `Error.INVALID_LENGTH` if the
+    /// requested `length` exceeds the number of available frames (rather than clamping).
+    ///
+    /// Some real-world JVMs exhibit this behavior, so tests can enable this flag to ensure
+    /// higher-level code clamps `length` appropriately.
+    pub thread_frames_strict_length: bool,
 }
 
 impl Default for MockJdwpServerConfig {
@@ -148,6 +155,7 @@ impl Default for MockJdwpServerConfig {
             field_modification_events: 0,
             class_unload_events: 0,
             vm_disconnect_events: 0,
+            thread_frames_strict_length: false,
         }
     }
 }
@@ -818,6 +826,7 @@ pub struct InterfaceTypeInvokeMethodCall {
 // JDWP error codes (subset).
 const ERROR_THREAD_NOT_SUSPENDED: u16 = 13;
 const ERROR_NOT_IMPLEMENTED: u16 = 99;
+const ERROR_INVALID_LENGTH: u16 = 504;
 pub const THREAD_ID: u64 = 0x8000_0000_0000_1001;
 pub const WORKER_THREAD_ID: u64 = 0x1002;
 
@@ -1435,18 +1444,27 @@ async fn handle_packet(
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 let available = frames.len().saturating_sub(start);
-                let take = if length < 0 {
-                    available
+                if state.config.thread_frames_strict_length
+                    && length >= 0
+                    && length as usize > available
+                {
+                    // Some JVMs return `Error.INVALID_LENGTH` instead of clamping `length` to
+                    // the number of available frames.
+                    (ERROR_INVALID_LENGTH, Vec::new())
                 } else {
-                    available.min(length as usize)
-                };
+                    let take = if length < 0 {
+                        available
+                    } else {
+                        available.min(length as usize)
+                    };
 
-                w.write_u32(take as u32);
-                for frame in frames.iter().rev().skip(start).take(take) {
-                    w.write_id(frame.frame_id, sizes.frame_id);
-                    w.write_location(&frame.location, sizes);
+                    w.write_u32(take as u32);
+                    for frame in frames.iter().rev().skip(start).take(take) {
+                        w.write_id(frame.frame_id, sizes.frame_id);
+                        w.write_location(&frame.location, sizes);
+                    }
+                    (0, w.into_vec())
                 }
-                (0, w.into_vec())
             }
         }
         // ThreadReference.FrameCount
