@@ -5,14 +5,18 @@ use nova_format::NewlineStyle;
 use serde::{Deserialize, Serialize};
 
 use nova_core::Name;
-use nova_db::salsa::{Database as SalsaDatabase, NovaTypeck, Snapshot as SalsaSnapshot};
+use nova_db::salsa::{
+    Database as SalsaDatabase, FileExprId, NovaHir, NovaTypeck, Snapshot as SalsaSnapshot,
+};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_flow::build_cfg_with;
 use nova_hir::body::{Body, ExprId, ExprKind, LocalId, LocalKind, StmtId, StmtKind};
 use nova_hir::body_lowering::lower_flow_body_with;
+use nova_hir::{hir, ids as hir_ids, item_tree};
+use nova_resolve::ids::DefWithBodyId;
 use nova_syntax::ast::{self, AstNode};
 use nova_syntax::{parse_java, SyntaxKind};
-use nova_types::Span;
+use nova_types::{ClassType, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
 use crate::edit::{FileId, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit};
 
@@ -63,6 +67,36 @@ fn is_valid_signature_type_string(ty: &str) -> bool {
     true
 }
 
+fn type_at_offset_fully_qualified(
+    snapshot: &SalsaSnapshot,
+    file: DbFileId,
+    offset: u32,
+) -> Option<String> {
+    let tree = snapshot.hir_item_tree(file);
+    let owners = collect_body_owners(&tree);
+
+    let mut best: Option<(DefWithBodyId, hir::ExprId, usize)> = None;
+    for owner in owners {
+        let body = match owner {
+            DefWithBodyId::Method(m) => snapshot.hir_body(m),
+            DefWithBodyId::Constructor(c) => snapshot.hir_constructor_body(c),
+            DefWithBodyId::Initializer(i) => snapshot.hir_initializer_body(i),
+        };
+
+        find_best_expr_in_stmt(
+            body.as_ref(),
+            body.root,
+            offset as usize,
+            owner,
+            &mut best,
+        );
+    }
+
+    let (owner, expr, _) = best?;
+    let expr_res = snapshot.type_of_expr_demand_result(file, FileExprId { owner, expr });
+    Some(format_type_fully_qualified(&*expr_res.env, &expr_res.ty))
+}
+
 fn infer_type_at_offsets(
     typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
@@ -70,9 +104,8 @@ fn infer_type_at_offsets(
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) = typeck
-            .snapshot
-            .type_at_offset_display(typeck.file, offset as u32)
+        let Some(ty) =
+            type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
@@ -81,6 +114,342 @@ fn infer_type_at_offsets(
         }
     }
     None
+}
+
+fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
+    match ty {
+        Type::Void => "void".to_string(),
+        Type::Primitive(p) => format_primitive_type(*p).to_string(),
+        Type::Class(ClassType { def, args }) => {
+            let Some(class_def) = env.class(*def) else {
+                return format!("<class#{}>", def.to_raw());
+            };
+            let mut out = binary_name_to_source_qualified(&class_def.name);
+            if !args.is_empty() {
+                out.push('<');
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx != 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&format_type_fully_qualified(env, arg));
+                }
+                out.push('>');
+            }
+            out
+        }
+        Type::Array(_) => {
+            let (base, dims) = peel_array_dims(ty);
+            let mut out = format_type_fully_qualified(env, base);
+            for _ in 0..dims {
+                out.push_str("[]");
+            }
+            out
+        }
+        Type::TypeVar(id) => format_type_var(env, *id),
+        Type::Wildcard(bound) => match bound {
+            WildcardBound::Unbounded => "?".to_string(),
+            WildcardBound::Extends(upper) => {
+                format!("? extends {}", format_type_fully_qualified(env, upper))
+            }
+            WildcardBound::Super(lower) => {
+                format!("? super {}", format_type_fully_qualified(env, lower))
+            }
+        },
+        Type::Intersection(types) => {
+            let mut it = types.iter();
+            let Some(first) = it.next() else {
+                return "<?>".to_string();
+            };
+            let mut out = format_type_fully_qualified(env, first);
+            for ty in it {
+                out.push_str(" & ");
+                out.push_str(&format_type_fully_qualified(env, ty));
+            }
+            out
+        }
+        Type::Null => "null".to_string(),
+        Type::Named(name) => binary_name_to_source_qualified(name),
+        Type::VirtualInner { owner, name } => {
+            let Some(owner_def) = env.class(*owner) else {
+                return format!("<class#{}>.{}", owner.to_raw(), name);
+            };
+            format!("{}.{}", binary_name_to_source_qualified(&owner_def.name), name)
+        }
+        Type::Unknown => "<?>".to_string(),
+        Type::Error => "<error>".to_string(),
+    }
+}
+
+fn peel_array_dims<'a>(mut ty: &'a Type) -> (&'a Type, usize) {
+    let mut dims = 0usize;
+    while let Type::Array(inner) = ty {
+        dims += 1;
+        ty = inner;
+    }
+    (ty, dims)
+}
+
+fn format_type_var(env: &dyn TypeEnv, id: TypeVarId) -> String {
+    env.type_param(id)
+        .map(|tp| tp.name.clone())
+        .unwrap_or_else(|| format!("<tv#{}>", id.0))
+}
+
+fn format_primitive_type(p: PrimitiveType) -> &'static str {
+    match p {
+        PrimitiveType::Boolean => "boolean",
+        PrimitiveType::Byte => "byte",
+        PrimitiveType::Short => "short",
+        PrimitiveType::Char => "char",
+        PrimitiveType::Int => "int",
+        PrimitiveType::Long => "long",
+        PrimitiveType::Float => "float",
+        PrimitiveType::Double => "double",
+    }
+}
+
+fn binary_name_to_source_qualified(binary_name: &str) -> String {
+    binary_name.replace('$', ".")
+}
+
+fn item_members<'a>(tree: &'a item_tree::ItemTree, item: hir_ids::ItemId) -> &'a [item_tree::Member] {
+    match item {
+        hir_ids::ItemId::Class(id) => &tree.class(id).members,
+        hir_ids::ItemId::Interface(id) => &tree.interface(id).members,
+        hir_ids::ItemId::Enum(id) => &tree.enum_(id).members,
+        hir_ids::ItemId::Record(id) => &tree.record(id).members,
+        hir_ids::ItemId::Annotation(id) => &tree.annotation(id).members,
+    }
+}
+
+fn collect_body_owners(tree: &item_tree::ItemTree) -> Vec<DefWithBodyId> {
+    let mut owners = Vec::new();
+    for item in &tree.items {
+        collect_body_owners_in_item(tree, *item, &mut owners);
+    }
+    owners
+}
+
+fn collect_body_owners_in_item(
+    tree: &item_tree::ItemTree,
+    item: item_tree::Item,
+    out: &mut Vec<DefWithBodyId>,
+) {
+    let id = match item {
+        item_tree::Item::Class(id) => hir_ids::ItemId::Class(id),
+        item_tree::Item::Interface(id) => hir_ids::ItemId::Interface(id),
+        item_tree::Item::Enum(id) => hir_ids::ItemId::Enum(id),
+        item_tree::Item::Record(id) => hir_ids::ItemId::Record(id),
+        item_tree::Item::Annotation(id) => hir_ids::ItemId::Annotation(id),
+    };
+
+    for member in item_members(tree, id) {
+        match *member {
+            item_tree::Member::Method(m) => {
+                if tree.method(m).body.is_some() {
+                    out.push(DefWithBodyId::Method(m));
+                }
+            }
+            item_tree::Member::Constructor(c) => out.push(DefWithBodyId::Constructor(c)),
+            item_tree::Member::Initializer(i) => out.push(DefWithBodyId::Initializer(i)),
+            item_tree::Member::Type(child) => collect_body_owners_in_item(tree, child, out),
+            item_tree::Member::Field(_) => {}
+        }
+    }
+}
+
+fn find_best_expr_in_stmt(
+    body: &hir::Body,
+    stmt: hir::StmtId,
+    offset: usize,
+    owner: DefWithBodyId,
+    best: &mut Option<(DefWithBodyId, hir::ExprId, usize)>,
+) {
+    use hir::Stmt as HirStmt;
+
+    match &body.stmts[stmt] {
+        HirStmt::Block { statements, .. } => {
+            for stmt in statements {
+                find_best_expr_in_stmt(body, *stmt, offset, owner, best);
+            }
+        }
+        HirStmt::Let { initializer, .. } => {
+            if let Some(expr) = initializer {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
+        HirStmt::Expr { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
+        HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
+        HirStmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            find_best_expr_in_stmt(body, *then_branch, offset, owner, best);
+            if let Some(else_branch) = else_branch {
+                find_best_expr_in_stmt(body, *else_branch, offset, owner, best);
+            }
+        }
+        HirStmt::While {
+            condition, body: b, ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
+        HirStmt::For {
+            init,
+            condition,
+            update,
+            body: b,
+            ..
+        } => {
+            for stmt in init {
+                find_best_expr_in_stmt(body, *stmt, offset, owner, best);
+            }
+            if let Some(condition) = condition {
+                find_best_expr_in_expr(body, *condition, offset, owner, best);
+            }
+            for expr in update {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
+        HirStmt::ForEach {
+            iterable, body: b, ..
+        } => {
+            find_best_expr_in_expr(body, *iterable, offset, owner, best);
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
+        HirStmt::Synchronized { expr, body: b, .. } => {
+            find_best_expr_in_expr(body, *expr, offset, owner, best);
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
+        HirStmt::Switch {
+            selector, body: b, ..
+        } => {
+            find_best_expr_in_expr(body, *selector, offset, owner, best);
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+        }
+        HirStmt::Try {
+            body: b,
+            catches,
+            finally,
+            ..
+        } => {
+            find_best_expr_in_stmt(body, *b, offset, owner, best);
+            for catch in catches {
+                find_best_expr_in_stmt(body, catch.body, offset, owner, best);
+            }
+            if let Some(finally) = finally {
+                find_best_expr_in_stmt(body, *finally, offset, owner, best);
+            }
+        }
+        HirStmt::Throw { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
+        HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
+    }
+}
+
+fn find_best_expr_in_expr(
+    body: &hir::Body,
+    expr: hir::ExprId,
+    offset: usize,
+    owner: DefWithBodyId,
+    best: &mut Option<(DefWithBodyId, hir::ExprId, usize)>,
+) {
+    use hir::Expr as HirExpr;
+    use hir::LambdaBody;
+
+    let range = body.exprs[expr].range();
+    if range.start <= offset && offset < range.end {
+        let len = range.len();
+        let replace = best.map(|(_, _, best_len)| len < best_len).unwrap_or(true);
+        if replace {
+            *best = Some((owner, expr, len));
+        }
+    }
+
+    match &body.exprs[expr] {
+        HirExpr::Cast { expr: inner, .. } => {
+            find_best_expr_in_expr(body, *inner, offset, owner, best);
+        }
+        HirExpr::FieldAccess { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ArrayAccess { array, index, .. } => {
+            find_best_expr_in_expr(body, *array, offset, owner, best);
+            find_best_expr_in_expr(body, *index, offset, owner, best);
+        }
+        HirExpr::MethodReference { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ConstructorReference { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ClassLiteral { ty, .. } => {
+            find_best_expr_in_expr(body, *ty, offset, owner, best);
+        }
+        HirExpr::Invalid { children, .. } => {
+            for child in children {
+                find_best_expr_in_expr(body, *child, offset, owner, best);
+            }
+        }
+        HirExpr::Call { callee, args, .. } => {
+            find_best_expr_in_expr(body, *callee, offset, owner, best);
+            for arg in args {
+                find_best_expr_in_expr(body, *arg, offset, owner, best);
+            }
+        }
+        HirExpr::New { args, .. } => {
+            for arg in args {
+                find_best_expr_in_expr(body, *arg, offset, owner, best);
+            }
+        }
+        HirExpr::ArrayCreation { dim_exprs, .. } => {
+            for dim_expr in dim_exprs {
+                find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
+            }
+        }
+        HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
+        HirExpr::Binary { lhs, rhs, .. } => {
+            find_best_expr_in_expr(body, *lhs, offset, owner, best);
+            find_best_expr_in_expr(body, *rhs, offset, owner, best);
+        }
+        HirExpr::Instanceof { expr, .. } => {
+            find_best_expr_in_expr(body, *expr, offset, owner, best);
+        }
+        HirExpr::Assign { lhs, rhs, .. } => {
+            find_best_expr_in_expr(body, *lhs, offset, owner, best);
+            find_best_expr_in_expr(body, *rhs, offset, owner, best);
+        }
+        HirExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            find_best_expr_in_expr(body, *then_expr, offset, owner, best);
+            find_best_expr_in_expr(body, *else_expr, offset, owner, best);
+        }
+        HirExpr::Lambda {
+            body: lambda_body, ..
+        } => match lambda_body {
+            LambdaBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
+            LambdaBody::Block(stmt) => find_best_expr_in_stmt(body, *stmt, offset, owner, best),
+        },
+        HirExpr::Name { .. }
+        | HirExpr::Literal { .. }
+        | HirExpr::Null { .. }
+        | HirExpr::This { .. }
+        | HirExpr::Super { .. }
+        | HirExpr::Missing { .. } => {}
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

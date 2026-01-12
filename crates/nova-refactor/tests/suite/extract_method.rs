@@ -3539,6 +3539,49 @@ class C {
 }
 
 #[test]
+fn extract_method_infers_var_type_as_fully_qualified() {
+    // Regression test: typeck's "display" type strings intentionally drop package qualifiers, but
+    // Extract Method must emit compilable parameter types even when the original file relied on a
+    // fully-qualified initializer (and has no corresponding import).
+    let fixture = r#"
+class C {
+    void m() {
+        var xs = new java.util.ArrayList<String>();
+        /*start*/System.out.println(xs);/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        var xs = new java.util.ArrayList<String>();
+        extracted(xs);
+    }
+
+    private void extracted(java.util.ArrayList<java.lang.String> xs) {
+        System.out.println(xs);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_infers_var_return_type() {
     let fixture = r#"
 class C {
