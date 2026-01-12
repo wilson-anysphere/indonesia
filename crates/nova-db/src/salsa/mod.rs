@@ -63,7 +63,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
- 
+
 use nova_core::ProjectDatabase;
 use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
@@ -213,8 +213,21 @@ struct SalsaMemoFootprint {
 }
 
 #[derive(Debug, Default)]
+struct SalsaInputFootprint {
+    inner: Mutex<SalsaInputFootprintInner>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+}
+
+#[derive(Debug, Default)]
 struct SalsaMemoFootprintInner {
     by_file: HashMap<FileId, FileMemoBytes>,
+    total_bytes: u64,
+}
+
+#[derive(Debug, Default)]
+struct SalsaInputFootprintInner {
+    file_content_by_file: HashMap<FileId, u64>,
     total_bytes: u64,
 }
 
@@ -280,6 +293,51 @@ impl SalsaMemoFootprint {
             .total_bytes
             .saturating_sub(prev_total)
             .saturating_add(next_total);
+        drop(inner);
+        self.refresh_tracker();
+    }
+}
+
+impl SalsaInputFootprint {
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, SalsaInputFootprintInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn bind_tracker(&self, tracker: nova_memory::MemoryTracker) {
+        let _ = self.tracker.set(tracker);
+        self.refresh_tracker();
+    }
+
+    fn refresh_tracker(&self) {
+        let Some(tracker) = self.tracker.get() else {
+            return;
+        };
+        let bytes = self.lock_inner().total_bytes;
+        tracker.set_bytes(bytes);
+    }
+
+    fn bytes(&self) -> u64 {
+        self.lock_inner().total_bytes
+    }
+
+    fn register(&self, manager: &MemoryManager) {
+        if self.registration.get().is_some() {
+            return;
+        }
+
+        let registration =
+            manager.register_tracker("salsa_inputs".to_string(), MemoryCategory::Other);
+        self.bind_tracker(registration.tracker());
+        let _ = self.registration.set(registration);
+    }
+
+    fn record_file_content_len(&self, file: FileId, len: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner.file_content_by_file.insert(file, len).unwrap_or(0);
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(len);
         drop(inner);
         self.refresh_tracker();
     }
@@ -666,12 +724,14 @@ pub struct Database {
     inputs: Arc<ParkingMutex<SalsaInputs>>,
     memo_evictor: Arc<OnceLock<Arc<SalsaMemoEvictor>>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
+    input_footprint: Arc<SalsaInputFootprint>,
 }
 
 impl Default for Database {
     fn default() -> Self {
         let db = RootDatabase::default();
         let memo_footprint = db.memo_footprint.clone();
+        let input_footprint = Arc::new(SalsaInputFootprint::default());
         let mut inputs = SalsaInputs::default();
         let default_project = ProjectId::from_raw(0);
         inputs
@@ -682,6 +742,7 @@ impl Default for Database {
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
             memo_footprint,
+            input_footprint,
         }
     }
 }
@@ -703,6 +764,7 @@ impl Database {
     ) -> Self {
         let db = RootDatabase::new_with_persistence(project_root, persistence);
         let memo_footprint = db.memo_footprint.clone();
+        let input_footprint = Arc::new(SalsaInputFootprint::default());
         let mut inputs = SalsaInputs::default();
         let default_project = ProjectId::from_raw(0);
         inputs
@@ -713,6 +775,7 @@ impl Database {
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
             memo_footprint,
+            input_footprint,
         }
     }
 
@@ -807,6 +870,9 @@ impl Database {
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
         use std::collections::hash_map::Entry;
 
+        self.input_footprint
+            .record_file_content_len(file, content.len() as u64);
+
         let init_dirty = {
             let mut inputs = self.inputs.lock();
             inputs.file_content.insert(file, content.clone());
@@ -833,6 +899,8 @@ impl Database {
         use std::collections::hash_map::Entry;
 
         let text = Arc::new(text.into());
+        self.input_footprint
+            .record_file_content_len(file, text.len() as u64);
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
         let (set_default_project, set_default_root, init_dirty) = {
@@ -1039,7 +1107,19 @@ impl Database {
         self.memo_footprint.bytes()
     }
 
+    pub fn salsa_input_bytes(&self) -> u64 {
+        self.input_footprint.bytes()
+    }
+
+    pub fn register_salsa_input_tracker(&self, manager: &MemoryManager) {
+        self.input_footprint.register(manager);
+    }
+
     pub fn register_salsa_memo_evictor(&self, manager: &MemoryManager) -> Arc<SalsaMemoEvictor> {
+        // `register_salsa_memo_evictor` is the main entrypoint used by workspace initialization, so
+        // also ensure Salsa input memory is visible to the manager.
+        self.register_salsa_input_tracker(manager);
+
         if let Some(existing) = self.memo_evictor.get() {
             existing.clone()
         } else {
@@ -1120,7 +1200,9 @@ impl Database {
             CacheMetadataArchive::open(&metadata_path)
                 .ok()
                 .flatten()
-                .filter(|m| m.is_compatible() && m.project_hash() == cache_dir.project_hash().as_str())
+                .filter(|m| {
+                    m.is_compatible() && m.project_hash() == cache_dir.project_hash().as_str()
+                })
                 .map(|m| m.diff_files_fast(&stamp_snapshot))
                 .unwrap_or_else(|| all_existing_files.clone())
         } else {
@@ -1240,7 +1322,11 @@ impl ProjectDatabase for Database {
 
     fn file_text(&self, path: &Path) -> Option<String> {
         let file_id = crate::SourceDatabase::file_id(self, path)?;
-        Some(crate::SourceDatabase::file_content(self, file_id).as_ref().clone())
+        Some(
+            crate::SourceDatabase::file_content(self, file_id)
+                .as_ref()
+                .clone(),
+        )
     }
 }
 
@@ -2003,6 +2089,33 @@ class Foo {
             assert!(snap.file_exists(file));
             assert_eq!(snap.source_root(file), SourceRootId::from_raw(0));
         });
+    }
+
+    #[test]
+    fn salsa_input_tracker_accounts_file_content_bytes() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new();
+        db.register_salsa_input_tracker(&manager);
+
+        let file1 = FileId::from_raw(1);
+        let file2 = FileId::from_raw(2);
+
+        db.set_file_content(file1, Arc::new("abcd".to_string()));
+        db.set_file_content(file2, Arc::new("hello!".to_string()));
+        assert_eq!(
+            manager.report().usage.other,
+            4 + 6,
+            "expected other usage to equal sum of file_content lengths"
+        );
+
+        // Replacing a file's content should update accounting incrementally.
+        db.set_file_content(file1, Arc::new("a".to_string()));
+        assert_eq!(manager.report().usage.other, 1 + 6);
+
+        // `set_file_text` also updates `file_content` and should be tracked.
+        db.set_file_text(file2, "xyz");
+        assert_eq!(manager.report().usage.other, 1 + 3);
+        assert_eq!(db.salsa_input_bytes(), 1 + 3);
     }
 
     #[test]
