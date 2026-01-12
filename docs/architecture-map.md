@@ -279,7 +279,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-framework-quarkus/src/lib.rs` (`analyze_java_sources`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Endpoint discovery currently delegates to `nova-framework-web`’s JAX-RS extractor only.
+  - Endpoint discovery delegates to `nova-framework-web`’s regex-based endpoint extractor (best-effort; not semantically resolved).
 
 ### `nova-framework-spring`
 - **Purpose:** Spring “baseline IntelliJ” features (beans/DI diagnostics, config completions, navigation).
@@ -289,8 +289,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Framework model is still heuristic and not backed by incremental semantic queries.
 
 ### `nova-framework-web`
-- **Purpose:** JAX-RS style HTTP endpoint discovery (used by `nova/web/endpoints`).
-- **Key entry points:** `crates/nova-framework-web/src/lib.rs` (`extract_jaxrs_endpoints_in_dir`).
+- **Purpose:** HTTP endpoint discovery across multiple Java web frameworks (JAX-RS, Spring MVC, Micronaut), used by `nova/web/endpoints`.
+- **Key entry points:** `crates/nova-framework-web/src/lib.rs` (`extract_http_endpoints_in_dir`, `extract_http_endpoints_from_source`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Regex-based extraction; not tied to semantic resolution or framework models yet.
@@ -351,9 +351,10 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   `crates/nova-lsp/src/extensions/*` (custom `nova/*` endpoints).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-   - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`).
-   - Request cancellation is routed (`$/cancelRequest` → request-scoped `CancellationToken`), but many handlers still only check cancellation at coarse boundaries; long-running work may not stop promptly.
-   - The server loop is intentionally simple/mostly synchronous today (requests are handled serially), and does not yet have a general async scheduling model for isolating expensive work.
+  - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`).
+  - Custom `nova/*` method support is advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (clients should still handle older servers that omit this).
+  - Request cancellation is routed (`$/cancelRequest` → request-scoped `CancellationToken`), but many handlers still only check cancellation at coarse boundaries; long-running work may not stop promptly.
+  - The server loop is intentionally simple/mostly synchronous today (requests are handled serially), and does not yet have a general async scheduling model for isolating expensive work.
 
 ### `nova-memory`
 - **Purpose:** memory budgeting + accounting + cooperative eviction (used by `nova-lsp` telemetry endpoints).

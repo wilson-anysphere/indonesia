@@ -104,3 +104,4 @@ Notable “delta” areas to be aware of:
   - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
 - **Protocol extensions:**
   - Custom `nova/*` methods exist (mostly implemented under `crates/nova-lsp/src/extensions/`) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
+  - Clients should still be defensive for older servers (or non-Nova servers) that don’t advertise these capabilities: use “optimistic call + method-not-found fallback” gating (see [`protocol-extensions.md`](protocol-extensions.md)).
