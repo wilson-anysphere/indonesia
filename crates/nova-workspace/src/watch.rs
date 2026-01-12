@@ -422,6 +422,10 @@ mod tests {
             root.join("build").join("gradle.lockfile"),
             root.join("target").join("dependencies.gradle"),
             root.join("target").join("deps.versions.toml"),
+            root.join("target").join("gradle.lockfile"),
+            root.join("target")
+                .join("dependency-locks")
+                .join("compileClasspath.lockfile"),
             root.join(".gradle").join("gradle.lockfile"),
             root.join("build")
                 .join("dependency-locks")
