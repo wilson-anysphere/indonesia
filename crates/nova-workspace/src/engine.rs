@@ -2659,14 +2659,14 @@ fn publish_watch_root_error(
     match err {
         WatchRootError::WatchFailed {
             root,
-            mode: _,
+            mode,
             error,
         } => {
             publish_to_subscribers(
                 subscribers,
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                    "Failed to watch {}: {error}",
-                    root.display()
+                    "Failed to watch {} ({mode:?}): {error}",
+                    root.display(),
                 ))),
             );
         }
