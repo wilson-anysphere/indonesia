@@ -892,9 +892,15 @@ fn parse_method_body(
             // reference and then an identifier (`Foo b` / `List<String> b` / `var b`), treat it as
             // a parameter separator instead of a declarator separator.
             let comma_followed_by_typed_param = next_sym == Some(',')
-                && parse_type_ref(tokens, after_name + 1, body_end)
-                    .and_then(|(_, _, next)| tokens.get(next).and_then(|t| t.ident()))
-                    .is_some();
+                && {
+                    // Typed lambda params can have modifiers/annotations (e.g. `(Foo a, @Ann Foo b) ->`).
+                    // Skip those before trying to parse the next type reference.
+                    let next_param_start =
+                        skip_modifiers_and_annotations(tokens, after_name + 1, body_end);
+                    parse_type_ref(tokens, next_param_start, body_end)
+                        .and_then(|(_, _, next)| tokens.get(next).and_then(|t| t.ident()))
+                        .is_some()
+                };
 
             if matches!(next_sym, Some('=') | Some(';'))
                 || (next_sym == Some(',') && !comma_followed_by_typed_param)

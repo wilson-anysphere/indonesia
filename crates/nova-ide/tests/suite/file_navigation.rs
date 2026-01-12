@@ -653,6 +653,8 @@ fn go_to_implementation_does_not_misinterpret_typed_lambda_params_as_comma_separ
         r#"
 //- /Foo.java
 class Foo {}
+//- /Ann.java
+@interface Ann {}
 //- /Bar.java
 class Bar { void $1baz(){} }
 //- /Main.java
@@ -660,7 +662,7 @@ class Main {
     Bar bar = new Bar();
 
     void test() {
-        consume((Foo a, Foo b) -> {}, bar);
+        consume((Foo a, @Ann Foo b) -> {}, bar);
         bar.$0baz();
     }
 
