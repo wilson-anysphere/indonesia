@@ -1213,13 +1213,41 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         if saw_build_definition_change {
             self.java_owning_targets_cache.clear();
             self.preferred_java_compile_info_targets.clear();
+            // BSP-based compile info is invalidated conservatively because we do not track the full
+            // transitive BUILD/.bzl closure without invoking `bazel query`.
+            self.cache.invalidate_provider(CompileInfoProvider::Bsp);
+        }
+
+        // Workspace file-label resolution only depends on Bazel package boundaries (`BUILD` /
+        // `BUILD.bazel` locations) and `.bazelignore`. Avoid clearing it for other build-definition
+        // changes like `.bzl` edits or `.bazelrc` churn.
+        let saw_package_boundary_change = changed.iter().any(|path| {
+            match path.file_name().and_then(|n| n.to_str()) {
+                Some("BUILD") | Some("BUILD.bazel") => {}
+                _ => return false,
+            }
+
+            if !path.starts_with(&self.root) {
+                return false;
+            }
+
+            // As above, ignore churn under `.bazelignore` prefixes, which Bazel treats as outside
+            // the package universe.
+            if let Ok(rel) = path.strip_prefix(&self.root) {
+                if let Ok(rel) = normalize_workspace_relative_path(rel) {
+                    if self.is_ignored_workspace_path(&rel) {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        });
+        if saw_package_boundary_change {
             self.workspace_file_label_cache
                 .lock()
                 .expect("workspace_file_label_cache lock poisoned")
                 .clear();
-            // BSP-based compile info is invalidated conservatively because we do not track the full
-            // transitive BUILD/.bzl closure without invoking `bazel query`.
-            self.cache.invalidate_provider(CompileInfoProvider::Bsp);
         }
         if changed
             .iter()

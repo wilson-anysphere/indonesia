@@ -247,6 +247,66 @@ fn path_to_label_returns_none_when_no_build_file_found() {
 }
 
 #[test]
+fn workspace_file_label_is_cached_until_build_file_invalidation() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+    create_file(&dir.path().join("java/Hello.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//java:Hello.java"));
+
+    // Remove the BUILD file; without caching this would now resolve to `None`.
+    std::fs::remove_file(dir.path().join("java/BUILD")).unwrap();
+
+    let cached = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(cached.as_deref(), Some("//java:Hello.java"));
+
+    workspace
+        .invalidate_changed_files(&[PathBuf::from("java/BUILD")])
+        .unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(label, None);
+}
+
+#[test]
+fn workspace_file_label_cache_is_not_cleared_by_bazelrc_changes() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelrc"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+    create_file(&dir.path().join("java/Hello.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//java:Hello.java"));
+
+    // Remove the BUILD file; without a cache hit, label resolution would now return `None`.
+    std::fs::remove_file(dir.path().join("java/BUILD")).unwrap();
+
+    // `.bazelrc` can affect query/aquery evaluation, but it cannot change Bazel package boundaries.
+    // Keep the file-label cache to avoid unnecessary filesystem scans.
+    std::fs::write(dir.path().join(".bazelrc"), "# changed\n").unwrap();
+    workspace
+        .invalidate_changed_files(&[PathBuf::from(".bazelrc")])
+        .unwrap();
+
+    let cached = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(cached.as_deref(), Some("//java:Hello.java"));
+}
+
+#[test]
 fn owning_targets_returns_empty_when_no_build_file_found() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
