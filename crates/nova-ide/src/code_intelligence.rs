@@ -7887,14 +7887,90 @@ fn in_scope_types(
     out
 }
 
+fn is_boolean_condition_context(tokens: &[Token], offset: usize) -> bool {
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        let tok = &tokens[i];
+        if tok.kind != TokenKind::Ident {
+            i += 1;
+            continue;
+        }
+
+        let keyword = tok.text.as_str();
+        if !matches!(keyword, "if" | "while" | "for") {
+            i += 1;
+            continue;
+        }
+
+        let Some(open_paren) = tokens.get(i + 1) else {
+            i += 1;
+            continue;
+        };
+        if open_paren.kind != TokenKind::Symbol('(') {
+            i += 1;
+            continue;
+        }
+
+        let Some((close_idx, _close_end)) = find_matching_paren(tokens, i + 1) else {
+            i += 1;
+            continue;
+        };
+
+        let open_end = open_paren.span.end;
+        let close_start = tokens[close_idx].span.start;
+        if !(open_end <= offset && offset <= close_start) {
+            i += 1;
+            continue;
+        }
+
+        match keyword {
+            "if" | "while" => return true,
+            "for" => return offset_in_for_condition(tokens, i + 1, close_idx, offset),
+            _ => {}
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+fn offset_in_for_condition(tokens: &[Token], open_idx: usize, close_idx: usize, offset: usize) -> bool {
+    // `for (<init>; <condition>; <update>)`
+    //
+    // We only treat the *condition* segment as boolean-expected. Enhanced-for (`:`) is ignored.
+    let mut depth: i32 = 0;
+    let mut semicolons: Vec<Span> = Vec::new();
+
+    for tok in &tokens[(open_idx + 1)..close_idx] {
+        match tok.kind {
+            TokenKind::Symbol('(') => depth += 1,
+            TokenKind::Symbol(')') => depth -= 1,
+            TokenKind::Symbol(';') if depth == 0 => {
+                semicolons.push(tok.span);
+                if semicolons.len() >= 2 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if semicolons.len() < 2 {
+        return false;
+    }
+
+    let cond_start = semicolons[0].end;
+    let cond_end = semicolons[1].start;
+    cond_start <= offset && offset <= cond_end
+}
+
 fn infer_expected_type(
     analysis: &Analysis,
     offset: usize,
     prefix_start: usize,
     in_scope_types: &HashMap<String, String>,
 ) -> Option<String> {
-    let _ = offset;
-
     // 1) Best-effort: inside same-file call argument list, use the callee's parameter type.
     if let Some(call) = analysis
         .calls
@@ -7960,89 +8036,96 @@ fn infer_expected_type(
     // assignment `=` within the current statement and infer the lhs identifier's type.
     //
     // This is intentionally heuristic (token-based) but works well for MVP contexts.
-    let token_before_idx = analysis
+    if let Some(token_before_idx) = analysis
         .tokens
         .iter()
         .enumerate()
         .filter(|(_, t)| t.span.end <= prefix_start)
         .map(|(idx, _)| idx)
-        .last();
+        .last()
+    {
+        let mut eq_idx = None;
+        for idx in (0..=token_before_idx).rev() {
+            let tok = &analysis.tokens[idx];
 
-    let Some(token_before_idx) = token_before_idx else {
-        return None;
-    };
+            // Stop at statement/block boundaries.
+            if matches!(
+                tok.kind,
+                TokenKind::Symbol(';') | TokenKind::Symbol('{') | TokenKind::Symbol('}')
+            ) {
+                break;
+            }
 
-    let mut eq_idx = None;
-    for idx in (0..=token_before_idx).rev() {
-        let tok = &analysis.tokens[idx];
+            if tok.kind != TokenKind::Symbol('=') {
+                continue;
+            }
 
-        // Stop at statement/block boundaries.
-        if matches!(
-            tok.kind,
-            TokenKind::Symbol(';') | TokenKind::Symbol('{') | TokenKind::Symbol('}')
-        ) {
+            let adjacent = |a: &Token, b: &Token| a.span.end == b.span.start;
+
+            // Skip `==`.
+            if analysis
+                .tokens
+                .get(idx + 1)
+                .is_some_and(|next| next.kind == TokenKind::Symbol('=') && adjacent(tok, next))
+            {
+                continue;
+            }
+            if analysis
+                .tokens
+                .get(idx.wrapping_sub(1))
+                .is_some_and(|prev| prev.kind == TokenKind::Symbol('=') && adjacent(prev, tok))
+            {
+                continue;
+            }
+
+            // Skip `!=`.
+            if analysis
+                .tokens
+                .get(idx.wrapping_sub(1))
+                .is_some_and(|prev| prev.kind == TokenKind::Symbol('!') && adjacent(prev, tok))
+            {
+                continue;
+            }
+
+            // Skip `<=` / `>=`, but keep shift-assignments like `<<=` / `>>=` / `>>>=`.
+            if let Some(prev) = analysis.tokens.get(idx.wrapping_sub(1)) {
+                if adjacent(prev, tok)
+                    && matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol('>'))
+                {
+                    let is_shift = analysis
+                        .tokens
+                        .get(idx.wrapping_sub(2))
+                        .is_some_and(|prev2| prev2.kind == prev.kind && adjacent(prev2, prev));
+                    if !is_shift {
+                        continue;
+                    }
+                }
+            }
+
+            eq_idx = Some(idx);
             break;
         }
 
-        if tok.kind != TokenKind::Symbol('=') {
-            continue;
-        }
-
-        let adjacent = |a: &Token, b: &Token| a.span.end == b.span.start;
-
-        // Skip `==`.
-        if analysis
-            .tokens
-            .get(idx + 1)
-            .is_some_and(|next| next.kind == TokenKind::Symbol('=') && adjacent(tok, next))
-        {
-            continue;
-        }
-        if analysis
-            .tokens
-            .get(idx.wrapping_sub(1))
-            .is_some_and(|prev| prev.kind == TokenKind::Symbol('=') && adjacent(prev, tok))
-        {
-            continue;
-        }
-
-        // Skip `!=`.
-        if analysis
-            .tokens
-            .get(idx.wrapping_sub(1))
-            .is_some_and(|prev| prev.kind == TokenKind::Symbol('!') && adjacent(prev, tok))
-        {
-            continue;
-        }
-
-        // Skip `<=` / `>=`, but keep shift-assignments like `<<=` / `>>=` / `>>>=`.
-        if let Some(prev) = analysis.tokens.get(idx.wrapping_sub(1)) {
-            if adjacent(prev, tok)
-                && matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol('>'))
+        if let Some(eq_idx) = eq_idx {
+            if let Some(lhs_ident) = analysis.tokens[..eq_idx]
+                .iter()
+                .rev()
+                .find(|t| t.kind == TokenKind::Ident)
             {
-                let is_shift = analysis
-                    .tokens
-                    .get(idx.wrapping_sub(2))
-                    .is_some_and(|prev2| prev2.kind == prev.kind && adjacent(prev2, prev));
-                if !is_shift {
-                    continue;
+                if let Some(ty) = in_scope_types.get(&lhs_ident.text) {
+                    return Some(ty.clone());
                 }
             }
         }
-
-        eq_idx = Some(idx);
-        break;
     }
 
-    let Some(eq_idx) = eq_idx else {
-        return None;
-    };
+    // 4) Boolean condition contexts (`if (...)`, `while (...)`, `do { ... } while (...)`,
+    // `for (...; <condition>; ...)`).
+    if is_boolean_condition_context(&analysis.tokens, offset) {
+        return Some("boolean".to_string());
+    }
 
-    let lhs_ident = analysis.tokens[..eq_idx]
-        .iter()
-        .rev()
-        .find(|t| t.kind == TokenKind::Ident)?;
-    in_scope_types.get(&lhs_ident.text).cloned()
+    None
 }
 
 fn brace_stack_at_offset(tokens: &[Token], offset: usize) -> Vec<usize> {

@@ -645,6 +645,52 @@ class A {
 }
 
 #[test]
+fn completion_in_boolean_condition_filters_to_boolean_typed_locals() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    boolean b = true;
+    int n = 0;
+    if (<|>) {}
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"b"),
+        "expected completion list to contain boolean local `b`; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"n"),
+        "expected completion list to not contain non-boolean local `n`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_while_condition_includes_true_literal() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    while (tr<|>) {}
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"true"),
+        "expected completion list to contain `true`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_javadoc_param_snippet() {
     let (db, file, pos) = fixture(
         r#"
