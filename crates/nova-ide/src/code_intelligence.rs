@@ -409,6 +409,550 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
 }
 
 // -----------------------------------------------------------------------------
+// Java annotation attribute completion helpers
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct AnnotationCallContext {
+    annotation_name: String,
+    open_paren: usize,
+    close_paren: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+enum ResolvedAnnotationSource {
+    Workspace(FileId),
+    Jdk,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAnnotationType {
+    binary_name: String,
+    source: ResolvedAnnotationSource,
+}
+
+fn annotation_attribute_completions(
+    db: &dyn Database,
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+    prefix: &str,
+) -> Option<Vec<CompletionItem>> {
+    let ctx = enclosing_annotation_call(text, offset)?;
+
+    // Ensure the cursor is inside the annotation argument list.
+    if prefix_start < ctx.open_paren + 1 {
+        return None;
+    }
+
+    // Avoid suggesting attribute names inside string literals. (Framework-specific annotation
+    // string completions should take precedence.)
+    if cursor_inside_string_literal(text, offset, ctx.open_paren + 1, ctx.close_paren) {
+        return None;
+    }
+
+    // Only offer attribute-name completions when we're not already inside a `name = value` slot.
+    if !cursor_in_annotation_attribute_name_position(text, ctx.open_paren, prefix_start) {
+        return None;
+    }
+
+    let workspace_index = WorkspaceTypeIndex::build(db);
+    let package = parse_java_package_name(text).unwrap_or_default();
+    let imports = parse_java_imports(text);
+
+    let mut types = TypeStore::with_minimal_jdk();
+    let resolved = resolve_annotation_type(
+        &mut types,
+        &workspace_index,
+        &package,
+        &imports,
+        ctx.annotation_name.as_str(),
+    )?;
+
+    match resolved.source {
+        ResolvedAnnotationSource::Workspace(type_file) => {
+            let path = db.file_path(type_file)?;
+            let source = db.file_content(type_file);
+            let mut source_provider = SourceTypeProvider::new();
+            source_provider.update_file(&mut types, path.to_path_buf(), source);
+        }
+        ResolvedAnnotationSource::Jdk => {
+            // `ensure_class_id` was already called as part of resolution; still load method stubs.
+        }
+    }
+
+    let class_id = types.class_id(&resolved.binary_name)?;
+    ensure_type_methods_loaded(&mut types, &Type::Named(resolved.binary_name.clone()));
+
+    let used = parse_used_annotation_attributes(text, ctx.open_paren + 1, offset);
+
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    let class_def = types.class(class_id)?;
+    for method in &class_def.methods {
+        if !method.params.is_empty() {
+            continue;
+        }
+        if !seen.insert(method.name.as_str()) {
+            continue;
+        }
+        if used.contains(method.name.as_str()) {
+            continue;
+        }
+
+        items.push(CompletionItem {
+            label: method.name.clone(),
+            kind: Some(CompletionItemKind::PROPERTY),
+            insert_text: Some(format!("{} = $0", method.name)),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ranking_ctx);
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
+}
+
+fn enclosing_annotation_call(text: &str, offset: usize) -> Option<AnnotationCallContext> {
+    let bytes = text.as_bytes();
+    let mut search_end = offset.min(bytes.len());
+
+    while let Some(at_pos) = text.get(..search_end)?.rfind('@') {
+        let mut i = at_pos + 1;
+        while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        let name_start = i;
+
+        while i < bytes.len() {
+            let ch = bytes[i] as char;
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        if i == name_start {
+            search_end = at_pos;
+            continue;
+        }
+
+        let name = text.get(name_start..i)?.to_string();
+
+        let mut j = i;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'(' {
+            search_end = at_pos;
+            continue;
+        }
+        let open_paren = j;
+        if open_paren >= offset {
+            search_end = at_pos;
+            continue;
+        }
+
+        let close_paren = find_matching_paren_in_text(text, open_paren);
+        if let Some(close) = close_paren {
+            if offset > close {
+                search_end = at_pos;
+                continue;
+            }
+        }
+
+        return Some(AnnotationCallContext {
+            annotation_name: name,
+            open_paren,
+            close_paren,
+        });
+    }
+
+    None
+}
+
+fn find_matching_paren_in_text(text: &str, open_paren: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if open_paren >= bytes.len() || bytes[open_paren] != b'(' {
+        return None;
+    }
+
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut i = open_paren;
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        // Strings.
+        if b == b'"' && !is_escaped_quote(bytes, i) {
+            in_string = !in_string;
+            i += 1;
+            continue;
+        }
+        if in_string {
+            i += 1;
+            continue;
+        }
+
+        // Line comment.
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment.
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn cursor_inside_string_literal(
+    text: &str,
+    offset: usize,
+    range_start: usize,
+    range_end: Option<usize>,
+) -> bool {
+    let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
+    let start = range_start.min(bytes.len());
+    let end = range_end.unwrap_or(bytes.len()).min(bytes.len());
+    if offset < start || offset > end {
+        return false;
+    }
+
+    let mut in_string = false;
+    let mut i = start;
+    while i < offset {
+        if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+            in_string = !in_string;
+        }
+        i += 1;
+    }
+    in_string
+}
+
+fn cursor_in_annotation_attribute_name_position(text: &str, open_paren: usize, cursor: usize) -> bool {
+    let bytes = text.as_bytes();
+    if open_paren >= bytes.len() || bytes[open_paren] != b'(' {
+        return false;
+    }
+    if cursor < open_paren + 1 {
+        return false;
+    }
+
+    let mut in_string = false;
+    let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut seen_equal = false;
+
+    let mut i = open_paren + 1;
+    while i < cursor.min(bytes.len()) {
+        let b = bytes[i];
+
+        if b == b'"' && !is_escaped_quote(bytes, i) {
+            in_string = !in_string;
+            i += 1;
+            continue;
+        }
+        if in_string {
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+
+        if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 {
+            if b == b',' {
+                seen_equal = false;
+            } else if b == b'=' {
+                seen_equal = true;
+            }
+        }
+
+        i += 1;
+    }
+
+    !seen_equal
+}
+
+fn parse_used_annotation_attributes(text: &str, args_start: usize, cursor: usize) -> HashSet<&str> {
+    let bytes = text.as_bytes();
+    let mut out = HashSet::new();
+
+    let start = args_start.min(bytes.len());
+    let end = cursor.min(bytes.len());
+    let mut i = start;
+    let mut in_string = false;
+    while i < end {
+        let b = bytes[i];
+
+        if b == b'"' && !is_escaped_quote(bytes, i) {
+            in_string = !in_string;
+            i += 1;
+            continue;
+        }
+        if in_string {
+            i += 1;
+            continue;
+        }
+
+        let ch = b as char;
+        if is_ident_start(ch) {
+            let ident_start = i;
+            i += 1;
+            while i < end && is_ident_continue(bytes[i] as char) {
+                i += 1;
+            }
+            let ident_end = i;
+
+            let mut j = i;
+            while j < end && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < end && bytes[j] == b'=' {
+                if let Some(ident) = text.get(ident_start..ident_end) {
+                    out.insert(ident);
+                }
+            }
+
+            i = j;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+fn parse_java_package_name(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("package") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        let pkg = rest
+            .split_once(';')
+            .map(|(pkg, _)| pkg)
+            .unwrap_or(rest)
+            .trim();
+        if !pkg.is_empty() {
+            return Some(pkg.to_string());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceTypeIndex {
+    /// Binary name (`package.Type`) -> file containing the type.
+    by_binary_name: HashMap<String, FileId>,
+}
+
+impl WorkspaceTypeIndex {
+    fn build(db: &dyn Database) -> Self {
+        let mut index = WorkspaceTypeIndex::default();
+
+        for file_id in db.all_file_ids() {
+            let Some(path) = db.file_path(file_id) else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                continue;
+            }
+
+            let text = db.file_content(file_id);
+            let package = parse_java_package_name(text).unwrap_or_default();
+            for ty in parse_top_level_type_names(text) {
+                let fqn = if package.is_empty() {
+                    ty.clone()
+                } else {
+                    format!("{package}.{ty}")
+                };
+                index.by_binary_name.entry(fqn).or_insert(file_id);
+            }
+        }
+
+        index
+    }
+
+    fn file_for_binary_name(&self, name: &str) -> Option<FileId> {
+        self.by_binary_name.get(name).copied()
+    }
+}
+
+fn parse_top_level_type_names(text: &str) -> Vec<String> {
+    let tokens = tokenize(text);
+    let mut brace_depth = 0i32;
+    let mut names = Vec::new();
+
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        match tokens[i].kind {
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => brace_depth -= 1,
+            _ => {}
+        }
+
+        if brace_depth == 0
+            && tokens[i].kind == TokenKind::Ident
+            && matches!(
+                tokens[i].text.as_str(),
+                "class" | "interface" | "enum" | "record"
+            )
+        {
+            if let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident) {
+                names.push(name_tok.text.clone());
+            }
+        }
+
+        i += 1;
+    }
+
+    names
+}
+
+fn resolve_annotation_type(
+    types: &mut TypeStore,
+    index: &WorkspaceTypeIndex,
+    package: &str,
+    imports: &JavaImportInfo,
+    annotation_name: &str,
+) -> Option<ResolvedAnnotationType> {
+    let ann = annotation_name.trim();
+    if ann.is_empty() {
+        return None;
+    }
+
+    // Qualified name: treat it as a binary name first.
+    if ann.contains('.') {
+        if let Some(file) = index.file_for_binary_name(ann) {
+            return Some(ResolvedAnnotationType {
+                binary_name: ann.to_string(),
+                source: ResolvedAnnotationSource::Workspace(file),
+            });
+        }
+
+        if ensure_class_id(types, ann).is_some() {
+            return Some(ResolvedAnnotationType {
+                binary_name: ann.to_string(),
+                source: ResolvedAnnotationSource::Jdk,
+            });
+        }
+
+        return None;
+    }
+
+    // Single-type import.
+    if let Some(imported) = imports
+        .explicit_types
+        .iter()
+        .find(|ty| ty.rsplit('.').next().unwrap_or(ty.as_str()) == ann)
+    {
+        if let Some(file) = index.file_for_binary_name(imported) {
+            return Some(ResolvedAnnotationType {
+                binary_name: imported.clone(),
+                source: ResolvedAnnotationSource::Workspace(file),
+            });
+        }
+        if ensure_class_id(types, imported).is_some() {
+            return Some(ResolvedAnnotationType {
+                binary_name: imported.clone(),
+                source: ResolvedAnnotationSource::Jdk,
+            });
+        }
+    }
+
+    // Same-package.
+    if !package.is_empty() {
+        let candidate = format!("{package}.{ann}");
+        if let Some(file) = index.file_for_binary_name(&candidate) {
+            return Some(ResolvedAnnotationType {
+                binary_name: candidate,
+                source: ResolvedAnnotationSource::Workspace(file),
+            });
+        }
+    }
+
+    // Star imports.
+    for star in &imports.star_packages {
+        if star.is_empty() {
+            continue;
+        }
+        let candidate = format!("{star}.{ann}");
+        if let Some(file) = index.file_for_binary_name(&candidate) {
+            return Some(ResolvedAnnotationType {
+                binary_name: candidate,
+                source: ResolvedAnnotationSource::Workspace(file),
+            });
+        }
+        if ensure_class_id(types, &candidate).is_some() {
+            return Some(ResolvedAnnotationType {
+                binary_name: candidate,
+                source: ResolvedAnnotationSource::Jdk,
+            });
+        }
+    }
+
+    // `java.lang.*` is implicitly imported.
+    let java_lang = format!("java.lang.{ann}");
+    if ensure_class_id(types, &java_lang).is_some() {
+        return Some(ResolvedAnnotationType {
+            binary_name: java_lang,
+            source: ResolvedAnnotationSource::Jdk,
+        });
+    }
+
+    None
+}
+
+// -----------------------------------------------------------------------------
 // Diagnostics
 // -----------------------------------------------------------------------------
 
@@ -1834,6 +2378,18 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     }
                 }
             }
+        }
+    }
+
+    // Java annotation element (attribute) completions inside `@Anno(...)`.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(items) =
+            annotation_attribute_completions(db, text, offset, prefix_start, &prefix)
+        {
+            return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
 

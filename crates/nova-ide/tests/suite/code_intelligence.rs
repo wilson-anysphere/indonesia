@@ -246,6 +246,52 @@ class A {
 }
 
 #[test]
+fn annotation_attribute_completion_suggests_elements() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
+    let java_text = r#"package p; @MyAnno(co<|>) class Main {}"#;
+
+    let (db, file, pos) =
+        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+
+    let items = completions(&db, file, pos);
+    let count = items
+        .iter()
+        .find(|i| i.label == "count")
+        .expect("expected completion list to include MyAnno.count");
+    let insert = count.insert_text.as_deref().unwrap_or("");
+    assert!(
+        insert.contains("count ="),
+        "expected completion insert text to contain `count =`; got {insert:?}"
+    );
+}
+
+#[test]
+fn annotation_attribute_completion_filters_already_present_elements() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
+    let java_text = r#"package p; @MyAnno(count = 1, <|>) class Main {}"#;
+
+    let (db, file, pos) =
+        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"value"),
+        "expected completion list to include MyAnno.value; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"count"),
+        "expected completion list to not include MyAnno.count twice; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_includes_arraylist_with_star_import() {
     let (db, file, pos) = fixture(
         r#"
