@@ -139,3 +139,45 @@ class C {
         "expected flow diagnostics to run for at least one method"
     );
 }
+
+#[test]
+fn type_at_offset_display_does_not_panic_on_broken_code() {
+    let src = r#"
+class C {
+    void m() {
+        int x = ;
+        if (true) { }
+    }
+}
+"#;
+
+    let (db, _tmp, file) = setup_db(src);
+
+    // Ensure this is actually syntactically malformed so the test exercises recovery paths.
+    assert!(
+        !db.parse_java(file).errors.is_empty(),
+        "expected parse errors for malformed snippet"
+    );
+
+    let offset = src
+        .find("true")
+        .expect("snippet should contain boolean literal");
+
+    // Ensure this IDE query stays demand-driven even on broken code.
+    db.clear_query_stats();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_at_offset_display should not execute typeck_body on broken code"
+    );
+}
