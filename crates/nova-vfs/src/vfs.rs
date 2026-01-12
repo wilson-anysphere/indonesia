@@ -468,6 +468,30 @@ mod tests {
     }
 
     #[test]
+    fn vfs_virtual_document_read_dir_is_unsupported() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Dir");
+
+        vfs.store_virtual_document(path.clone(), "class Dir {}".to_string());
+
+        let err = vfs
+            .read_dir(&path)
+            .expect_err("expected read_dir to be unsupported");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn vfs_virtual_document_metadata_is_unsupported_even_if_missing() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.MissingMeta");
+
+        let err = vfs
+            .metadata(&path)
+            .expect_err("expected metadata to be unsupported");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
     fn legacy_decompiled_virtual_documents_are_readable() {
         let vfs = Vfs::new(LocalFs::new());
         let path = VfsPath::legacy_decompiled("com/example/Foo");
