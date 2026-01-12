@@ -245,7 +245,7 @@ def check_perf_docs() -> list[str]:
 
     bench_path_re = re.compile(r"crates/[A-Za-z0-9_-]+/benches/[A-Za-z0-9_-]+\.rs")
     bench_cmd_re = re.compile(
-        r"cargo bench[^\n]*\s-p\s+([^\s]+)[^\n]*\s--bench\s+([^\s`]+)"
+        r"(?:cargo bench|bash\s+(?:\./)?scripts/cargo_agent\.sh\s+bench)[^\n]*\s-p\s+([^\s]+)[^\n]*\s--bench\s+([^\s`]+)"
     )
     for doc_path in docs_require_paths:
         if not doc_path.exists():
