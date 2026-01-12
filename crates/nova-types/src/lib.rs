@@ -3382,6 +3382,46 @@ fn collect_class_supertypes(
 fn collect_supertypes_for_lub(env: &dyn TypeEnv, ty: &Type) -> HashMap<ClassId, Type> {
     let object = Type::class(env.well_known().object, vec![]);
 
+    fn merge_supertype_maps(
+        env: &dyn TypeEnv,
+        out: &mut HashMap<ClassId, Type>,
+        incoming: HashMap<ClassId, Type>,
+    ) {
+        use std::collections::hash_map::Entry;
+
+        for (def, ty) in incoming {
+            match out.entry(def) {
+                Entry::Vacant(v) => {
+                    v.insert(ty);
+                }
+                Entry::Occupied(mut o) => {
+                    let existing = o.get().clone();
+                    let merged = match (&existing, &ty) {
+                        (
+                            Type::Class(ClassType {
+                                def: a_def,
+                                args: a_args,
+                            }),
+                            Type::Class(ClassType {
+                                def: b_def,
+                                args: b_args,
+                            }),
+                        ) if a_def == b_def => lub_same_generic_class(env, *a_def, a_args, b_args),
+                        _ => {
+                            // Fallback: prefer the deterministic sort key to keep map updates stable.
+                            if type_sort_key(env, &existing) <= type_sort_key(env, &ty) {
+                                existing
+                            } else {
+                                ty
+                            }
+                        }
+                    };
+                    o.insert(merged);
+                }
+            }
+        }
+    }
+
     match ty {
         Type::Class(ClassType { def, args }) => {
             let mut out = collect_class_supertypes(env, *def, args.clone());
@@ -3399,9 +3439,13 @@ fn collect_supertypes_for_lub(env: &dyn TypeEnv, ty: &Type) -> HashMap<ClassId, 
         Type::TypeVar(id) => {
             let mut out = HashMap::new();
             if let Some(tp) = env.type_param(*id) {
-                for ub in &tp.upper_bounds {
+                // Sort to avoid depending on how bounds are collected (and because bound order
+                // is not semantically meaningful for LUB computation).
+                let mut bounds: Vec<&Type> = tp.upper_bounds.iter().collect();
+                bounds.sort_by_cached_key(|t| type_sort_key(env, t));
+                for ub in bounds {
                     let ub = canonicalize_for_lub(env, ub);
-                    out.extend(collect_supertypes_for_lub(env, &ub));
+                    merge_supertype_maps(env, &mut out, collect_supertypes_for_lub(env, &ub));
                 }
             }
             out.insert(env.well_known().object, object);
@@ -3409,9 +3453,12 @@ fn collect_supertypes_for_lub(env: &dyn TypeEnv, ty: &Type) -> HashMap<ClassId, 
         }
         Type::Intersection(parts) => {
             let mut out = HashMap::new();
+            // Sort to avoid depending on intersection ordering.
+            let mut parts: Vec<&Type> = parts.iter().collect();
+            parts.sort_by_cached_key(|t| type_sort_key(env, t));
             for p in parts {
                 let p = canonicalize_for_lub(env, p);
-                out.extend(collect_supertypes_for_lub(env, &p));
+                merge_supertype_maps(env, &mut out, collect_supertypes_for_lub(env, &p));
             }
             out.insert(env.well_known().object, object);
             out
