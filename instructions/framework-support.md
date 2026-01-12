@@ -288,11 +288,11 @@ through the normal `diagnostics`/`completions` hooks by using `db.file_path(file
 
 ```bash
 # Framework support tests
-bash scripts/cargo_agent.sh test -p nova-framework --lib
-bash scripts/cargo_agent.sh test -p nova-framework-spring --lib
-bash scripts/cargo_agent.sh test -p nova-framework-lombok --lib
-bash scripts/cargo_agent.sh test -p nova-framework-jpa --lib
-bash scripts/cargo_agent.sh test -p nova-apt --lib
+bash scripts/cargo_agent.sh test --locked -p nova-framework --lib
+bash scripts/cargo_agent.sh test --locked -p nova-framework-spring --lib
+bash scripts/cargo_agent.sh test --locked -p nova-framework-lombok --lib
+bash scripts/cargo_agent.sh test --locked -p nova-framework-jpa --lib
+bash scripts/cargo_agent.sh test --locked -p nova-apt --lib
 ```
 
 ### Test Structure

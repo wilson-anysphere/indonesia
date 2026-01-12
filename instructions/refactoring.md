@@ -209,7 +209,7 @@ void extracted(int x, int y) {
 
 ```bash
 # Run refactoring tests
-bash scripts/cargo_agent.sh test -p nova-refactor --lib
+bash scripts/cargo_agent.sh test --locked -p nova-refactor --lib
 ```
 
 ### Test Structure

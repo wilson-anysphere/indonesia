@@ -152,19 +152,19 @@ list.stream().map(x -> x.toString())
 
 ```bash
 # Type system tests
-bash scripts/cargo_agent.sh test -p nova-types --lib
+bash scripts/cargo_agent.sh test --locked -p nova-types --lib
 
 # Resolution tests
-bash scripts/cargo_agent.sh test -p nova-resolve --lib
+bash scripts/cargo_agent.sh test --locked -p nova-resolve --lib
 
 # HIR tests
-bash scripts/cargo_agent.sh test -p nova-hir --lib
+bash scripts/cargo_agent.sh test --locked -p nova-hir --lib
 
 # Flow analysis tests
-bash scripts/cargo_agent.sh test -p nova-flow --lib
+bash scripts/cargo_agent.sh test --locked -p nova-flow --lib
 
 # Classpath tests
-bash scripts/cargo_agent.sh test -p nova-classpath --lib
+bash scripts/cargo_agent.sh test --locked -p nova-classpath --lib
 ```
 
 ### JLS Compliance Tests

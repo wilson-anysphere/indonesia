@@ -121,13 +121,13 @@ named `golden_corpus` — run it via `--test harness` and (optionally) a test-na
 
 ```bash
 # (Re)generate expected `.tree`/`.errors` outputs
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 
 # Run the golden corpus test
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 
 # Run the full `nova-syntax` integration harness
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 ```
 
 ### Java Language Levels
@@ -165,24 +165,24 @@ let formatted = nova_format::format_file(source, options);
 
 ```bash
 # Parser unit tests
-bash scripts/cargo_agent.sh test -p nova-syntax --lib
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --lib
 
 # Parser integration test harness
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 
 # Parser golden corpus fixtures (test-name filter)
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 
 # Formatter tests (`insta` snapshots)
-bash scripts/cargo_agent.sh test -p nova-format --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness
 # or focus on a subset:
-bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 
 # Update / bless expectations:
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 ```
 
 ---

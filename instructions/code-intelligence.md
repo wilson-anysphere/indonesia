@@ -188,13 +188,13 @@ pub struct SymbolIndex {
 
 ```bash
 # IDE feature tests
-bash scripts/cargo_agent.sh test -p nova-ide --lib
+bash scripts/cargo_agent.sh test --locked -p nova-ide --lib
 
 # Index tests
-bash scripts/cargo_agent.sh test -p nova-index --lib
+bash scripts/cargo_agent.sh test --locked -p nova-index --lib
 
 # Fuzzy matching tests
-bash scripts/cargo_agent.sh test -p nova-fuzzy --lib
+bash scripts/cargo_agent.sh test --locked -p nova-fuzzy --lib
 ```
 
 ### Completion Tests

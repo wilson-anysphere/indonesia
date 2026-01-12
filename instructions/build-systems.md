@@ -246,10 +246,10 @@ my-project/
 
 ```bash
 # Build system tests
-bash scripts/cargo_agent.sh test -p nova-build --lib
-bash scripts/cargo_agent.sh test -p nova-build-bazel --lib
-bash scripts/cargo_agent.sh test -p nova-project --lib
-bash scripts/cargo_agent.sh test -p nova-classpath --lib
+bash scripts/cargo_agent.sh test --locked -p nova-build --lib
+bash scripts/cargo_agent.sh test --locked -p nova-build-bazel --lib
+bash scripts/cargo_agent.sh test --locked -p nova-project --lib
+bash scripts/cargo_agent.sh test --locked -p nova-classpath --lib
 ```
 
 ### Test Structure

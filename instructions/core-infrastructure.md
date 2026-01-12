@@ -123,12 +123,12 @@ let derived = DerivedCache::new(storage_path);
 
 ```bash
 # Test core crates
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh test -p nova-db --lib
-bash scripts/cargo_agent.sh test -p nova-vfs --lib
-bash scripts/cargo_agent.sh test -p nova-cache --lib
-bash scripts/cargo_agent.sh test -p nova-memory --lib
-bash scripts/cargo_agent.sh test -p nova-workspace --lib
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+bash scripts/cargo_agent.sh test --locked -p nova-db --lib
+bash scripts/cargo_agent.sh test --locked -p nova-vfs --lib
+bash scripts/cargo_agent.sh test --locked -p nova-cache --lib
+bash scripts/cargo_agent.sh test --locked -p nova-memory --lib
+bash scripts/cargo_agent.sh test --locked -p nova-workspace --lib
 ```
 
 **Test patterns:**

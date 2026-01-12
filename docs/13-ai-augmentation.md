@@ -685,19 +685,19 @@ Nova's AI subsystems are intentionally heuristic-heavy (privacy sanitization, pa
 - Run them (agent-safe) with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-ai --test ai_eval
+bash scripts/cargo_agent.sh test --locked -p nova-ai --test ai_eval
 ```
 
 If you prefer running the consolidated integration test binary and filtering to the suite module, use:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-ai --test tests suite::ai_eval
+bash scripts/cargo_agent.sh test --locked -p nova-ai --test tests suite::ai_eval
 ```
 
 In normal local development / CI (outside the agent runner wrapper), the equivalent command is:
 
 ```bash
-cargo test -p nova-ai \
+cargo test --locked -p nova-ai \
   --test ai_eval
 ```
 

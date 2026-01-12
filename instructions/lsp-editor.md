@@ -287,13 +287,13 @@ lspconfig.nova_lsp.setup({})
 
 ```bash
 # LSP server tests
-bash scripts/cargo_agent.sh test -p nova-lsp --lib
+bash scripts/cargo_agent.sh test --locked -p nova-lsp --lib
 
 # Router tests
-bash scripts/cargo_agent.sh test -p nova-router --lib
+bash scripts/cargo_agent.sh test --locked -p nova-router --lib
 
 # CLI tests
-bash scripts/cargo_agent.sh test -p nova-cli --lib
+bash scripts/cargo_agent.sh test --locked -p nova-cli --lib
 ```
 
 ### Integration Tests
