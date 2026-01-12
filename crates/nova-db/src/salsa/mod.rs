@@ -548,6 +548,9 @@ impl SalsaInputs {
         for (&file, &exists) in &self.file_exists {
             db.set_file_exists(file, exists);
         }
+        for (&file, &dirty) in &self.file_is_dirty {
+            db.set_file_is_dirty(file, dirty);
+        }
         for (&file, &project) in &self.file_project {
             db.set_file_project(file, project);
         }
@@ -3204,6 +3207,7 @@ class Foo {
         rw_db.set_file_exists(file, true);
         rw_db.set_file_path(file, file_path);
         rw_db.set_file_content(file, text.clone());
+        rw_db.set_file_is_dirty(file, false);
 
         let from_rw = rw_db.item_tree(file);
         drop(rw_db);
@@ -3219,6 +3223,7 @@ class Foo {
         rw_db2.set_file_exists(file, true);
         rw_db2.set_file_path(file, file_path);
         rw_db2.set_file_content(file, text.clone());
+        rw_db2.set_file_is_dirty(file, false);
 
         let from_cache = rw_db2.item_tree(file);
         assert_eq!(&*from_cache, &*from_rw);
@@ -3237,11 +3242,77 @@ class Foo {
         disabled_db.set_file_exists(file, true);
         disabled_db.set_file_path(file, file_path);
         disabled_db.set_file_content(file, text);
+        disabled_db.set_file_is_dirty(file, false);
 
         let from_disabled = disabled_db.item_tree(file);
         assert_eq!(&*from_disabled, &*from_rw);
         assert_eq!(stat(&disabled_db, "item_tree").disk_hits, 0);
         assert_eq!(stat(&disabled_db, "item_tree").disk_misses, 0);
+    }
+
+    #[test]
+    fn dirty_files_do_not_overwrite_persisted_ast_artifacts() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let cache_cfg = CacheConfig {
+            cache_root_override: Some(cache_root),
+        };
+
+        let rel_path = "src/A.java";
+        let disk_text = "class A {}";
+        std::fs::write(project_root.join(rel_path), disk_text).unwrap();
+
+        let file = FileId::from_raw(1);
+
+        // First run: parse + persist artifacts for the on-disk content.
+        let mut db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg.clone(),
+            },
+        );
+        db.set_file_exists(file, true);
+        db.set_file_path(file, rel_path);
+        db.set_file_content(file, Arc::new(disk_text.to_string()));
+        db.set_file_is_dirty(file, false);
+        let _ = db.item_tree(file);
+
+        // Second run in the same DB: mutate in-memory only (dirty overlay) and ensure we do *not*
+        // overwrite the persisted artifacts.
+        db.set_file_content(file, Arc::new("class A { int x; }".to_string()));
+        db.set_file_is_dirty(file, true);
+        let _ = db.item_tree(file);
+        drop(db);
+
+        // Third run (fresh DB): original disk content should still warm-start.
+        let mut db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg,
+            },
+        );
+        db.set_file_exists(file, true);
+        db.set_file_path(file, rel_path);
+        db.set_file_content(file, Arc::new(disk_text.to_string()));
+        db.set_file_is_dirty(file, false);
+
+        db.clear_query_stats();
+        let _ = db.item_tree(file);
+
+        assert_eq!(
+            executions(&db, "parse"),
+            0,
+            "expected warm-start from persisted artifacts (parse should not execute)"
+        );
+        assert_eq!(stat(&db, "item_tree").disk_hits, 1);
+        assert_eq!(stat(&db, "item_tree").disk_misses, 0);
     }
 
     #[test]
@@ -3272,6 +3343,7 @@ class Foo {
         ro_db.set_file_exists(file, true);
         ro_db.set_file_path(file, rel_path);
         ro_db.set_file_content(file, text.clone());
+        ro_db.set_file_is_dirty(file, false);
         let ro_tree = ro_db.item_tree(file);
         assert_eq!(stat(&ro_db, "item_tree").disk_hits, 0);
         assert_eq!(stat(&ro_db, "item_tree").disk_misses, 1);
@@ -3304,6 +3376,7 @@ class Foo {
         rw_db.set_file_exists(file, true);
         rw_db.set_file_path(file, rel_path);
         rw_db.set_file_content(file, text);
+        rw_db.set_file_is_dirty(file, false);
         let rw_tree = rw_db.item_tree(file);
         assert_eq!(&*rw_tree, &*ro_tree);
         assert_eq!(stat(&rw_db, "item_tree").disk_hits, 0);
@@ -3338,6 +3411,7 @@ class Foo {
         db.set_file_exists(file, true);
         db.set_file_path(file, rel_path);
         db.set_file_content(file, text.clone());
+        db.set_file_is_dirty(file, false);
         let expected = db.item_tree(file);
         drop(db);
 
@@ -3365,6 +3439,7 @@ class Foo {
         db2.set_file_exists(file, true);
         db2.set_file_path(file, rel_path);
         db2.set_file_content(file, text);
+        db2.set_file_is_dirty(file, false);
 
         let actual = db2.item_tree(file);
         assert_eq!(&*actual, &*expected);

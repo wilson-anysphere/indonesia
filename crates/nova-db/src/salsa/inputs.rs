@@ -17,9 +17,9 @@ pub trait NovaInputs: ra_salsa::Database {
     /// Whether the host considers the file content to be "dirty" (in-memory edits not yet saved
     /// to disk).
     ///
-    /// This is used by project indexing warm-start logic: unchanged on-disk files are normally
-    /// validated via fast metadata fingerprints (mtime + size), but purely in-memory edits would
-    /// otherwise be invisible without an explicit, tracked signal.
+    /// This is used by warm-start / persistence logic:
+    /// - avoid overwriting on-disk caches with transient editor text
+    /// - allow indexing to distinguish on-disk state from in-memory overlays
     ///
     /// Hosts should set this to `true` when a file is modified in an editor buffer and back to
     /// `false` once the buffer state matches the on-disk content again.

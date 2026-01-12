@@ -110,13 +110,15 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     }
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
-        let artifacts = FileAstArtifacts {
-            parse: (*parse).clone(),
-            item_tree: (*result).clone(),
-            symbol_summary: None,
-        };
-        db.persistence()
-            .store_ast_artifacts(file_path.as_str(), fingerprint, &artifacts);
+        if !db.file_is_dirty(file) {
+            let artifacts = FileAstArtifacts {
+                parse: (*parse).clone(),
+                item_tree: (*result).clone(),
+                symbol_summary: None,
+            };
+            db.persistence()
+                .store_ast_artifacts(file_path.as_str(), fingerprint, &artifacts);
+        }
     }
     db.record_query_stat("item_tree", start.elapsed());
     result
