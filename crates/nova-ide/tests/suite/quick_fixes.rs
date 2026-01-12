@@ -7,6 +7,7 @@ use nova_db::{InMemoryFileStore, SalsaDbView};
 use nova_ext::{ProjectId, Span};
 use nova_ide::code_action::diagnostic_quick_fixes;
 use nova_ide::extensions::IdeExtensions;
+use nova_ide::quick_fix::quick_fixes_for_diagnostics;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
 
@@ -775,5 +776,89 @@ fn diagnostic_quick_fixes_static_import_inserts_import_statement() {
     assert!(
         updated.contains("import static java.lang.Math.max;"),
         "expected static import insertion; got:\n{updated}"
+    );
+}
+
+#[test]
+fn diagnostic_quick_fixes_offer_keep_import_actions_for_ambiguous_import() {
+    let source = "import a.Foo;\nimport b.Foo;\nclass A {}\n";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("Foo").expect("expected Foo in fixture");
+    let foo_end = foo_start + "Foo".len();
+    let range = Range::new(
+        offset_to_position(source, foo_start),
+        offset_to_position(source, foo_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("ambiguous-import".to_string())),
+        message: "ambiguous import for `Foo`: a.Foo, b.Foo".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
+
+    assert!(
+        actions.iter().any(|action| action.title == "Keep import a.Foo"),
+        "expected Keep import a.Foo; got actions {actions:#?}"
+    );
+    assert!(
+        actions.iter().any(|action| action.title == "Keep import b.Foo"),
+        "expected Keep import b.Foo; got actions {actions:#?}"
+    );
+
+    let keep_a = actions
+        .iter()
+        .find(|action| action.title == "Keep import a.Foo")
+        .expect("missing Keep import a.Foo");
+
+    let updated = apply_workspace_edit(source, keep_a.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("import a.Foo;"),
+        "expected updated source to still contain import a.Foo; got:\n{updated}"
+    );
+    assert!(
+        !updated.contains("import b.Foo;"),
+        "expected updated source to delete import b.Foo; got:\n{updated}"
+    );
+}
+
+#[test]
+fn quick_fixes_for_diagnostics_offer_keep_import_action_for_ambiguous_import() {
+    let source = "import a.Foo;\nimport b.Foo;\nclass A {}\n";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("Foo").expect("expected Foo in fixture");
+    let foo_end = foo_start + "Foo".len();
+    let foo_span = Span::new(foo_start, foo_end);
+
+    let diags = vec![nova_types::Diagnostic::error(
+        "ambiguous-import",
+        "ambiguous import for `Foo`: a.Foo, b.Foo",
+        Some(foo_span),
+    )];
+
+    let actions = quick_fixes_for_diagnostics(&uri, source, foo_span, &diags);
+
+    let keep_a = find_code_action(&actions, "Keep import a.Foo")
+        .or_else(|| find_code_action(&actions, "Keep import b.Foo"))
+        .unwrap_or_else(|| {
+            panic!(
+                "missing keep-import quick fix; got titles {:?}",
+                action_titles(&actions)
+            )
+        });
+
+    let updated = apply_workspace_edit(source, keep_a.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("import a.Foo;") || updated.contains("import b.Foo;"),
+        "expected updated source to still contain one of the imports; got:\n{updated}"
+    );
+    assert!(
+        !(updated.contains("import a.Foo;") && updated.contains("import b.Foo;")),
+        "expected one candidate import to be deleted; got:\n{updated}"
     );
 }

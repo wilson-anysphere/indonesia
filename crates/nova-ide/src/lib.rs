@@ -30,7 +30,7 @@ mod jpa_intel;
 mod micronaut_intel;
 mod project;
 mod quarkus_intel;
-mod quick_fix;
+pub mod quick_fix;
 mod quickfix;
 pub mod refactor;
 mod spring_config;

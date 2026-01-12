@@ -3,6 +3,7 @@ use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
     Uri, WorkspaceEdit,
 };
+use crate::quick_fixes::is_java_identifier;
 use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
 use nova_jdk::JdkIndex;
 use nova_refactor::extract_method::{
@@ -105,6 +106,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
 /// - `duplicate-import` → `Remove duplicate import`
+/// - `ambiguous-import` → `Keep import <fqn>` (remove the other candidate imports)
 /// - `FLOW_NULL_DEREF` → `Wrap with Objects.requireNonNull`
 pub fn diagnostic_quick_fixes(
     source: &str,
@@ -155,6 +157,7 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = remove_duplicate_import_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
+        actions.extend(ambiguous_import_quick_fixes(source, &uri, &selection, diag));
         actions.extend(type_mismatch_quick_fixes(source, &uri, &selection, diag));
         actions.extend(return_mismatch_quick_fixes(source, &uri, &selection, diag));
         if let Some(action) = flow_null_deref_quick_fix(source, &uri, &selection, diag) {
@@ -844,6 +847,129 @@ fn remove_duplicate_import_quick_fix(
         diagnostics: Some(vec![diagnostic.clone()]),
         ..CodeAction::default()
     })
+}
+
+fn ambiguous_import_quick_fixes(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
+    if diagnostic_code(diagnostic) != Some("ambiguous-import") {
+        return Vec::new();
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return Vec::new();
+    }
+
+    let Some(candidates) = ambiguous_import_candidates(&diagnostic.message) else {
+        return Vec::new();
+    };
+    if candidates.len() < 2 {
+        return Vec::new();
+    }
+
+    let is_static = full_line_range(source, &diagnostic.range)
+        .and_then(|range| source_range_text(source, &range))
+        .is_some_and(|line| line.trim_start().starts_with("import static "));
+
+    let import_prefix = if is_static { "import static " } else { "import " };
+
+    let mut expected_lines: HashMap<String, String> = HashMap::new();
+    for cand in &candidates {
+        expected_lines.insert(format!("{import_prefix}{cand};"), cand.clone());
+    }
+
+    // Find all matching candidate import lines in the file.
+    let mut spans_by_candidate: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    let mut offset = 0usize;
+    for segment in source.split_inclusive('\n') {
+        let line_start = offset;
+        let line_end = offset + segment.len();
+
+        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
+        line = line.strip_suffix('\r').unwrap_or(line);
+        let trimmed = line.trim();
+
+        if let Some(cand) = expected_lines.get(trimmed) {
+            spans_by_candidate
+                .entry(cand.clone())
+                .or_default()
+                .push((line_start, line_end));
+        }
+
+        offset = line_end;
+    }
+
+    let mut actions = Vec::new();
+    for cand in &candidates {
+        // If we can't locate the candidate import line, skip offering the keep action.
+        if !spans_by_candidate.contains_key(cand) {
+            continue;
+        }
+
+        let mut ranges_to_delete: Vec<(usize, usize)> = Vec::new();
+        for other in candidates.iter().filter(|c| *c != cand) {
+            if let Some(ranges) = spans_by_candidate.get(other) {
+                ranges_to_delete.extend(ranges.iter().copied());
+            }
+        }
+        if ranges_to_delete.is_empty() {
+            continue;
+        }
+
+        // Deterministic + robust ordering: reverse-sorted, so sequential application won't shift
+        // earlier offsets even if a client applies edits in-order.
+        ranges_to_delete.sort_by_key(|(start, end)| {
+            (std::cmp::Reverse(*start), std::cmp::Reverse(*end))
+        });
+        ranges_to_delete.dedup();
+
+        let edits: Vec<TextEdit> = ranges_to_delete
+            .into_iter()
+            .map(|(start, end)| TextEdit {
+                range: Range {
+                    start: crate::text::offset_to_position(source, start),
+                    end: crate::text::offset_to_position(source, end),
+                },
+                new_text: String::new(),
+            })
+            .collect();
+
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), edits);
+
+        actions.push(CodeAction {
+            title: if is_static {
+                format!("Keep static import {cand}")
+            } else {
+                format!("Keep import {cand}")
+            },
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            ..CodeAction::default()
+        });
+    }
+
+    actions
+}
+
+fn ambiguous_import_candidates(message: &str) -> Option<Vec<String>> {
+    let rest = message.splitn(2, ": ").nth(1)?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for cand in rest.split(", ").map(str::trim).filter(|s| !s.is_empty()) {
+        if seen.insert(cand.to_string()) {
+            out.push(cand.to_string());
+        }
+    }
+    Some(out)
 }
 
 fn type_mismatch_quick_fixes(

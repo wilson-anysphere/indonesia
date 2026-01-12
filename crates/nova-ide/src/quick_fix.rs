@@ -10,7 +10,7 @@ use regex::Regex;
 ///
 /// This is intentionally deterministic and purely text-based: it only looks at the provided
 /// diagnostics, selection span, and current file text.
-pub(crate) fn quick_fixes_for_diagnostics(
+pub fn quick_fixes_for_diagnostics(
     uri: &Uri,
     source: &str,
     selection: Span,
@@ -147,6 +147,82 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     is_preferred: Some(true),
                     ..Default::default()
                 }));
+            }
+            "ambiguous-import" => {
+                let Some(candidates) = ambiguous_import_candidates(&diag.message) else {
+                    continue;
+                };
+                if candidates.len() < 2 {
+                    continue;
+                }
+
+                let Some(line_start) = line_start_offset(source, diag_span.start) else {
+                    continue;
+                };
+                let line_end = line_end_offset(source, diag_span.start);
+                let is_static = source
+                    .get(line_start..line_end)
+                    .map(|line| {
+                        let mut line = line.strip_suffix('\n').unwrap_or(line);
+                        line = line.strip_suffix('\r').unwrap_or(line);
+                        line.trim_start().starts_with("import static ")
+                    })
+                    .unwrap_or(false);
+
+                let spans_by_candidate = collect_import_line_spans(source, &candidates, is_static);
+
+                for cand in &candidates {
+                    // If we can't find the candidate import line, we can't "keep" it.
+                    if !spans_by_candidate.contains_key(cand) {
+                        continue;
+                    }
+
+                    let mut delete_spans: Vec<Span> = Vec::new();
+                    for other in candidates.iter().filter(|c| *c != cand) {
+                        if let Some(spans) = spans_by_candidate.get(other) {
+                            delete_spans.extend(spans.iter().copied());
+                        }
+                    }
+                    if delete_spans.is_empty() {
+                        continue;
+                    }
+
+                    // Deterministic ordering: reverse-sorted so sequential application won't shift
+                    // earlier offsets even if a client applies edits in-order.
+                    delete_spans.sort_by_key(|span| (std::cmp::Reverse(span.start), std::cmp::Reverse(span.end)));
+                    delete_spans.dedup_by_key(|span| (span.start, span.end));
+
+                    let mut edits = Vec::new();
+                    for span in delete_spans {
+                        let range = Range {
+                            start: crate::text::offset_to_position(source, span.start),
+                            end: crate::text::offset_to_position(source, span.end),
+                        };
+                        edits.push(TextEdit {
+                            range,
+                            new_text: String::new(),
+                        });
+                    }
+
+                    let mut changes = HashMap::new();
+                    changes.insert(uri.clone(), edits);
+                    let edit = WorkspaceEdit {
+                        changes: Some(changes),
+                        document_changes: None,
+                        change_annotations: None,
+                    };
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: if is_static {
+                            format!("Keep static import {cand}")
+                        } else {
+                            format!("Keep import {cand}")
+                        },
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        edit: Some(edit),
+                        ..Default::default()
+                    }));
+                }
             }
             "unresolved-type" => {
                 let name = source
@@ -506,6 +582,53 @@ fn extract_backticked(message: &str) -> Option<String> {
     let end_rel = rest.find('`')?;
     let name = &rest[..end_rel];
     (!name.is_empty()).then_some(name.to_string())
+}
+
+fn ambiguous_import_candidates(message: &str) -> Option<Vec<String>> {
+    let rest = message.splitn(2, ": ").nth(1)?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for cand in rest.split(", ").map(str::trim).filter(|s| !s.is_empty()) {
+        if seen.insert(cand.to_string()) {
+            out.push(cand.to_string());
+        }
+    }
+    Some(out)
+}
+
+fn collect_import_line_spans(
+    source: &str,
+    candidates: &[String],
+    is_static: bool,
+) -> HashMap<String, Vec<Span>> {
+    let import_prefix = if is_static { "import static " } else { "import " };
+
+    let mut expected_lines: HashMap<String, String> = HashMap::new();
+    for cand in candidates {
+        expected_lines.insert(format!("{import_prefix}{cand};"), cand.clone());
+    }
+
+    let mut spans_by_candidate: HashMap<String, Vec<Span>> = HashMap::new();
+    let mut offset = 0usize;
+    for segment in source.split_inclusive('\n') {
+        let line_start = offset;
+        let line_end = offset + segment.len();
+
+        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
+        line = line.strip_suffix('\r').unwrap_or(line);
+        let trimmed = line.trim();
+
+        if let Some(cand) = expected_lines.get(trimmed) {
+            spans_by_candidate
+                .entry(cand.clone())
+                .or_default()
+                .push(Span::new(line_start, line_end));
+        }
+
+        offset = line_end;
+    }
+
+    spans_by_candidate
 }
 
 fn initialize_unassigned_local_action(
