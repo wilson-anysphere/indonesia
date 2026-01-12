@@ -579,8 +579,8 @@ fuzz_target!(|edits: Vec<FuzzEdit>| {
 **Implementation note (current repo):** Real-project validation is implemented as ignored tests using
 local-only clones under `test-projects/`:
 
-- `crates/nova-workspace/tests/suite/real_projects.rs` (run via `crates/nova-workspace/tests/workspace_events.rs`)
-- `crates/nova-cli/tests/suite/real_projects.rs` (run via `crates/nova-cli/tests/harness.rs`)
+- `crates/nova-project/tests/harness.rs` (run via `cargo test --locked -p nova-project --test harness -- --ignored`)
+- `crates/nova-cli/tests/real_projects.rs` (run via `cargo test --locked -p nova-cli --test real_projects -- --ignored`)
 
 Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
 or the “Real-project validation” section of [`14-testing-infrastructure.md`](14-testing-infrastructure.md).

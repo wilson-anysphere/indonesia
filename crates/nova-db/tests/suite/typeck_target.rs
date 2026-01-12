@@ -1,8 +1,8 @@
-//! Minimal `nova-db` type-checking integration test entrypoint.
+//! Minimal `nova-db` type-checking integration test module.
 //!
-//! Most `nova-db` integration tests are consolidated into `tests/harness.rs` for compile-time and
-//! memory efficiency. Some tooling still expects `cargo test --locked -p nova-db --test typeck`, so we keep
-//! a tiny dedicated test target that exercises a handful of representative typeck behaviors.
+//! `nova-db` integration tests are consolidated into `tests/harness.rs` for compile-time and memory
+//! efficiency. Run this focused subset via the harness + filter:
+//! `bash scripts/cargo_agent.sh test --locked -p nova-db --test harness suite::typeck_target`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

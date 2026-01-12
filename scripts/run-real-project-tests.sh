@@ -106,7 +106,7 @@ failures=0
 
 run_test() {
   # With `set -e` enabled, wrap in `if ! ...` so failures don't abort the script;
-  # we want to run both nova-workspace and nova-cli suites and report all failures.
+  # we want to run both nova-project and nova-cli suites and report all failures.
   if ! "$@"; then
     failures=1
   fi
