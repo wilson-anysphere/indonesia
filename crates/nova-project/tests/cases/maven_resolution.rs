@@ -219,10 +219,6 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
 "#,
     );
 
-    // Create placeholder jars in the local repo so `maven_dependency_jar_path` can find them.
-    write_file(&repo_jar_path(&repo, "com.dep", "dep-a", "1.0.0"), "");
-    write_file(&repo_jar_path(&repo, "com.dep", "dep-b", "2.0.0"), "");
-
     let options = LoadOptions {
         maven_repo: Some(repo.clone()),
         ..LoadOptions::default()

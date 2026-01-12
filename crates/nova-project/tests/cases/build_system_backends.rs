@@ -118,3 +118,4 @@ fn parse_project_returns_non_empty_models_for_fixtures() {
         "expected Simple project to return at least one module"
     );
 }
+

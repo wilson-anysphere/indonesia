@@ -22,6 +22,9 @@ mod bazel_reload;
 #[path = "cases/build_file_detection.rs"]
 mod build_file_detection;
 
+#[path = "cases/build_system_backends.rs"]
+mod build_system_backends;
+
 #[path = "cases/discovery.rs"]
 mod discovery;
 
@@ -37,6 +40,9 @@ mod gradle_jpms_workspace_model;
 #[path = "cases/gradle_reload_build_files.rs"]
 mod gradle_reload_build_files;
 
+#[path = "cases/gradle_reload_snapshot.rs"]
+mod gradle_reload_snapshot;
+
 #[path = "cases/gradle_snapshot.rs"]
 mod gradle_snapshot;
 
@@ -49,6 +55,9 @@ mod jpms;
 #[path = "cases/maven_jpms_workspace_model.rs"]
 mod maven_jpms_workspace_model;
 
+#[path = "cases/maven_missing_jars.rs"]
+mod maven_missing_jars;
+
 #[path = "cases/maven_repo_config.rs"]
 mod maven_repo_config;
 
@@ -60,6 +69,9 @@ mod maven_settings_repo;
 
 #[path = "cases/maven_snapshot.rs"]
 mod maven_snapshot;
+
+#[path = "cases/maven_workspace_module_transitive_deps.rs"]
+mod maven_workspace_module_transitive_deps;
 
 #[path = "cases/real_projects.rs"]
 mod real_projects;

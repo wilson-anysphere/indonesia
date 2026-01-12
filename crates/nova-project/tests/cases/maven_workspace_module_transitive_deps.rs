@@ -117,8 +117,8 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
     );
 
     // Ensure deterministic output (no dependence on host ~/.m2).
-    let model2 =
-        load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
+
