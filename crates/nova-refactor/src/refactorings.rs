@@ -596,6 +596,7 @@ pub fn extract_variable(
         });
     }
     reject_unsafe_extract_variable_context(&expr, &stmt)?;
+    reject_extract_variable_eval_order_guard(text, selection, &expr, &stmt)?;
 
     // Be conservative: extracting from loop conditions changes evaluation frequency.
     match stmt {
@@ -2874,6 +2875,96 @@ fn reject_unsafe_extract_variable_context(
     }
 
     Ok(())
+}
+
+fn reject_extract_variable_eval_order_guard(
+    source: &str,
+    selection: TextRange,
+    expr: &ast::Expression,
+    enclosing_stmt: &ast::Statement,
+) -> Result<(), RefactorError> {
+    let selection = trim_range(source, selection);
+    let expr_range = trim_range(source, syntax_range(expr.syntax()));
+    if selection.len() == 0 || expr_range.len() == 0 {
+        return Ok(());
+    }
+
+    // When we extract an expression into a fresh statement, we evaluate it *before* the enclosing
+    // statement. This can change the relative order of side effects and thrown exceptions with
+    // respect to other expressions.
+    //
+    // Be conservative and reject when there are other side-effectful expressions outside the
+    // selection in the portion of the statement that's evaluated as part of the "header".
+    //
+    // Important: for statements with nested bodies (`if`, `switch`, `synchronized`), extracting a
+    // header expression does *not* reorder side effects inside the body. We therefore restrict
+    // scanning to the header expression when the selection is inside it.
+    let scan_root = eval_order_guard_scan_root(source, enclosing_stmt, expr_range);
+    if has_order_sensitive_expr_outside_selection(source, &scan_root, expr_range) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract because it may change evaluation order",
+        });
+    }
+
+    Ok(())
+}
+
+fn eval_order_guard_scan_root(
+    source: &str,
+    enclosing_stmt: &ast::Statement,
+    expr_range: TextRange,
+) -> nova_syntax::SyntaxNode {
+    match enclosing_stmt {
+        ast::Statement::IfStatement(stmt) => stmt
+            .condition()
+            .filter(|cond| contains_range(trim_range(source, syntax_range(cond.syntax())), expr_range))
+            .map(|cond| cond.syntax().clone())
+            .unwrap_or_else(|| enclosing_stmt.syntax().clone()),
+        ast::Statement::SwitchStatement(stmt) => stmt
+            .expression()
+            .filter(|selector| {
+                contains_range(
+                    trim_range(source, syntax_range(selector.syntax())),
+                    expr_range,
+                )
+            })
+            .map(|selector| selector.syntax().clone())
+            .unwrap_or_else(|| enclosing_stmt.syntax().clone()),
+        ast::Statement::SynchronizedStatement(stmt) => stmt
+            .expression()
+            .filter(|lock_expr| {
+                contains_range(
+                    trim_range(source, syntax_range(lock_expr.syntax())),
+                    expr_range,
+                )
+            })
+            .map(|lock_expr| lock_expr.syntax().clone())
+            .unwrap_or_else(|| enclosing_stmt.syntax().clone()),
+        _ => enclosing_stmt.syntax().clone(),
+    }
+}
+
+fn has_order_sensitive_expr_outside_selection(
+    source: &str,
+    scan_root: &nova_syntax::SyntaxNode,
+    selection: TextRange,
+) -> bool {
+    let selection = trim_range(source, selection);
+    if selection.len() == 0 {
+        return false;
+    }
+
+    scan_root
+        .descendants()
+        .filter_map(ast::Expression::cast)
+        .any(|expr| {
+            let range = trim_range(source, syntax_range(expr.syntax()));
+            ranges_disjoint(range, selection) && has_side_effects(expr.syntax())
+        })
+}
+
+fn ranges_disjoint(a: TextRange, b: TextRange) -> bool {
+    a.end <= b.start || b.end <= a.start
 }
 
 fn contains_range(outer: TextRange, inner: TextRange) -> bool {
