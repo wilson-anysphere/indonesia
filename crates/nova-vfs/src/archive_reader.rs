@@ -25,7 +25,7 @@ impl NovaArchiveReader {
 }
 
 impl ArchiveReader for NovaArchiveReader {
-    fn read_to_string(&self, path: &ArchivePath) -> io::Result<String> {
+    fn read_bytes(&self, path: &ArchivePath) -> io::Result<Vec<u8>> {
         if !path.archive.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -37,13 +37,17 @@ impl ArchiveReader for NovaArchiveReader {
         let archive = Archive::new(path.archive.clone());
         let bytes = archive.read(entry.as_ref()).map_err(io::Error::other)?;
         match bytes {
-            Some(bytes) => String::from_utf8(bytes)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err)),
+            Some(bytes) => Ok(bytes),
             None => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("archive entry not found ({path})"),
             )),
         }
+    }
+
+    fn read_to_string(&self, path: &ArchivePath) -> io::Result<String> {
+        let bytes = self.read_bytes(path)?;
+        String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
     }
 
     fn exists(&self, path: &ArchivePath) -> bool {

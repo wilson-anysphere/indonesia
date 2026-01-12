@@ -126,10 +126,13 @@ mod tests {
 
         let names: std::collections::BTreeSet<_> =
             configs.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains("Run Main"));
-        assert!(names.contains("Run Application"));
-        assert!(names.contains("Spring Boot: Application"));
-        assert!(names.contains("Debug Tests: MainTest"));
+        assert!(names.contains("Run Main"), "configs: {names:?}");
+        assert!(names.contains("Run Application"), "configs: {names:?}");
+        assert!(
+            names.contains("Spring Boot: Application"),
+            "configs: {names:?}"
+        );
+        assert!(names.contains("Debug Tests: MainTest"), "configs: {names:?}");
 
         let spring = configs
             .iter()

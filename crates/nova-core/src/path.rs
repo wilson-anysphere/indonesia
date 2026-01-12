@@ -305,11 +305,15 @@ fn path_to_file_uri_windows(path: &AbsPathBuf) -> Result<String, PathToUriError>
         let mut parts = stripped.split('\\');
         let host = parts.next().ok_or(PathToUriError::UnsupportedWindowsPath)?;
         let share = parts.next().ok_or(PathToUriError::UnsupportedWindowsPath)?;
+        // Canonicalize the host/share casing so semantically-equal UNC paths map to
+        // a single URI/key.
+        let host = host.to_ascii_lowercase();
+        let share = share.to_ascii_lowercase();
 
         let mut uri = String::from("file://");
-        uri.push_str(&encode_uri_path(host));
+        uri.push_str(&encode_uri_path(&host));
         uri.push('/');
-        uri.push_str(&encode_uri_path(share));
+        uri.push_str(&encode_uri_path(&share));
 
         for part in parts {
             uri.push('/');
@@ -321,7 +325,8 @@ fn path_to_file_uri_windows(path: &AbsPathBuf) -> Result<String, PathToUriError>
     // Drive letter paths: C:\path\to\file
     let bytes = path.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' {
-        let drive = bytes[0] as char;
+        // Canonicalize the drive letter to uppercase so `c:` and `C:` map to the same key.
+        let drive = (bytes[0] as char).to_ascii_uppercase();
         let mut rest = &path[2..];
         if rest.starts_with('\\') || rest.starts_with('/') {
             rest = &rest[1..];
@@ -342,19 +347,22 @@ fn path_to_file_uri_windows(path: &AbsPathBuf) -> Result<String, PathToUriError>
 #[cfg(windows)]
 fn file_uri_to_path_windows(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
     let (authority, path) = split_file_uri(uri)?;
-    let authority = percent_decode(authority)?;
+    let authority = percent_decode(authority)?.to_ascii_lowercase();
     let path = percent_decode(path)?;
 
     if !authority.is_empty() && authority != "localhost" {
         // UNC
         let path = path.strip_prefix('/').ok_or(UriToPathError::InvalidUri)?;
         let mut parts = path.split('/');
-        let share = parts.next().ok_or(UriToPathError::UnsupportedWindowsUri)?;
+        let share = parts
+            .next()
+            .ok_or(UriToPathError::UnsupportedWindowsUri)?
+            .to_ascii_lowercase();
 
         let mut buf = String::from(r"\\");
         buf.push_str(&authority);
         buf.push('\\');
-        buf.push_str(share);
+        buf.push_str(&share);
         for part in parts {
             if part.is_empty() {
                 continue;
@@ -374,7 +382,8 @@ fn file_uri_to_path_windows(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
     }
 
     let mut buf = String::new();
-    buf.push(path.as_bytes()[0] as char);
+    // Canonicalize drive letter to uppercase so semantically-equal paths map to a single key.
+    buf.push((path.as_bytes()[0] as char).to_ascii_uppercase());
     buf.push(':');
     buf.push('\\');
     buf.push_str(&path[2..].trim_start_matches('/').replace('/', "\\"));
@@ -432,6 +441,17 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    fn windows_drive_letter_is_canonicalized() {
+        let uri = "file:///c:/tmp/a%20b.java";
+        let path = file_uri_to_path(uri).unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from(r"C:\tmp\a b.java")).unwrap());
+
+        let uri2 = path_to_file_uri(&path).unwrap();
+        assert_eq!(uri2, "file:///C:/tmp/a%20b.java");
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn windows_drive_file_uri_normalizes_dotdot() {
         let path = file_uri_to_path("file:///C:/a/b/../c.java").unwrap();
         assert_eq!(
@@ -465,5 +485,18 @@ mod tests {
             path,
             AbsPathBuf::new(PathBuf::from(r"\\server\share\a\c.java")).unwrap()
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_unc_host_is_canonicalized() {
+        let uri = "file://SERVER/Share/tmp/a.java";
+        let path = file_uri_to_path(uri).unwrap();
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from(r"\\server\share\tmp\a.java")).unwrap()
+        );
+        let uri2 = path_to_file_uri(&path).unwrap();
+        assert_eq!(uri2, "file://server/share/tmp/a.java");
     }
 }

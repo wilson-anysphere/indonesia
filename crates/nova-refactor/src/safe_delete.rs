@@ -366,24 +366,13 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
     // If the receiver ends with a call expression (e.g. `new Foo()` or `factory()`),
     // walk back to the identifier preceding the `(` so `new Foo().bar()` resolves to `Foo`.
     if bytes.get(end - 1) == Some(&b')') {
-        let mut depth: usize = 1;
-        let mut pos = end - 1;
-        while pos > 0 {
-            pos -= 1;
-            match bytes[pos] {
-                b')' => depth = depth.saturating_add(1),
-                b'(' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        end = pos;
-                        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-                            end -= 1;
-                        }
-                        break;
-                    }
-                }
-                _ => {}
-            }
+        let close = end - 1;
+        let Some(open) = find_matching_open_paren(bytes, close) else {
+            return Receiver::Unknown;
+        };
+        end = open;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
         }
         if end == 0 {
             return Receiver::Unknown;
@@ -423,6 +412,27 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
     } else {
         Receiver::Var(token.to_string())
     }
+}
+
+fn find_matching_open_paren(bytes: &[u8], mut close: usize) -> Option<usize> {
+    let mut depth: usize = 0;
+    loop {
+        match bytes.get(close)? {
+            b')' => depth = depth.saturating_add(1),
+            b'(' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(close);
+                }
+            }
+            _ => {}
+        }
+        if close == 0 {
+            break;
+        }
+        close -= 1;
+    }
+    None
 }
 
 fn is_ident_continue(b: u8) -> bool {

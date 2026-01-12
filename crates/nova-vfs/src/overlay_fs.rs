@@ -33,6 +33,14 @@ impl<F: FileSystem> OverlayFs<F> {
         docs.remove(path);
     }
 
+    pub fn rename(&self, from: &VfsPath, to: VfsPath) {
+        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
+        let Some(doc) = docs.remove(from) else {
+            return;
+        };
+        docs.entry(to).or_insert(doc);
+    }
+
     pub fn is_open(&self, path: &VfsPath) -> bool {
         let docs = self.docs.lock().expect("overlay mutex poisoned");
         docs.contains_key(path)
@@ -56,6 +64,13 @@ impl<F: FileSystem> OverlayFs<F> {
 }
 
 impl<F: FileSystem> FileSystem for OverlayFs<F> {
+    fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+        if let Some(text) = self.document_text(path) {
+            return Ok(text.into_bytes());
+        }
+        self.base.read_bytes(path)
+    }
+
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
         if let Some(text) = self.document_text(path) {
             return Ok(text);

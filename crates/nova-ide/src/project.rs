@@ -104,12 +104,12 @@ impl Project {
                     source_roots,
                     ..
                 }) => (workspace_root, source_roots),
-                Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
-                    // Keep debug configuration discovery working even for ad-hoc folders
-                    // that don't have a recognized build tool layout.
+                Err(_) => {
+                    // Keep debug configuration discovery working even for ad-hoc folders or when
+                    // project loading fails (for example, due to a broken build file in an
+                    // ancestor directory).
                     (root.clone(), Vec::new())
                 }
-                Err(err) => return Err(ProjectDiscoveryError::Project(err)),
             };
 
         let mut java_files = Vec::new();

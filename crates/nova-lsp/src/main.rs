@@ -18,7 +18,7 @@ use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
     MultiTokenCompletionProvider,
 };
-use nova_db::{FileId as DbFileId, InMemoryFileStore};
+use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
@@ -36,13 +36,12 @@ use nova_refactor::{
     RefactorJavaDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget,
     SemanticRefactorError,
 };
-use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
+use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -588,21 +587,25 @@ fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct AnalysisState {
-    file_ids: FileIdRegistry,
+    vfs: Vfs<LocalFs>,
+    file_paths: HashMap<nova_db::FileId, PathBuf>,
     file_exists: HashMap<nova_db::FileId, bool>,
     file_contents: HashMap<nova_db::FileId, String>,
 }
 
 impl AnalysisState {
-    fn path_for_uri(&mut self, uri: &lsp_types::Uri) -> VfsPath {
-        VfsPath::uri(uri.to_string())
+    fn path_for_uri(&self, uri: &lsp_types::Uri) -> VfsPath {
+        VfsPath::from(uri)
     }
 
     fn file_id_for_uri(&mut self, uri: &lsp_types::Uri) -> (nova_db::FileId, VfsPath) {
         let path = self.path_for_uri(uri);
-        let file_id = self.file_ids.file_id(path.clone());
+        let file_id = self.vfs.file_id(path.clone());
+        if let Some(local) = path.as_local_path() {
+            self.file_paths.insert(file_id, local.to_path_buf());
+        }
         (file_id, path)
     }
 
@@ -610,10 +613,41 @@ impl AnalysisState {
         self.file_exists.contains_key(&file_id)
     }
 
-    fn set_overlay_text(&mut self, uri: &lsp_types::Uri, text: String) {
-        let (file_id, _) = self.file_id_for_uri(uri);
-        self.file_exists.insert(file_id, true);
-        self.file_contents.insert(file_id, text);
+    fn open_document(
+        &mut self,
+        uri: lsp_types::Uri,
+        text: String,
+        version: i32,
+    ) -> nova_db::FileId {
+        let path = self.path_for_uri(&uri);
+        let id = self.vfs.open_document(path.clone(), text.clone(), version);
+        if let Some(local) = path.as_local_path() {
+            self.file_paths.insert(id, local.to_path_buf());
+        }
+        self.file_exists.insert(id, true);
+        self.file_contents.insert(id, text);
+        id
+    }
+
+    fn apply_document_changes(
+        &mut self,
+        uri: &lsp_types::Uri,
+        new_version: i32,
+        changes: &[lsp_types::TextDocumentContentChangeEvent],
+    ) -> Result<ChangeEvent, DocumentError> {
+        let evt = self.vfs.apply_document_changes_lsp(uri, new_version, changes)?;
+        if let ChangeEvent::DocumentChanged { file_id, path, .. } = &evt {
+            self.file_exists.insert(*file_id, true);
+            if let Ok(text) = self.vfs.read_to_string(path) {
+                self.file_contents.insert(*file_id, text);
+            }
+        }
+        Ok(evt)
+    }
+
+    fn close_document(&mut self, uri: &lsp_types::Uri) {
+        self.vfs.close_document_lsp(uri);
+        self.refresh_from_disk(uri);
     }
 
     fn mark_missing(&mut self, uri: &lsp_types::Uri) {
@@ -624,39 +658,23 @@ impl AnalysisState {
 
     fn refresh_from_disk(&mut self, uri: &lsp_types::Uri) {
         let (file_id, path) = self.file_id_for_uri(uri);
-        match &path {
-            VfsPath::Local(path) => match fs::read_to_string(path) {
-                Ok(text) => {
-                    self.file_exists.insert(file_id, true);
-                    self.file_contents.insert(file_id, text);
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    self.file_exists.insert(file_id, false);
-                    self.file_contents.remove(&file_id);
-                }
-                Err(_) => {
-                    // Treat other IO errors as a cache miss; keep previous state.
-                }
-            },
-            _ => {
-                // Non-local paths are not supported in the stdio server.
+        match self.vfs.read_to_string(&path) {
+            Ok(text) => {
+                self.file_exists.insert(file_id, true);
+                self.file_contents.insert(file_id, text);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.file_exists.insert(file_id, false);
+                self.file_contents.remove(&file_id);
+            }
+            Err(_) => {
+                // Treat other IO errors as a cache miss; keep previous state.
             }
         }
     }
 
-    fn ensure_loaded(
-        &mut self,
-        open_documents: &HashMap<String, Document>,
-        uri: &lsp_types::Uri,
-    ) -> nova_db::FileId {
+    fn ensure_loaded(&mut self, uri: &lsp_types::Uri) -> nova_db::FileId {
         let (file_id, _path) = self.file_id_for_uri(uri);
-
-        // Overlay always wins, and it shouldn't be overwritten by disk updates.
-        if let Some(doc) = open_documents.get(uri.as_str()) {
-            self.file_exists.insert(file_id, true);
-            self.file_contents.insert(file_id, doc.text().to_owned());
-            return file_id;
-        }
 
         // If we already have a view of the file (present or missing), keep it until we receive an
         // explicit notification (didChangeWatchedFiles) telling us it changed.
@@ -675,9 +693,25 @@ impl AnalysisState {
     fn rename_uri(&mut self, from: &lsp_types::Uri, to: &lsp_types::Uri) -> nova_db::FileId {
         let from_path = self.path_for_uri(from);
         let to_path = self.path_for_uri(to);
-        let id = self.file_ids.rename_path(&from_path, to_path);
+        let id = self.vfs.rename_path(&from_path, to_path.clone());
+        if let Some(local) = to_path.as_local_path() {
+            self.file_paths.insert(id, local.to_path_buf());
+        } else {
+            self.file_paths.remove(&id);
+        }
         // Keep content/existence under the preserved id; callers should refresh content from disk if needed.
         id
+    }
+}
+
+impl Default for AnalysisState {
+    fn default() -> Self {
+        Self {
+            vfs: Vfs::new(LocalFs::new()),
+            file_paths: HashMap::new(),
+            file_exists: HashMap::new(),
+            file_contents: HashMap::new(),
+        }
     }
 }
 
@@ -690,17 +724,15 @@ impl nova_db::Database for AnalysisState {
     }
 
     fn file_path(&self, file_id: nova_db::FileId) -> Option<&std::path::Path> {
-        self.file_ids
-            .get_path(file_id)
-            .and_then(|path| path.as_local_path())
+        self.file_paths.get(&file_id).map(PathBuf::as_path)
     }
 
     fn all_file_ids(&self) -> Vec<nova_db::FileId> {
-        self.file_ids.all_file_ids()
+        self.vfs.all_file_ids()
     }
 
     fn file_id(&self, path: &std::path::Path) -> Option<nova_db::FileId> {
-        self.file_ids.get_id(&VfsPath::local(path.to_path_buf()))
+        self.vfs.get_id(&VfsPath::local(path.to_path_buf()))
     }
 }
 
@@ -708,10 +740,10 @@ struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
     workspace: Option<Workspace>,
-    documents: HashMap<String, Document>,
     refactor_overlay_generation: u64,
     refactor_snapshot_cache: Option<CachedRefactorWorkspaceSnapshot>,
     analysis: AnalysisState,
+    jdk_index: Option<nova_jdk::JdkIndex>,
     ai: Option<NovaAi>,
     privacy: nova_ai::PrivacyMode,
     ai_config: nova_config::AiConfig,
@@ -808,10 +840,10 @@ impl ServerState {
             shutdown_requested: false,
             project_root: None,
             workspace: None,
-            documents: HashMap::new(),
             refactor_overlay_generation: 0,
             refactor_snapshot_cache: None,
             analysis: AnalysisState::default(),
+            jdk_index: None,
             ai,
             privacy,
             ai_config,
@@ -828,10 +860,11 @@ impl ServerState {
     }
 
     fn refresh_document_memory(&mut self) {
-        let total: u64 = self
-            .documents
-            .values()
-            .map(|doc| doc.text().len() as u64)
+        let open = self.analysis.vfs.open_documents().snapshot();
+        let total: u64 = open
+            .iter()
+            .filter_map(|id| self.analysis.file_contents.get(id))
+            .map(|text| text.len() as u64)
             .sum();
         self.documents_memory.tracker().set_bytes(total);
         self.memory.enforce();
@@ -870,11 +903,19 @@ impl ServerState {
             }
         }
 
-        let overlays: HashMap<String, Arc<str>> = self
-            .documents
-            .iter()
-            .map(|(uri, doc)| (uri.clone(), Arc::<str>::from(doc.text().to_owned())))
-            .collect();
+        let mut overlays: HashMap<String, Arc<str>> = HashMap::new();
+        for file_id in self.analysis.vfs.open_documents().snapshot() {
+            let Some(path) = self.analysis.vfs.path_for_id(file_id) else {
+                continue;
+            };
+            let Some(uri) = path.to_uri() else {
+                continue;
+            };
+            let Some(text) = self.analysis.file_contents.get(&file_id) else {
+                continue;
+            };
+            overlays.insert(uri, Arc::<str>::from(text.to_owned()));
+        }
         let snapshot =
             RefactorWorkspaceSnapshot::build(uri, &overlays).map_err(|e| e.to_string())?;
         let project_root = snapshot.project_root().to_path_buf();
@@ -1209,7 +1250,8 @@ fn handle_request_json(
                     "error": { "code": -32602, "message": "missing textDocument.uri" }
                 }));
             };
-            let Some(doc) = state.documents.get(uri) else {
+            let path = VfsPath::uri(uri.to_string());
+            let Some(text) = state.analysis.vfs.overlay().document_text(&path) else {
                 return Ok(json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -1218,7 +1260,7 @@ fn handle_request_json(
             };
 
             Ok(
-                match nova_lsp::handle_formatting_request(method, params, doc.text()) {
+                match nova_lsp::handle_formatting_request(method, params, &text) {
                     Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                     Err(err) => {
                         let (code, message) = match err {
@@ -1272,11 +1314,7 @@ fn handle_request_json(
             };
 
             // Best-effort: build an in-memory index from open documents.
-            let files: BTreeMap<String, String> = state
-                .documents
-                .iter()
-                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
-                .collect();
+            let files = open_document_files(state);
             let index = Index::new(files);
 
             Ok(match nova_lsp::handle_safe_delete(&index, params) {
@@ -1325,11 +1363,7 @@ fn handle_request_json(
             };
 
             // Best-effort: build an in-memory index from open documents.
-            let files: BTreeMap<String, String> = state
-                .documents
-                .iter()
-                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
-                .collect();
+            let files = open_document_files(state);
             let index = Index::new(files);
 
             Ok(
@@ -1399,15 +1433,12 @@ fn resolve_completion_item_with_state(
         .or_else(|| {
             // Best-effort fallback: resolve against the only open document when the completion
             // item doesn't carry a URI.
-            if state.documents.len() == 1 {
-                state
-                    .documents
-                    .values()
-                    .next()
-                    .map(|doc| doc.text().to_owned())
-            } else {
-                None
+            let open = state.analysis.vfs.open_documents().snapshot();
+            if open.len() != 1 {
+                return None;
             }
+            let file_id = open.into_iter().next()?;
+            state.analysis.file_contents.get(&file_id).cloned()
         });
 
     match text {
@@ -1508,14 +1539,17 @@ fn handle_notification(
             };
             let uri = params.text_document.uri;
             let uri_string = uri.to_string();
-            let text = params.text_document.text;
             let version = params.text_document.version.unwrap_or(0);
-
-            state.analysis.set_overlay_text(&uri, text.clone());
-            state
-                .documents
-                .insert(uri_string.clone(), Document::new(text, version));
-            state.note_refactor_overlay_change(&uri_string);
+            let file_id = state
+                .analysis
+                .open_document(uri.clone(), params.text_document.text, version);
+            let canonical_uri = state
+                .analysis
+                .vfs
+                .path_for_id(file_id)
+                .and_then(|p| p.to_uri())
+                .unwrap_or(uri_string);
+            state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
         }
         "textDocument/didChange" => {
@@ -1524,29 +1558,24 @@ fn handle_notification(
             else {
                 return Ok(());
             };
-            let uri = params.text_document.uri.to_string();
-            let Some(doc) = state.documents.get_mut(&uri) else {
-                // LSP guarantees `didChange` only for open documents.
-                return Ok(());
-            };
-
-            let changes: Vec<ContentChange> = params
-                .content_changes
-                .into_iter()
-                .map(ContentChange::from)
-                .collect();
-            if let Err(err) = doc.apply_changes(params.text_document.version, &changes) {
+            let uri_string = params.text_document.uri.to_string();
+            let evt = state.analysis.apply_document_changes(
+                &params.text_document.uri,
+                params.text_document.version,
+                &params.content_changes,
+            );
+            if let Err(err) = evt {
                 tracing::warn!(
                     target = "nova.lsp",
-                    uri,
+                    uri = uri_string,
                     "failed to apply document changes: {err}"
                 );
                 return Ok(());
             }
-            state
-                .analysis
-                .set_overlay_text(&params.text_document.uri, doc.text().to_owned());
-            state.note_refactor_overlay_change(&uri);
+            let canonical_uri = VfsPath::from(&params.text_document.uri)
+                .to_uri()
+                .unwrap_or_else(|| uri_string);
+            state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
         }
         "textDocument/didClose" => {
@@ -1555,11 +1584,12 @@ fn handle_notification(
             else {
                 return Ok(());
             };
-            let uri = params.text_document.uri.to_string();
-            state.documents.remove(uri.as_str());
-            state.note_refactor_overlay_change(&uri);
+            let canonical_uri = VfsPath::from(&params.text_document.uri)
+                .to_uri()
+                .unwrap_or_else(|| params.text_document.uri.to_string());
+            state.analysis.close_document(&params.text_document.uri);
+            state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
-            state.analysis.refresh_from_disk(&params.text_document.uri);
         }
         "workspace/didChangeWatchedFiles" => {
             let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(params)
@@ -1569,7 +1599,8 @@ fn handle_notification(
 
             for change in params.changes {
                 let uri = change.uri;
-                if state.documents.contains_key(uri.as_str()) {
+                let path = VfsPath::from(&uri);
+                if state.analysis.vfs.overlay().is_open(&path) {
                     continue;
                 }
 
@@ -1581,6 +1612,24 @@ fn handle_notification(
                         state.analysis.mark_missing(&uri);
                     }
                     _ => {}
+                }
+            }
+        }
+        "workspace/didRenameFiles" => {
+            let Ok(params) = serde_json::from_value::<lsp_types::RenameFilesParams>(params) else {
+                return Ok(());
+            };
+
+            for file in params.files {
+                let (Ok(old_uri), Ok(new_uri)) =
+                    (file.old_uri.parse::<LspUri>(), file.new_uri.parse::<LspUri>())
+                else {
+                    continue;
+                };
+                state.analysis.rename_uri(&old_uri, &new_uri);
+                let to_path = VfsPath::from(&new_uri);
+                if !state.analysis.vfs.overlay().is_open(&to_path) {
+                    state.analysis.refresh_from_disk(&new_uri);
                 }
             }
         }
@@ -1599,7 +1648,8 @@ fn handle_notification(
             // If the source buffer is open, treat the rename as a pure path move; the in-memory
             // overlay remains the source of truth.
             state.analysis.rename_uri(&params.from, &params.to);
-            if !state.documents.contains_key(params.to.as_str()) {
+            let to_path = VfsPath::from(&params.to);
+            if !state.analysis.vfs.overlay().is_open(&to_path) {
                 state.analysis.refresh_from_disk(&params.to);
             }
         }
@@ -1751,53 +1801,67 @@ fn handle_code_action(
                 // Best-effort Safe Delete code action: only available for open documents because
                 // the stdio server does not maintain a project-wide index. This keeps SymbolIds
                 // stable across the code-action → safeDelete request flow.
-                if let Some(doc) = state.documents.get(uri.as_str()) {
-                    if let Some(offset) = position_to_offset_utf16(doc.text(), cursor) {
-                        let files: BTreeMap<String, String> = state
-                            .documents
-                            .iter()
-                            .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
-                            .collect();
-                        let index = Index::new(files);
-                        let target = index
-                            .symbols()
-                            .iter()
-                            .filter(|sym| sym.file == uri.as_str())
-                            .filter(|sym| sym.kind == SymbolKind::Method)
-                            .filter(|sym| {
-                                offset >= sym.name_range.start && offset <= sym.name_range.end
-                            })
-                            .min_by_key(|sym| sym.decl_range.len())
-                            .map(|sym| sym.id);
+                let path = VfsPath::from(&uri);
+                if state.analysis.vfs.overlay().is_open(&path) {
+                    if let Some(text) = state.analysis.vfs.overlay().document_text(&path) {
+                        if let Some(offset) = position_to_offset_utf16(&text, cursor) {
+                            let mut files: BTreeMap<String, String> = BTreeMap::new();
+                            for file_id in state.analysis.vfs.open_documents().snapshot() {
+                                let Some(path) = state.analysis.vfs.path_for_id(file_id) else {
+                                    continue;
+                                };
+                                let Some(uri) = path.to_uri() else {
+                                    continue;
+                                };
+                                let Some(text) = state.analysis.file_contents.get(&file_id) else {
+                                    continue;
+                                };
+                                files.insert(uri, text.to_owned());
+                            }
+                            let index = Index::new(files);
 
-                        if let Some(target) = target {
-                            if let Some(action) = nova_lsp::safe_delete_code_action(
-                                &index,
-                                SafeDeleteTarget::Symbol(target),
-                            ) {
-                                let mut action = action;
-                                if let lsp_types::CodeActionOrCommand::CodeAction(code_action) =
-                                    &mut action
-                                {
-                                    if code_action.edit.is_none() && code_action.command.is_none() {
-                                        code_action.command = Some(lsp_types::Command {
-                                            title: code_action.title.clone(),
-                                            command: nova_lsp::SAFE_DELETE_COMMAND.to_string(),
-                                            arguments: Some(vec![serde_json::to_value(
-                                                nova_lsp::SafeDeleteParams {
-                                                    target:
-                                                        nova_lsp::SafeDeleteTargetParam::SymbolId(
-                                                            target,
-                                                        ),
-                                                    mode: nova_refactor::SafeDeleteMode::Safe,
-                                                },
-                                            )
-                                            .map_err(|e| e.to_string())?]),
-                                        });
+                            let canonical_uri = path.to_uri().unwrap_or_else(|| uri.to_string());
+                            let target = index
+                                .symbols()
+                                .iter()
+                                .filter(|sym| sym.file == canonical_uri)
+                                .filter(|sym| sym.kind == SymbolKind::Method)
+                                .filter(|sym| {
+                                    offset >= sym.name_range.start && offset <= sym.name_range.end
+                                })
+                                .min_by_key(|sym| sym.decl_range.len())
+                                .map(|sym| sym.id);
+
+                            if let Some(target) = target {
+                                if let Some(action) = nova_lsp::safe_delete_code_action(
+                                    &index,
+                                    SafeDeleteTarget::Symbol(target),
+                                ) {
+                                    let mut action = action;
+                                    if let lsp_types::CodeActionOrCommand::CodeAction(
+                                        code_action,
+                                    ) = &mut action
+                                    {
+                                        if code_action.edit.is_none()
+                                            && code_action.command.is_none()
+                                        {
+                                            code_action.command = Some(lsp_types::Command {
+                                                title: code_action.title.clone(),
+                                                command: nova_lsp::SAFE_DELETE_COMMAND.to_string(),
+                                                arguments: Some(vec![serde_json::to_value(
+                                                    nova_lsp::SafeDeleteParams {
+                                                        target: nova_lsp::SafeDeleteTargetParam::SymbolId(target),
+                                                        mode: nova_refactor::SafeDeleteMode::Safe,
+                                                    },
+                                                )
+                                                .map_err(|e| e.to_string())?]),
+                                            });
+                                        }
                                     }
+                                    actions.push(
+                                        serde_json::to_value(action).map_err(|e| e.to_string())?,
+                                    );
                                 }
-                                actions
-                                    .push(serde_json::to_value(action).map_err(|e| e.to_string())?);
                             }
                         }
                     }
@@ -2177,16 +2241,64 @@ fn handle_definition(
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
-    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
         return Ok(serde_json::Value::Null);
     }
 
-    let location = nova_lsp::goto_definition(&state.analysis, file_id, params.position);
+    let location = nova_lsp::goto_definition(&state.analysis, file_id, params.position)
+        .or_else(|| goto_definition_jdk(state, file_id, params.position));
     match location {
         Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
         None => Ok(serde_json::Value::Null),
     }
+}
+
+fn goto_definition_jdk(
+    state: &mut ServerState,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Location> {
+    if state.jdk_index.is_none() {
+        state.jdk_index = nova_jdk::JdkIndex::discover(None).ok();
+    }
+    let jdk = state.jdk_index.as_ref()?;
+    let text = state.analysis.file_content(file);
+    let offset = position_to_offset_utf16(text, position)?;
+    let (start, end) = ident_range_at(text, offset)?;
+    let ident = text.get(start..end)?;
+
+    let stub = jdk.lookup_type(ident).ok().flatten()?;
+    let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
+
+    let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
+    let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
+    let symbol = nova_decompile::SymbolKey::Class {
+        internal_name: stub.internal_name.clone(),
+    };
+    let range = decompiled.range_for(&symbol)?;
+
+    // Register the virtual document in the VFS overlay so follow-up requests can read it.
+    let vfs_path = VfsPath::uri(uri_string.clone());
+    let vfs_file_id = state.analysis.vfs.file_id(vfs_path.clone());
+    state
+        .analysis
+        .vfs
+        .overlay()
+        .open(vfs_path, decompiled.text.clone(), 0);
+    state.analysis.file_exists.insert(vfs_file_id, true);
+    state
+        .analysis
+        .file_contents
+        .insert(vfs_file_id, decompiled.text);
+
+    Some(lsp_types::Location {
+        uri: uri_string.parse().ok()?,
+        range: lsp_types::Range::new(
+            lsp_types::Position::new(range.start.line, range.start.character),
+            lsp_types::Position::new(range.end.line, range.end.character),
+        ),
+    })
 }
 
 fn handle_implementation(
@@ -2197,7 +2309,7 @@ fn handle_implementation(
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
-    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
         return Ok(serde_json::Value::Null);
     }
@@ -2218,7 +2330,7 @@ fn handle_declaration(
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
-    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
         return Ok(serde_json::Value::Null);
     }
@@ -2238,7 +2350,7 @@ fn handle_type_definition(
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
-    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
         return Ok(serde_json::Value::Null);
     }
@@ -2264,7 +2376,7 @@ fn handle_document_diagnostic(
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
-    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let file_id = state.analysis.ensure_loaded(&uri);
     let diagnostics: Vec<lsp_types::Diagnostic> = if state.analysis.exists(file_id) {
         nova_lsp::diagnostics(&state.analysis, file_id)
     } else {
@@ -2992,11 +3104,7 @@ fn handle_execute_command(
             }
 
             let args: nova_lsp::SafeDeleteParams = parse_first_arg(params.arguments)?;
-            let files: BTreeMap<String, String> = state
-                .documents
-                .iter()
-                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
-                .collect();
+            let files = open_document_files(state);
             let index = Index::new(files);
             match nova_lsp::handle_safe_delete(&index, args) {
                 Ok(result) => {
@@ -3048,23 +3156,38 @@ fn select_debug_configuration_for_main(
         .or_else(|| configs.iter().find(|c| c.main_class == main_class).cloned())
 }
 
-fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
-    state
-        .documents
-        .get(uri)
-        .map(|doc| doc.text().to_owned())
-        .or_else(|| read_file_from_uri(uri))
+fn open_document_files(state: &ServerState) -> BTreeMap<String, String> {
+    let mut files = BTreeMap::new();
+    for file_id in state.analysis.vfs.open_documents().snapshot() {
+        let Some(path) = state.analysis.vfs.path_for_id(file_id) else {
+            continue;
+        };
+        let Some(uri) = path.to_uri() else {
+            continue;
+        };
+        let Some(text) = state.analysis.file_contents.get(&file_id) else {
+            continue;
+        };
+        files.insert(uri, text.to_owned());
+    }
+    files
 }
 
-fn read_file_from_uri(uri: &str) -> Option<String> {
-    let path = path_from_uri(uri)?;
-    fs::read_to_string(path).ok()
+fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
+    let path = VfsPath::uri(uri.to_string());
+    state
+        .analysis
+        .vfs
+        .overlay()
+        .document_text(&path)
+        .or_else(|| state.analysis.vfs.read_to_string(&path).ok())
 }
 
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
-    nova_core::file_uri_to_path(uri)
-        .ok()
-        .map(|path| path.into_path_buf())
+    match VfsPath::uri(uri.to_string()) {
+        VfsPath::Local(path) => Some(path),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3086,6 +3209,85 @@ mod tests {
             let uri = "file:///C:/tmp/My%20File.java";
             let path = path_from_uri(uri).expect("path");
             assert_eq!(path, PathBuf::from(r"C:\tmp\My File.java"));
+        }
+    }
+
+    #[test]
+    fn editing_an_open_document_does_not_change_file_id() {
+        let mut analysis = AnalysisState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let original = analysis.open_document(uri.clone(), "hello world".to_string(), 1);
+        let change = lsp_types::TextDocumentContentChangeEvent {
+            range: Some(lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 6,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 11,
+                },
+            }),
+            range_length: None,
+            text: "nova".to_string(),
+        };
+        let evt = analysis
+            .apply_document_changes(&uri, 2, &[change])
+            .expect("apply changes");
+        match evt {
+            ChangeEvent::DocumentChanged { file_id, .. } => assert_eq!(file_id, original),
+            other => panic!("unexpected change event: {other:?}"),
+        }
+
+        let looked_up = analysis.ensure_loaded(&uri);
+        assert_eq!(looked_up, original);
+    }
+
+    #[test]
+    fn go_to_definition_into_jdk_returns_canonical_virtual_uri_and_is_readable() {
+        // Point JDK discovery at the tiny fake JDK shipped in this repository.
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
+        let prior_java_home = std::env::var_os("JAVA_HOME");
+        std::env::set_var("JAVA_HOME", &fake_jdk_root);
+
+        let mut state = ServerState::new(nova_config::AiConfig::default(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let text = "class Main { void m() { String s = \"\"; } }".to_string();
+        state
+            .analysis
+            .open_document(uri.clone(), text.clone(), 1);
+
+        let offset = text.find("String").expect("String token exists");
+        let position = nova_lsp::text_pos::lsp_position(&text, offset).expect("position");
+        let params = TextDocumentPositionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            position,
+        };
+        let value = serde_json::to_value(params).unwrap();
+        let resp = handle_definition(value, &mut state).unwrap();
+        let loc: lsp_types::Location = serde_json::from_value(resp).unwrap();
+
+        assert!(loc.uri.as_str().starts_with("nova:///decompiled/"));
+        let vfs_path = VfsPath::from(&loc.uri);
+        assert_eq!(vfs_path.to_uri().unwrap(), loc.uri.to_string());
+
+        let loaded = state
+            .analysis
+            .vfs
+            .read_to_string(&vfs_path)
+            .expect("read virtual document");
+        assert!(loaded.contains("class String"), "unexpected decompiled text: {loaded}");
+
+        match prior_java_home {
+            Some(value) => std::env::set_var("JAVA_HOME", value),
+            None => std::env::remove_var("JAVA_HOME"),
         }
     }
 
@@ -3552,9 +3754,16 @@ fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRe
 
     let db = OpenDocumentsDb(
         state
-            .documents
-            .iter()
-            .filter_map(|(uri, doc)| path_from_uri(uri).map(|path| (path, doc.text().to_owned())))
+            .analysis
+            .vfs
+            .open_documents()
+            .snapshot()
+            .into_iter()
+            .filter_map(|file_id| {
+                let path = state.analysis.file_paths.get(&file_id)?.clone();
+                let text = state.analysis.file_contents.get(&file_id)?.clone();
+                Some((path, text))
+            })
             .collect(),
     );
 

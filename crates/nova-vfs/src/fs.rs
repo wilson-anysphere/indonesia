@@ -12,6 +12,17 @@ use crate::path::VfsPath;
 /// The trait is intentionally small so it can be implemented for different
 /// backends (local FS, overlays, future archives, etc).
 pub trait FileSystem: Send + Sync {
+    /// Reads the file contents as raw bytes.
+    ///
+    /// Implementations may return `ErrorKind::InvalidData` for paths that cannot
+    /// be represented as bytes (e.g. synthesized virtual documents).
+    fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("byte reads not supported ({path})"),
+        ))
+    }
+
     /// Reads the file contents as UTF-8 text.
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String>;
 
@@ -61,11 +72,26 @@ impl Default for LocalFs {
 }
 
 impl FileSystem for LocalFs {
+    fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+        match path {
+            VfsPath::Local(path) => fs::read(path),
+            VfsPath::Archive(path) => self.archive.read_bytes(path),
+            VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("cannot read decompiled document: {path}"),
+            )),
+            VfsPath::Uri(uri) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("cannot read URI path: {uri}"),
+            )),
+        }
+    }
+
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
         match path {
             VfsPath::Local(path) => fs::read_to_string(path),
             VfsPath::Archive(path) => self.archive.read_to_string(path),
-            VfsPath::Decompiled { .. } => Err(io::Error::new(
+            VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("cannot read decompiled document: {path}"),
             )),
@@ -80,7 +106,7 @@ impl FileSystem for LocalFs {
         match path {
             VfsPath::Local(path) => path.exists(),
             VfsPath::Archive(path) => self.archive.exists(path),
-            VfsPath::Decompiled { .. } => false,
+            VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => false,
             VfsPath::Uri(_) => false,
         }
     }
@@ -92,7 +118,7 @@ impl FileSystem for LocalFs {
                 io::ErrorKind::Unsupported,
                 format!("archive metadata not implemented ({path})"),
             )),
-            VfsPath::Decompiled { .. } => Err(io::Error::new(
+            VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("decompiled document metadata not supported ({path})"),
             )),
@@ -110,7 +136,7 @@ impl FileSystem for LocalFs {
                 io::ErrorKind::Unsupported,
                 format!("archive directory listing not implemented ({path})"),
             )),
-            VfsPath::Decompiled { .. } => Err(io::Error::new(
+            VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("decompiled document directory listing not supported ({path})"),
             )),

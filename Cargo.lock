@@ -3975,6 +3975,7 @@ dependencies = [
  "nova-framework-web",
  "nova-ide",
  "nova-index",
+ "nova-jdk",
  "nova-jdwp",
  "nova-memory",
  "nova-metrics",

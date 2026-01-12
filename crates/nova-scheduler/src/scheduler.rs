@@ -9,47 +9,70 @@ use crate::{
     RequestContext, TaskError,
 };
 
-fn build_rayon_pool(name_prefix: &'static str, threads: usize) -> ThreadPool {
-    // Thread creation can fail in constrained CI/sandbox environments (e.g. low RLIMIT_NPROC). Nova
-    // should degrade gracefully rather than crashing during startup.
-    let requested = threads.max(1);
-    let mut desired = requested;
+enum BlockingPool {
+    Rayon(ThreadPool),
+    Inline,
+}
+
+impl BlockingPool {
+    fn spawn<F>(&self, job: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match self {
+            BlockingPool::Rayon(pool) => pool.spawn(job),
+            BlockingPool::Inline => job(),
+        }
+    }
+}
+
+fn build_rayon_pool(prefix: &'static str, threads: usize) -> BlockingPool {
+    // Thread creation can fail in constrained CI/sandbox environments (e.g. low RLIMIT_NPROC or
+    // `EAGAIN`). Nova should degrade gracefully rather than crashing during startup.
+    let mut threads = threads.max(1);
     loop {
         match rayon::ThreadPoolBuilder::new()
-            .num_threads(desired)
-            .thread_name(move |idx| format!("{name_prefix}-{idx}"))
+            .num_threads(threads)
+            .thread_name(move |idx| format!("{prefix}-{idx}"))
             .build()
         {
-            Ok(pool) => return pool,
-            Err(_err) if desired > 1 => {
-                desired /= 2;
-                continue;
+            Ok(pool) => return BlockingPool::Rayon(pool),
+            // When running many Nova instances (or in constrained environments), we can hit
+            // OS thread limits. Fall back to a smaller pool instead of crashing.
+            Err(_) if threads > 1 => {
+                threads = (threads / 2).max(1);
             }
-            Err(err) => panic!(
-                "failed to build {name_prefix} pool (requested {requested} thread(s)): {err}"
-            ),
+            Err(_) => {
+                // If we can't create *any* worker threads, fall back to inline execution.
+                // This preserves functional correctness at the cost of parallelism.
+                return BlockingPool::Inline;
+            }
         }
     }
 }
 
 fn build_io_runtime(threads: usize) -> Runtime {
-    let requested = threads.max(1);
-    let mut desired = requested;
+    let mut threads = threads.max(1);
     loop {
         match tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(desired)
+            .worker_threads(threads)
             .enable_io()
             .enable_time()
             .thread_name("nova-io")
             .build()
         {
-            Ok(runtime) => return runtime,
-            Err(_err) if desired > 1 => {
-                desired /= 2;
-                continue;
+            Ok(rt) => return rt,
+            Err(_) if threads > 1 => {
+                threads = 1;
             }
             Err(err) => {
-                panic!("failed to build IO runtime (requested {requested} thread(s)): {err}")
+                // Best-effort fall back to a current-thread runtime, which should be able to
+                // start even when thread creation is temporarily unavailable.
+                return tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .unwrap_or_else(|_| panic!("failed to build IO runtime: {err}"));
             }
         }
     }
@@ -91,8 +114,8 @@ pub struct Scheduler {
 }
 
 struct SchedulerInner {
-    compute_pool: ThreadPool,
-    background_pool: ThreadPool,
+    compute_pool: BlockingPool,
+    background_pool: BlockingPool,
     io_runtime: Option<Runtime>,
     io_handle: tokio::runtime::Handle,
     progress: ProgressSender,
@@ -102,7 +125,6 @@ impl Scheduler {
     pub fn new(config: SchedulerConfig) -> Self {
         let compute_pool = build_rayon_pool("nova-compute", config.compute_threads);
         let background_pool = build_rayon_pool("nova-background", config.background_threads);
-
         let io_runtime = build_io_runtime(config.io_threads);
         let io_handle = io_runtime.handle().clone();
 

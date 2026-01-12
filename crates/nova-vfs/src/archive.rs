@@ -42,6 +42,11 @@ impl fmt::Display for ArchivePath {
 /// This is an abstraction hook; `LocalFs` uses a concrete implementation by
 /// default, but callers can supply custom readers via `LocalFs::with_archive_reader`.
 pub trait ArchiveReader: Send + Sync + fmt::Debug {
+    /// Reads an archive entry as raw bytes.
+    ///
+    /// This is used for binary payloads (e.g. `.class` files) as well as text.
+    fn read_bytes(&self, path: &ArchivePath) -> io::Result<Vec<u8>>;
+
     fn read_to_string(&self, path: &ArchivePath) -> io::Result<String>;
 
     fn exists(&self, path: &ArchivePath) -> bool;
@@ -52,6 +57,13 @@ pub trait ArchiveReader: Send + Sync + fmt::Debug {
 pub struct StubArchiveReader;
 
 impl ArchiveReader for StubArchiveReader {
+    fn read_bytes(&self, path: &ArchivePath) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("archive reading not implemented ({path})"),
+        ))
+    }
+
     fn read_to_string(&self, path: &ArchivePath) -> io::Result<String> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

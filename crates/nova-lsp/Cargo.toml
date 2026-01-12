@@ -29,6 +29,7 @@ nova-ide = { path = "../nova-ide" }
 nova-framework-web = { path = "../nova-framework-web" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
+nova-jdk = { path = "../nova-jdk" }
 nova-memory = { path = "../nova-memory" }
 nova-metrics = { path = "../nova-metrics" }
 nova-project = { path = "../nova-project" }

@@ -60,8 +60,13 @@ impl<F: FileSystem> Vfs<F> {
 
     /// Rename (or move) a path, preserving the existing `FileId` when possible.
     pub fn rename_path(&self, from: &VfsPath, to: VfsPath) -> FileId {
-        let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
-        ids.rename_path(from, to)
+        let to_for_overlay = to.clone();
+        let id = {
+            let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+            ids.rename_path(from, to)
+        };
+        self.fs.rename(from, to_for_overlay);
+        id
     }
 
     /// Returns all currently-tracked file ids (sorted).
@@ -127,6 +132,10 @@ impl<F: FileSystem> Vfs<F> {
 }
 
 impl<F: FileSystem> FileSystem for Vfs<F> {
+    fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+        self.fs.read_bytes(path)
+    }
+
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
         self.fs.read_to_string(path)
     }
@@ -196,6 +205,28 @@ mod tests {
         assert_eq!(vfs.get_id(&from), None);
         assert_eq!(vfs.get_id(&to), Some(id));
         assert_eq!(vfs.path_for_id(id), Some(to));
+    }
+
+    #[test]
+    fn vfs_rename_path_moves_open_overlay_document() {
+        let vfs = Vfs::new(LocalFs::new());
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("a.java"));
+        let to = VfsPath::local(dir.path().join("b.java"));
+
+        let id = vfs.open_document(from.clone(), "hello".to_string(), 1);
+        assert!(vfs.open_documents().is_open(id));
+        assert!(vfs.overlay().is_open(&from));
+
+        let moved = vfs.rename_path(&from, to.clone());
+        assert_eq!(moved, id);
+
+        assert!(!vfs.overlay().is_open(&from));
+        assert!(vfs.overlay().is_open(&to));
+        assert_eq!(vfs.read_to_string(&to).unwrap(), "hello");
+        assert_eq!(vfs.get_id(&to), Some(id));
+        assert_eq!(vfs.path_for_id(id), Some(to));
+        assert!(vfs.open_documents().is_open(id));
     }
 
     #[cfg(feature = "lsp")]

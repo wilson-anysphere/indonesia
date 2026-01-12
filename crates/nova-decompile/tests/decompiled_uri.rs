@@ -1,7 +1,8 @@
 use nova_cache::Fingerprint;
 use nova_decompile::{
-    class_internal_name_from_uri, decompiled_uri_for_classfile, parse_decompiled_uri,
-    uri_for_class_internal_name, DECOMPILER_SCHEMA_VERSION, NOVA_VIRTUAL_URI_SCHEME,
+    canonicalize_decompiled_uri, class_internal_name_from_uri, decompiled_uri_for_classfile,
+    parse_decompiled_uri, uri_for_class_internal_name, DECOMPILER_SCHEMA_VERSION,
+    NOVA_VIRTUAL_URI_SCHEME,
 };
 
 const FOO_CLASS: &[u8] = include_bytes!("fixtures/com/example/Foo.class");
@@ -67,4 +68,18 @@ fn legacy_uri_helpers_still_work() {
         class_internal_name_from_uri(&legacy).as_deref(),
         Some(FOO_INTERNAL_NAME)
     );
+}
+
+#[test]
+fn canonicalize_decompiled_uri_upgrades_legacy_scheme() {
+    let legacy = uri_for_class_internal_name(FOO_INTERNAL_NAME);
+    let canonical = canonicalize_decompiled_uri(&legacy, FOO_CLASS).expect("canonicalize");
+    assert_eq!(canonical, decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME));
+}
+
+#[test]
+fn canonicalize_decompiled_uri_leaves_canonical_uris_untouched() {
+    let uri = decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME);
+    let canonical = canonicalize_decompiled_uri(&uri, FOO_CLASS).expect("canonicalize");
+    assert_eq!(canonical, uri);
 }

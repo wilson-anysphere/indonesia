@@ -290,6 +290,13 @@ pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
         start
     };
 
+    // If the caller explicitly provided a directory that already looks like a self-contained
+    // project root, prefer it over ancestor build markers. This prevents unrelated files in
+    // shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
+    if !start.is_file() && start_dir.join("src").is_dir() {
+        return Some(start_dir.to_path_buf());
+    }
+
     let bazel_root = bazel_workspace_root(start_dir);
     let maven_root = maven_workspace_root(start_dir);
     let gradle_root = gradle_workspace_root(start_dir);

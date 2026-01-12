@@ -24,17 +24,25 @@ pub enum VfsPath {
         content_hash: String,
         binary_name: String,
     },
+    /// Legacy decompiled virtual document URI (pre ADR0006).
+    ///
+    /// Canonical URI form: `nova-decompile:///com/example/Foo.class`.
+    ///
+    /// Prefer [`VfsPath::Decompiled`]; this exists for backwards compatibility
+    /// while the rest of the system migrates.
+    LegacyDecompiled { internal_name: String },
     /// A generic URI string that an external implementation can resolve.
     Uri(String),
 }
 
 impl VfsPath {
     pub fn local(path: impl Into<PathBuf>) -> Self {
-        Self::Local(path.into())
+        let path = path.into();
+        Self::Local(normalize_local_path(&path))
     }
 
     pub fn jar(archive: impl Into<PathBuf>, entry: impl Into<String>) -> Self {
-        let archive = archive.into();
+        let archive = normalize_local_path(&archive.into());
         let entry = entry.into();
         match normalize_archive_entry(&entry) {
             Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jar, archive, entry)),
@@ -47,7 +55,7 @@ impl VfsPath {
     }
 
     pub fn jmod(archive: impl Into<PathBuf>, entry: impl Into<String>) -> Self {
-        let archive = archive.into();
+        let archive = normalize_local_path(&archive.into());
         let entry = entry.into();
         match normalize_archive_entry(&entry) {
             Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jmod, archive, entry)),
@@ -62,9 +70,22 @@ impl VfsPath {
     pub fn decompiled(content_hash: impl Into<String>, binary_name: impl Into<String>) -> Self {
         let content_hash = content_hash.into();
         let binary_name = binary_name.into();
+        let content_hash = normalize_decompiled_hash(content_hash);
+        let binary_name = normalize_decompiled_binary_name(binary_name);
+        if !is_decompiled_hash(&content_hash) {
+            // Don't allow construction of the structured decompiled variant with a non-canonical
+            // hash; callers that need to preserve arbitrary URIs can use `VfsPath::uri`.
+            return Self::Uri(format!("nova:///decompiled/{content_hash}/{binary_name}.java"));
+        }
         Self::Decompiled {
-            content_hash: normalize_decompiled_segment(content_hash),
-            binary_name: normalize_decompiled_binary_name(binary_name),
+            content_hash,
+            binary_name,
+        }
+    }
+
+    pub fn legacy_decompiled(internal_name: impl Into<String>) -> Self {
+        Self::LegacyDecompiled {
+            internal_name: normalize_legacy_internal_name(internal_name.into()),
         }
     }
 
@@ -82,6 +103,9 @@ impl VfsPath {
         }
         if let Some(decompiled) = parse_decompiled_uri(&uri) {
             return decompiled;
+        }
+        if let Some(legacy) = parse_legacy_decompiled_uri(&uri) {
+            return legacy;
         }
         Self::Uri(uri)
     }
@@ -108,6 +132,8 @@ impl VfsPath {
     ///
     /// - Local absolute paths use the `file:` scheme.
     /// - Archive paths use `jar:` / `jmod:` and embed the archive's `file:` URI.
+    /// - Decompiled virtual documents use `nova:`.
+    /// - Legacy decompiled virtual documents use `nova-decompile:`.
     /// - `Uri` paths are returned as-is.
     pub fn to_uri(&self) -> Option<String> {
         match self {
@@ -128,6 +154,9 @@ impl VfsPath {
             } => Some(format!(
                 "nova:///decompiled/{content_hash}/{binary_name}.java"
             )),
+            VfsPath::LegacyDecompiled { internal_name } => {
+                Some(format!("nova-decompile:///{internal_name}.class"))
+            }
             VfsPath::Uri(uri) => Some(uri.clone()),
         }
     }
@@ -142,6 +171,13 @@ impl VfsPath {
         }
     }
 
+    pub fn as_legacy_decompiled(&self) -> Option<&str> {
+        match self {
+            VfsPath::LegacyDecompiled { internal_name } => Some(internal_name),
+            _ => None,
+        }
+    }
+
     #[cfg(feature = "lsp")]
     pub fn to_lsp_uri(&self) -> Option<lsp_types::Uri> {
         self.to_uri()?.parse().ok()
@@ -150,13 +186,13 @@ impl VfsPath {
 
 impl From<PathBuf> for VfsPath {
     fn from(value: PathBuf) -> Self {
-        VfsPath::Local(value)
+        VfsPath::local(value)
     }
 }
 
 impl From<&Path> for VfsPath {
     fn from(value: &Path) -> Self {
-        VfsPath::Local(value.to_path_buf())
+        VfsPath::local(value.to_path_buf())
     }
 }
 
@@ -169,6 +205,9 @@ impl fmt::Display for VfsPath {
                 content_hash,
                 binary_name,
             } => write!(f, "nova:///decompiled/{content_hash}/{binary_name}.java"),
+            VfsPath::LegacyDecompiled { internal_name } => {
+                write!(f, "nova-decompile:///{internal_name}.class")
+            }
             VfsPath::Uri(uri) => write!(f, "{uri}"),
         }
     }
@@ -229,7 +268,7 @@ fn normalize_local_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::Prefix(prefix_component) => {
-                prefix = Some(prefix_component.as_os_str().to_owned());
+                prefix = Some(normalize_prefix(prefix_component));
             }
             Component::RootDir => has_root = true,
             Component::CurDir => {}
@@ -263,8 +302,35 @@ fn normalize_local_path(path: &Path) -> PathBuf {
     out
 }
 
+fn normalize_prefix(prefix_component: std::path::PrefixComponent<'_>) -> OsString {
+    #[cfg(windows)]
+    {
+        let prefix = prefix_component.as_os_str().to_string_lossy().into_owned();
+        if let Some(colon) = prefix.rfind(':') {
+            if colon > 0 {
+                let mut bytes = prefix.into_bytes();
+                let drive = bytes[colon - 1];
+                if drive.is_ascii_alphabetic() {
+                    bytes[colon - 1] = drive.to_ascii_uppercase();
+                }
+                return OsString::from(String::from_utf8(bytes).unwrap_or_default());
+            }
+        }
+        OsString::from(prefix)
+    }
+
+    #[cfg(not(windows))]
+    {
+        prefix_component.as_os_str().to_owned()
+    }
+}
+
 fn normalize_decompiled_segment(segment: String) -> String {
     segment.trim_matches(|c| c == '/' || c == '\\').to_string()
+}
+
+fn normalize_decompiled_hash(segment: String) -> String {
+    normalize_decompiled_segment(segment).to_ascii_lowercase()
 }
 
 fn normalize_decompiled_binary_name(binary_name: String) -> String {
@@ -292,6 +358,21 @@ fn normalize_decompiled_binary_name(binary_name: String) -> String {
     }
 
     out
+}
+
+fn normalize_legacy_internal_name(internal_name: String) -> String {
+    let internal_name = internal_name
+        .strip_suffix(".class")
+        .unwrap_or(&internal_name)
+        .to_string();
+    let raw = internal_name.trim_matches(|c| c == '/' || c == '\\');
+    let raw = if raw.contains('\\') {
+        raw.replace('\\', "/")
+    } else {
+        raw.to_string()
+    };
+    let segments: Vec<&str> = raw.split('/').filter(|s| !s.is_empty()).collect();
+    segments.join("/")
 }
 
 fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
@@ -345,6 +426,9 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
     if content_hash.is_empty() {
         return None;
     }
+    if !is_decompiled_hash(content_hash) {
+        return None;
+    }
 
     let filename = segments[2];
     let filename_stem = filename.strip_suffix(".java")?;
@@ -356,6 +440,63 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
         content_hash.to_string(),
         filename_stem.to_string(),
     ))
+}
+
+fn is_decompiled_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn parse_legacy_decompiled_uri(uri: &str) -> Option<VfsPath> {
+    let rest = uri.strip_prefix("nova-decompile:")?;
+    if rest.contains('?') || rest.contains('#') {
+        return None;
+    }
+
+    // Extract the path component, rejecting URIs with a non-empty authority.
+    let path = if let Some(after_slashes) = rest.strip_prefix("//") {
+        if !after_slashes.starts_with('/') {
+            return None;
+        }
+        after_slashes
+    } else if rest.starts_with('/') {
+        rest
+    } else {
+        return None;
+    };
+
+    let path = if path.contains('\\') {
+        std::borrow::Cow::Owned(path.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    };
+
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return None;
+    }
+    if segments.contains(&"..") {
+        return None;
+    }
+
+    let last = segments.last()?;
+    let stem = last.strip_suffix(".class")?;
+    if stem.is_empty() {
+        return None;
+    }
+
+    let mut internal = String::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        if idx > 0 {
+            internal.push('/');
+        }
+        if idx + 1 == segments.len() {
+            internal.push_str(stem);
+        } else {
+            internal.push_str(seg);
+        }
+    }
+
+    Some(VfsPath::legacy_decompiled(internal))
 }
 
 #[cfg(test)]
@@ -491,7 +632,8 @@ mod tests {
 
     #[test]
     fn decompiled_uri_roundtrips() {
-        let path = VfsPath::decompiled("abc123", "com.example.Foo");
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let path = VfsPath::decompiled(hash, "com.example.Foo");
         let uri = path.to_uri().expect("decompiled uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, path);
@@ -499,22 +641,50 @@ mod tests {
 
     #[test]
     fn decompiled_uri_normalizes_multiple_slashes_when_printing() {
-        let parsed = VfsPath::uri("nova:////decompiled//abc123//com.example.Foo.java");
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let uri = format!("nova:////decompiled//{hash}//com.example.Foo.java");
+        let parsed = VfsPath::uri(uri);
+        let expected = format!("nova:///decompiled/{hash}/com.example.Foo.java");
         assert_eq!(
             parsed.to_uri().as_deref(),
-            Some("nova:///decompiled/abc123/com.example.Foo.java")
+            Some(expected.as_str())
         );
     }
 
     #[test]
     fn decompiled_uri_rejects_dotdot_segments() {
-        let uri = "nova:///decompiled/abc123/../X.java";
-        assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let uri = format!("nova:///decompiled/{hash}/../X.java");
+        assert_eq!(VfsPath::uri(uri.as_str()), VfsPath::Uri(uri));
     }
 
     #[test]
     fn unknown_nova_uri_stays_uri() {
         let uri = "nova:///something/else";
+        assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
+    }
+
+    #[test]
+    fn legacy_decompiled_uri_roundtrips() {
+        let path = VfsPath::legacy_decompiled("com/example/Foo");
+        let uri = path.to_uri().expect("uri");
+        assert_eq!(uri, "nova-decompile:///com/example/Foo.class");
+        let round = VfsPath::uri(uri);
+        assert_eq!(round, path);
+    }
+
+    #[test]
+    fn legacy_decompiled_uri_normalizes_extra_slashes_when_printing() {
+        let parsed = VfsPath::uri("nova-decompile:////com//example///Foo.class");
+        assert_eq!(
+            parsed.to_uri().as_deref(),
+            Some("nova-decompile:///com/example/Foo.class")
+        );
+    }
+
+    #[test]
+    fn legacy_decompiled_uri_rejects_dotdot_segments() {
+        let uri = "nova-decompile:///com/example/../Foo.class";
         assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
     }
 
