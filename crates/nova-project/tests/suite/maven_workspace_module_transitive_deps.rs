@@ -652,6 +652,113 @@ fn maven_workspace_model_omits_missing_transitive_external_deps_of_workspace_mod
 }
 
 #[test]
+fn maven_workspace_model_includes_missing_transitive_external_deps_of_workspace_module_deps_when_include_missing_jars_enabled(
+) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let maven_repo = root.join("m2");
+    fs::create_dir_all(&maven_repo).expect("mkdir m2");
+
+    // Root aggregator with two workspace modules.
+    write_file(
+        &root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <modules>
+    <module>lib</module>
+    <module>app</module>
+  </modules>
+</project>
+"#,
+    );
+
+    // `lib` depends on an external jar, but we will intentionally not create it in the local repo.
+    write_file(
+        &root.join("lib/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>lib</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.dep</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &root.join("app/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+ </project>
+"#,
+    );
+
+    let dep_a_jar = repo_jar_path(&maven_repo, "com.dep", "dep-a", "1.0.0");
+    assert!(
+        !dep_a_jar.is_file(),
+        "jar should not exist for this test"
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        maven_include_missing_jars: true,
+        ..LoadOptions::default()
+    };
+
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let app_module = model
+        .modules
+        .iter()
+        .find(|m| m.name == "app")
+        .expect("app module");
+
+    assert!(
+        app_module
+            .module_path
+            .iter()
+            .chain(app_module.classpath.iter())
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == dep_a_jar),
+        "expected placeholder jar path to be present on app classpath/module-path when maven_include_missing_jars is enabled: {}",
+        dep_a_jar.display()
+    );
+
+    // Determinism.
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    assert_eq!(model.modules, model2.modules);
+    assert_eq!(model.jpms_modules, model2.jpms_modules);
+}
+
+#[test]
 fn maven_workspace_model_includes_transitive_external_closure_of_workspace_module_deps() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
