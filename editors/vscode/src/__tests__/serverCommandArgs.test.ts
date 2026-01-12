@@ -47,10 +47,24 @@ describe('extractMainClassFromCommandArgs', () => {
 });
 
 describe('server command handler signatures', () => {
-  it('registers nova.runTest with an argument-taking callback (for CodeLens args)', () => {
+  it('does not locally register server-advertised executeCommandProvider command IDs', () => {
     const src = readFileSync('src/serverCommands.ts', 'utf8');
-    // Ensure we did not accidentally register a zero-arg lambda, which would drop LSP-provided args.
-    expect(src).not.toMatch(/registerCommand\(\s*['"]nova\.runTest['"],\s*async\s*\(\s*\)\s*=>/);
+    // These command IDs are registered automatically by vscode-languageclient when the server
+    // advertises them via `capabilities.executeCommandProvider.commands`. Registering them locally
+    // would collide and can fail client initialization.
+    const serverCommandIds = [
+      'nova.runTest',
+      'nova.debugTest',
+      'nova.runMain',
+      'nova.debugMain',
+      'nova.extractMethod',
+    ];
+
+    for (const id of serverCommandIds) {
+      // Direct registration.
+      expect(src).not.toMatch(new RegExp(`registerCommand\\(\\s*['"]${id.replace('.', '\\\\.')}['"]`));
+      // Registration via helper (historical).
+      expect(src).not.toMatch(new RegExp(`registerCommandSafe\\([^\\n]*['"]${id.replace('.', '\\\\.')}['"]`));
+    }
   });
 });
-

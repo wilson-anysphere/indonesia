@@ -54,6 +54,31 @@ describe('command registrations', () => {
     }
   });
 
+  it('does not locally register server-advertised executeCommandProvider command IDs', async () => {
+    const serverCommandIds = ['nova.runTest', 'nova.debugTest', 'nova.runMain', 'nova.debugMain', 'nova.extractMethod'];
+
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const files = await listTypescriptFiles(srcRoot);
+
+    const counts = new Map<string, number>(serverCommandIds.map((id) => [id, 0]));
+
+    for (const filePath of files) {
+      const contents = await fs.readFile(filePath, 'utf8');
+      for (const id of serverCommandIds) {
+        const direct = new RegExp(`registerCommand\\(\\s*['"]${escapeRegExp(id)}['"]`, 'g');
+        const safe = new RegExp(`registerCommandSafe\\(\\s*[^,]+,\\s*['"]${escapeRegExp(id)}['"]`, 'g');
+        const matches = (contents.match(direct)?.length ?? 0) + (contents.match(safe)?.length ?? 0);
+        if (matches > 0) {
+          counts.set(id, (counts.get(id) ?? 0) + matches);
+        }
+      }
+    }
+
+    for (const id of serverCommandIds) {
+      expect(counts.get(id)).toBe(0);
+    }
+  });
+
   it('does not double-register Nova build integration commands', async () => {
     const commandIds = ['nova.buildProject', 'nova.reloadProject'];
 

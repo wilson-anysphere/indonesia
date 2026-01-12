@@ -185,6 +185,13 @@ export function registerNovaServerCommands(
     getTestOutputChannel: () => vscode.OutputChannel;
   },
 ): NovaServerCommandHandlers {
+  // Note: we intentionally do NOT call `vscode.commands.registerCommand` for the server-advertised
+  // `workspace/executeCommand` IDs (e.g. `nova.runTest`). `vscode-languageclient` auto-registers
+  // those commands based on `capabilities.executeCommandProvider.commands`, and double-registering
+  // the same identifier is a fatal error in VS Code.
+  //
+  // Instead, we implement the UX for these commands via `LanguageClientOptions.middleware.executeCommand`
+  // (see `extension.ts`), which dispatches to the handlers returned from this function.
   const runTest = async (...args: unknown[]): Promise<void> => {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     if (workspaces.length === 0) {

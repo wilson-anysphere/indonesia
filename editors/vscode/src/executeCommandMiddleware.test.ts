@@ -15,7 +15,7 @@ describe('executeCommand middleware wiring', () => {
     // run our UX handlers).
     expect(contents).toMatch(/middleware:\s*{\s*executeCommand:\s*async\s*\(\s*command\s*,\s*args\s*,\s*next\s*\)/s);
     expect(contents).toMatch(/serverCommandHandlers\?\.\s*dispatch\s*\(\s*command\s*,\s*args\s*\)/);
-    expect(contents).toMatch(/serverCommandHandlers\s*=\s*registerNovaServerCommands\s*\(/);
+    expect(contents).toMatch(/registerNovaServerCommands\s*\(/);
+    expect(contents).toMatch(/serverCommandHandlers\s*=\s*[a-zA-Z0-9_]+\s*;/);
   });
 });
-

@@ -43,6 +43,41 @@ test('package.json has no duplicate activationEvents or contributes.commands ent
   );
 });
 
+test('package.json contributes Run/Debug Test/Main as local interactive commands (avoids LSP executeCommand ID collisions)', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const commandIds = new Set(
+    commands
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+      .filter((id): id is string => typeof id === 'string'),
+  );
+
+  const expectedLocalCommands = [
+    'nova.runTestInteractive',
+    'nova.debugTestInteractive',
+    'nova.runMainInteractive',
+    'nova.debugMainInteractive',
+  ];
+  for (const id of expectedLocalCommands) {
+    assert.ok(commandIds.has(id));
+    assert.ok(activationEvents.includes(`onCommand:${id}`));
+  }
+
+  const serverCommandIds = ['nova.runTest', 'nova.debugTest', 'nova.runMain', 'nova.debugMain'];
+  for (const id of serverCommandIds) {
+    assert.ok(!commandIds.has(id));
+    assert.ok(!activationEvents.includes(`onCommand:${id}`));
+  }
+});
+
 test('package.json contributes Nova request metrics commands', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
@@ -67,7 +102,7 @@ test('package.json contributes Nova request metrics commands', async () => {
   assert.ok(activationEvents.includes('onCommand:nova.resetRequestMetrics'));
 });
 
-test('package.json contributes Nova CodeLens executeCommand command palette entries', async () => {
+test('package.json contributes Run/Debug Test/Main command palette entries via local interactive IDs', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
   const pkg = JSON.parse(raw) as {
@@ -90,18 +125,29 @@ test('package.json contributes Nova CodeLens executeCommand command palette entr
     byId.set(id, { title: (entry as { title?: unknown }).title });
   }
 
-  // `nova.runTest` is a server-provided `workspace/executeCommand` ID.
-  // We intentionally do NOT contribute a command palette entry for it to avoid
-  // confusion/collisions with vscode-languageclient's auto-registered command.
+  // `nova.runTest`/`nova.debugTest`/`nova.runMain`/`nova.debugMain` are server-provided
+  // `workspace/executeCommand` IDs.
+  // We intentionally do NOT contribute command palette entries for them to avoid collisions with
+  // vscode-languageclient's auto-registered commands.
   assert.equal(byId.get('nova.runTest')?.title, undefined);
-  assert.equal(byId.get('nova.debugTest')?.title, 'Nova: Debug Test');
-  assert.equal(byId.get('nova.runMain')?.title, 'Nova: Run Main…');
-  assert.equal(byId.get('nova.debugMain')?.title, 'Nova: Debug Main…');
+  assert.equal(byId.get('nova.debugTest')?.title, undefined);
+  assert.equal(byId.get('nova.runMain')?.title, undefined);
+  assert.equal(byId.get('nova.debugMain')?.title, undefined);
+
+  assert.equal(byId.get('nova.runTestInteractive')?.title, 'Nova: Run Test');
+  assert.equal(byId.get('nova.debugTestInteractive')?.title, 'Nova: Debug Test');
+  assert.equal(byId.get('nova.runMainInteractive')?.title, 'Nova: Run Main…');
+  assert.equal(byId.get('nova.debugMainInteractive')?.title, 'Nova: Debug Main…');
 
   assert.ok(!activationEvents.includes('onCommand:nova.runTest'));
-  assert.ok(activationEvents.includes('onCommand:nova.debugTest'));
-  assert.ok(activationEvents.includes('onCommand:nova.runMain'));
-  assert.ok(activationEvents.includes('onCommand:nova.debugMain'));
+  assert.ok(!activationEvents.includes('onCommand:nova.debugTest'));
+  assert.ok(!activationEvents.includes('onCommand:nova.runMain'));
+  assert.ok(!activationEvents.includes('onCommand:nova.debugMain'));
+
+  assert.ok(activationEvents.includes('onCommand:nova.runTestInteractive'));
+  assert.ok(activationEvents.includes('onCommand:nova.debugTestInteractive'));
+  assert.ok(activationEvents.includes('onCommand:nova.runMainInteractive'));
+  assert.ok(activationEvents.includes('onCommand:nova.debugMainInteractive'));
 });
 
 test('package.json contributes Nova Frameworks view context-menu commands', async () => {

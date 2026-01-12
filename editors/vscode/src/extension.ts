@@ -2136,11 +2136,39 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register local handlers for server-advertised `workspace/executeCommand` IDs.
   // This ensures Nova code lenses (Run Test / Debug Test / Run Main / Debug Main) do something
   // user-visible when invoked in VS Code.
-  serverCommandHandlers = registerNovaServerCommands(context, {
+  const registeredServerCommands = registerNovaServerCommands(context, {
     novaRequest: sendNovaRequest,
     requireClient,
     getTestOutputChannel,
   });
+  serverCommandHandlers = registeredServerCommands;
+
+  // Command palette entries for running/debugging tests and mains.
+  //
+  // The underlying CodeLens command IDs (`nova.runTest`, `nova.debugTest`, `nova.runMain`,
+  // `nova.debugMain`) are registered automatically by vscode-languageclient from the server's
+  // `executeCommandProvider.commands` list. We keep separate, locally-registered command IDs for
+  // the command palette so they work even before the language client finishes initialization.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.runTestInteractive', async (...args: unknown[]) => {
+      await registeredServerCommands.runTest(...args);
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.debugTestInteractive', async (...args: unknown[]) => {
+      await registeredServerCommands.debugTest(...args);
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.runMainInteractive', async (...args: unknown[]) => {
+      await registeredServerCommands.runMain(...args);
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.debugMainInteractive', async (...args: unknown[]) => {
+      await registeredServerCommands.debugMain(...args);
+    }),
+  );
 
   ensureClientStarted = ensureLanguageClientStarted;
   stopClient = stopLanguageClient;

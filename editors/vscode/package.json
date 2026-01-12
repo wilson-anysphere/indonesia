@@ -36,9 +36,10 @@
     "onCommand:nova.resetRequestMetrics",
     "onCommand:nova.discoverTests",
     "onCommand:nova.reloadProject",
-    "onCommand:nova.debugTest",
-    "onCommand:nova.runMain",
-    "onCommand:nova.debugMain",
+    "onCommand:nova.runTestInteractive",
+    "onCommand:nova.debugTestInteractive",
+    "onCommand:nova.runMainInteractive",
+    "onCommand:nova.debugMainInteractive",
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.frameworks.search",
     "onCommand:nova.frameworks.refresh",
@@ -127,15 +128,19 @@
         "title": "Nova: Reload Project"
       },
       {
-        "command": "nova.debugTest",
+        "command": "nova.runTestInteractive",
+        "title": "Nova: Run Test"
+      },
+      {
+        "command": "nova.debugTestInteractive",
         "title": "Nova: Debug Test"
       },
       {
-        "command": "nova.runMain",
+        "command": "nova.runMainInteractive",
         "title": "Nova: Run Main\u2026"
       },
       {
-        "command": "nova.debugMain",
+        "command": "nova.debugMainInteractive",
         "title": "Nova: Debug Main\u2026"
       },
       {
