@@ -70,6 +70,7 @@ pub struct WatcherHandle {
     watcher_thread: Option<thread::JoinHandle<()>>,
     driver_stop: channel::Sender<()>,
     driver_thread: Option<thread::JoinHandle<()>>,
+    watcher_command_store: Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
 }
 
 impl Drop for WatcherHandle {
@@ -83,6 +84,11 @@ impl Drop for WatcherHandle {
         if let Some(handle) = self.driver_thread.take() {
             let _ = handle.join();
         }
+
+        *self
+            .watcher_command_store
+            .lock()
+            .expect("workspace watcher command store mutex poisoned") = None;
     }
 }
 
@@ -99,6 +105,13 @@ pub(crate) struct WorkspaceEngine {
 
     project_state: Arc<Mutex<ProjectState>>,
     ide_project: RwLock<Option<Project>>,
+    watch_config: Arc<RwLock<WatchConfig>>,
+    watcher_command_store: Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
+}
+
+#[derive(Debug, Clone)]
+enum WatchCommand {
+    Watch(PathBuf),
 }
 
 #[derive(Debug)]
@@ -190,6 +203,8 @@ impl WorkspaceEngine {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             project_state: Arc::new(Mutex::new(ProjectState::default())),
             ide_project: RwLock::new(None),
+            watch_config: Arc::new(RwLock::new(WatchConfig::new(workspace_root))),
+            watcher_command_store: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -231,7 +246,7 @@ impl WorkspaceEngine {
     }
 
     pub fn start_watching(self: &Arc<Self>) -> Result<WatcherHandle> {
-        let (watch_config, watch_root) = {
+        let watch_root = {
             let state = self
                 .project_state
                 .lock()
@@ -240,30 +255,27 @@ impl WorkspaceEngine {
                 .workspace_root
                 .clone()
                 .context("workspace root not set")?;
-
-            let mut source_roots = Vec::new();
-            let mut generated_roots = Vec::new();
-            for root_entry in &state.config.source_roots {
-                match root_entry.origin {
-                    SourceRootOrigin::Source => source_roots.push(root_entry.path.clone()),
-                    SourceRootOrigin::Generated => generated_roots.push(root_entry.path.clone()),
-                }
-            }
-
-            (
-                WatchConfig {
-                    workspace_root: root.clone(),
-                    source_roots,
-                    generated_source_roots: generated_roots,
-                },
-                root,
-            )
+            root
         };
+
+        let watch_config = Arc::clone(&self.watch_config);
+        let initial_config = watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .clone();
 
         let engine = Arc::clone(self);
         let (batch_tx, batch_rx) = channel::unbounded::<(ChangeCategory, Vec<NormalizedEvent>)>();
 
         let (watcher_stop_tx, watcher_stop_rx) = channel::bounded::<()>(0);
+        let (command_tx, command_rx) = channel::unbounded::<WatchCommand>();
+
+        {
+            *self
+                .watcher_command_store
+                .lock()
+                .expect("workspace watcher command store mutex poisoned") = Some(command_tx.clone());
+        }
 
         let subscribers = Arc::clone(&self.subscribers);
         let watcher_thread = thread::spawn(move || {
@@ -292,12 +304,8 @@ impl WorkspaceEngine {
                 }
 
                 match change {
-                    FileChange::Created { path } => {
-                        Some(NormalizedEvent::Created(to_pathbuf(path)?))
-                    }
-                    FileChange::Modified { path } => {
-                        Some(NormalizedEvent::Modified(to_pathbuf(path)?))
-                    }
+                    FileChange::Created { path } => Some(NormalizedEvent::Created(to_pathbuf(path)?)),
+                    FileChange::Modified { path } => Some(NormalizedEvent::Modified(to_pathbuf(path)?)),
                     FileChange::Deleted { path } => Some(NormalizedEvent::Deleted(to_pathbuf(path)?)),
                     FileChange::Moved { from, to } => Some(NormalizedEvent::Moved {
                         from: to_pathbuf(from)?,
@@ -306,12 +314,13 @@ impl WorkspaceEngine {
                 }
             }
 
+            let mut watched_roots: HashSet<PathBuf> = HashSet::new();
             let mut roots: Vec<PathBuf> = Vec::new();
             roots.push(watch_root.clone());
-            for root in watch_config
+            for root in initial_config
                 .source_roots
                 .iter()
-                .chain(watch_config.generated_source_roots.iter())
+                .chain(initial_config.generated_source_roots.iter())
             {
                 // If the configured root is outside the workspace root, we need to watch it
                 // explicitly. Roots under the workspace root are already covered by the recursive
@@ -329,14 +338,19 @@ impl WorkspaceEngine {
                 if !root.exists() {
                     continue;
                 }
-                if let Err(err) = watcher.watch_root(&root) {
-                    publish_to_subscribers(
-                        &subscribers,
-                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                            "Failed to watch {}: {err}",
-                            root.display()
-                        ))),
-                    );
+                match watcher.watch_root(&root) {
+                    Ok(()) => {
+                        watched_roots.insert(root);
+                    }
+                    Err(err) => {
+                        publish_to_subscribers(
+                            &subscribers,
+                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                "Failed to watch {}: {err}",
+                                root.display()
+                            ))),
+                        );
+                    }
                 }
             }
 
@@ -355,16 +369,48 @@ impl WorkspaceEngine {
                         }
                         break;
                     }
+                    recv(command_rx) -> msg => {
+                        let Ok(cmd) = msg else { break };
+                        match cmd {
+                            WatchCommand::Watch(root) => {
+                                if watched_roots.contains(&root) {
+                                    continue;
+                                }
+                                if !root.exists() {
+                                    continue;
+                                }
+                                match watcher.watch_root(&root) {
+                                    Ok(()) => {
+                                        watched_roots.insert(root);
+                                    }
+                                    Err(err) => {
+                                        publish_to_subscribers(
+                                            &subscribers,
+                                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(
+                                                format!(
+                                                    "Failed to watch {}: {err}",
+                                                    root.display()
+                                                ),
+                                            )),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     recv(watch_rx) -> msg => {
                         let Ok(res) = msg else { break };
                         match res {
                             Ok(WatchEvent { changes }) => {
                                 let now = Instant::now();
+                                let config = watch_config
+                                    .read()
+                                    .expect("workspace watch config lock poisoned");
                                 for change in changes {
                                     let Some(norm) = vfs_change_to_normalized(change) else {
                                         continue;
                                     };
-                                    if let Some(cat) = categorize_event(&watch_config, &norm) {
+                                    if let Some(cat) = categorize_event(&config, &norm) {
                                         debouncer.push(&cat, norm, now);
                                     }
                                 }
@@ -442,6 +488,7 @@ impl WorkspaceEngine {
             watcher_thread: Some(watcher_thread),
             driver_stop: driver_stop_tx,
             driver_thread: Some(driver_thread),
+            watcher_command_store: Arc::clone(&self.watcher_command_store),
         })
     }
 
@@ -521,6 +568,8 @@ impl WorkspaceEngine {
         let query_db = self.query_db.clone();
         let subscribers = Arc::clone(&self.subscribers);
         let scheduler = self.scheduler.clone();
+        let watch_config = Arc::clone(&self.watch_config);
+        let watcher_command_store = Arc::clone(&self.watcher_command_store);
 
         self.project_reload_debouncer.debounce_with_delay(
             "workspace-reload",
@@ -537,7 +586,15 @@ impl WorkspaceEngine {
                 };
 
                 if let Err(err) =
-                    reload_project_and_sync(&root, &changed, &vfs, &query_db, &project_state)
+                    reload_project_and_sync(
+                        &root,
+                        &changed,
+                        &vfs,
+                        &query_db,
+                        &project_state,
+                        &watch_config,
+                        &watcher_command_store,
+                    )
                 {
                     publish_to_subscribers(
                         &subscribers,
@@ -570,6 +627,8 @@ impl WorkspaceEngine {
             &self.vfs,
             &self.query_db,
             &self.project_state,
+            &self.watch_config,
+            &self.watcher_command_store,
         )
     }
 
@@ -1089,6 +1148,22 @@ fn build_source_roots(config: &ProjectConfig) -> Vec<SourceRootEntry> {
         .collect()
 }
 
+fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut source_roots = Vec::new();
+    let mut generated_source_roots = Vec::new();
+    for root_entry in &config.source_roots {
+        match root_entry.origin {
+            SourceRootOrigin::Source => source_roots.push(root_entry.path.clone()),
+            SourceRootOrigin::Generated => generated_source_roots.push(root_entry.path.clone()),
+        }
+    }
+    source_roots.sort();
+    source_roots.dedup();
+    generated_source_roots.sort();
+    generated_source_roots.dedup();
+    (source_roots, generated_source_roots)
+}
+
 fn java_files_under(root: &Path) -> Result<Vec<PathBuf>> {
     match fs::metadata(root) {
         Ok(meta) if meta.is_dir() => {}
@@ -1164,6 +1239,8 @@ fn reload_project_and_sync(
     vfs: &Vfs<LocalFs>,
     query_db: &salsa::Database,
     project_state: &Arc<Mutex<ProjectState>>,
+    watch_config: &Arc<RwLock<WatchConfig>>,
+    watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
 ) -> Result<()> {
     let (previous_config, mut options, previous_classpath_fingerprint) = {
         let state = project_state
@@ -1187,7 +1264,22 @@ fn reload_project_and_sync(
         .as_ref()
         .unwrap_or_else(|| previous_config.as_ref());
 
-    let loaded = match nova_project::reload_project(base_config, &mut options, changed_files) {
+    // `nova-project` only reloads the full project model when build files change. Generated-source
+    // roots can change when nova-apt updates its snapshot at
+    // `.nova/apt-cache/generated-roots.json`, so force a full reload when that file is in the
+    // change set.
+    let effective_changed_files = if changed_files.iter().any(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "generated-roots.json")
+            && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
+    }) {
+        &[] as &[PathBuf]
+    } else {
+        changed_files
+    };
+
+    let loaded = match nova_project::reload_project(base_config, &mut options, effective_changed_files)
+    {
         Ok(config) => config,
         Err(ProjectError::UnknownProjectType { .. }) => fallback_project_config(workspace_root),
         Err(err) => {
@@ -1208,6 +1300,7 @@ fn reload_project_and_sync(
         Arc::clone(&previous_config)
     };
     let source_roots = build_source_roots(&config);
+    let (watch_source_roots, watch_generated_roots) = watch_roots_from_project_config(&config);
     let next_classpath_fingerprint = classpath_fingerprint(&config);
     let classpath_changed = match &previous_classpath_fingerprint {
         Some(prev) => prev != &next_classpath_fingerprint,
@@ -1222,6 +1315,33 @@ fn reload_project_and_sync(
         state.load_options = options;
         state.source_roots = source_roots.clone();
         state.classpath_fingerprint = Some(next_classpath_fingerprint.clone());
+    }
+
+    {
+        let mut cfg = watch_config
+            .write()
+            .expect("workspace watch config lock poisoned");
+        cfg.workspace_root = workspace_root.to_path_buf();
+        cfg.source_roots = watch_source_roots.clone();
+        cfg.generated_source_roots = watch_generated_roots.clone();
+    }
+
+    // If the watcher is running, ensure it begins watching any newly discovered roots outside the
+    // workspace root. Roots under the workspace root are already covered by the recursive watch.
+    if let Some(tx) = watcher_command_store
+        .lock()
+        .expect("workspace watcher command store mutex poisoned")
+        .clone()
+    {
+        for root in watch_source_roots
+            .iter()
+            .chain(watch_generated_roots.iter())
+        {
+            if root.starts_with(workspace_root) {
+                continue;
+            }
+            let _ = tx.send(WatchCommand::Watch(root.clone()));
+        }
     }
 
     let project = ProjectId::from_raw(0);
@@ -1989,11 +2109,7 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
 
         let module_info = root.join("src/module-info.java");
-        fs::write(
-            &module_info,
-            "module com.example.one { }".as_bytes(),
-        )
-        .unwrap();
+        fs::write(&module_info, "module com.example.one { }".as_bytes()).unwrap();
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
@@ -2053,6 +2169,100 @@ mod tests {
                 .lookup_type("String")
                 .expect("jdk lookup should not error");
             assert!(stub.is_some(), "expected String to be indexed from fake JDK");
+        });
+    }
+
+    #[test]
+    fn project_reload_updates_watcher_config_for_new_generated_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            br#"<?xml version="1.0"?><project></project>"#,
+        )
+        .unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let generated_root = root.join("custom-generated");
+        let generated_file = generated_root.join("Gen.java");
+        let event = NormalizedEvent::Created(generated_file.clone());
+
+        let stale_config = engine
+            .watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .clone();
+        assert!(
+            !stale_config.source_roots.is_empty() || !stale_config.generated_source_roots.is_empty(),
+            "expected Maven workspace to have configured roots"
+        );
+        assert!(
+            !stale_config.generated_source_roots.contains(&generated_root),
+            "test expects custom generated root to be absent before reload"
+        );
+        assert_eq!(categorize_event(&stale_config, &event), None);
+
+        // Simulate nova-apt writing a snapshot of generated roots, then reload the project so the
+        // newly discovered roots are incorporated into the watcher config.
+        let snapshot_dir = root.join(".nova").join("apt-cache");
+        fs::create_dir_all(&snapshot_dir).unwrap();
+        let snapshot = serde_json::json!({
+            "schema_version": 1,
+            "modules": [{
+                "module_root": root.to_string_lossy(),
+                "roots": [{
+                    "kind": "main",
+                    "path": generated_root.to_string_lossy(),
+                }]
+            }]
+        });
+        let snapshot_path = snapshot_dir.join("generated-roots.json");
+        fs::write(&snapshot_path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
+
+        engine.reload_project_now(&[snapshot_path]).unwrap();
+
+        let current_config = engine
+            .watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .clone();
+        assert!(
+            current_config.generated_source_roots.contains(&generated_root),
+            "expected watcher config to include newly generated root"
+        );
+        assert_eq!(
+            categorize_event(&current_config, &event),
+            Some(ChangeCategory::Source)
+        );
+
+        // Demonstrate why the watcher must consult the *current* WatchConfig: the original snapshot
+        // would continue to drop events for the newly configured root.
+        assert_eq!(categorize_event(&stale_config, &event), None);
+
+        fs::create_dir_all(&generated_root).unwrap();
+        fs::write(&generated_file, "class Gen {}".as_bytes()).unwrap();
+        engine.apply_filesystem_events(vec![NormalizedEvent::Created(generated_file.clone())]);
+
+        let file_id = engine
+            .vfs
+            .get_id(&VfsPath::local(generated_file.clone()))
+            .expect("generated file id allocated");
+        engine.query_db.with_snapshot(|snap| {
+            let project = ProjectId::from_raw(0);
+            assert!(snap.file_exists(file_id));
+            assert!(snap.project_files(project).contains(&file_id));
         });
     }
 
