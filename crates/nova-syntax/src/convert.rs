@@ -44,6 +44,14 @@ impl TryFrom<nova_core::TextRange> for TextRange {
     }
 }
 
+impl TryFrom<&nova_core::TextRange> for TextRange {
+    type Error = TextEditConvertError;
+
+    fn try_from(value: &nova_core::TextRange) -> Result<Self, Self::Error> {
+        (*value).try_into()
+    }
+}
+
 impl TryFrom<nova_core::TextEdit> for TextEdit {
     type Error = TextEditConvertError;
 
@@ -51,6 +59,17 @@ impl TryFrom<nova_core::TextEdit> for TextEdit {
         Ok(TextEdit {
             range: value.range.try_into()?,
             replacement: value.replacement,
+        })
+    }
+}
+
+impl TryFrom<&nova_core::TextEdit> for TextEdit {
+    type Error = TextEditConvertError;
+
+    fn try_from(value: &nova_core::TextEdit) -> Result<Self, Self::Error> {
+        Ok(TextEdit {
+            range: value.range.try_into()?,
+            replacement: value.replacement.clone(),
         })
     }
 }
@@ -87,6 +106,15 @@ mod tests {
     }
 
     #[test]
+    fn converts_borrowed_core_text_edits_to_syntax_text_edits() {
+        let edit =
+            CoreTextEdit::new(CoreTextRange::new(TextSize::from(2), TextSize::from(4)), "XX");
+        let converted = TextEdit::try_from(&edit).unwrap();
+        assert_eq!(converted.replacement, "XX");
+        assert_eq!(converted.range, TextRange { start: 2, end: 4 });
+    }
+
+    #[test]
     fn rejects_offsets_that_do_not_fit_in_u32() {
         let too_large = u64::from(u32::MAX) + 1;
         assert!(matches!(
@@ -108,4 +136,3 @@ mod tests {
         ));
     }
 }
-
