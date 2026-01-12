@@ -120,7 +120,7 @@ fn parse_method_declaration() {
 # - `insta` snapshots (formatter): set `INSTA_UPDATE=always`
 #
 # Parser golden corpus (`nova-syntax`): writes `crates/nova-syntax/testdata/**/*.tree` + `.errors`
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 #
 # Refactor before/after fixtures (`nova-refactor`): writes `crates/nova-refactor/tests/fixtures/**/after/**`
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
@@ -392,7 +392,7 @@ bash scripts/cargo_agent.sh test -p nova-types --lib -- test_name
 bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
 
 # Update snapshots
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots

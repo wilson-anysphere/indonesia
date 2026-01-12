@@ -35,9 +35,9 @@ Examples (CI command → agent-safe local equivalent):
 
 ```bash
 # CI:
-cargo test --locked -p nova-syntax --test javac_corpus
+cargo test --locked -p nova-syntax --test harness suite::javac_corpus
 # agent/multi-runner:
-bash scripts/cargo_agent.sh test --locked -p nova-syntax --test javac_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::javac_corpus
 
 # CI:
 cargo bench --locked -p nova-core --bench critical_paths
@@ -46,7 +46,7 @@ bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
 ```
 
 Environment variables still apply; just prefix the wrapper instead of `cargo`:
-`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus`.
+`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus`.
 
 ## CI-equivalent “smoke” run (what `ci.yml` enforces)
 
@@ -111,7 +111,8 @@ git diff --exit-code
 (cd editors/vscode && npm ci && npm test && npm run package)
 
 # javac.yml (requires `javac` on PATH; JDK 17+ recommended)
-cargo test --locked -p nova-syntax --test javac_corpus
+# javac.yml (requires `javac` on PATH; JDK 17+ recommended)
+cargo test --locked -p nova-syntax --test harness suite::javac_corpus
 cargo test --locked -p nova-types --test javac_differential -- --ignored
 
 # Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
@@ -219,26 +220,26 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
   - `testdata/recovery/**/*.java` — inputs expected to produce parse errors but still recover
     - `*.tree` contains a debug dump of the recovered syntax tree
     - `*.errors` contains canonicalized parse errors
-- Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (included by `crates/nova-syntax/tests/javac_corpus.rs`)
+- Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (run via `crates/nova-syntax/tests/harness.rs`)
 
-The golden corpus test is the `#[test] fn golden_corpus()` test inside the `javac_corpus`
-integration test binary. There is **no** separate integration test target named `golden_corpus`;
-run it via `--test javac_corpus` and (optionally) a test-name filter.
+The golden corpus test is the `#[test] fn golden_corpus()` test inside the consolidated `harness`
+integration test binary. There is **no** separate `--test golden_corpus` integration test target;
+run it via `--test harness` and (optionally) a test-name filter.
 
 **Run locally:**
 
 ```bash
-# Full `nova-syntax` integration test suite (`javac_corpus`)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+# Full `nova-syntax` integration test suite (`harness`)
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 
 # Just the golden corpus test (test-name filter)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 ```
 
 **Update / bless expectations (writes `.tree`/`.errors` files next to the fixtures):**
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 ```
 
 #### 2b) Refactoring before/after fixtures
@@ -273,7 +274,7 @@ These are not always golden “snapshots”, but they are fixture-driven tests:
 - `crates/nova-testing/fixtures/` — small Maven/Gradle projects used by LSP “test discovery” flows.
 - `crates/*/tests/fixtures/` — per-crate file fixtures (e.g. framework analyzers, decompiler inputs).
 - `crates/*/testdata/` — per-crate sample inputs (build tool parsing, classpath discovery, etc).
-- `crates/nova-syntax/testdata/javac/` — small `javac` differential corpus used by `crates/nova-syntax/tests/javac_corpus.rs`.
+- `crates/nova-syntax/testdata/javac/` — small `javac` corpus used by `crates/nova-syntax/tests/suite/javac_corpus.rs`.
 
 #### 2d) Formatter golden tests (`insta` snapshots)
 
@@ -342,7 +343,7 @@ cargo test --locked -p nova-lsp stdio_
 
 #### 3b) DAP end-to-end tests (in-memory transport)
 
-**Where:** `crates/nova-dap/tests/real_jvm.rs` + `crates/nova-dap/tests/suite/*.rs` (single harness;
+**Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/tests.rs`;
 most tests use in-memory duplex streams + a mock JDWP server).
 
 **Run locally:**
@@ -359,7 +360,7 @@ message and returns early so normal CI stays stable.
 
 **Where:**
 
-- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (compiled by `crates/nova-dap/tests/real_jvm.rs`)
+- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (run via `crates/nova-dap/tests/tests.rs`)
 - Java fixture: `crates/nova-dap/testdata/java/Main.java`
 
 **Run locally:**
@@ -632,7 +633,7 @@ Set `BLESS=1` to rewrite on-disk expectations for file-based golden tests:
 Example:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
@@ -711,7 +712,7 @@ locally” near the top of this document).
 2. Generate/update the expected `.tree`/`.errors` outputs with:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 ```
 
 ### Add a new refactoring before/after fixture

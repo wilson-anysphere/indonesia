@@ -39,7 +39,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run javac corpus tests
-        run: cargo test --locked -p nova-syntax --test javac_corpus
+        run: cargo test --locked -p nova-syntax --test harness suite::javac_corpus
 
       - name: Run javac smoke tests
         run: cargo test --locked -p nova-types --test javac_differential -- --ignored

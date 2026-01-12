@@ -62,17 +62,16 @@ More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives i
 Some tests compare Nova’s output against on-disk “golden” expectations (parser snapshots, refactor
 before/after fixtures). To update those expectations:
 
-Note: the parser golden corpus is the `golden_corpus` test inside the `javac_corpus` integration
-test binary (`crates/nova-syntax/tests/javac_corpus.rs`). There is no standalone integration test
-target named `golden_corpus` — run it via `--test javac_corpus` (optionally filtering by test
-name).
+Note: the parser golden corpus is the `golden_corpus` test inside the consolidated `harness`
+integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no standalone
+`--test golden_corpus` target — run it via `--test harness` (optionally filtering by test name).
 
 ```bash
-# Run the full `nova-syntax` integration test suite (`javac_corpus`)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+# Run the full `nova-syntax` integration test suite (`harness`)
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 
 # Update / bless parser golden corpus expectations
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 

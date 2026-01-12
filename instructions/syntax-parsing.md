@@ -108,10 +108,10 @@ testdata/
 │   └── declarations/
 ```
 
-These fixtures are exercised by the `golden_corpus` test inside the `javac_corpus` integration
-test binary (`crates/nova-syntax/tests/javac_corpus.rs` includes
-`crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate integration test target
-named `golden_corpus` — run it via `--test javac_corpus` and (optionally) a test-name filter.
+These fixtures are exercised by the `golden_corpus` test inside the consolidated `harness`
+integration test binary (`crates/nova-syntax/tests/harness.rs` includes
+`crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate `--test golden_corpus`
+target — run it via `--test harness` and (optionally) a test-name filter.
 
 **To add a test:**
 1. Create `testdata/parser/category/test_name.java`
@@ -121,13 +121,13 @@ named `golden_corpus` — run it via `--test javac_corpus` and (optionally) a te
 
 ```bash
 # (Re)generate expected `.tree`/`.errors` outputs
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 
 # Run the golden corpus test
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 
-# Run the full `nova-syntax` integration suite (`javac_corpus`)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+# Run the full `nova-syntax` integration suite (`harness`)
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 ```
 
 ### Java Language Levels
@@ -167,18 +167,18 @@ let formatted = nova_format::format_file(source, options);
 # Parser unit tests
 bash scripts/cargo_agent.sh test -p nova-syntax --lib
 
-# Parser integration tests (`javac_corpus` includes the `golden_corpus` fixture test)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+# Parser integration tests (`harness` includes the `golden_corpus` fixture test)
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 
 # Parser golden corpus fixtures (test-name filter)
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 
 # Formatter tests (`insta` snapshots)
 bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 
 # Update / bless expectations:
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
