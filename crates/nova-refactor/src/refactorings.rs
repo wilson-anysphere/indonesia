@@ -2335,7 +2335,147 @@ fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
 
 fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
     let stmt = pat.syntax().ancestors().find_map(ast::Statement::cast)?;
-    Some(syntax_range(stmt.syntax()))
+    let stmt_range = syntax_range(stmt.syntax());
+
+    // Java pattern variables can be "flow-scoped" and may be in scope *after* the statement that
+    // contains the pattern, e.g.:
+    //
+    // `if (!(obj instanceof String s)) return;`
+    // `System.out.println(s); // s is in scope here`
+    //
+    // For extract-variable we only need a conservative scope approximation for conflict checking.
+    // Expand the scope to the end of the enclosing statement list when we can detect a simple
+    // guard-style `if` that guarantees the pattern is matched for the subsequent control flow.
+    if let ast::Statement::IfStatement(if_stmt) = &stmt {
+        if pattern_in_scope_after_if_statement(pat, if_stmt) {
+            if let Some(container) = nearest_statement_list_container_range(if_stmt.syntax()) {
+                return Some(TextRange::new(stmt_range.start, container.end));
+            }
+        }
+    }
+
+    Some(stmt_range)
+}
+
+fn pattern_in_scope_after_if_statement(pat: &ast::TypePattern, if_stmt: &ast::IfStatement) -> bool {
+    let Some(condition) = if_stmt.condition() else {
+        return false;
+    };
+
+    let Some(pattern_matches_when_condition_true) =
+        pattern_matches_when_condition_true(pat, &condition)
+    else {
+        return false;
+    };
+
+    let Some(then_branch) = if_stmt.then_branch() else {
+        return false;
+    };
+
+    let then_completes = !statement_always_exits(&then_branch);
+    let else_completes = if let Some(else_branch) = if_stmt.else_branch() {
+        !statement_always_exits(&else_branch)
+    } else {
+        // No else branch means the implicit else is an empty statement, which completes normally.
+        true
+    };
+
+    // If control can reach after the `if` through the then-branch, then the condition was `true`.
+    // If control can reach after the `if` through the else-branch, then the condition was `false`.
+    //
+    // Pattern variables are in scope after the statement only if every path that reaches after the
+    // `if` implies a successful match for the pattern.
+    if then_completes && !pattern_matches_when_condition_true {
+        return false;
+    }
+    if else_completes && pattern_matches_when_condition_true {
+        return false;
+    }
+
+    // If no path reaches after the if-statement, there is no meaningful "after" scope.
+    then_completes || else_completes
+}
+
+fn pattern_matches_when_condition_true(
+    pat: &ast::TypePattern,
+    condition: &ast::Expression,
+) -> Option<bool> {
+    // Find the `instanceof` expression that introduces this pattern binding.
+    let inst = pat
+        .syntax()
+        .ancestors()
+        .find_map(ast::InstanceofExpression::cast)?;
+
+    let cond_range = syntax_range(condition.syntax());
+    let inst_range = syntax_range(inst.syntax());
+    if !(cond_range.start <= inst_range.start && inst_range.end <= cond_range.end) {
+        return None;
+    }
+
+    // Walk up the tree from the instanceof expression to the condition, tracking whether the
+    // condition is negated by an odd number of `!` operators.
+    let mut negated = false;
+    let mut node = inst.syntax().clone();
+    let cond_syntax = condition.syntax();
+
+    while &node != cond_syntax {
+        let parent = node.parent()?;
+
+        if ast::ParenthesizedExpression::cast(parent.clone()).is_some() {
+            node = parent;
+            continue;
+        }
+
+        if let Some(unary) = ast::UnaryExpression::cast(parent.clone()) {
+            let is_bang = unary
+                .syntax()
+                .first_token()
+                .is_some_and(|tok| tok.kind() == SyntaxKind::Bang);
+            if !is_bang {
+                return None;
+            }
+            negated = !negated;
+            node = parent;
+            continue;
+        }
+
+        // We only handle simple conditions that are a (possibly parenthesized) instanceof pattern,
+        // optionally wrapped in `!` negations. For more complex boolean expressions, fall back to a
+        // statement-local scope approximation.
+        return None;
+    }
+
+    Some(!negated)
+}
+
+fn statement_always_exits(stmt: &ast::Statement) -> bool {
+    match stmt {
+        ast::Statement::ReturnStatement(_)
+        | ast::Statement::ThrowStatement(_)
+        | ast::Statement::BreakStatement(_)
+        | ast::Statement::ContinueStatement(_) => true,
+        ast::Statement::Block(block) => {
+            let mut it = block.statements();
+            let Some(only) = it.next() else {
+                return false;
+            };
+            if it.next().is_some() {
+                return false;
+            }
+            statement_always_exits(&only)
+        }
+        _ => false,
+    }
+}
+
+fn nearest_statement_list_container_range(node: &nova_syntax::SyntaxNode) -> Option<TextRange> {
+    node.ancestors().find_map(|node| {
+        if let Some(block) = ast::Block::cast(node.clone()) {
+            Some(syntax_range(block.syntax()))
+        } else {
+            ast::SwitchBlock::cast(node).map(|b| syntax_range(b.syntax()))
+        }
+    })
 }
 
 #[derive(Clone, Debug)]
