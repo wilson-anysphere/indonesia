@@ -778,6 +778,41 @@ impl RefactorJavaDatabase {
             );
         }
 
+        // Additional syntax-based indexing pass: stable HIR drops qualifiers on `this`/`super`
+        // expressions (e.g. `Outer.this` / `Outer.super`). Member accesses through these qualified
+        // receivers depend on the qualifier type, so we recover them directly from the full
+        // syntax tree.
+        for (file, file_id) in &file_ids {
+            let Some(scope_result) = scopes.get(file_id) else {
+                continue;
+            };
+
+            let text = files.get(file).map(|t| t.as_ref()).unwrap_or("");
+            let parse = nova_syntax::parse_java(text);
+            let root = parse.syntax();
+
+            let tree = item_trees
+                .get(file_id)
+                .cloned()
+                .unwrap_or_else(|| snap.hir_item_tree(*file_id));
+
+            record_qualified_receiver_member_references(
+                file,
+                &root,
+                tree.as_ref(),
+                scope_result,
+                &resolver,
+                &workspace_def_map,
+                &type_by_name,
+                &type_name_by_item,
+                &methods_by_item,
+                &inheritance,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
+        }
+
         // Ensure we don't materialize overlapping edits if the same reference was indexed by
         // multiple mechanisms (e.g. both HIR and syntax scans).
         for refs in &mut references {
@@ -2467,6 +2502,21 @@ fn record_body_references(
         Some(QualifiedName::from_dotted(&dotted))
     }
 
+    // Stable HIR drops qualifiers on `this`/`super` expressions (`Outer.this`, `Outer.super`).
+    // Avoid indexing member accesses through these receivers here, since the qualifier affects
+    // which member is being referenced. A later syntax-based pass can recover the qualifier and
+    // resolve the correct member symbol.
+    fn is_qualified_this_or_super(file_text: &str, body: &hir::Body, expr: hir::ExprId) -> bool {
+        let (start, end) = match &body.exprs[expr] {
+            hir::Expr::This { range } | hir::Expr::Super { range } => (range.start, range.end),
+            _ => return false,
+        };
+        if start >= end || end > file_text.len() {
+            return false;
+        }
+        file_text[start..end].contains('.')
+    }
+
     // Track call callee expressions so we can treat `obj.method()` as a method reference span for
     // the `method` token (rather than a field access span).
     let mut call_callees: HashSet<hir::ExprId> = HashSet::new();
@@ -2570,6 +2620,10 @@ fn record_body_references(
                 ..
             } => {
                 if call_callees.contains(&expr_id) {
+                    return;
+                }
+
+                if is_qualified_this_or_super(file_text, body, *receiver) {
                     return;
                 }
 
@@ -2744,6 +2798,10 @@ fn record_body_references(
                     name_range,
                     ..
                 } => {
+                    if is_qualified_this_or_super(file_text, body, *receiver) {
+                        return;
+                    }
+
                     // `WorkspaceDefMap::type_def` only contains methods declared directly on the
                     // type, so member resolution for `this.m()` / `super.m()` needs an explicit
                     // inheritance walk to find inherited methods.
@@ -2842,6 +2900,10 @@ fn record_body_references(
                 name_range,
                 ..
             } => {
+                if is_qualified_this_or_super(file_text, body, *receiver) {
+                    return;
+                }
+
                 // `WorkspaceDefMap::type_def` does not include inherited methods, so resolve
                 // `this::m` / `super::m` via an explicit inheritance walk.
                 let receiver_kind = match &body.exprs[*receiver] {
@@ -3674,6 +3736,239 @@ fn record_syntax_method_reference_references(
             file,
             name_range,
             ResolutionKey::Method(method),
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_qualified_receiver_member_references(
+    file: &FileId,
+    root: &nova_syntax::SyntaxNode,
+    tree: &ItemTree,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    workspace_def_map: &WorkspaceDefMap,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    fn syntax_node_text_no_trivia(node: &nova_syntax::SyntaxNode) -> String {
+        let mut out = String::new();
+        for tok in node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| !tok.kind().is_trivia())
+        {
+            out.push_str(tok.text());
+        }
+        out
+    }
+
+    fn expr_to_qualified_name(expr: ast::Expression) -> Option<QualifiedName> {
+        match expr {
+            ast::Expression::NameExpression(name_expr) => {
+                let text = ast::support::child::<ast::Name>(name_expr.syntax())
+                    .map(|name| name.text())
+                    .unwrap_or_else(|| syntax_node_text_no_trivia(name_expr.syntax()));
+                (!text.is_empty()).then_some(QualifiedName::from_dotted(&text))
+            }
+            ast::Expression::FieldAccessExpression(field_access) => {
+                let prefix = expr_to_qualified_name(field_access.expression()?)?;
+                let seg = field_access.name_token()?.text().to_string();
+                Some(QualifiedName::from_dotted(&format!(
+                    "{}.{seg}",
+                    prefix.to_dotted()
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    fn qualified_receiver(expr: ast::Expression) -> Option<(ReceiverKind, QualifiedName)> {
+        match expr {
+            ast::Expression::ThisExpression(this_expr) => Some((
+                ReceiverKind::This,
+                expr_to_qualified_name(this_expr.qualifier()?)?,
+            )),
+            ast::Expression::SuperExpression(super_expr) => Some((
+                ReceiverKind::Super,
+                expr_to_qualified_name(super_expr.qualifier()?)?,
+            )),
+            _ => None,
+        }
+    }
+
+    // `Outer.this.m(...)` / `Outer.super.m(...)` method calls.
+    for call in root
+        .descendants()
+        .filter_map(ast::MethodCallExpression::cast)
+    {
+        let Some(ast::Expression::FieldAccessExpression(field_access)) = call.callee() else {
+            continue;
+        };
+
+        let Some(receiver) = field_access.expression() else {
+            continue;
+        };
+        let Some((receiver_kind, qual_path)) = qualified_receiver(receiver) else {
+            continue;
+        };
+
+        let Some(name_tok) = field_access.name_token() else {
+            continue;
+        };
+        let method_name = name_tok.text();
+        let name_range = syntax_token_range(&name_tok);
+
+        let start_scope = enclosing_item_at_offset(tree, name_range.start)
+            .and_then(|item| scope_result.class_scopes.get(&item).copied())
+            .unwrap_or(scope_result.file_scope);
+
+        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
+            &scope_result.scopes,
+            start_scope,
+            &qual_path,
+        ) else {
+            continue;
+        };
+
+        let Some(method) = resolve_receiver_method(
+            item,
+            receiver_kind,
+            method_name,
+            type_by_name,
+            type_name_by_item,
+            methods_by_item,
+            inheritance,
+        ) else {
+            continue;
+        };
+
+        record_reference(
+            file,
+            name_range,
+            ResolutionKey::Method(method),
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+
+    // `Outer.this::m` / `Outer.super::m` method references.
+    for method_ref in root
+        .descendants()
+        .filter_map(ast::MethodReferenceExpression::cast)
+    {
+        let Some(receiver) = method_ref.expression() else {
+            continue;
+        };
+        let Some((receiver_kind, qual_path)) = qualified_receiver(receiver) else {
+            continue;
+        };
+
+        let Some(name_tok) = method_ref.name_token() else {
+            continue;
+        };
+        let method_name = name_tok.text();
+        let name_range = syntax_token_range(&name_tok);
+
+        let start_scope = enclosing_item_at_offset(tree, name_range.start)
+            .and_then(|item| scope_result.class_scopes.get(&item).copied())
+            .unwrap_or(scope_result.file_scope);
+
+        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
+            &scope_result.scopes,
+            start_scope,
+            &qual_path,
+        ) else {
+            continue;
+        };
+
+        let Some(method) = resolve_receiver_method(
+            item,
+            receiver_kind,
+            method_name,
+            type_by_name,
+            type_name_by_item,
+            methods_by_item,
+            inheritance,
+        ) else {
+            continue;
+        };
+
+        record_reference(
+            file,
+            name_range,
+            ResolutionKey::Method(method),
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+
+    // `Outer.this.foo` / `Outer.super.foo` field accesses.
+    for field_access in root
+        .descendants()
+        .filter_map(ast::FieldAccessExpression::cast)
+    {
+        // Skip method-call callees (`Outer.this.m()`), handled above.
+        if field_access
+            .syntax()
+            .parent()
+            .and_then(ast::MethodCallExpression::cast)
+            .is_some()
+        {
+            continue;
+        }
+
+        let Some(receiver) = field_access.expression() else {
+            continue;
+        };
+        let Some((receiver_kind, qual_path)) = qualified_receiver(receiver) else {
+            continue;
+        };
+
+        let Some(name_tok) = field_access.name_token() else {
+            continue;
+        };
+        let field_name = name_tok.text();
+        let name_range = syntax_token_range(&name_tok);
+
+        let start_scope = enclosing_item_at_offset(tree, name_range.start)
+            .and_then(|item| scope_result.class_scopes.get(&item).copied())
+            .unwrap_or(scope_result.file_scope);
+
+        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
+            &scope_result.scopes,
+            start_scope,
+            &qual_path,
+        ) else {
+            continue;
+        };
+
+        let Some(field) = resolve_receiver_field(
+            item,
+            receiver_kind,
+            field_name,
+            workspace_def_map,
+            type_by_name,
+            type_name_by_item,
+            inheritance,
+        ) else {
+            continue;
+        };
+
+        record_reference(
+            file,
+            name_range,
+            ResolutionKey::Field(field),
             resolution_to_symbol,
             references,
             spans,

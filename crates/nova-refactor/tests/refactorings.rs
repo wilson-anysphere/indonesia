@@ -6896,6 +6896,185 @@ class Use {
 }
 
 #[test]
+fn rename_field_updates_qualified_outer_this_reference() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  int foo = 0;
+
+  class Inner {
+    int foo = 1;
+
+    int m() {
+      return foo + Outer.this.foo;
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int foo = 0").unwrap() + "int ".len() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at outer field foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("int bar = 0;"),
+        "outer field declaration should be renamed: {after}"
+    );
+    assert!(
+        after.contains("int foo = 1;"),
+        "inner field declaration should remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("return foo + Outer.this.bar;"),
+        "qualified outer field reference should be renamed: {after}"
+    );
+    assert!(
+        !after.contains("Outer.this.foo"),
+        "old qualified reference should not remain: {after}"
+    );
+}
+
+#[test]
+fn rename_method_updates_qualified_outer_this_call() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  void m() {}
+
+  class Inner {
+    void m() {}
+
+    void call() {
+      Outer.this.m();
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void m()").unwrap() + "void ".len();
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at outer method m");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "n".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("void n()"),
+        "outer method declaration should be renamed: {after}"
+    );
+    assert!(
+        after.contains("void m() {}"),
+        "inner method declaration should remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("Outer.this.n();"),
+        "qualified outer method call should be renamed: {after}"
+    );
+    assert!(
+        !after.contains("Outer.this.m();"),
+        "old qualified call should not remain: {after}"
+    );
+}
+
+#[test]
+fn rename_method_updates_qualified_outer_this_method_reference() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  void m() {}
+
+  class Inner {
+    void f() {
+      Runnable r = Outer.this::m;
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void m()").unwrap() + "void ".len();
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at outer method m");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "n".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("void n()"),
+        "outer method declaration should be renamed: {after}"
+    );
+    assert!(
+        after.contains("Outer.this::n"),
+        "qualified outer method reference should be renamed: {after}"
+    );
+    assert!(
+        !after.contains("Outer.this::m"),
+        "old qualified reference should not remain: {after}"
+    );
+}
+
+#[test]
+fn rename_method_updates_qualified_outer_super_call() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Base {
+  void foo() {}
+}
+
+class Outer extends Base {
+  class Inner {
+    void call() {
+      Outer.super.foo();
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void foo()").unwrap() + "void ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Base.foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("void bar()"));
+    assert!(after.contains("Outer.super.bar();"));
+    assert!(!after.contains("Outer.super.foo();"));
+}
+
+#[test]
 fn rename_fully_qualified_type_in_expression_updates_segment() {
     let foo_file = FileId::new("Foo.java");
     let use_file = FileId::new("Use.java");
