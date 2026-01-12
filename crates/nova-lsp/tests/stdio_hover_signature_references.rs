@@ -229,10 +229,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     );
 
     // signature help inside argument list
-    let call_offset = disk_source
-        .find("foo(1")
-        .expect("foo(1 call")
-        + "foo(".len();
+    let call_offset = disk_source.find("foo(1").expect("foo(1 call") + "foo(".len();
     let call_pos = utf16_position(disk_source, call_offset);
     write_jsonrpc_message(
         &mut stdin,

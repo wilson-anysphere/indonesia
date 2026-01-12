@@ -115,4 +115,3 @@ fn framework_analyzer_adapter_runs_on_framework_ide_database() {
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].label, "fwIdeDbHint");
 }
-

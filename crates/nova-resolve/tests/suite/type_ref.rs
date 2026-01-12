@@ -1435,17 +1435,38 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
     assert_eq!(annotated.ty, plain.ty);
 
     // Varargs: `@A String @B ...` -> `@AString@B...`
-    let plain =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@AString@B...", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String...",
+        None,
+    );
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "@AString@B...",
+        None,
+    );
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int...", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint@B...", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "@Aint@B...",
+        None,
+    );
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);

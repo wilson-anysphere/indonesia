@@ -832,7 +832,8 @@ mod tests {
 
     #[test]
     fn zip_contains_exact_respects_multi_release_and_target_release() {
-        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/multirelease.jar");
+        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/multirelease.jar");
         assert!(jar.is_file(), "fixture missing: {}", jar.display());
 
         let cancel = CancellationToken::new();
@@ -850,7 +851,8 @@ mod tests {
 
     #[test]
     fn zip_contains_prefix_respects_multi_release_and_target_release() {
-        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/multirelease.jar");
+        let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/multirelease.jar");
         assert!(jar.is_file(), "fixture missing: {}", jar.display());
 
         let cancel = CancellationToken::new();

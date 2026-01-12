@@ -530,7 +530,8 @@ pub fn extract_variable(
                 || ast::ForStatement::cast(parent).is_some())
         {
             return Err(RefactorError::ExtractNotSupported {
-                reason: "cannot extract into a single-statement control structure body without braces",
+                reason:
+                    "cannot extract into a single-statement control structure body without braces",
             });
         }
     }

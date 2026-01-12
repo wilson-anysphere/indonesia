@@ -84,4 +84,3 @@ public class C { B b; com.foo.sub.B qb; }
     assert!(c.contains("com.bar.sub.B qb;"));
     assert!(!c.contains("com.foo.sub.B"));
 }
-

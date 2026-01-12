@@ -210,7 +210,9 @@ fn qualify_field_initializer_expr(
         .filter_map(ast::NameExpression::cast)
         .filter_map(|name_expr| {
             let head = head_name_segment(name_expr.syntax())?;
-            instance_fields.contains(&head).then_some(syntax_range(name_expr.syntax()).start)
+            instance_fields
+                .contains(&head)
+                .then_some(syntax_range(name_expr.syntax()).start)
         })
         .collect();
     insertions.sort_unstable();
@@ -241,7 +243,9 @@ fn qualify_constant_initializer_expr(
         .filter_map(ast::NameExpression::cast)
         .filter_map(|name_expr| {
             let head = head_name_segment(name_expr.syntax())?;
-            static_fields.contains(&head).then_some(syntax_range(name_expr.syntax()).start)
+            static_fields
+                .contains(&head)
+                .then_some(syntax_range(name_expr.syntax()).start)
         })
         .collect();
     insertions.sort_unstable();
@@ -561,7 +565,10 @@ fn collect_static_field_names(body: &ast::ClassBody) -> HashSet<String> {
         };
         let is_static = field
             .modifiers()
-            .map(|mods| mods.keywords().any(|tok| tok.kind() == SyntaxKind::StaticKw))
+            .map(|mods| {
+                mods.keywords()
+                    .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+            })
             .unwrap_or(false);
         if !is_static {
             continue;

@@ -1587,10 +1587,7 @@ class A {}
         .expect("expected java.util.Map.Entry nested type completion in static import");
 
     let text = text_with_caret.replace("<|>", "");
-    let segment_start = text
-        .find("Map.E")
-        .expect("expected Map.E in fixture")
-        + "Map.".len();
+    let segment_start = text.find("Map.E").expect("expected Map.E in fixture") + "Map.".len();
 
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,

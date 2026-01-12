@@ -1783,7 +1783,8 @@ impl WorkspaceEngine {
         }
 
         if !exists && was_known && !open_docs.is_open(file_id) {
-            self.query_db.set_file_content(file_id, empty_file_content());
+            self.query_db
+                .set_file_content(file_id, empty_file_content());
         }
 
         self.update_project_files_membership(&vfs_path, file_id, exists);
@@ -3384,7 +3385,11 @@ mod tests {
         });
 
         engine2
-            .apply_changes(&vfs_path, 2, &[ContentChange::full("class Dirty {}".to_string())])
+            .apply_changes(
+                &vfs_path,
+                2,
+                &[ContentChange::full("class Dirty {}".to_string())],
+            )
             .unwrap();
         engine2.query_db.with_snapshot(|snap| {
             assert!(
@@ -4638,11 +4643,8 @@ mod tests {
 
         let workspace = crate::Workspace::open(root).unwrap();
         let vfs_path = VfsPath::local(file.clone());
-        let file_id = workspace.open_document(
-            vfs_path.clone(),
-            "class Main { overlay }".to_string(),
-            1,
-        );
+        let file_id =
+            workspace.open_document(vfs_path.clone(), "class Main { overlay }".to_string(), 1);
 
         fs::remove_file(&file).unwrap();
         workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(file.clone())]);
@@ -4650,7 +4652,10 @@ mod tests {
         let engine = workspace.engine_for_tests();
         engine.query_db.with_snapshot(|snap| {
             assert!(snap.file_exists(file_id));
-            assert_eq!(snap.file_content(file_id).as_str(), "class Main { overlay }");
+            assert_eq!(
+                snap.file_content(file_id).as_str(),
+                "class Main { overlay }"
+            );
         });
     }
 

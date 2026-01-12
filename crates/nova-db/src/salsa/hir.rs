@@ -72,7 +72,11 @@ fn hir_ast_id_map(db: &dyn NovaHir, file: FileId) -> Arc<AstIdMap> {
     let syntax = parse_java.syntax();
     let map = AstIdMap::new(&syntax);
     let result = Arc::new(map);
-    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::HirAstIdMap, result.estimated_bytes());
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::HirAstIdMap,
+        result.estimated_bytes(),
+    );
     db.record_query_stat("hir_ast_id_map", start.elapsed());
     result
 }

@@ -154,8 +154,10 @@ fn config_diagnostics_work_for_windows_style_paths_on_non_windows_hosts() {
 
     let diags = registry.framework_diagnostics(&db, config);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
-            && d.message.contains("unknown.key")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
+                && d.message.contains("unknown.key")),
         "expected SPRING_UNKNOWN_CONFIG_KEY for unknown.key; got {diags:?}"
     );
 }

@@ -167,7 +167,10 @@ fn maven_project_accepts_exploded_dependency_directory_as_classpath_dir() {
     let tmp_repo = tempfile::tempdir().expect("tempdir maven repo");
     let expected_jar_dir = tmp_repo.path().join("com/example/dep/1.0/dep-1.0.jar");
     fs::create_dir_all(&expected_jar_dir).expect("mkdir exploded jar dir");
-    assert!(expected_jar_dir.is_dir(), "expected jar path to be a directory");
+    assert!(
+        expected_jar_dir.is_dir(),
+        "expected jar path to be a directory"
+    );
 
     let options = LoadOptions {
         maven_repo: Some(tmp_repo.path().to_path_buf()),
@@ -224,7 +227,10 @@ fn maven_workspace_model_accepts_exploded_dependency_directory_as_classpath_dir(
     let tmp_repo = tempfile::tempdir().expect("tempdir maven repo");
     let expected_jar_dir = tmp_repo.path().join("com/example/dep/1.0/dep-1.0.jar");
     fs::create_dir_all(&expected_jar_dir).expect("mkdir exploded jar dir");
-    assert!(expected_jar_dir.is_dir(), "expected jar path to be a directory");
+    assert!(
+        expected_jar_dir.is_dir(),
+        "expected jar path to be a directory"
+    );
 
     let options = LoadOptions {
         maven_repo: Some(tmp_repo.path().to_path_buf()),

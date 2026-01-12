@@ -485,7 +485,9 @@ impl SalsaInputFootprint {
             content_len: content.len() as u64,
             prev_content_ptr: Arc::as_ptr(prev_content) as usize,
             prev_content_len: prev_content.len() as u64,
-            last_edit_len: last_edit.map(|edit| edit.replacement.len() as u64).unwrap_or(0),
+            last_edit_len: last_edit
+                .map(|edit| edit.replacement.len() as u64)
+                .unwrap_or(0),
         };
 
         let mut inner = self.lock_inner();
@@ -3823,7 +3825,10 @@ class Foo {
         db.set_file_text(file, "abc");
         let rel_path_bytes = format!("file-{}.java", file.to_raw()).len() as u64;
         let project_files_bytes = std::mem::size_of::<FileId>() as u64;
-        assert_eq!(manager.report().usage.other, 3 + rel_path_bytes + project_files_bytes);
+        assert_eq!(
+            manager.report().usage.other,
+            3 + rel_path_bytes + project_files_bytes
+        );
 
         let edit = nova_core::TextEdit::new(
             nova_core::TextRange::new(nova_core::TextSize::from(1), nova_core::TextSize::from(2)),
@@ -3833,7 +3838,7 @@ class Foo {
 
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
         // Incremental parse metadata keeps the previous text snapshot and the edit replacement.
-        let expected = (6 /* new file_content */ + 3 /* file_prev_content */ + 4 /* replacement */)
+        let expected = (6 /* new file_content */ + 3 /* file_prev_content */ + 4/* replacement */)
             + rel_path_bytes
             + project_files_bytes;
         assert_eq!(manager.report().usage.other, expected);

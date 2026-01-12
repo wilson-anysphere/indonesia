@@ -17,7 +17,9 @@ impl OnRemoveCallback {
 
 impl std::fmt::Debug for OnRemoveCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("OnRemoveCallback").field(&"<callback>").finish()
+        f.debug_tuple("OnRemoveCallback")
+            .field(&"<callback>")
+            .finish()
     }
 }
 

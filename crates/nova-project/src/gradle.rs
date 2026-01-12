@@ -1293,9 +1293,7 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
                 .checked_sub(1)
                 .and_then(|idx| bytes.get(idx))
                 .is_some_and(|b| is_word_byte(*b));
-            let next_is_word = bytes
-                .get(i + kw.len())
-                .is_some_and(|b| is_word_byte(*b));
+            let next_is_word = bytes.get(i + kw.len()).is_some_and(|b| is_word_byte(*b));
             if !prev_is_word && !next_is_word {
                 out.push(i);
                 i += kw.len();

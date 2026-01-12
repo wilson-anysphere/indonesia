@@ -5061,8 +5061,11 @@ fn method_reference_completions(
 
             match call_kind {
                 CallKind::Instance => {
-                    let instance: Vec<&MethodDef> =
-                        candidates.iter().copied().filter(|m| !m.is_static).collect();
+                    let instance: Vec<&MethodDef> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|m| !m.is_static)
+                        .collect();
                     if !instance.is_empty() {
                         candidates = instance;
                     }
@@ -6462,12 +6465,9 @@ fn maybe_add_smart_constructor_completions(
 
     match expected_def.kind {
         ClassKind::Class => {
-            if let Some(item) = smart_constructor_completion_item(
-                env_types,
-                expected_id,
-                &expected_detail,
-                prefix,
-            ) {
+            if let Some(item) =
+                smart_constructor_completion_item(env_types, expected_id, &expected_detail, prefix)
+            {
                 items.push(item);
             }
         }
@@ -6631,7 +6631,11 @@ fn smart_constructor_completion_item(
     }
 
     let simple = java_simple_name(&class_def.name);
-    if !prefix.is_empty() && !simple.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+    if !prefix.is_empty()
+        && !simple
+            .to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+    {
         return None;
     }
 

@@ -21,7 +21,10 @@ const JPMS_COMPILER_FLAG_NEEDLES: [&str; 12] = [
 pub(crate) fn compiler_arg_looks_like_jpms(arg: &str) -> bool {
     let arg = arg.trim();
     JPMS_COMPILER_FLAG_NEEDLES.iter().any(|flag| {
-        arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+        arg == *flag
+            || arg
+                .strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
     })
 }
 
@@ -300,14 +303,20 @@ mod tests {
 
     #[test]
     fn compiler_args_looks_like_jpms_handles_short_and_long_flags() {
-        assert!(compiler_args_looks_like_jpms(&["--module-path".to_string()]));
-        assert!(compiler_args_looks_like_jpms(&["--module-path=/tmp".to_string()]));
+        assert!(compiler_args_looks_like_jpms(
+            &["--module-path".to_string()]
+        ));
+        assert!(compiler_args_looks_like_jpms(&[
+            "--module-path=/tmp".to_string()
+        ]));
         assert!(compiler_args_looks_like_jpms(&["-p".to_string()]));
 
         assert!(compiler_args_looks_like_jpms(&["--module".to_string()]));
         assert!(compiler_args_looks_like_jpms(&["-m".to_string()]));
 
-        assert!(!compiler_args_looks_like_jpms(&["-processorpath".to_string()]));
+        assert!(!compiler_args_looks_like_jpms(&[
+            "-processorpath".to_string()
+        ]));
     }
 
     #[test]

@@ -1808,7 +1808,9 @@ fn resolve_member_in_type(
     }
     if accept_methods {
         if let Some(methods) = ty.methods.get(&name) {
-            return methods.first().map(|method| ResolutionKey::Method(method.id));
+            return methods
+                .first()
+                .map(|method| ResolutionKey::Method(method.id));
         }
     }
     None
@@ -1884,11 +1886,9 @@ fn process_name_expression(
         NameExprContext::MethodCallee => {
             // `foo()` or `Type.foo()`.
             if segments.len() == 1 {
-                let Some(resolved) = resolver.resolve_method_name(
-                    scopes,
-                    scope,
-                    &Name::from(last_name.as_str()),
-                ) else {
+                let Some(resolved) =
+                    resolver.resolve_method_name(scopes, scope, &Name::from(last_name.as_str()))
+                else {
                     return;
                 };
                 let method = match resolved {

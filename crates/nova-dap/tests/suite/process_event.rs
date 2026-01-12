@@ -251,7 +251,10 @@ async fn dap_attach_emits_process_event() {
         body.get("isLocalProcess").and_then(|v| v.as_bool()),
         Some(true)
     );
-    assert_eq!(body.get("startMethod").and_then(|v| v.as_str()), Some("attach"));
+    assert_eq!(
+        body.get("startMethod").and_then(|v| v.as_str()),
+        Some("attach")
+    );
     assert!(
         body.get("systemProcessId").is_none(),
         "attach process event should not include systemProcessId"

@@ -282,7 +282,8 @@ impl SymbolSearchIndex {
 
             // Keep at most `limit` matches while scoring candidates, to avoid large
             // allocations and O(n log n) sorts for short queries.
-            let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::with_capacity(limit);
+            let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> =
+                BinaryHeap::with_capacity(limit);
             let mut matcher = FuzzyMatcher::new(query);
 
             let mut push_scored = |id: SymbolId, score: MatchScore| {
@@ -832,10 +833,7 @@ mod tests {
 
         // Baseline: always score both fields and pick the best. When the
         // strings are equal, this should match the optimized path.
-        assert_eq!(
-            Some(results[0].score),
-            baseline_best_score("fb", &symbol)
-        );
+        assert_eq!(Some(results[0].score), baseline_best_score("fb", &symbol));
     }
 
     #[test]
@@ -858,10 +856,7 @@ mod tests {
         // and should win the prefix score tie-break.
         let results = index.search("Foo", 10);
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            Some(results[0].score),
-            baseline_best_score("Foo", &symbol)
-        );
+        assert_eq!(Some(results[0].score), baseline_best_score("Foo", &symbol));
     }
 
     #[test]
@@ -874,10 +869,7 @@ mod tests {
         // still preserve the baseline best-of behavior.
         let results = index.search("Foo", 10);
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            Some(results[0].score),
-            baseline_best_score("Foo", &symbol)
-        );
+        assert_eq!(Some(results[0].score), baseline_best_score("Foo", &symbol));
     }
 
     #[test]

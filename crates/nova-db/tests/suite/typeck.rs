@@ -1010,7 +1010,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("base")),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("base")),
         "expected Base.base() call to resolve, got {diags:?}"
     );
 
@@ -1393,7 +1395,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected `new Object()` to resolve its implicit no-arg constructor; got {diags:?}"
     );
 }
@@ -3139,9 +3143,11 @@ class C { double m(){ return PI; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
-            && d.code.as_ref() != "unresolved-field"
-            && d.code.as_ref() != "unresolved-name"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-static-member"
+                && d.code.as_ref() != "unresolved-field"
+                && d.code.as_ref() != "unresolved-name"),
         "expected Math.* static star import to provide PI; got {diags:?}"
     );
 

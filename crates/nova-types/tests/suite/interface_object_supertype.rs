@@ -1,6 +1,6 @@
 use nova_types::{
-    resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodResolution, TyContext,
-    PrimitiveType, Type, TypeEnv, TypeStore,
+    resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodResolution,
+    PrimitiveType, TyContext, Type, TypeEnv, TypeStore,
 };
 
 use pretty_assertions::assert_eq;

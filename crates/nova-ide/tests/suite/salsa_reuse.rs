@@ -160,9 +160,7 @@ fn file_diagnostics_reuse_caller_provided_salsa_database_for_imports() {
 
     let diags = nova_ide::file_diagnostics(&db, file_b);
     assert!(
-        !diags
-            .iter()
-            .any(|d| d.code.as_ref() == "unresolved-import"),
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
         "expected import to resolve using caller-provided Salsa DB; got diagnostics: {diags:#?}"
     );
 }

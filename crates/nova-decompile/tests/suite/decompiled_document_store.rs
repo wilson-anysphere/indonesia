@@ -80,7 +80,9 @@ fn load_document_is_miss_and_deletes_oversized_metadata() {
     let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let binary_name = "com.example.Foo";
 
-    store.store_text(content_hash, binary_name, "hello").unwrap();
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .unwrap();
 
     let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
     let meta_path = temp
@@ -97,7 +99,10 @@ fn load_document_is_miss_and_deletes_oversized_metadata() {
     assert!(loaded.is_none());
     assert!(!meta_path.exists(), "oversized metadata should be deleted");
     assert_eq!(
-        store.load_text(content_hash, binary_name).unwrap().as_deref(),
+        store
+            .load_text(content_hash, binary_name)
+            .unwrap()
+            .as_deref(),
         Some("hello"),
         "text entry should remain present"
     );
@@ -114,7 +119,9 @@ fn load_document_is_miss_and_deletes_symlinked_metadata() {
     let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let binary_name = "com.example.Foo";
 
-    store.store_text(content_hash, binary_name, "hello").unwrap();
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .unwrap();
 
     let outside = TempDir::new().unwrap();
     let target = outside.path().join("outside.meta.json");
@@ -143,7 +150,9 @@ fn load_document_is_miss_and_deletes_hardlinked_metadata() {
     let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let binary_name = "com.example.Foo";
 
-    store.store_text(content_hash, binary_name, "hello").unwrap();
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .unwrap();
 
     let outside = TempDir::new().unwrap();
     let target = outside.path().join("outside.meta.json");
@@ -371,7 +380,10 @@ fn exists_rejects_oversized_entries_and_deletes_them() {
     drop(file);
 
     assert!(!store.exists(content_hash, binary_name));
-    assert!(!path.exists(), "oversize cache file should be deleted by exists()");
+    assert!(
+        !path.exists(),
+        "oversize cache file should be deleted by exists()"
+    );
 }
 
 #[test]
@@ -393,7 +405,10 @@ fn exists_rejects_non_file_entries_and_deletes_them() {
 
     assert!(path.is_dir());
     assert!(!store.exists(content_hash, binary_name));
-    assert!(!path.exists(), "directory cache entry should be deleted by exists()");
+    assert!(
+        !path.exists(),
+        "directory cache entry should be deleted by exists()"
+    );
 }
 
 #[test]
@@ -485,7 +500,10 @@ fn hard_link_entries_are_treated_as_cache_miss_and_deleted() {
     let loaded = store.load_text(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
     assert!(!path.exists(), "hard link should be deleted");
-    assert!(target.exists(), "target outside the store must not be deleted");
+    assert!(
+        target.exists(),
+        "target outside the store must not be deleted"
+    );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "evil");
 }
 

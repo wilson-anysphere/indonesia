@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nova_core::SymbolId;
-use nova_fuzzy::{FuzzyMatcher, TrigramCandidateScratch, TrigramIndexBuilder};
 #[cfg(feature = "unicode")]
 use nova_fuzzy::RankKey;
+use nova_fuzzy::{FuzzyMatcher, TrigramCandidateScratch, TrigramIndexBuilder};
 
 fn configure_rayon() {
     // Criterion uses Rayon internally for statistics. On constrained CI hosts we can fail to spawn
