@@ -280,15 +280,15 @@ pub(crate) fn load_gradle_project(
         .map(|name| root.join(name))
         .find(|p| p.is_file());
 
-    let mut module_names = if let Some(settings_path) = settings_path.as_ref() {
+    let mut module_refs = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
             std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
                 source,
             })?;
-        parse_gradle_settings_modules(&contents)
+        parse_gradle_settings_projects(&contents)
     } else {
-        vec![".".to_string()]
+        vec![GradleModuleRef::root()]
     };
 
     // When a Gradle workspace defines subprojects in `settings.gradle(.kts)`, we usually treat the
@@ -297,9 +297,9 @@ pub(crate) fn load_gradle_project(
     // module too. For determinism, we always put the root module first.
     if settings_path.is_some()
         && root_project_has_sources(root)
-        && !module_names.iter().any(|name| name == ".")
+        && !module_refs.iter().any(|module| module.dir_rel == ".")
     {
-        module_names.insert(0, ".".to_string());
+        module_refs.insert(0, GradleModuleRef::root());
     }
 
     let snapshot = load_gradle_snapshot(root);
@@ -343,27 +343,26 @@ pub(crate) fn load_gradle_project(
     }
     let version_catalog = load_gradle_version_catalog(root);
 
-    for module_name in module_names {
-        let project_path = if module_name == "." {
-            ":".to_string()
-        } else {
-            format!(":{}", module_name.replace('/', ":"))
-        };
+    for module_ref in module_refs {
+        let project_path = &module_ref.project_path;
 
-        let module_root = if module_name == "." {
+        let module_root = if module_ref.dir_rel == "." {
             root.to_path_buf()
-        } else if let Some(dir) = snapshot_project_dirs.get(&project_path) {
+        } else if let Some(dir) = snapshot_project_dirs.get(project_path) {
             dir.clone()
         } else {
-            root.join(&module_name)
+            root.join(&module_ref.dir_rel)
         };
-        let module_display_name = if module_name == "." {
+        let module_display_name = if module_ref.dir_rel == "." {
             root.file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("root")
                 .to_string()
         } else {
-            module_name.clone()
+            module_ref
+                .project_path
+                .trim_start_matches(':')
+                .replace(':', "/")
         };
 
         modules.push(Module {
@@ -374,7 +373,7 @@ pub(crate) fn load_gradle_project(
 
         if let Some(cfg) = snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.java_compile_configs.get(&project_path))
+            .and_then(|snapshot| snapshot.java_compile_configs.get(project_path))
         {
             for src_root in &cfg.main_source_roots {
                 let path = resolve_snapshot_project_dir(root, src_root);
@@ -927,14 +926,6 @@ pub(crate) fn load_gradle_workspace_model(
         module_configs,
         jpms_modules,
     ))
-}
-
-fn parse_gradle_settings_modules(contents: &str) -> Vec<String> {
-    // `ProjectConfig` module roots are directory-relative; reuse the more robust project parser.
-    parse_gradle_settings_projects(contents)
-        .into_iter()
-        .map(|m| m.dir_rel)
-        .collect()
 }
 
 #[derive(Debug, Clone)]

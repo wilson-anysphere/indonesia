@@ -349,6 +349,42 @@ fn loads_gradle_multi_module_workspace_includes_root_project_when_it_has_sources
 }
 
 #[test]
+fn loads_gradle_includeflat_workspace() {
+    let root = testdata_path("gradle-includeflat/root");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    assert!(
+        config
+            .modules
+            .iter()
+            .any(|m| m.root == config.workspace_root.join("../app")),
+        "expected includeFlat module root to resolve to ../app"
+    );
+
+    let roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("../app/src/main/java"))));
+}
+
+#[test]
 fn loads_gradle_projectdir_mapping_workspace() {
     let root = testdata_path("gradle-projectdir-mapping");
     let gradle_home = tempdir().expect("tempdir");
