@@ -249,19 +249,37 @@ pub struct ManualFileWatcherHandle {
     tx: channel::Sender<WatchMessage>,
 }
 
+const MANUAL_WATCH_QUEUE_CAPACITY: usize = 1024;
+
 impl ManualFileWatcherHandle {
     /// Inject a synthetic watcher event.
     pub fn push(&self, event: WatchEvent) -> io::Result<()> {
-        self.tx
-            .send(Ok(event))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+        match self.tx.try_send(Ok(event)) {
+            Ok(()) => Ok(()),
+            Err(channel::TrySendError::Full(_)) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "watch queue is full",
+            )),
+            Err(channel::TrySendError::Disconnected(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "watch receiver dropped",
+            )),
+        }
     }
 
     /// Inject an asynchronous watcher error.
     pub fn push_error(&self, error: io::Error) -> io::Result<()> {
-        self.tx
-            .send(Err(error))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+        match self.tx.try_send(Err(error)) {
+            Ok(()) => Ok(()),
+            Err(channel::TrySendError::Full(_)) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "watch queue is full",
+            )),
+            Err(channel::TrySendError::Disconnected(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "watch receiver dropped",
+            )),
+        }
     }
 }
 
@@ -273,7 +291,7 @@ impl Default for ManualFileWatcher {
 
 impl ManualFileWatcher {
     pub fn new() -> Self {
-        let (tx, rx) = channel::unbounded();
+        let (tx, rx) = channel::bounded(MANUAL_WATCH_QUEUE_CAPACITY);
         Self {
             tx,
             rx,

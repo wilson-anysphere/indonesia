@@ -179,9 +179,9 @@ pub(crate) fn load_maven_project(
                     // Maven dependency artifacts are typically jar files, but some build systems
                     // (and test fixtures) can "explode" jars into directories (often still ending
                     // with `.jar`). Treat existing directories as directories.
-                    //
                     // Missing artifacts are omitted so downstream JPMS/classpath indexing doesn't
-                    // fail trying to open non-existent archives.
+                    // fail trying to open non-existent archives (see
+                    // `tests/cases/maven_missing_jars.rs`).
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
