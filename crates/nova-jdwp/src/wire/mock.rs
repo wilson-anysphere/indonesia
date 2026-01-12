@@ -854,6 +854,11 @@ const SMART_STEP_CORGE_METHOD_ID: u64 = 0x4006;
 const SMART_STEP_FOO_METHOD_ID: u64 = 0x4007;
 const SMART_STEP_TRIM_METHOD_ID: u64 = 0x4008;
 pub const DEFINED_STAGE0_METHOD_ID: u64 = 0x4009;
+// The mock JDWP server does not validate bytecode for injected helper classes. The wire-level
+// stream debugger relies on the helper exposing `stage0..stageN` methods (plus an optional
+// `terminal`) so tests can exercise the compile+inject pipeline without requiring a system JDK.
+const DEFINED_STAGE_METHOD_COUNT: u32 = 64;
+const DEFINED_TERMINAL_METHOD_ID: u64 = DEFINED_STAGE0_METHOD_ID + DEFINED_STAGE_METHOD_COUNT as u64;
 const SMART_STEP_METHOD_IDS: [u64; 6] = [
     SMART_STEP_BAR_METHOD_ID,
     SMART_STEP_QUX_METHOD_ID,
@@ -970,6 +975,46 @@ fn jdwp_value_tag(value: &JdwpValue) -> u8 {
         JdwpValue::Object { tag, .. } => tag,
         JdwpValue::Void => b'V',
     }
+}
+
+fn invoke_method_return_value(method_id: MethodId, args: &[JdwpValue]) -> JdwpValue {
+    let Some(first) = args.first().cloned() else {
+        return JdwpValue::Void;
+    };
+
+    // Keep legacy mock behavior: most invoke-method calls just echo the first argument so tests can
+    // easily assert round-trips.
+    if method_id == METHOD_ID {
+        return first;
+    }
+
+    // `wire_stream_eval` tests define a class and invoke `stage0` with a single argument. Preserve
+    // the "echo" semantics for that specific case so the test can verify the JDWP plumbing.
+    if method_id == DEFINED_STAGE0_METHOD_ID && args.len() == 1 {
+        return first;
+    }
+
+    // Stream-debug helper stage methods return a list-like object so the runtime can expand it via
+    // `Inspector::object_children`, which triggers `ArrayReference.GetValues` calls (used by
+    // deadlock/cancellation tests).
+    let stage_end = DEFINED_STAGE0_METHOD_ID + DEFINED_STAGE_METHOD_COUNT as u64;
+    if (DEFINED_STAGE0_METHOD_ID..stage_end).contains(&method_id) {
+        return JdwpValue::Object {
+            tag: b'L',
+            id: SAMPLE_ARRAYLIST_OBJECT_ID,
+        };
+    }
+
+    // Terminal result: return something stable and primitive-like.
+    if method_id == DEFINED_TERMINAL_METHOD_ID {
+        return JdwpValue::Long(3);
+    }
+
+    if method_id == DEFINED_CLASS_PING_METHOD_ID {
+        return first;
+    }
+
+    first
 }
 
 async fn run(
@@ -1103,28 +1148,28 @@ async fn handle_packet(
             // default handler if needed.
             let mut invoke_r = JdwpReader::new(&packet.payload);
             let parsed = (|| {
-                let thread_id = match (packet.command_set, packet.command) {
+                let (thread_id, method_id) = match (packet.command_set, packet.command) {
                     // ObjectReference.InvokeMethod
                     (9, 6) => {
                         let _object_id = invoke_r.read_object_id(sizes)?;
                         let thread_id = invoke_r.read_object_id(sizes)?;
                         let _class_id = invoke_r.read_reference_type_id(sizes)?;
-                        let _method_id = invoke_r.read_id(sizes.method_id)?;
-                        thread_id
+                        let method_id = invoke_r.read_id(sizes.method_id)?;
+                        (thread_id, method_id)
                     }
                     // ClassType.InvokeMethod
                     (3, 3) => {
                         let _class_id = invoke_r.read_reference_type_id(sizes)?;
                         let thread_id = invoke_r.read_object_id(sizes)?;
-                        let _method_id = invoke_r.read_id(sizes.method_id)?;
-                        thread_id
+                        let method_id = invoke_r.read_id(sizes.method_id)?;
+                        (thread_id, method_id)
                     }
                     // InterfaceType.InvokeMethod
                     (5, 1) => {
                         let _interface_id = invoke_r.read_reference_type_id(sizes)?;
                         let thread_id = invoke_r.read_object_id(sizes)?;
-                        let _method_id = invoke_r.read_id(sizes.method_id)?;
-                        thread_id
+                        let method_id = invoke_r.read_id(sizes.method_id)?;
+                        (thread_id, method_id)
                     }
                     _ => unreachable!("unexpected invoke-method command"),
                 };
@@ -1134,10 +1179,10 @@ async fn handle_packet(
                     args.push(invoke_r.read_tagged_value(sizes)?);
                 }
                 let _options = invoke_r.read_u32()?;
-                Ok::<_, super::types::JdwpError>((thread_id, args))
+                Ok::<_, super::types::JdwpError>((thread_id, method_id, args))
             })();
 
-            if let Ok((thread_id, args)) = parsed {
+            if let Ok((thread_id, method_id, args)) = parsed {
                 if state.take_invoke_method_breakpoint_event() {
                     // Emit a breakpoint event packet.
                     let suspend_policy = breakpoint_suspend_policy.unwrap_or(1);
@@ -1153,7 +1198,7 @@ async fn handle_packet(
                     let event_packet = encode_command(packet_id, 64, 100, &payload);
 
                     // Queue the invoke reply to be delivered after a ThreadReference.Resume.
-                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let return_value = invoke_method_return_value(method_id, &args);
                     let mut reply_w = JdwpWriter::new();
                     reply_w.write_tagged_value(&return_value, sizes);
                     // JDWP spec: `exception` is a tagged object id.
@@ -1808,10 +1853,20 @@ async fn handle_packet(
             let mut w = JdwpWriter::new();
             match class_id {
                 DEFINED_CLASS_ID => {
-                    w.write_u32(2);
+                    // Stream-eval helpers expose `stage0..stageN` methods (and optionally a
+                    // `terminal`). The mock does not validate bytecode, but still needs to expose
+                    // method metadata so the wire-level stream debugger can resolve method IDs.
+                    w.write_u32(DEFINED_STAGE_METHOD_COUNT + 2); // stages + terminal + ping
 
-                    w.write_id(DEFINED_STAGE0_METHOD_ID, sizes.method_id);
-                    w.write_string("stage0");
+                    for idx in 0..DEFINED_STAGE_METHOD_COUNT {
+                        w.write_id(DEFINED_STAGE0_METHOD_ID + idx as u64, sizes.method_id);
+                        w.write_string(&format!("stage{idx}"));
+                        w.write_string("()Ljava/lang/Object;");
+                        w.write_u32(1);
+                    }
+
+                    w.write_id(DEFINED_TERMINAL_METHOD_ID, sizes.method_id);
+                    w.write_string("terminal");
                     w.write_string("()Ljava/lang/Object;");
                     w.write_u32(1);
 
@@ -2362,19 +2417,19 @@ async fn handle_packet(
                 let _object_id = r.read_object_id(sizes)?;
                 let _thread_id = r.read_object_id(sizes)?;
                 let _class_id = r.read_reference_type_id(sizes)?;
-                let _method_id = r.read_id(sizes.method_id)?;
+                let method_id = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
                 let _options = r.read_u32()?;
-                Ok::<_, super::types::JdwpError>(args)
+                Ok::<_, super::types::JdwpError>((method_id, args))
             })();
 
             match res {
-                Ok(args) => {
-                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                Ok((method_id, args)) => {
+                    let return_value = invoke_method_return_value(method_id, &args);
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
                     w.write_tagged_object_id(b'L', 0, sizes); // exception
@@ -2925,7 +2980,7 @@ async fn handle_packet(
                         }
                     }
 
-                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let return_value = invoke_method_return_value(method_id, &args);
                     state.class_type_invoke_method_calls.lock().await.push(
                         ClassTypeInvokeMethodCall {
                             class_id,
@@ -3039,7 +3094,7 @@ async fn handle_packet(
 
             match res {
                 Ok((interface_id, thread, method_id, args, options)) => {
-                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let return_value = invoke_method_return_value(method_id, &args);
                     state.interface_type_invoke_method_calls.lock().await.push(
                         InterfaceTypeInvokeMethodCall {
                             interface_id,

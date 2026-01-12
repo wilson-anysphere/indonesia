@@ -46,20 +46,6 @@ pub(crate) struct FunctionBreakpointSpec {
     pub log_message: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct RequestedBreakpoint {
-    id: i64,
-    spec: BreakpointSpec,
-    verified: bool,
-}
-
-#[derive(Debug, Clone)]
-struct RequestedFunctionBreakpoint {
-    id: i64,
-    spec: FunctionBreakpointSpec,
-    verified: bool,
-}
-
 /// Internal representation of a DAP `DataBreakpoint` (watchpoint).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,15 +270,19 @@ pub struct Debugger {
     objects: ObjectRegistry,
     internal_eval_threads: Arc<StdMutex<HashSet<ThreadId>>>,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
-    requested_breakpoints: HashMap<String, Vec<RequestedBreakpoint>>,
-    function_breakpoints: Vec<BreakpointEntry>,
-    requested_function_breakpoints: Vec<RequestedFunctionBreakpoint>,
-    /// Next ID to assign to a DAP `Breakpoint`.
+    requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    /// Tracks source breakpoints that were returned as unverified because the class was not yet
+    /// loaded.
     ///
-    /// DAP breakpoint IDs are opaque to the client. We generate stable IDs so we can later emit a
-    /// DAP `breakpoint` event when a deferred breakpoint becomes verified (e.g. after a
-    /// `ClassPrepare` event).
-    next_breakpoint_id: i64,
+    /// When we later observe a JDWP `ClassPrepare` for the corresponding class, we attempt to
+    /// install the pending breakpoints. Successful installs are surfaced to the DAP client via
+    /// `breakpoint` events (see [`Debugger::take_breakpoint_updates`]).
+    pending_breakpoints: HashMap<String, HashSet<i32>>,
+    function_breakpoints: Vec<BreakpointEntry>,
+    requested_function_breakpoints: Vec<FunctionBreakpointSpec>,
+    /// Tracks function breakpoints that were returned as unverified because the class was not yet
+    /// loaded.
+    pending_function_breakpoints: HashSet<String>,
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     /// Pending DAP breakpoint updates emitted after deferred installation (class prepare).
     ///
@@ -437,9 +427,10 @@ impl Debugger {
             internal_eval_threads: Arc::new(StdMutex::new(HashSet::new())),
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
+            pending_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
             requested_function_breakpoints: Vec::new(),
-            next_breakpoint_id: 1,
+            pending_function_breakpoints: HashSet::new(),
             breakpoint_metadata: HashMap::new(),
             breakpoint_updates: Vec::new(),
             class_prepare_request: None,
@@ -557,12 +548,6 @@ impl Debugger {
         self.breakpoint_metadata
             .get(&request_id)
             .is_some_and(|meta| meta.log_message.is_some())
-    }
-
-    fn alloc_breakpoint_id(&mut self) -> i64 {
-        let id = self.next_breakpoint_id;
-        self.next_breakpoint_id += 1;
-        id
     }
 
     /// Drain any pending "breakpoint became verified" updates recorded during class-prepare
@@ -1185,8 +1170,11 @@ impl Debugger {
         };
         let file = file_key.clone();
 
+        // Clear any pending markers from prior `setBreakpoints` calls; if we still can't resolve
+        // classes after this call we'll re-populate it below.
+        self.pending_breakpoints.remove(&file);
+
         struct BreakpointRequest {
-            id: i64,
             requested_line: i32,
             spec: BreakpointSpec,
         }
@@ -1216,18 +1204,17 @@ impl Debugger {
         let requests: Vec<BreakpointRequest> = breakpoints
             .into_iter()
             .zip(resolved_lines.into_iter())
-            .map(|(bp, resolved_line)| {
-                let id = self.alloc_breakpoint_id();
-                BreakpointRequest {
-                    id,
-                    requested_line: bp.line,
-                    spec: BreakpointSpec {
-                        line: resolved_line,
-                        ..bp
-                    },
-                }
+            .map(|(bp, resolved_line)| BreakpointRequest {
+                requested_line: bp.line,
+                spec: BreakpointSpec {
+                    line: resolved_line,
+                    ..bp
+                },
             })
             .collect();
+
+        let resolved_breakpoints: Vec<BreakpointSpec> =
+            requests.iter().map(|req| req.spec.clone()).collect();
 
         if let Some(existing) = self.breakpoints.remove(&file_key) {
             for bp in existing {
@@ -1240,11 +1227,12 @@ impl Debugger {
 
         if requests.is_empty() {
             self.requested_breakpoints.remove(&file);
-            return Ok(Vec::new());
+        } else {
+            self.requested_breakpoints
+                .insert(file.clone(), resolved_breakpoints);
         }
 
         let mut results = Vec::with_capacity(requests.len());
-        let mut requested_out = Vec::with_capacity(requests.len());
 
         // Best-effort: attempt to apply now for already-loaded classes.
         let classes = cancellable_jdwp(cancel, self.jdwp.all_classes()).await?;
@@ -1278,20 +1266,18 @@ impl Debugger {
         }
 
         if class_candidates.is_empty() {
-            for req in requests {
-                requested_out.push(RequestedBreakpoint {
-                    id: req.id,
-                    spec: req.spec.clone(),
-                    verified: false,
-                });
-                results.push(json!({
-                    "verified": false,
-                    "id": req.id,
-                    "line": req.spec.line,
-                    "message": "class not loaded yet"
-                }));
+            if !requests.is_empty() {
+                let pending_lines: HashSet<i32> =
+                    requests.iter().map(|req| req.spec.line).collect();
+                if !pending_lines.is_empty() {
+                    self.pending_breakpoints.insert(file.clone(), pending_lines);
+                }
             }
-            self.requested_breakpoints.insert(file.clone(), requested_out);
+            for req in requests {
+                results.push(
+                    json!({"verified": false, "line": req.spec.line, "message": "class not loaded yet"}),
+                );
+            }
             return Ok(results);
         }
 
@@ -1301,9 +1287,9 @@ impl Debugger {
             check_cancel(cancel)?;
             let spec_line = req.spec.line;
             let _requested_line = req.requested_line;
-            let condition = normalize_breakpoint_string(req.spec.condition.clone());
-            let mut hit_condition = normalize_breakpoint_string(req.spec.hit_condition.clone());
-            let log_message = normalize_breakpoint_string(req.spec.log_message.clone());
+            let condition = normalize_breakpoint_string(req.spec.condition);
+            let mut hit_condition = normalize_breakpoint_string(req.spec.hit_condition);
+            let log_message = normalize_breakpoint_string(req.spec.log_message);
 
             let count_modifier = hit_condition
                 .as_deref()
@@ -1322,6 +1308,7 @@ impl Debugger {
             };
 
             let mut verified = false;
+            let mut first_request_id: Option<i32> = None;
             let mut last_error: Option<String> = None;
             let mut saw_location = false;
             let mut first_resolved_line = None;
@@ -1348,6 +1335,7 @@ impl Debugger {
                             Ok(request_id) => {
                                 verified = true;
                                 verified_resolved_line.get_or_insert(resolved.line);
+                                first_request_id.get_or_insert(request_id);
 
                                 all_entries.push(BreakpointEntry { request_id });
                                 self.breakpoint_metadata.insert(
@@ -1378,46 +1366,25 @@ impl Debugger {
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
                 obj.insert("line".to_string(), json!(line));
-                obj.insert("id".to_string(), json!(req.id));
+                if let Some(id) = first_request_id {
+                    obj.insert("id".to_string(), json!(id));
+                }
                 results.push(Value::Object(obj));
-                let mut stored_spec = req.spec.clone();
-                stored_spec.line = line;
-                requested_out.push(RequestedBreakpoint {
-                    id: req.id,
-                    spec: stored_spec,
-                    verified: true,
-                });
             } else if saw_location {
                 let line = first_resolved_line.unwrap_or(spec_line);
                 results.push(json!({
                     "verified": false,
-                    "id": req.id,
                     "line": line,
                     "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
                 }));
-                let mut stored_spec = req.spec.clone();
-                stored_spec.line = line;
-                requested_out.push(RequestedBreakpoint {
-                    id: req.id,
-                    spec: stored_spec,
-                    verified: false,
-                });
             } else {
                 results.push(json!({
                     "verified": false,
-                    "id": req.id,
                     "line": spec_line,
                     "message": "no executable code at this line"
                 }));
-                requested_out.push(RequestedBreakpoint {
-                    id: req.id,
-                    spec: req.spec.clone(),
-                    verified: false,
-                });
             }
         }
-
-        self.requested_breakpoints.insert(file.clone(), requested_out);
 
         if !all_entries.is_empty() {
             self.breakpoints.insert(file.clone(), all_entries);
@@ -1433,6 +1400,9 @@ impl Debugger {
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
 
+        // Reset pending markers for this setFunctionBreakpoints call.
+        self.pending_function_breakpoints.clear();
+
         // Clear existing function breakpoints.
         let existing = std::mem::take(&mut self.function_breakpoints);
         for bp in existing {
@@ -1441,38 +1411,26 @@ impl Debugger {
             self.breakpoint_metadata.remove(&bp.request_id);
         }
 
-        let mut results = Vec::with_capacity(breakpoints.len());
-        let mut requested_out = Vec::with_capacity(breakpoints.len());
-        let mut all_entries = Vec::new();
-
         if breakpoints.is_empty() {
             self.requested_function_breakpoints.clear();
-            return Ok(results);
+        } else {
+            self.requested_function_breakpoints = breakpoints.clone();
         }
 
-        for mut bp in breakpoints {
+        let mut results = Vec::with_capacity(breakpoints.len());
+        let mut all_entries = Vec::new();
+
+        for bp in breakpoints {
             check_cancel(cancel)?;
-            let id = self.alloc_breakpoint_id();
             let spec_name = bp.name.trim().to_string();
             if spec_name.is_empty() {
-                results.push(json!({
-                    "verified": false,
-                    "id": id,
-                    "message": "function breakpoint name must not be empty"
-                }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
+                results.push(json!({"verified": false, "message": "function breakpoint name must not be empty"}));
                 continue;
             }
-            // Canonicalize for matching and avoid repeated trimming in class-prepare hooks.
-            bp.name = spec_name.clone();
 
-            let condition = normalize_breakpoint_string(bp.condition.clone());
-            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition.clone());
-            let log_message = normalize_breakpoint_string(bp.log_message.clone());
+            let condition = normalize_breakpoint_string(bp.condition);
+            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let log_message = normalize_breakpoint_string(bp.log_message);
 
             let count_modifier = hit_condition
                 .as_deref()
@@ -1491,14 +1449,8 @@ impl Debugger {
             let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
                 results.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "unsupported function breakpoint. Use `Class.method` (optionally fully qualified)."
                 }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
                 continue;
             };
 
@@ -1506,20 +1458,16 @@ impl Debugger {
             let classes =
                 cancellable_jdwp(cancel, self.jdwp.classes_by_signature(&signature)).await?;
             if classes.is_empty() {
+                self.pending_function_breakpoints.insert(spec_name.clone());
                 results.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "class not loaded yet"
                 }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
                 continue;
             }
 
             let mut verified = false;
+            let mut first_request_id: Option<i32> = None;
             let mut first_line: Option<i32> = None;
             let mut last_error: Option<String> = None;
             let mut saw_method = false;
@@ -1591,6 +1539,7 @@ impl Debugger {
                     {
                         Ok(request_id) => {
                             verified = true;
+                            first_request_id.get_or_insert(request_id);
                             first_line.get_or_insert(line);
 
                             all_entries.push(BreakpointEntry { request_id });
@@ -1617,53 +1566,30 @@ impl Debugger {
             if verified {
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
-                obj.insert("id".to_string(), json!(id));
+                if let Some(id) = first_request_id {
+                    obj.insert("id".to_string(), json!(id));
+                }
                 if let Some(line) = first_line {
                     obj.insert("line".to_string(), json!(line));
                 }
                 results.push(Value::Object(obj));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: true,
-                });
             } else if !saw_method {
                 results.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": format!("method `{method_name}` not found in {class_name}")
                 }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
             } else if saw_location {
                 results.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
                 }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
             } else {
                 results.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "no executable code for this function"
                 }));
-                requested_out.push(RequestedFunctionBreakpoint {
-                    id,
-                    spec: bp,
-                    verified: false,
-                });
             }
         }
-
-        self.requested_function_breakpoints = requested_out;
 
         if !all_entries.is_empty() {
             self.function_breakpoints.extend(all_entries);
@@ -2000,7 +1926,6 @@ impl Debugger {
         let mut out = Vec::with_capacity(breakpoints.len());
         for spec in breakpoints {
             check_cancel(cancel)?;
-            let id = self.alloc_breakpoint_id();
 
             let access_type = spec
                 .access_type
@@ -2018,7 +1943,6 @@ impl Debugger {
             let Some(target) = decode_field_data_id(&spec.data_id) else {
                 out.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "unsupported dataId (expected a field watchpoint)",
                 }));
                 continue;
@@ -2030,7 +1954,6 @@ impl Debugger {
             if needs_read && !caps.can_watch_field_access {
                 out.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "target VM does not support field access watchpoints (JDWP canWatchFieldAccess=false)",
                 }));
                 continue;
@@ -2038,7 +1961,6 @@ impl Debugger {
             if needs_write && !caps.can_watch_field_modification {
                 out.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": "target VM does not support field modification watchpoints (JDWP canWatchFieldModification=false)",
                 }));
                 continue;
@@ -2051,7 +1973,6 @@ impl Debugger {
                 other => {
                     out.push(json!({
                         "verified": false,
-                        "id": id,
                         "message": format!("unsupported accessType {other:?} (expected \"read\", \"write\", or \"readWrite\")"),
                     }));
                     continue;
@@ -2087,7 +2008,6 @@ impl Debugger {
                 }
                 out.push(json!({
                     "verified": false,
-                    "id": id,
                     "message": last_error.unwrap_or_else(|| "failed to set watchpoint".to_string()),
                 }));
                 continue;
@@ -2098,7 +2018,8 @@ impl Debugger {
 
             let mut bp = serde_json::Map::new();
             bp.insert("verified".to_string(), json!(true));
-            bp.insert("id".to_string(), json!(id));
+            // DAP breakpoint IDs are opaque; expose the first JDWP request id for UX/debugging.
+            bp.insert("id".to_string(), json!(installed[0].1));
             out.push(Value::Object(bp));
         }
 
@@ -2585,1101 +2506,41 @@ impl Debugger {
         expression: String,
         config: nova_stream_debug::StreamDebugConfig,
     ) -> Result<crate::stream_debug::StreamDebugBody> {
-        use nova_stream_debug::{
-            analyze_stream_expression, StreamDebugResult, StreamSample, StreamStepResult,
-            StreamTerminalResult, StreamValueKind,
-        };
-
         let cancel = &cancel;
         check_cancel(cancel)?;
 
-        let analysis = analyze_stream_expression(&expression)
+        let analysis = nova_stream_debug::analyze_stream_expression(&expression)
             .map_err(|err| DebuggerError::InvalidRequest(err.to_string()))?;
 
-        // The wire-level JDWP adapter has two stream-debug runtimes:
-        // - A real runtime (`wire_stream_debug`) that compiles+injects a helper class into the
-        //   debuggee and invokes methods to sample each stage.
-        // - A mock/runtime fallback used by the JDWP mock server in tests, which cannot execute
-        //   injected bytecode and therefore simulates common stream operations by inspecting the
-        //   source collection/array.
-        //
-        // Detect the mock server via the sentinel `VirtualMachine.ClassPaths.base_dir == "/mock"`.
-        // This avoids attempting helper injection against the mock server (which would not
-        // produce meaningful results).
-        let is_mock_vm = match cancellable_jdwp(cancel, jdwp.virtual_machine_class_paths()).await {
-            Ok(paths) => paths.base_dir == "/mock",
-            Err(JdwpError::Cancelled) => return Err(DebuggerError::Jdwp(JdwpError::Cancelled)),
-            Err(_) => false,
-        };
-
-        if !is_mock_vm {
-            let runtime = crate::wire_stream_debug::debug_stream_in_frame(
-                &jdwp,
-                cancel,
-                frame.thread,
-                frame.frame_id,
-                frame.location,
-                &analysis,
-                &config,
-            )
-            .await
-            .map_err(|err| match err {
-                crate::wire_stream_debug::WireStreamDebugError::Cancelled => {
-                    DebuggerError::Jdwp(JdwpError::Cancelled)
-                }
-                crate::wire_stream_debug::WireStreamDebugError::Timeout => DebuggerError::Timeout,
-                crate::wire_stream_debug::WireStreamDebugError::Jdwp(err) => {
-                    DebuggerError::Jdwp(err)
-                }
-                other => DebuggerError::InvalidRequest(other.to_string()),
-            })?;
-
-            return Ok(crate::stream_debug::StreamDebugBody { analysis, runtime });
-        }
-
-        fn parse_i64(s: &str) -> Option<i64> {
-            s.trim().parse::<i64>().ok()
-        }
-
-        fn extract_single_arg(call_source: &str) -> Option<&str> {
-            let start = call_source.find('(')?;
-            let end = call_source.rfind(')')?;
-            (end > start).then(|| call_source[(start + 1)..end].trim())
-        }
-
-        fn parse_indexed_child_name(name: &str) -> Option<usize> {
-            let name = name.trim();
-            if !name.starts_with('[') || !name.ends_with(']') {
-                return None;
+        let runtime = match crate::wire_stream_debug::debug_stream_wire_in_frame(
+            &jdwp,
+            frame.thread,
+            frame.frame_id,
+            frame.location,
+            &analysis,
+            &config,
+            cancel,
+        )
+        .await
+        {
+            Ok(runtime) => runtime,
+            Err(crate::wire_stream_debug::WireStreamDebugError::Cancelled) => {
+                return Err(DebuggerError::Jdwp(JdwpError::Cancelled));
             }
-            let inner = &name[1..name.len().saturating_sub(1)];
-            if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_digit()) {
-                return None;
+            Err(crate::wire_stream_debug::WireStreamDebugError::Timeout) => {
+                return Err(DebuggerError::Timeout);
             }
-            inner.parse::<usize>().ok()
-        }
-
-        fn parse_filter_predicate(arg: &str) -> Option<Box<dyn Fn(i64) -> bool + Send + Sync>> {
-            let (param, body) = arg.split_once("->")?;
-            let param = param.trim();
-            let body = body.trim();
-
-            // Support a small subset of common numeric predicates:
-            //   x > 1
-            //   x >= 1
-            //   x < 1
-            //   x <= 1
-            //   x == 1
-            //   x != 1
-            let ops = [">=", "<=", "==", "!=", ">", "<"];
-            for op in ops {
-                if let Some((lhs, rhs)) = body.split_once(op) {
-                    let lhs = lhs.trim();
-                    let rhs = rhs.trim();
-                    if lhs == param {
-                        let rhs = parse_i64(rhs)?;
-                        return Some(Box::new(move |x| match op {
-                            ">=" => x >= rhs,
-                            "<=" => x <= rhs,
-                            "==" => x == rhs,
-                            "!=" => x != rhs,
-                            ">" => x > rhs,
-                            "<" => x < rhs,
-                            _ => false,
-                        }));
-                    } else if rhs == param {
-                        let lhs = parse_i64(lhs)?;
-                        return Some(Box::new(move |x| match op {
-                            ">=" => lhs >= x,
-                            "<=" => lhs <= x,
-                            "==" => lhs == x,
-                            "!=" => lhs != x,
-                            ">" => lhs > x,
-                            "<" => lhs < x,
-                            _ => false,
-                        }));
-                    }
-                }
+            Err(crate::wire_stream_debug::WireStreamDebugError::Jdwp(err)) => {
+                return Err(DebuggerError::Jdwp(err));
             }
-
-            None
-        }
-
-        fn parse_map_fn(arg: &str) -> Option<Box<dyn Fn(i64) -> i64 + Send + Sync>> {
-            let (param, body) = arg.split_once("->")?;
-            let param = param.trim();
-            let body = body.trim();
-
-            // Identity mapping: `x -> x`
-            if body == param {
-                return Some(Box::new(|x| x));
+            Err(err) => {
+                return Err(DebuggerError::InvalidRequest(err.to_string()));
             }
-
-            // Support a small subset of common numeric mappings:
-            //   x * 2
-            //   x + 2
-            //   x - 2
-            //   x / 2
-            let ops = ["*", "+", "-", "/"];
-            for op in ops {
-                if let Some((lhs, rhs)) = body.split_once(op) {
-                    let lhs = lhs.trim();
-                    let rhs = rhs.trim();
-                    if lhs == param {
-                        let rhs = parse_i64(rhs)?;
-                        return Some(Box::new(move |x| match op {
-                            "*" => x.saturating_mul(rhs),
-                            "+" => x.saturating_add(rhs),
-                            "-" => x.saturating_sub(rhs),
-                            "/" => {
-                                if rhs == 0 {
-                                    x
-                                } else {
-                                    x / rhs
-                                }
-                            }
-                            _ => x,
-                        }));
-                    } else if rhs == param {
-                        let lhs = parse_i64(lhs)?;
-                        return Some(Box::new(move |x| match op {
-                            "*" => lhs.saturating_mul(x),
-                            "+" => lhs.saturating_add(x),
-                            "-" => lhs.saturating_sub(x),
-                            "/" => {
-                                if x == 0 {
-                                    lhs
-                                } else {
-                                    lhs / x
-                                }
-                            }
-                            _ => x,
-                        }));
-                    }
-                }
-            }
-
-            None
-        }
-
-        #[async_recursion::async_recursion]
-        async fn format_stream_value(
-            inspector: &mut Inspector,
-            cancel: &CancellationToken,
-            started: Instant,
-            budget: Duration,
-            value: &JdwpValue,
-        ) -> Result<String> {
-            enforce_budget(cancel, started, budget)?;
-
-            // Follow primitive-wrapper previews so things like `java.lang.Integer` show up as `1`
-            // (instead of `Integer@...`), matching the legacy stream-debug UX expectations.
-            let mut current = value.clone();
-
-            loop {
-                enforce_budget(cancel, started, budget)?;
-                match current {
-                    JdwpValue::Void => return Ok("void".to_string()),
-                    JdwpValue::Boolean(v) => return Ok(v.to_string()),
-                    JdwpValue::Byte(v) => return Ok(v.to_string()),
-                    JdwpValue::Short(v) => return Ok(v.to_string()),
-                    JdwpValue::Int(v) => return Ok(v.to_string()),
-                    JdwpValue::Long(v) => return Ok(v.to_string()),
-                    JdwpValue::Float(v) => return Ok(trim_float(v as f64)),
-                    JdwpValue::Double(v) => return Ok(trim_float(v)),
-                    JdwpValue::Char(v) => return Ok(decode_java_char(v).to_string()),
-                    JdwpValue::Object { id: 0, .. } => return Ok("null".to_string()),
-                    JdwpValue::Object { id, .. } => {
-                        let preview =
-                            budgeted_jdwp(cancel, started, budget, inspector.preview_object(id))
-                                .await?;
-                        let runtime_type = preview.runtime_type;
-                        match preview.kind {
-                            ObjectKindPreview::String { value } => return Ok(value),
-                            ObjectKindPreview::PrimitiveWrapper { value } => {
-                                current = *value;
-                                continue;
-                            }
-                            ObjectKindPreview::Optional { value } => {
-                                return Ok(match value {
-                                    None => "Optional.empty".to_string(),
-                                    Some(v) => format!(
-                                        "Optional[{}]",
-                                        format_stream_value(inspector, cancel, started, budget, &v)
-                                            .await?
-                                    ),
-                                });
-                            }
-                            _ => return Ok(format!("{runtime_type}#{id}")),
-                        }
-                    }
-                }
-            }
-        }
-
-        async fn resolve_local_in_frame(
-            jdwp: &JdwpClient,
-            cancel: &CancellationToken,
-            started: Instant,
-            budget: Duration,
-            thread: ThreadId,
-            frame_id: u64,
-            location: Location,
-            name: &str,
-        ) -> Result<Option<JdwpValue>> {
-            enforce_budget(cancel, started, budget)?;
-
-            // Prefer `Method.VariableTableWithGeneric` when available. Some VMs (and the JDWP mock
-            // server) only surface certain locals (e.g. generic `List<T>`) via the generic-aware
-            // variant.
-            let mut var: Option<(u32, String)> = None;
-            match budgeted_jdwp(
-                cancel,
-                started,
-                budget,
-                jdwp.method_variable_table_with_generic(location.class_id, location.method_id),
-            )
-            .await
-            {
-                Ok((_argc, vars)) => {
-                    let in_scope: Vec<_> = vars
-                        .into_iter()
-                        .filter(|v| {
-                            v.code_index <= location.index
-                                && location.index < v.code_index + (v.length as u64)
-                        })
-                        .collect();
-                    if let Some(found) = in_scope.iter().find(|v| v.name == name) {
-                        var = Some((found.slot, found.signature.clone()));
-                    }
-                }
-                Err(err) => match err {
-                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                        return Err(err)
-                    }
-                    _ => {}
-                },
-            }
-
-            if var.is_none() {
-                let (_argc, vars) = match budgeted_jdwp(
-                    cancel,
-                    started,
-                    budget,
-                    jdwp.method_variable_table(location.class_id, location.method_id),
-                )
-                .await
-                {
-                    Ok(res) => res,
-                    Err(err) => match err {
-                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                            return Err(err)
-                        }
-                        _ => return Ok(None),
-                    },
-                };
-
-                let in_scope: Vec<VariableInfo> = vars
-                    .into_iter()
-                    .filter(|v| {
-                        v.code_index <= location.index
-                            && location.index < v.code_index + (v.length as u64)
-                    })
-                    .collect();
-                if let Some(found) = in_scope.iter().find(|v| v.name == name) {
-                    var = Some((found.slot, found.signature.clone()));
-                }
-            }
-
-            let Some((slot, signature)) = var else {
-                return Ok(None);
-            };
-
-            let mut values = match budgeted_jdwp(
-                cancel,
-                started,
-                budget,
-                jdwp.stack_frame_get_values(thread, frame_id, &[(slot, signature)]),
-            )
-            .await
-            {
-                Ok(values) => values,
-                Err(err) => match err {
-                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                        return Err(err)
-                    }
-                    _ => return Ok(None),
-                },
-            };
-            Ok(values.pop())
-        }
-
-        async fn resolve_field_in_frame(
-            jdwp: &JdwpClient,
-            cancel: &CancellationToken,
-            started: Instant,
-            budget: Duration,
-            thread: ThreadId,
-            frame_id: u64,
-            name: &str,
-        ) -> Result<Option<JdwpValue>> {
-            enforce_budget(cancel, started, budget)?;
-
-            let this_id = match budgeted_jdwp(
-                cancel,
-                started,
-                budget,
-                jdwp.stack_frame_this_object(thread, frame_id),
-            )
-            .await
-            {
-                Ok(id) => id,
-                Err(err) => match err {
-                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                        return Err(err)
-                    }
-                    _ => return Ok(None),
-                },
-            };
-            if this_id == 0 {
-                return Ok(None);
-            }
-
-            const MODIFIER_STATIC: u32 = 0x0008;
-
-            let (_ref_type_tag, mut type_id) = match budgeted_jdwp(
-                cancel,
-                started,
-                budget,
-                jdwp.object_reference_reference_type(this_id),
-            )
-            .await
-            {
-                Ok(res) => res,
-                Err(err) => match err {
-                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                        return Err(err)
-                    }
-                    _ => return Ok(None),
-                },
-            };
-
-            let mut seen_types = std::collections::HashSet::new();
-            while type_id != 0 && seen_types.insert(type_id) {
-                enforce_budget(cancel, started, budget)?;
-
-                let fields = match budgeted_jdwp(
-                    cancel,
-                    started,
-                    budget,
-                    jdwp.reference_type_fields(type_id),
-                )
-                .await
-                {
-                    Ok(fields) => fields,
-                    Err(err) => match err {
-                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                            return Err(err)
-                        }
-                        _ => return Ok(None),
-                    },
-                };
-
-                if let Some(field) = fields
-                    .into_iter()
-                    .find(|f| f.name == name && (f.mod_bits & MODIFIER_STATIC == 0))
-                {
-                    let mut values = match budgeted_jdwp(
-                        cancel,
-                        started,
-                        budget,
-                        jdwp.object_reference_get_values(this_id, &[field.field_id]),
-                    )
-                    .await
-                    {
-                        Ok(values) => values,
-                        Err(err) => match err {
-                            DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                                return Err(err)
-                            }
-                            _ => return Ok(None),
-                        },
-                    };
-                    return Ok(values.pop());
-                }
-
-                type_id = match budgeted_jdwp(
-                    cancel,
-                    started,
-                    budget,
-                    jdwp.class_type_superclass(type_id),
-                )
-                .await
-                {
-                    Ok(id) => id,
-                    Err(err) => match err {
-                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                            return Err(err)
-                        }
-                        _ => break,
-                    },
-                };
-            }
-
-            Ok(None)
-        }
-
-        const FIELD_MODIFIER_STATIC: u32 = 0x0008;
-        const ERROR_NOT_FOUND: u16 = 41;
-        const ERROR_UNSUPPORTED_VERSION: u16 = 68;
-        const ERROR_NOT_IMPLEMENTED: u16 = 99;
-
-        fn is_unsupported_command_error(err: &JdwpError) -> bool {
-            matches!(
-                err,
-                JdwpError::VmError(
-                    ERROR_NOT_FOUND | ERROR_UNSUPPORTED_VERSION | ERROR_NOT_IMPLEMENTED
-                )
-            )
-        }
-
-        async fn resolve_static_field_in_frame(
-            jdwp: &JdwpClient,
-            cancel: &CancellationToken,
-            location: Location,
-            name: &str,
-        ) -> Result<Option<JdwpValue>> {
-            check_cancel(cancel)?;
-
-            #[derive(Debug, Clone)]
-            struct FieldMeta {
-                declaring_type: ReferenceTypeId,
-                field_id: u64,
-                name: String,
-                mod_bits: u32,
-            }
-
-            async fn reference_type_fields_best_effort(
-                jdwp: &JdwpClient,
-                cancel: &CancellationToken,
-                class_id: ReferenceTypeId,
-            ) -> Result<Vec<FieldMeta>> {
-                match cancellable_jdwp(cancel, jdwp.reference_type_fields_with_generic(class_id))
-                    .await
-                {
-                    Ok(fields) => Ok(fields
-                        .into_iter()
-                        .map(|f| FieldMeta {
-                            declaring_type: class_id,
-                            field_id: f.field_id,
-                            name: f.name,
-                            mod_bits: f.mod_bits,
-                        })
-                        .collect()),
-                    Err(err) if is_unsupported_command_error(&err) => {
-                        let fields =
-                            cancellable_jdwp(cancel, jdwp.reference_type_fields(class_id)).await?;
-                        Ok(fields
-                            .into_iter()
-                            .map(|f| FieldMeta {
-                                declaring_type: class_id,
-                                field_id: f.field_id,
-                                name: f.name,
-                                mod_bits: f.mod_bits,
-                            })
-                            .collect())
-                    }
-                    Err(err) => Err(err.into()),
-                }
-            }
-
-            let mut current = location.class_id;
-            let mut seen = std::collections::HashSet::new();
-            while current != 0 && seen.insert(current) {
-                let fields = match reference_type_fields_best_effort(jdwp, cancel, current).await {
-                    Ok(fields) => fields,
-                    Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
-                        return Err(JdwpError::Cancelled.into())
-                    }
-                    Err(_) => Vec::new(),
-                };
-
-                if let Some(field) = fields.into_iter().find(|f| f.name == name) {
-                    if field.mod_bits & FIELD_MODIFIER_STATIC != 0 {
-                        let mut values = cancellable_jdwp(
-                            cancel,
-                            jdwp.reference_type_get_values(field.declaring_type, &[field.field_id]),
-                        )
-                        .await?;
-                        return Ok(values.pop());
-                    }
-
-                    // Field hiding: an instance field with the same name blocks inherited static
-                    // fields (and in static contexts would be a compile error).
-                    return Ok(None);
-                }
-
-                match cancellable_jdwp(cancel, jdwp.class_type_superclass(current)).await {
-                    Ok(super_id) => current = super_id,
-                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                    Err(_) => break,
-                }
-            }
-
-            Ok(None)
-        }
-
-        let started = Instant::now();
-        let budget = config.max_total_time;
-        enforce_budget(cancel, started, budget)?;
-        let mut inspector = Inspector::new(jdwp.clone());
-
-        fn unsafe_existing_stream_message(stream_expr: &str) -> String {
-            // Safety guard: sampling a stream requires iterating it, which consumes
-            // already-instantiated `Stream` values.
-            format!(
-                "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
-Stream debug needs to sample elements by iterating the stream, which would *consume* that Stream value.\n\
-Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
-            )
-        }
-
-        fn strip_this_dot(expr: &str) -> Option<&str> {
-            let expr = expr.trim();
-            let rest = expr.strip_prefix("this")?;
-            let rest = rest.trim_start();
-            let rest = rest.strip_prefix('.')?;
-            Some(rest.trim_start())
-        }
-
-        // Resolve the source sample by inspecting the underlying collection/array object.
-        let (source_elements, source_truncated, source_collection_type) = {
-            let (name, kind) = match &analysis.source {
-                nova_stream_debug::StreamSource::Collection {
-                    collection_expr, ..
-                } => (collection_expr.trim().to_string(), "collection"),
-                nova_stream_debug::StreamSource::ExistingStream { stream_expr } => {
-                    let stream_expr = stream_expr.trim();
-                    if nova_stream_debug::is_pure_access_expr(stream_expr) {
-                        return Err(DebuggerError::InvalidRequest(
-                            unsafe_existing_stream_message(stream_expr),
-                        ));
-                    }
-
-                    // Best-effort support: allow `java.util.Arrays.stream(arr)` by inspecting the
-                    // underlying array `arr` rather than consuming the stream value itself.
-                    let arrays_stream_arg = (|| {
-                        let idx = stream_expr.rfind("Arrays.stream")?;
-                        let after = stream_expr[(idx + "Arrays.stream".len())..].trim_start();
-                        if !after.starts_with('(') {
-                            return None;
-                        }
-                        let arg = extract_single_arg(&stream_expr[idx..])?;
-                        let arg = arg.trim();
-                        if arg.is_empty() || arg.contains(',') {
-                            return None;
-                        }
-                        Some(arg.to_string())
-                    })();
-
-                    let Some(array_expr) = arrays_stream_arg else {
-                        return Err(DebuggerError::InvalidRequest(
-                            "unsupported stream source (only collection.stream() and java.util.Arrays.stream(array) are supported)".to_string(),
-                        ));
-                    };
-                    (array_expr, "array")
-                }
-                _ => {
-                    return Err(DebuggerError::InvalidRequest(
-                        "unsupported stream source (only collection.stream() and java.util.Arrays.stream(array) are supported)".to_string(),
-                    ));
-                }
-            };
-
-            // Best-effort: issue a minimal `InvokeMethod` call before sampling.
-            //
-            // `InvokeMethod` can interleave with asynchronous JDWP events (e.g. hitting a
-            // breakpoint mid-invoke). Stream debug marks the evaluation thread as being in
-            // internal-evaluation mode so the event task can auto-resume and suppress DAP events.
-            //
-            // The dummy `(class_id=0, method_id=0)` invoke is expected to fail on real JVMs; we
-            // ignore non-cancellation errors and fall back to the inspection-based runtime.
-            match cancellable_jdwp(
-                cancel,
-                jdwp.class_type_invoke_method(0, frame.thread, 0, &[JdwpValue::Int(1)], 0),
-            )
-            .await
-            {
-                Ok((_value, _exception)) => {}
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_err) => {}
-            }
-
-            let original_name = name.trim();
-            if original_name.is_empty() {
-                return Err(DebuggerError::InvalidRequest(format!(
-                    "stream source {kind} expression is empty"
-                )));
-            }
-
-            let mut lookup_name = original_name;
-            let mut force_field = false;
-            if let Some(rest) = strip_this_dot(original_name) {
-                if !rest.is_empty() {
-                    lookup_name = rest;
-                    force_field = true;
-                }
-            }
-
-            // The frame selected by the DAP client may correspond to a synthetic lambda frame
-            // on the same source line, which won't have access to the original local variables.
-            // Best-effort: if the variable isn't found in the requested frame, walk up the
-            // stack and use the first frame where it is in-scope.
-            let mut value = if force_field {
-                resolve_field_in_frame(
-                    &jdwp,
-                    cancel,
-                    started,
-                    budget,
-                    frame.thread,
-                    frame.frame_id,
-                    lookup_name,
-                )
-                .await?
-            } else {
-                resolve_local_in_frame(
-                    &jdwp,
-                    cancel,
-                    started,
-                    budget,
-                    frame.thread,
-                    frame.frame_id,
-                    frame.location,
-                    lookup_name,
-                )
-                .await?
-            };
-
-            if !force_field && value.is_none() {
-                value = resolve_field_in_frame(
-                    &jdwp,
-                    cancel,
-                    started,
-                    budget,
-                    frame.thread,
-                    frame.frame_id,
-                    lookup_name,
-                )
-                .await?;
-            }
-
-            if value.is_none() {
-                let frames =
-                    budgeted_jdwp(cancel, started, budget, jdwp.frames(frame.thread, 0, -1))
-                        .await?;
-                for frame_info in frames {
-                    if frame_info.frame_id == frame.frame_id {
-                        continue;
-                    }
-                    value = if force_field {
-                        resolve_field_in_frame(
-                            &jdwp,
-                            cancel,
-                            started,
-                            budget,
-                            frame.thread,
-                            frame_info.frame_id,
-                            lookup_name,
-                        )
-                        .await?
-                    } else {
-                        resolve_local_in_frame(
-                            &jdwp,
-                            cancel,
-                            started,
-                            budget,
-                            frame.thread,
-                            frame_info.frame_id,
-                            frame_info.location,
-                            lookup_name,
-                        )
-                        .await?
-                    };
-                    if value.is_some() {
-                        break;
-                    }
-
-                    if !force_field {
-                        value = resolve_field_in_frame(
-                            &jdwp,
-                            cancel,
-                            started,
-                            budget,
-                            frame.thread,
-                            frame_info.frame_id,
-                            lookup_name,
-                        )
-                        .await?;
-                        if value.is_some() {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Finally, fall back to resolving static fields on the declaring class hierarchy.
-            //
-            // Note: we intentionally do this after searching for locals/instance fields across
-            // frames so we preserve Java's shadowing rules (locals > fields > static fields) even
-            // when the selected frame is a synthetic lambda frame that lacks the original locals.
-            if value.is_none() {
-                value = resolve_static_field_in_frame(&jdwp, cancel, frame.location, lookup_name)
-                    .await?;
-            }
-
-            let Some(value) = value else {
-                return Err(DebuggerError::InvalidRequest(format!(
-                    "stream source {kind} `{original_name}` not found in scope"
-                )));
-            };
-
-            let object_id = match value {
-                JdwpValue::Object { id, .. } if id != 0 => id,
-                _ => {
-                    return Err(DebuggerError::InvalidRequest(format!(
-                        "stream source `{original_name}` is not an object"
-                    )))
-                }
-            };
-
-            // First attempt: use the built-in preview for known collection types.
-            let preview =
-                budgeted_jdwp(cancel, started, budget, inspector.preview_object(object_id)).await?;
-            let collection_type = Some(preview.runtime_type.clone());
-
-            let (size, mut raw_sample) = match preview.kind {
-                ObjectKindPreview::List { size, sample } => {
-                    let mut raw_sample = sample;
-                    if config.max_sample_size > raw_sample.len() && size > raw_sample.len() {
-                        match budgeted_jdwp(
-                            cancel,
-                            started,
-                            budget,
-                            inspector.object_children(object_id),
-                        )
-                        .await
-                        {
-                            Ok(children) => {
-                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
-                                    .into_iter()
-                                    .filter_map(|child| {
-                                        parse_indexed_child_name(&child.name)
-                                            .map(|idx| (idx, child.value))
-                                    })
-                                    .collect();
-                                indexed_children.sort_by_key(|(idx, _)| *idx);
-                                raw_sample = indexed_children
-                                    .into_iter()
-                                    .map(|(_, value)| value)
-                                    .take(config.max_sample_size)
-                                    .collect();
-                            }
-                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
-                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
-                                return Err(JdwpError::Cancelled.into())
-                            }
-                            Err(_err) => {
-                                // Best-effort: fall back to the preview sample (which is limited).
-                            }
-                        }
-                    }
-                    (size, raw_sample)
-                }
-                ObjectKindPreview::Set { size, sample } => {
-                    let mut raw_sample = sample;
-                    if config.max_sample_size > raw_sample.len() && size > raw_sample.len() {
-                        match budgeted_jdwp(
-                            cancel,
-                            started,
-                            budget,
-                            inspector.object_children(object_id),
-                        )
-                        .await
-                        {
-                            Ok(children) => {
-                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
-                                    .into_iter()
-                                    .filter_map(|child| {
-                                        parse_indexed_child_name(&child.name)
-                                            .map(|idx| (idx, child.value))
-                                    })
-                                    .collect();
-                                indexed_children.sort_by_key(|(idx, _)| *idx);
-                                raw_sample = indexed_children
-                                    .into_iter()
-                                    .map(|(_, value)| value)
-                                    .take(config.max_sample_size)
-                                    .collect();
-                            }
-                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
-                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
-                                return Err(JdwpError::Cancelled.into())
-                            }
-                            Err(_err) => {
-                                // Best-effort: fall back to the preview sample (which is limited).
-                            }
-                        }
-                    }
-                    (size, raw_sample)
-                }
-                ObjectKindPreview::Array { length, sample, .. } => {
-                    let mut raw_sample = sample;
-                    if config.max_sample_size > raw_sample.len() && length > raw_sample.len() {
-                        match budgeted_jdwp(
-                            cancel,
-                            started,
-                            budget,
-                            inspector.object_children(object_id),
-                        )
-                        .await
-                        {
-                            Ok(children) => {
-                                let mut indexed_children: Vec<(usize, JdwpValue)> = children
-                                    .into_iter()
-                                    .filter_map(|child| {
-                                        parse_indexed_child_name(&child.name)
-                                            .map(|idx| (idx, child.value))
-                                    })
-                                    .collect();
-                                indexed_children.sort_by_key(|(idx, _)| *idx);
-                                raw_sample = indexed_children
-                                    .into_iter()
-                                    .map(|(_, value)| value)
-                                    .take(config.max_sample_size)
-                                    .collect();
-                            }
-                            Err(DebuggerError::Timeout) => return Err(DebuggerError::Timeout),
-                            Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
-                                return Err(JdwpError::Cancelled.into())
-                            }
-                            Err(_err) => {
-                                // Best-effort: fall back to the preview sample (which is limited).
-                            }
-                        }
-                    }
-                    (length, raw_sample)
-                }
-                _ if preview.runtime_type == "java.util.Arrays$ArrayList" => {
-                    // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
-                    // the default preview helpers. Read the backing array field directly.
-                    let children = budgeted_jdwp(
-                        cancel,
-                        started,
-                        budget,
-                        inspector.object_children(object_id),
-                    )
-                    .await?;
-                    let array_id =
-                        children
-                            .iter()
-                            .find_map(|child| match (&child.name[..], &child.value) {
-                                ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
-                                _ => None,
-                            });
-                    let Some(array_id) = array_id else {
-                        return Err(DebuggerError::InvalidRequest(
-                            "unsupported list implementation (missing backing array)".to_string(),
-                        ));
-                    };
-                    let length = budgeted_jdwp(
-                        cancel,
-                        started,
-                        budget,
-                        jdwp.array_reference_length(array_id),
-                    )
-                    .await?;
-                    let length = length.max(0) as usize;
-                    let sample_len = length.min(config.max_sample_size);
-                    let sample = if sample_len == 0 {
-                        Vec::new()
-                    } else {
-                        budgeted_jdwp(
-                            cancel,
-                            started,
-                            budget,
-                            jdwp.array_reference_get_values(array_id, 0, sample_len as i32),
-                        )
-                        .await?
-                    };
-                    (length, sample)
-                }
-                _ => {
-                    return Err(DebuggerError::InvalidRequest(
-                        "streamDebug currently only supports List/Set/Array sources".to_string(),
-                    ))
-                }
-            };
-
-            // Respect `max_sample_size` even if the preview returns more.
-            if raw_sample.len() > config.max_sample_size {
-                raw_sample.truncate(config.max_sample_size);
-            }
-
-            let truncated = raw_sample.len() < size;
-            let mut elements = Vec::with_capacity(raw_sample.len());
-            for v in &raw_sample {
-                elements
-                    .push(format_stream_value(&mut inspector, cancel, started, budget, v).await?);
-            }
-
-            (elements, truncated, collection_type)
-        };
-
-        let mut source_sample = StreamSample {
-            elements: source_elements,
-            truncated: source_truncated,
-            element_type: None,
-            collection_type: source_collection_type,
-        };
-
-        // Best-effort: infer a primitive element type from the formatted values.
-        if source_sample.element_type.is_none() {
-            source_sample.element_type = match analysis.stream_kind {
-                StreamValueKind::IntStream => Some("int".to_string()),
-                StreamValueKind::LongStream => Some("long".to_string()),
-                StreamValueKind::DoubleStream => Some("double".to_string()),
-                StreamValueKind::Stream => None,
-            };
-        }
-
-        let source_duration_ms = 0u128;
-
-        let mut last_sample = source_sample.clone();
-        let mut steps = Vec::new();
-
-        for op in &analysis.intermediates {
-            enforce_budget(cancel, started, budget)?;
-            let step_start = Instant::now();
-
-            if op.is_side_effecting() && !config.allow_side_effects {
-                steps.push(StreamStepResult {
-                    operation: op.name.clone(),
-                    kind: op.kind,
-                    executed: false,
-                    input: last_sample.clone(),
-                    output: last_sample.clone(),
-                    duration_ms: 0,
-                });
-                continue;
-            }
-
-            let input = last_sample.clone();
-            let mut output = input.clone();
-
-            match op.kind {
-                nova_stream_debug::StreamOperationKind::Filter => {
-                    let arg = extract_single_arg(&op.call_source).ok_or_else(|| {
-                        DebuggerError::InvalidRequest(format!(
-                            "unsupported filter call: {}",
-                            op.call_source
-                        ))
-                    })?;
-                    let pred = parse_filter_predicate(arg).ok_or_else(|| {
-                        DebuggerError::InvalidRequest(format!(
-                            "unsupported filter predicate: {arg}"
-                        ))
-                    })?;
-
-                    output.elements = input
-                        .elements
-                        .iter()
-                        .filter(|s| parse_i64(s).is_some_and(|v| pred(v)))
-                        .cloned()
-                        .collect();
-                }
-                nova_stream_debug::StreamOperationKind::Map => {
-                    let arg = extract_single_arg(&op.call_source).ok_or_else(|| {
-                        DebuggerError::InvalidRequest(format!(
-                            "unsupported map call: {}",
-                            op.call_source
-                        ))
-                    })?;
-                    let func = parse_map_fn(arg).ok_or_else(|| {
-                        DebuggerError::InvalidRequest(format!("unsupported map fn: {arg}"))
-                    })?;
-
-                    output.elements = input
-                        .elements
-                        .iter()
-                        .filter_map(|s| parse_i64(s).map(|v| func(v).to_string()))
-                        .collect();
-                }
-                other => {
-                    return Err(DebuggerError::InvalidRequest(format!(
-                        "unsupported stream operation: {other:?}"
-                    )));
-                }
-            }
-
-            let duration_ms = step_start.elapsed().as_millis();
-            steps.push(StreamStepResult {
-                operation: op.name.clone(),
-                kind: op.kind,
-                executed: true,
-                input,
-                output: output.clone(),
-                duration_ms,
-            });
-            last_sample = output;
-        }
-
-        let terminal = if let Some(term) = &analysis.terminal {
-            if !config.allow_terminal_ops
-                || (term.is_side_effecting() && !config.allow_side_effects)
-            {
-                Some(StreamTerminalResult {
-                    operation: term.name.clone(),
-                    kind: term.kind,
-                    executed: false,
-                    value: None,
-                    type_name: None,
-                    duration_ms: 0,
-                })
-            } else {
-                enforce_budget(cancel, started, budget)?;
-                match term.kind {
-                    nova_stream_debug::StreamOperationKind::Count => Some(StreamTerminalResult {
-                        operation: term.name.clone(),
-                        kind: term.kind,
-                        executed: true,
-                        value: Some(last_sample.elements.len().to_string()),
-                        type_name: Some("long".to_string()),
-                        duration_ms: 0,
-                    }),
-                    _ => {
-                        return Err(DebuggerError::InvalidRequest(format!(
-                            "unsupported terminal operation: {}",
-                            term.name
-                        )));
-                    }
-                }
-            }
-        } else {
-            None
-        };
-
-        let runtime = StreamDebugResult {
-            expression: analysis.expression.clone(),
-            source: analysis.source.clone(),
-            source_sample,
-            source_duration_ms,
-            steps,
-            terminal,
-            total_duration_ms: started.elapsed().as_millis(),
         };
 
         Ok(crate::stream_debug::StreamDebugBody { analysis, runtime })
     }
+
 
     pub async fn set_variable(
         &mut self,
@@ -4957,13 +3818,14 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             status: 0,
         };
 
-        if let Some(mut bps) = self.requested_breakpoints.get(&file).cloned() {
+        if let Some(bps) = self.requested_breakpoints.get(&file).cloned() {
             let mut entries = Vec::new();
-            for bp in bps.iter_mut() {
-                let spec_line = bp.spec.line;
-                let condition = normalize_breakpoint_string(bp.spec.condition.clone());
-                let mut hit_condition = normalize_breakpoint_string(bp.spec.hit_condition.clone());
-                let log_message = normalize_breakpoint_string(bp.spec.log_message.clone());
+            let mut updated_lines: HashSet<i32> = HashSet::new();
+            for bp in bps {
+                let spec_line = bp.line;
+                let condition = normalize_breakpoint_string(bp.condition);
+                let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
+                let log_message = normalize_breakpoint_string(bp.log_message);
 
                 let count_modifier = hit_condition
                     .as_deref()
@@ -4986,9 +3848,16 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     if let Some(count) = count_modifier {
                         modifiers.push(EventModifier::Count { count });
                     }
-                    if let Ok(request_id) =
-                        self.jdwp.event_request_set(2, suspend_policy, modifiers).await
+                    if let Ok(request_id) = self
+                        .jdwp
+                        .event_request_set(2, suspend_policy, modifiers)
+                        .await
                     {
+                        let was_pending = self
+                            .pending_breakpoints
+                            .get(&file)
+                            .is_some_and(|lines| lines.contains(&spec_line));
+
                         entries.push(BreakpointEntry { request_id });
                         self.breakpoint_metadata.insert(
                             request_id,
@@ -5000,21 +3869,27 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                             },
                         );
 
-                        if !bp.verified {
-                            bp.verified = true;
-                            bp.spec.line = resolved.line;
+                        if was_pending {
+                            // Deduplicate by resolved location line for this class-prepare event.
+                            if updated_lines.insert(resolved.line) {
+                                let mut bp = serde_json::Map::new();
+                                bp.insert("verified".to_string(), json!(true));
+                                bp.insert("line".to_string(), json!(resolved.line));
+                                bp.insert("id".to_string(), json!(request_id));
+                                bp.insert("source".to_string(), json!({ "path": file.clone() }));
+                                self.breakpoint_updates.push(Value::Object(bp));
+                            }
 
-                            let mut update = serde_json::Map::new();
-                            update.insert("verified".to_string(), json!(true));
-                            update.insert("line".to_string(), json!(resolved.line));
-                            update.insert("id".to_string(), json!(bp.id));
-                            update.insert("source".to_string(), json!({ "path": file.clone() }));
-                            self.breakpoint_updates.push(Value::Object(update));
+                            if let Some(lines) = self.pending_breakpoints.get_mut(&file) {
+                                lines.remove(&spec_line);
+                                if lines.is_empty() {
+                                    self.pending_breakpoints.remove(&file);
+                                }
+                            }
                         }
                     }
                 }
             }
-            self.requested_breakpoints.insert(file.clone(), bps);
             if !entries.is_empty() {
                 self.breakpoints.entry(file).or_default().extend(entries);
             }
@@ -5048,12 +3923,12 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             Err(_) => source_file.clone(),
         };
 
-        let mut breakpoints = self.requested_function_breakpoints.clone();
+        let breakpoints = self.requested_function_breakpoints.clone();
         let mut entries = Vec::new();
 
-        for bp in breakpoints.iter_mut() {
+        for bp in breakpoints {
             check_cancel(cancel)?;
-            let spec_name = bp.spec.name.trim().to_string();
+            let spec_name = bp.name.trim().to_string();
             let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
                 continue;
             };
@@ -5062,9 +3937,10 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 continue;
             }
 
-            let condition = normalize_breakpoint_string(bp.spec.condition.clone());
-            let mut hit_condition = normalize_breakpoint_string(bp.spec.hit_condition.clone());
-            let log_message = normalize_breakpoint_string(bp.spec.log_message.clone());
+            let is_pending = self.pending_function_breakpoints.contains(&spec_name);
+            let condition = normalize_breakpoint_string(bp.condition);
+            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let log_message = normalize_breakpoint_string(bp.log_message);
 
             let count_modifier = hit_condition
                 .as_deref()
@@ -5095,7 +3971,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 }
             };
 
-            let mut first_line: Option<i32> = None;
+            let mut pending_first_request_id: Option<i32> = None;
+            let mut pending_first_line: Option<i32> = None;
             let mut installed_any = false;
 
             for method in methods.iter().filter(|m| m.name == method_name) {
@@ -5141,7 +4018,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     .await
                 {
                     installed_any = true;
-                    first_line.get_or_insert(line);
+                    pending_first_request_id.get_or_insert(request_id);
+                    pending_first_line.get_or_insert(line);
                     entries.push(BreakpointEntry { request_id });
                     self.breakpoint_metadata.insert(
                         request_id,
@@ -5155,23 +4033,22 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 }
             }
 
-            if installed_any && !bp.verified {
-                bp.verified = true;
-
-                let mut update = serde_json::Map::new();
-                update.insert("verified".to_string(), json!(true));
-                update.insert("id".to_string(), json!(bp.id));
-                if let Some(line) = first_line {
-                    update.insert("line".to_string(), json!(line));
+            if is_pending && installed_any {
+                let mut bp = serde_json::Map::new();
+                bp.insert("verified".to_string(), json!(true));
+                if let Some(line) = pending_first_line {
+                    bp.insert("line".to_string(), json!(line));
+                }
+                if let Some(request_id) = pending_first_request_id {
+                    bp.insert("id".to_string(), json!(request_id));
                 }
                 if !file.is_empty() {
-                    update.insert("source".to_string(), json!({ "path": file.clone() }));
+                    bp.insert("source".to_string(), json!({ "path": file.clone() }));
                 }
-                self.breakpoint_updates.push(Value::Object(update));
+                self.breakpoint_updates.push(Value::Object(bp));
+                self.pending_function_breakpoints.remove(&spec_name);
             }
         }
-
-        self.requested_function_breakpoints = breakpoints;
 
         if !entries.is_empty() {
             self.function_breakpoints.extend(entries);
@@ -6355,10 +5232,10 @@ mod tests {
         .await
         .unwrap();
 
-        let setup_cancel = CancellationToken::new();
+        let cancel = CancellationToken::new();
 
         let (frames, _total) = dbg
-            .stack_trace(&setup_cancel, THREAD_ID as i64, None, None)
+            .stack_trace(&cancel, THREAD_ID as i64, None, None)
             .await
             .unwrap();
         let frame_id = frames
@@ -6430,55 +5307,31 @@ mod tests {
             allow_terminal_ops: true,
         };
 
-        for expr in [
-            "field.stream().filter(x -> x > 1).map(x -> x * 2).count()",
-            "this.field.stream().filter(x -> x > 1).map(x -> x * 2).count()",
-        ] {
-            let fut = dbg
-                .stream_debug(
-                    CancellationToken::new(),
-                    frame_id,
-                    expr.to_string(),
-                    cfg.clone(),
-                )
-                .unwrap();
-            let body = fut.await.unwrap();
+        let expr = "field.stream().filter(x -> x > 1).map(x -> x * 2).count()";
+        let fut = dbg
+            .stream_debug(cancel, frame_id, expr.to_string(), cfg)
+            .unwrap();
+        let body = fut.await.unwrap();
 
-            assert_eq!(
-                body.runtime.source_sample.elements,
-                vec!["1".to_string(), "2".to_string(), "3".to_string()]
-            );
+        // The mock JDWP server does not execute injected helper bytecode, so we can't assert real
+        // stream semantics here. Instead, verify that the stream debugger resolved `field` as an
+        // instance-field binding (rather than a local variable) by checking that the helper
+        // invocation arguments include the array object we attached to `this.field`.
+        let invoke_calls = server.class_type_invoke_method_calls().await;
+        assert!(
+            invoke_calls.iter().any(|call| call.args.iter().any(|arg| match arg {
+                JdwpValue::Object { id, .. } => *id == array_id,
+                _ => false,
+            })),
+            "expected injected helper invocations to include instance field object id 0x{array_id:x}; calls={invoke_calls:?}"
+        );
 
-            let filter_step = body
-                .runtime
-                .steps
-                .iter()
-                .find(|step| step.operation == "filter")
-                .expect("expected filter step");
-            assert_eq!(
-                filter_step.output.elements,
-                vec!["2".to_string(), "3".to_string()]
-            );
-
-            let map_step = body
-                .runtime
-                .steps
-                .iter()
-                .find(|step| step.operation == "map")
-                .expect("expected map step");
-            assert_eq!(
-                map_step.output.elements,
-                vec!["4".to_string(), "6".to_string()]
-            );
-
-            assert_eq!(
-                body.runtime
-                    .terminal
-                    .as_ref()
-                    .and_then(|t| t.value.as_deref()),
-                Some("2")
-            );
-        }
+        // Still assert the request completes successfully so the full compile+inject pipeline is
+        // exercised under mock JDWP.
+        assert_eq!(
+            body.runtime.source_sample.elements,
+            vec!["10".to_string(), "20".to_string(), "30".to_string()]
+        );
     }
 
     #[tokio::test]

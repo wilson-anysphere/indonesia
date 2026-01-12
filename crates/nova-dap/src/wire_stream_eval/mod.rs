@@ -11,6 +11,9 @@ pub mod java_types;
 pub mod javac_config;
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nova_jdwp::wire::inspect::Inspector;
@@ -23,6 +26,7 @@ use nova_stream_debug::StreamSample;
 use thiserror::Error;
 
 use crate::javac::{apply_stream_eval_defaults, compile_java_for_hot_swap, HotSwapJavacConfig};
+use crate::hot_swap::CompiledClass;
 static STREAM_EVAL_CLASS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
@@ -97,6 +101,40 @@ impl StreamEvalHelper {
     }
 }
 
+/// Compiler abstraction used by the stream-eval helper pipeline.
+///
+/// The wire-level stream debugger normally relies on `javac` to compile a generated helper class
+/// which is then injected into the target JVM.
+///
+/// Nova's unit/integration tests frequently run against [`nova_jdwp::wire::mock::MockJdwpServer`],
+/// which intentionally does **not** validate injected class bytecode. To keep CI green without
+/// requiring a system JDK, tests (and the wire-level stream debugger) can provide a compiler that
+/// returns dummy bytecode.
+pub(crate) trait StreamEvalCompiler {
+    fn compile<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+        javac: &'a HotSwapJavacConfig,
+        source_file: &'a Path,
+        helper_fqcn: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompiledClass>, StreamEvalError>> + Send + 'a>>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JavacStreamEvalCompiler;
+
+impl StreamEvalCompiler for JavacStreamEvalCompiler {
+    fn compile<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+        javac: &'a HotSwapJavacConfig,
+        source_file: &'a Path,
+        _helper_fqcn: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompiledClass>, StreamEvalError>> + Send + 'a>> {
+        Box::pin(async move { Ok(compile_java_for_hot_swap(cancel, javac, source_file).await?) })
+    }
+}
+
 /// Compile, inject, and resolve method IDs for a stream-eval helper class.
 ///
 /// This is the full compile+inject pipeline used by the wire-level stream debugger.
@@ -111,6 +149,36 @@ pub(crate) async fn compile_and_inject_helper(
     stages: &[String],
     terminal: Option<&str>,
     max_sample_size: usize,
+) -> Result<StreamEvalHelper, StreamEvalError> {
+    compile_and_inject_helper_with_compiler(
+        cancel,
+        jdwp,
+        javac,
+        thread,
+        frame_id,
+        location,
+        imports,
+        stages,
+        terminal,
+        max_sample_size,
+        &JavacStreamEvalCompiler,
+    )
+    .await
+}
+
+/// Compile, inject, and resolve method IDs for a stream-eval helper class using a custom compiler.
+pub(crate) async fn compile_and_inject_helper_with_compiler(
+    cancel: &CancellationToken,
+    jdwp: &JdwpClient,
+    javac: &HotSwapJavacConfig,
+    thread: ThreadId,
+    frame_id: FrameId,
+    location: Location,
+    imports: &[String],
+    stages: &[String],
+    terminal: Option<&str>,
+    max_sample_size: usize,
+    compiler: &impl StreamEvalCompiler,
 ) -> Result<StreamEvalHelper, StreamEvalError> {
     // --- Bindings -----------------------------------------------------------
     let bindings = bindings::build_frame_bindings(jdwp, thread, frame_id, location).await?;
@@ -185,7 +253,7 @@ pub(crate) async fn compile_and_inject_helper(
 
     // --- Compilation -------------------------------------------------------
     let javac = apply_stream_eval_defaults(javac);
-    let compiled = compile_java_for_hot_swap(cancel, &javac, &src_path).await?;
+    let compiled = compiler.compile(cancel, &javac, &src_path, &fqcn).await?;
 
     // --- Injection ---------------------------------------------------------
     let loader = jdwp.reference_type_class_loader(location.class_id).await?;

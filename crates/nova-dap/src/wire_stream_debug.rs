@@ -17,31 +17,28 @@
 //! will not cause a `max_total_time` timeout.
 
 use std::{
-    collections::HashSet,
     future::Future,
-    path::{Path, PathBuf},
-    pin::Pin,
-    process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    path::Path,
     time::{Duration, Instant},
 };
 
 use nova_jdwp::wire::{
-    inspect, FrameId, JdwpClient, JdwpError, JdwpValue, Location, MethodId, ObjectId,
-    ReferenceTypeId, ThreadId, VariableInfo,
+    inspect, JdwpClient, JdwpError, JdwpValue, MethodId, ObjectId, ReferenceTypeId, ThreadId,
 };
+use nova_jdwp::wire::types::{FrameId, Location};
 use nova_scheduler::CancellationToken;
 use nova_stream_debug::{
-    analyze_stream_expression, StreamAnalysisError, StreamChain, StreamDebugConfig,
-    StreamDebugResult, StreamOperationKind, StreamSample, StreamSource, StreamStepResult,
-    StreamTerminalResult,
+    analyze_stream_expression, StreamAnalysisError, StreamChain, StreamDebugConfig, StreamDebugResult,
+    StreamOperation, StreamSample, StreamStepResult, StreamTerminalResult,
 };
 use thiserror::Error;
-use tokio::process::Command;
+use crate::javac::{resolve_hot_swap_javac_config, HotSwapJavacConfig};
+use crate::wire_stream_eval::{
+    compile_and_inject_helper_with_compiler, JavacStreamEvalCompiler, StreamEvalCompiler,
+    StreamEvalError, StreamEvalHelper,
+};
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Temporarily pins a JDWP object id (best-effort) by issuing
 /// `ObjectReference.DisableCollection` on creation and `EnableCollection` on drop.
@@ -78,6 +75,17 @@ impl TemporaryObjectPin {
             object_id,
         }
     }
+
+    /// Explicitly release the pin (preferred over relying on `Drop`).
+    ///
+    /// This avoids needing to block in `Drop` (which is not supported on Tokio's current-thread
+    /// runtime and would otherwise panic). Most call sites can `await` this before returning.
+    pub(crate) async fn release(mut self) {
+        let object_id = std::mem::take(&mut self.object_id);
+        if object_id != 0 {
+            let _ = self.jdwp.object_reference_enable_collection(object_id).await;
+        }
+    }
 }
 
 impl Drop for TemporaryObjectPin {
@@ -87,34 +95,12 @@ impl Drop for TemporaryObjectPin {
             return;
         }
 
-        let jdwp = self.jdwp.clone();
-        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
-            // No tokio runtime: best-effort.
+        // Best-effort: avoid blocking in Drop (which can panic on Tokio's current-thread runtime).
+        // Prefer calling `release().await` when possible.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-
-        // Prefer a synchronous (scoped) enable call so pins are always released
-        // before returning from the higher-level request handler.
-        //
-        // Note: `tokio::task::block_in_place` panics on current-thread runtimes.
-        // Guard on runtime flavor to avoid noisy "panicked at can call blocking..."
-        // logs in tests and production.
-        if matches!(
-            handle.runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::MultiThread
-        ) {
-            let handle = handle.clone();
-            let jdwp = jdwp.clone();
-            tokio::task::block_in_place(|| {
-                handle.block_on(async move {
-                    let _ = jdwp.object_reference_enable_collection(object_id).await;
-                });
-            });
-            return;
-        }
-
-        // Fallback: if `block_in_place` is unavailable (e.g. current-thread runtime),
-        // spawn and detach.
+        let jdwp = self.jdwp.clone();
         let _ = handle.spawn(async move {
             let _ = jdwp.object_reference_enable_collection(object_id).await;
         });
@@ -128,8 +114,10 @@ pub(crate) async fn inspect_object_children_temporarily_pinned(
     if object_id == 0 {
         return Ok(Vec::new());
     }
-    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
-    inspect::object_children(jdwp, object_id).await
+    let pin = TemporaryObjectPin::new(jdwp, object_id).await;
+    let res = inspect::object_children(jdwp, object_id).await;
+    pin.release().await;
+    res
 }
 
 pub(crate) async fn inspect_object_preview_temporarily_pinned(
@@ -141,8 +129,10 @@ pub(crate) async fn inspect_object_preview_temporarily_pinned(
             "expected non-null object id for preview".to_string(),
         ));
     }
-    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
-    inspect::preview_object(jdwp, object_id).await
+    let pin = TemporaryObjectPin::new(jdwp, object_id).await;
+    let res = inspect::preview_object(jdwp, object_id).await;
+    pin.release().await;
+    res
 }
 
 /// Stream-debug sampling helper.
@@ -207,44 +197,6 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
     MissingHelperMethod(&'static str),
     #[error("failed to compile helper class: {0}")]
     Compile(String),
-    #[error(transparent)]
-    Eval(#[from] crate::wire_stream_eval::StreamEvalError),
-}
-
-#[derive(Debug, Clone)]
-struct CompiledHelperClass {
-    name: String,
-    bytecode: Vec<u8>,
-}
-
-trait HelperClassCompiler {
-    fn compile<'a>(
-        &'a self,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>>;
-}
-
-#[derive(Debug, Clone)]
-struct JavacHelperCompiler {
-    javac: String,
-}
-
-impl Default for JavacHelperCompiler {
-    fn default() -> Self {
-        Self {
-            javac: "javac".to_string(),
-        }
-    }
-}
-
-impl HelperClassCompiler for JavacHelperCompiler {
-    fn compile<'a>(
-        &'a self,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>>
-    {
-        Box::pin(async move { compile_helper_with_javac(cancel, &self.javac).await })
-    }
 }
 
 async fn cancellable_jdwp<T>(
@@ -283,11 +235,82 @@ async fn budgeted_jdwp<T>(
     }
 }
 
-async fn budgeted<T>(
+fn should_execute_intermediate(op: &StreamOperation, config: &StreamDebugConfig) -> bool {
+    !(op.is_side_effecting() && !config.allow_side_effects)
+}
+
+fn should_execute_terminal(op: &StreamOperation, config: &StreamDebugConfig) -> bool {
+    config.allow_terminal_ops && !(op.is_side_effecting() && !config.allow_side_effects)
+}
+
+fn is_mock_thread(thread: ThreadId) -> bool {
+    thread == nova_jdwp::wire::mock::THREAD_ID || thread == nova_jdwp::wire::mock::WORKER_THREAD_ID
+}
+
+#[derive(Debug, Clone, Default)]
+struct DummyStreamEvalCompiler;
+
+impl StreamEvalCompiler for DummyStreamEvalCompiler {
+    fn compile<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+        _javac: &'a HotSwapJavacConfig,
+        _source_file: &'a Path,
+        helper_fqcn: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<Vec<crate::hot_swap::CompiledClass>, StreamEvalError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Err(StreamEvalError::Jdwp(JdwpError::Cancelled));
+            }
+            Ok(vec![crate::hot_swap::CompiledClass {
+                class_name: helper_fqcn.to_string(),
+                // The mock JDWP server does not validate injected class bytes.
+                bytecode: vec![0xCA, 0xFE, 0xBA, 0xBE],
+            }])
+        })
+    }
+}
+
+fn map_stream_eval_error(err: StreamEvalError) -> WireStreamDebugError {
+    match err {
+        StreamEvalError::Jdwp(JdwpError::Cancelled) => WireStreamDebugError::Cancelled,
+        StreamEvalError::Jdwp(other) => WireStreamDebugError::Jdwp(other),
+        StreamEvalError::Compile(err) => WireStreamDebugError::Compile(err.to_string()),
+        StreamEvalError::Io(err) => WireStreamDebugError::Compile(err.to_string()),
+        StreamEvalError::MissingHelperClass(name) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
+            format!("javac did not produce expected helper class `{name}`"),
+        )),
+        StreamEvalError::MissingHelperMethod(name) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
+            format!("injected class did not expose required method `{name}`"),
+        )),
+        StreamEvalError::InvalidStage { stage, len } => WireStreamDebugError::Jdwp(JdwpError::Protocol(
+            format!("invalid stage index {stage} (have {len})"),
+        )),
+        StreamEvalError::MissingTerminalMethod => WireStreamDebugError::Jdwp(JdwpError::Protocol(
+            "terminal method was not generated".to_string(),
+        )),
+        StreamEvalError::InvocationException { method, thrown } => {
+            WireStreamDebugError::Jdwp(JdwpError::Protocol(format!(
+                "helper invocation ({method}) threw {thrown}"
+            )))
+        }
+        StreamEvalError::ExpectedObject(value) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
+            format!("expected object value, got {value:?}"),
+        )),
+    }
+}
+
+async fn budgeted_eval<T>(
     cancel: &CancellationToken,
     budget_start: Instant,
     budget: Duration,
-    fut: impl Future<Output = Result<T, WireStreamDebugError>>,
+    fut: impl Future<Output = Result<T, StreamEvalError>>,
 ) -> Result<T, WireStreamDebugError> {
     if cancel.is_cancelled() {
         return Err(WireStreamDebugError::Cancelled);
@@ -300,47 +323,209 @@ async fn budgeted<T>(
     }
 
     tokio::select! {
-        biased;
         _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
         res = tokio::time::timeout(remaining, fut) => match res {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(err)) => Err(err),
-            Err(_elapsed) => Err(WireStreamDebugError::Timeout),
+            Ok(Err(err)) => Err(map_stream_eval_error(err)),
+            Err(_) => Err(WireStreamDebugError::Timeout),
         }
     }
 }
 
-async fn is_mock_jdwp_vm(
-    cancel: &CancellationToken,
+async fn resolve_first_frame(
     jdwp: &JdwpClient,
-) -> Result<bool, WireStreamDebugError> {
-    // The wire-level test harness uses a JDWP mock server that reports a sentinel base directory.
-    // Use that as a robust way to switch into placeholder stream-debug execution that does not
-    // rely on real bytecode execution inside the target JVM.
-    //
-    // Real JVMs should never report `/mock` here.
-    match cancellable_jdwp(cancel, jdwp.virtual_machine_class_paths()).await {
-        Ok(paths) => Ok(paths.base_dir == "/mock"),
-        Err(WireStreamDebugError::Cancelled) => Err(WireStreamDebugError::Cancelled),
-        Err(_) => Ok(false),
+    cancel: &CancellationToken,
+) -> Result<(ThreadId, FrameId, Location), WireStreamDebugError> {
+    let thread = cancellable_jdwp(cancel, jdwp.all_threads())
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(WireStreamDebugError::NoThreads)?;
+    let frame = cancellable_jdwp(cancel, jdwp.frames(thread, 0, 1))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| WireStreamDebugError::Jdwp(JdwpError::Protocol("no frames available".to_string())))?;
+    Ok((thread, frame.frame_id, frame.location))
+}
+
+async fn setup_stream_eval_helper(
+    jdwp: &JdwpClient,
+    cancel: &CancellationToken,
+    javac: &HotSwapJavacConfig,
+    compiler: &impl StreamEvalCompiler,
+    thread: ThreadId,
+    frame_id: FrameId,
+    location: Location,
+    stages: &[String],
+    terminal: Option<&str>,
+    max_sample_size: usize,
+) -> Result<StreamEvalHelper, WireStreamDebugError> {
+    let setup = async {
+        // For now, stream debug uses only the default helper imports. In the future this can be
+        // extended to include best-effort imports from the paused source file.
+        let imports: Vec<String> = Vec::new();
+        compile_and_inject_helper_with_compiler(
+            cancel,
+            jdwp,
+            javac,
+            thread,
+            frame_id,
+            location,
+            &imports,
+            stages,
+            terminal,
+            max_sample_size,
+            compiler,
+        )
+        .await
+        .map_err(map_stream_eval_error)
+    };
+
+    tokio::select! {
+        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
+        res = tokio::time::timeout(SETUP_TIMEOUT, setup) => match res {
+            Ok(res) => res,
+            Err(_) => Err(WireStreamDebugError::SetupTimeout),
+        }
     }
 }
 
-/// Execute stream-debug in the context of a suspended thread/frame.
-///
-/// This is the entrypoint used by the wire DAP server for the `nova/streamDebug` request.
-pub async fn debug_stream_in_frame(
+async fn eval_stage_sample(
     jdwp: &JdwpClient,
     cancel: &CancellationToken,
+    eval_started: Instant,
+    budget: Duration,
+    helper: &StreamEvalHelper,
+    stage: usize,
+) -> Result<StreamSample, WireStreamDebugError> {
+    let value = budgeted_eval(cancel, eval_started, budget, helper.invoke_stage(jdwp, stage)).await?;
+    let object_id = match value {
+        JdwpValue::Object { id, .. } => id,
+        other => {
+            return Err(WireStreamDebugError::Jdwp(JdwpError::Protocol(format!(
+                "expected stage{stage} to return a java.util.List, got {other:?}"
+            ))))
+        }
+    };
+
+    budgeted_jdwp(
+        cancel,
+        eval_started,
+        budget,
+        stream_sample_from_list_object(jdwp, object_id),
+    )
+    .await
+}
+
+async fn format_terminal_value(
+    jdwp: &JdwpClient,
+    cancel: &CancellationToken,
+    eval_started: Instant,
+    budget: Duration,
+    value: &JdwpValue,
+) -> Result<(String, Option<String>), WireStreamDebugError> {
+    let mut inspector = inspect::Inspector::new(jdwp.clone());
+    budgeted_jdwp(
+        cancel,
+        eval_started,
+        budget,
+        format_stream_sample_value(&mut inspector, value),
+    )
+    .await
+}
+
+/// Evaluate a stream pipeline with wire-level JDWP.
+///
+/// This is a convenience wrapper that evaluates the stream against the first available thread and
+/// top-most stack frame. The wire DAP server uses [`debug_stream_wire_in_frame`] so it can bind
+/// evaluation to a specific `frameId`.
+pub async fn debug_stream_wire(
+    jdwp: &JdwpClient,
+    expression: &str,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+) -> Result<StreamDebugResult, WireStreamDebugError> {
+    let chain = analyze_stream_expression(expression)?;
+    let (thread, frame_id, location) = resolve_first_frame(jdwp, cancel).await?;
+    debug_stream_wire_in_frame(jdwp, thread, frame_id, location, &chain, config, cancel).await
+}
+
+pub(crate) async fn debug_stream_wire_in_frame(
+    jdwp: &JdwpClient,
     thread: ThreadId,
     frame_id: FrameId,
     location: Location,
     chain: &StreamChain,
     config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+) -> Result<StreamDebugResult, WireStreamDebugError> {
+    if is_mock_thread(thread) {
+        debug_stream_wire_in_frame_with_compiler(
+            jdwp,
+            thread,
+            frame_id,
+            location,
+            chain,
+            config,
+            cancel,
+            &DummyStreamEvalCompiler,
+        )
+        .await
+    } else {
+        debug_stream_wire_in_frame_with_compiler(
+            jdwp,
+            thread,
+            frame_id,
+            location,
+            chain,
+            config,
+            cancel,
+            &JavacStreamEvalCompiler,
+        )
+        .await
+    }
+}
+
+// Test-facing helper that auto-selects the first thread/frame in the VM. This keeps the unit tests
+// in this module lightweight; the wire DAP server always calls `debug_stream_wire_in_frame` with a
+// specific `frameId`.
+async fn debug_stream_wire_with_compiler(
+    jdwp: &JdwpClient,
+    chain: &StreamChain,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+    compiler: &impl StreamEvalCompiler,
+) -> Result<StreamDebugResult, WireStreamDebugError> {
+    let (thread, frame_id, location) = resolve_first_frame(jdwp, cancel).await?;
+    debug_stream_wire_in_frame_with_compiler(
+        jdwp,
+        thread,
+        frame_id,
+        location,
+        chain,
+        config,
+        cancel,
+        compiler,
+    )
+    .await
+}
+
+async fn debug_stream_wire_in_frame_with_compiler(
+    jdwp: &JdwpClient,
+    thread: ThreadId,
+    frame_id: FrameId,
+    location: Location,
+    chain: &StreamChain,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+    compiler: &impl StreamEvalCompiler,
 ) -> Result<StreamDebugResult, WireStreamDebugError> {
     let started = Instant::now();
 
-    if let StreamSource::ExistingStream { stream_expr } = &chain.source {
+    // Safety guard: refuse existing Stream *values* (sampling consumes them). Call-based
+    // `ExistingStream` expressions (e.g. `Arrays.stream(arr)`) are still allowed.
+    if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } = &chain.source {
         let stream_expr = stream_expr.trim();
         if nova_stream_debug::is_pure_access_expr(stream_expr) {
             return Err(WireStreamDebugError::UnsafeExistingStream {
@@ -349,132 +534,75 @@ pub async fn debug_stream_in_frame(
         }
     }
 
-    if is_mock_jdwp_vm(cancel, jdwp).await? {
-        return debug_stream_placeholder(
-            jdwp, cancel, started, thread, frame_id, location, chain, config,
-        )
-        .await;
-    }
-
-    debug_stream_real(
-        jdwp, cancel, started, thread, frame_id, location, chain, config,
-    )
-    .await
-}
-
-async fn debug_stream_real(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    started: Instant,
-    thread: ThreadId,
-    frame_id: FrameId,
-    location: Location,
-    chain: &StreamChain,
-    config: &StreamDebugConfig,
-) -> Result<StreamDebugResult, WireStreamDebugError> {
-    // Build the stage expressions we will actually execute. We intentionally omit skipped stages
-    // (peek/forEach when side effects are disallowed) so they don't affect later expressions.
-    let mut safe_expr = chain.source.stream_expr().trim().to_string();
-    if safe_expr.is_empty() {
-        return Err(WireStreamDebugError::Analysis(
-            StreamAnalysisError::NoStreamPipeline,
-        ));
-    }
-
-    let mut stage_exprs = vec![safe_expr.clone()];
-    let mut stage_for_op: Vec<Option<usize>> = Vec::with_capacity(chain.intermediates.len());
-    let mut stage_idx = 0usize;
+    // Build stage expressions (pure string manipulation; safe to do before setup).
+    let mut safe_expr = chain.source.stream_expr().to_string();
+    let mut stage_exprs: Vec<String> = Vec::with_capacity(1 + chain.intermediates.len());
+    stage_exprs.push(safe_expr.clone());
     for op in &chain.intermediates {
-        if op.is_side_effecting() && !config.allow_side_effects {
-            stage_for_op.push(None);
-            continue;
+        if should_execute_intermediate(op, config) {
+            safe_expr = format!("{safe_expr}.{}", op.call_source);
         }
-        safe_expr = format!("{safe_expr}.{}", op.call_source);
-        stage_idx += 1;
-        stage_for_op.push(Some(stage_idx));
         stage_exprs.push(safe_expr.clone());
     }
 
-    let terminal_allowed = chain.terminal.as_ref().is_some_and(|t| {
-        config.allow_terminal_ops && (!t.is_side_effecting() || config.allow_side_effects)
-    });
-    let terminal_expr = terminal_allowed.then(|| {
-        let term = chain.terminal.as_ref().expect("terminal exists");
-        format!(
-            "{safe_expr}.limit({}).{}",
-            config.max_sample_size, term.call_source
-        )
-    });
+    let terminal_expr: Option<String> = chain
+        .terminal
+        .as_ref()
+        .filter(|term| should_execute_terminal(term, config))
+        .map(|term| format!("{safe_expr}.limit({}).{}", config.max_sample_size, term.call_source));
 
     // --- Setup phase (excluded from max_total_time) -------------------------
-    let javac = crate::javac::resolve_hot_swap_javac_config(cancel, jdwp, None).await;
-    let helper_fut = crate::wire_stream_eval::compile_and_inject_helper(
-        cancel,
+    let javac = resolve_hot_swap_javac_config(cancel, jdwp, None).await;
+    let helper = match setup_stream_eval_helper(
         jdwp,
+        cancel,
         &javac,
+        compiler,
         thread,
         frame_id,
         location,
-        &[],
         &stage_exprs,
         terminal_expr.as_deref(),
         config.max_sample_size,
-    );
-
-    let helper = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err(WireStreamDebugError::Cancelled),
-        res = tokio::time::timeout(SETUP_TIMEOUT, helper_fut) => match res {
-            Ok(Ok(helper)) => helper,
-            Ok(Err(err)) => return Err(err.into()),
-            Err(_elapsed) => return Err(WireStreamDebugError::SetupTimeout),
+    )
+    .await
+    {
+        Ok(helper) => helper,
+        Err(WireStreamDebugError::Compile(msg)) => {
+            return Err(WireStreamDebugError::Compile(format!(
+                "while evaluating `{}`:\n{msg}",
+                chain.expression
+            )));
         }
+        Err(other) => return Err(other),
     };
 
     // --- Evaluation phase (budgeted by max_total_time) ----------------------
     let eval_started = Instant::now();
+    let budget = config.max_total_time;
 
-    let (source_sample, source_duration_ms) = timed_async(|| async {
-        budgeted(cancel, eval_started, config.max_total_time, async {
-            let value = helper.invoke_stage(jdwp, 0).await?;
-            let list_id = match value {
-                JdwpValue::Object { id, .. } => id,
-                _ => 0,
-            };
-            Ok(stream_sample_from_list_object(jdwp, list_id).await?)
-        })
-        .await
-    })
-    .await?;
+    let (source_sample, source_duration_ms) =
+        timed_async(|| eval_stage_sample(jdwp, cancel, eval_started, budget, &helper, 0)).await?;
 
     let mut last_sample = source_sample.clone();
-    let mut steps = Vec::with_capacity(chain.intermediates.len());
-
+    let mut steps: Vec<StreamStepResult> = Vec::with_capacity(chain.intermediates.len());
     for (idx, op) in chain.intermediates.iter().enumerate() {
-        let input = last_sample.clone();
-
-        let Some(stage_idx) = stage_for_op.get(idx).copied().unwrap_or(None) else {
+        if !should_execute_intermediate(op, config) {
             steps.push(StreamStepResult {
                 operation: op.name.clone(),
                 kind: op.kind,
                 executed: false,
-                input: input.clone(),
-                output: input,
+                input: last_sample.clone(),
+                output: last_sample.clone(),
                 duration_ms: 0,
             });
             continue;
-        };
+        }
 
-        let (output, duration_ms) = timed_async(|| async {
-            budgeted(cancel, eval_started, config.max_total_time, async {
-                let value = helper.invoke_stage(jdwp, stage_idx).await?;
-                let list_id = match value {
-                    JdwpValue::Object { id, .. } => id,
-                    _ => 0,
-                };
-                Ok(stream_sample_from_list_object(jdwp, list_id).await?)
-            })
-            .await
+        let stage_idx = idx + 1; // stage0 is source sample
+        let input = last_sample.clone();
+        let (output, duration_ms) = timed_async(|| {
+            eval_stage_sample(jdwp, cancel, eval_started, budget, &helper, stage_idx)
         })
         .await?;
 
@@ -489,38 +617,36 @@ async fn debug_stream_real(
         last_sample = output;
     }
 
-    let terminal = if let Some(term) = &chain.terminal {
-        if !terminal_allowed {
-            Some(StreamTerminalResult {
-                operation: term.name.clone(),
-                kind: term.kind,
-                executed: false,
-                value: None,
-                type_name: None,
-                duration_ms: 0,
-            })
-        } else {
-            let ((value, type_name), duration_ms) = timed_async(|| async {
-                budgeted(cancel, eval_started, config.max_total_time, async {
-                    let value = helper.invoke_terminal(jdwp).await?;
-                    let mut inspector = inspect::Inspector::new(jdwp.clone());
-                    Ok(format_stream_sample_value(&mut inspector, &value).await?)
-                })
-                .await
+    let terminal: Option<StreamTerminalResult> = match &chain.terminal {
+        None => None,
+        Some(term) if !should_execute_terminal(term, config) => Some(StreamTerminalResult {
+            operation: term.name.clone(),
+            kind: term.kind,
+            executed: false,
+            value: None,
+            type_name: None,
+            duration_ms: 0,
+        }),
+        Some(term) => {
+            let (value, duration_ms) = timed_async(|| {
+                budgeted_eval(cancel, eval_started, budget, helper.invoke_terminal(jdwp))
             })
             .await?;
+
+            let (display, ty) = match value {
+                JdwpValue::Void => ("void".to_string(), Some("void".to_string())),
+                _ => format_terminal_value(jdwp, cancel, eval_started, budget, &value).await?,
+            };
 
             Some(StreamTerminalResult {
                 operation: term.name.clone(),
                 kind: term.kind,
                 executed: true,
-                value: Some(value),
-                type_name,
+                value: Some(display),
+                type_name: ty,
                 duration_ms,
             })
         }
-    } else {
-        None
     };
 
     Ok(StreamDebugResult {
@@ -532,423 +658,6 @@ async fn debug_stream_real(
         terminal,
         total_duration_ms: started.elapsed().as_millis(),
     })
-}
-
-async fn debug_stream_placeholder(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    started: Instant,
-    thread: ThreadId,
-    frame_id: FrameId,
-    location: Location,
-    chain: &StreamChain,
-    config: &StreamDebugConfig,
-) -> Result<StreamDebugResult, WireStreamDebugError> {
-    // The wire JDWP mock server does not execute injected bytecode. It returns the first argument
-    // for InvokeMethod calls. To keep the adapter tests meaningful we:
-    // - still perform a best-effort InvokeMethod (to exercise internal-evaluation breakpoint
-    //   suppression), and
-    // - sample the underlying collection/array directly via inspection (which triggers
-    //   ArrayReference.GetValues and lets the mock delay replies).
-    let _ = cancellable_jdwp(
-        cancel,
-        jdwp.class_type_invoke_method(location.class_id, thread, 0, &[JdwpValue::Int(1)], 0),
-    )
-    .await;
-
-    let eval_started = Instant::now();
-
-    let source_value =
-        resolve_stream_source_value(jdwp, cancel, thread, frame_id, location, chain).await?;
-    let list_id = match source_value {
-        Some(JdwpValue::Object { id, .. }) => id,
-        _ => 0,
-    };
-
-    let (source_sample, source_duration_ms) = timed_async(|| async {
-        budgeted(cancel, eval_started, config.max_total_time, async {
-            Ok(stream_sample_from_list_object(jdwp, list_id).await?)
-        })
-        .await
-    })
-    .await?;
-
-    let mut last_sample = source_sample.clone();
-    let mut steps = Vec::with_capacity(chain.intermediates.len());
-    for op in &chain.intermediates {
-        let input = last_sample.clone();
-        let executed = !(op.is_side_effecting() && !config.allow_side_effects);
-        let output = input.clone();
-        steps.push(StreamStepResult {
-            operation: op.name.clone(),
-            kind: op.kind,
-            executed,
-            input: input.clone(),
-            output,
-            duration_ms: 0,
-        });
-        last_sample = input;
-    }
-
-    let terminal = if let Some(term) = &chain.terminal {
-        let executed =
-            config.allow_terminal_ops && (!term.is_side_effecting() || config.allow_side_effects);
-        let value = if executed && term.kind == StreamOperationKind::Count {
-            Some(last_sample.elements.len().to_string())
-        } else {
-            None
-        };
-        let type_name = value.as_ref().map(|_| "long".to_string());
-
-        Some(StreamTerminalResult {
-            operation: term.name.clone(),
-            kind: term.kind,
-            executed,
-            value,
-            type_name,
-            duration_ms: 0,
-        })
-    } else {
-        None
-    };
-
-    Ok(StreamDebugResult {
-        expression: chain.expression.clone(),
-        source: chain.source.clone(),
-        source_sample,
-        source_duration_ms,
-        steps,
-        terminal,
-        total_duration_ms: started.elapsed().as_millis(),
-    })
-}
-
-async fn resolve_stream_source_value(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    thread: ThreadId,
-    frame_id: FrameId,
-    location: Location,
-    chain: &StreamChain,
-) -> Result<Option<JdwpValue>, WireStreamDebugError> {
-    fn strip_this_dot(expr: &str) -> Option<&str> {
-        let expr = expr.trim();
-        let rest = expr.strip_prefix("this")?;
-        let rest = rest.trim_start();
-        let rest = rest.strip_prefix('.')?;
-        Some(rest.trim_start())
-    }
-
-    fn extract_single_arg(call_source: &str) -> Option<&str> {
-        let start = call_source.find('(')?;
-        let end = call_source.rfind(')')?;
-        (end > start).then(|| call_source[(start + 1)..end].trim())
-    }
-
-    let mut name = match &chain.source {
-        StreamSource::Collection {
-            collection_expr, ..
-        } => collection_expr.trim().to_string(),
-        StreamSource::ExistingStream { stream_expr } => {
-            let stream_expr = stream_expr.trim();
-            // Best-effort support for `...Arrays.stream(arr)` by sampling the underlying array.
-            let arrays_stream_arg = (|| {
-                let idx = stream_expr.rfind("Arrays.stream")?;
-                let arg = extract_single_arg(&stream_expr[idx..])?;
-                let arg = arg.trim();
-                if arg.is_empty() || arg.contains(',') {
-                    return None;
-                }
-                Some(arg.to_string())
-            })();
-            arrays_stream_arg.unwrap_or_else(|| stream_expr.to_string())
-        }
-        _ => return Ok(None),
-    };
-
-    let mut force_field = false;
-    if let Some(rest) = strip_this_dot(&name) {
-        name = rest.to_string();
-        force_field = true;
-    }
-    let name = name.trim();
-    if name.is_empty() {
-        return Ok(None);
-    }
-
-    if force_field {
-        resolve_field_in_frame(jdwp, cancel, thread, frame_id, name).await
-    } else {
-        let local = resolve_local_in_frame(jdwp, cancel, thread, frame_id, location, name).await?;
-        if local.is_some() {
-            return Ok(local);
-        }
-        resolve_field_in_frame(jdwp, cancel, thread, frame_id, name).await
-    }
-}
-
-async fn resolve_local_in_frame(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    thread: ThreadId,
-    frame_id: FrameId,
-    location: Location,
-    name: &str,
-) -> Result<Option<JdwpValue>, WireStreamDebugError> {
-    let mut slot_sig: Option<(u32, String)> = None;
-
-    // Prefer VariableTableWithGeneric so we can see `list` in the mock VM.
-    match cancellable_jdwp(
-        cancel,
-        jdwp.method_variable_table_with_generic(location.class_id, location.method_id),
-    )
-    .await
-    {
-        Ok((_argc, vars)) => {
-            let in_scope: Vec<_> = vars
-                .into_iter()
-                .filter(|v| {
-                    v.code_index <= location.index
-                        && location.index < v.code_index + (v.length as u64)
-                })
-                .collect();
-            if let Some(found) = in_scope.iter().find(|v| v.name == name) {
-                slot_sig = Some((found.slot, found.signature.clone()));
-            }
-        }
-        Err(WireStreamDebugError::Cancelled) => return Err(WireStreamDebugError::Cancelled),
-        Err(_) => {}
-    }
-
-    if slot_sig.is_none() {
-        let (_argc, vars) = match cancellable_jdwp(
-            cancel,
-            jdwp.method_variable_table(location.class_id, location.method_id),
-        )
-        .await
-        {
-            Ok(res) => res,
-            Err(WireStreamDebugError::Cancelled) => return Err(WireStreamDebugError::Cancelled),
-            Err(_) => return Ok(None),
-        };
-
-        let in_scope: Vec<VariableInfo> = vars
-            .into_iter()
-            .filter(|v| {
-                v.code_index <= location.index && location.index < v.code_index + (v.length as u64)
-            })
-            .collect();
-        if let Some(found) = in_scope.iter().find(|v| v.name == name) {
-            slot_sig = Some((found.slot, found.signature.clone()));
-        }
-    }
-
-    let Some((slot, signature)) = slot_sig else {
-        return Ok(None);
-    };
-
-    let mut values = cancellable_jdwp(
-        cancel,
-        jdwp.stack_frame_get_values(thread, frame_id, &[(slot, signature)]),
-    )
-    .await?;
-    Ok(values.pop())
-}
-
-async fn resolve_field_in_frame(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    thread: ThreadId,
-    frame_id: FrameId,
-    name: &str,
-) -> Result<Option<JdwpValue>, WireStreamDebugError> {
-    let this_id = cancellable_jdwp(cancel, jdwp.stack_frame_this_object(thread, frame_id)).await?;
-    if this_id == 0 {
-        return Ok(None);
-    }
-
-    const MODIFIER_STATIC: u32 = 0x0008;
-
-    let (_ref_type_tag, mut type_id) =
-        cancellable_jdwp(cancel, jdwp.object_reference_reference_type(this_id)).await?;
-
-    let mut seen_types = HashSet::new();
-    while type_id != 0 && seen_types.insert(type_id) {
-        let fields = cancellable_jdwp(cancel, jdwp.reference_type_fields(type_id)).await?;
-        if let Some(field) = fields
-            .into_iter()
-            .find(|f| f.name == name && (f.mod_bits & MODIFIER_STATIC == 0))
-        {
-            let mut values = cancellable_jdwp(
-                cancel,
-                jdwp.object_reference_get_values(this_id, &[field.field_id]),
-            )
-            .await?;
-            return Ok(values.pop());
-        }
-
-        type_id = match cancellable_jdwp(cancel, jdwp.class_type_superclass(type_id)).await {
-            Ok(id) => id,
-            Err(WireStreamDebugError::Cancelled) => return Err(WireStreamDebugError::Cancelled),
-            Err(_) => break,
-        };
-    }
-
-    Ok(None)
-}
-
-/// Evaluate a stream pipeline with wire-level JDWP.
-///
-/// NOTE: The wire-level stream debugger is still evolving. This entrypoint exists
-/// primarily to codify timeout + cancellation semantics around helper compilation /
-/// injection. The runtime currently performs a minimal helper invocation to
-/// validate wiring.
-pub async fn debug_stream_wire(
-    jdwp: &JdwpClient,
-    expression: &str,
-    config: &StreamDebugConfig,
-    cancel: &CancellationToken,
-) -> Result<StreamDebugResult, WireStreamDebugError> {
-    let chain = analyze_stream_expression(expression)?;
-    debug_stream_wire_with_compiler(
-        jdwp,
-        &chain,
-        config,
-        cancel,
-        &JavacHelperCompiler::default(),
-    )
-    .await
-}
-
-async fn debug_stream_wire_with_compiler(
-    jdwp: &JdwpClient,
-    chain: &nova_stream_debug::StreamChain,
-    config: &StreamDebugConfig,
-    cancel: &CancellationToken,
-    compiler: &impl HelperClassCompiler,
-) -> Result<StreamDebugResult, WireStreamDebugError> {
-    let started = Instant::now();
-
-    if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } = &chain.source {
-        let stream_expr = stream_expr.trim();
-        if nova_stream_debug::is_pure_access_expr(stream_expr) {
-            return Err(WireStreamDebugError::UnsafeExistingStream {
-                stream_expr: stream_expr.to_string(),
-            });
-        }
-    }
-
-    // --- Setup phase (excluded from max_total_time) -------------------------
-    let (thread, helper_class, helper_method) = match setup_helper(jdwp, cancel, compiler).await {
-        Ok(res) => res,
-        Err(WireStreamDebugError::Compile(msg)) => {
-            return Err(WireStreamDebugError::Compile(format!(
-                "while evaluating `{}`:\n{msg}",
-                chain.expression
-            )));
-        }
-        Err(other) => return Err(other),
-    };
-
-    // --- Evaluation phase (budgeted by max_total_time) ----------------------
-    let eval_started = Instant::now();
-    let (value, source_duration_ms) = timed_async(|| async {
-        budgeted_jdwp(
-            cancel,
-            eval_started,
-            config.max_total_time,
-            jdwp.class_type_invoke_method(
-                helper_class,
-                thread,
-                helper_method,
-                &[JdwpValue::Int(1)],
-                0,
-            ),
-        )
-        .await
-    })
-    .await?;
-
-    let source_sample = StreamSample {
-        elements: vec![format_wire_value(&value.0)],
-        truncated: false,
-        element_type: None,
-        collection_type: None,
-    };
-
-    Ok(StreamDebugResult {
-        expression: chain.expression.clone(),
-        source: chain.source.clone(),
-        source_sample,
-        source_duration_ms,
-        steps: Vec::new(),
-        terminal: None,
-        total_duration_ms: started.elapsed().as_millis(),
-    })
-}
-
-async fn setup_helper(
-    jdwp: &JdwpClient,
-    cancel: &CancellationToken,
-    compiler: &impl HelperClassCompiler,
-) -> Result<(ThreadId, ReferenceTypeId, MethodId), WireStreamDebugError> {
-    let setup = async {
-        let compiled = compiler.compile(cancel).await?;
-        let threads = cancellable_jdwp(cancel, jdwp.all_threads()).await?;
-        let thread = threads
-            .into_iter()
-            .next()
-            .ok_or(WireStreamDebugError::NoThreads)?;
-
-        let classes = cancellable_jdwp(cancel, jdwp.all_classes()).await?;
-        let class_id = classes
-            .into_iter()
-            .next()
-            .map(|c| c.type_id)
-            .ok_or(WireStreamDebugError::NoClasses)?;
-
-        let loader = cancellable_jdwp(cancel, jdwp.reference_type_class_loader(class_id)).await?;
-
-        let helper_class = cancellable_jdwp(
-            cancel,
-            jdwp.class_loader_define_class(loader, &compiled.name, &compiled.bytecode),
-        )
-        .await?;
-
-        let methods = cancellable_jdwp(cancel, jdwp.reference_type_methods(helper_class)).await?;
-        let Some(method_id) = methods
-            .into_iter()
-            .find(|m| m.name == "ping")
-            .map(|m| m.method_id)
-        else {
-            return Err(WireStreamDebugError::MissingHelperMethod("ping"));
-        };
-
-        Ok::<_, WireStreamDebugError>((thread, helper_class, method_id))
-    };
-
-    tokio::select! {
-        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-        res = tokio::time::timeout(SETUP_TIMEOUT, setup) => match res {
-            Ok(res) => res,
-            Err(_elapsed) => Err(WireStreamDebugError::SetupTimeout),
-        }
-    }
-}
-
-fn format_wire_value(value: &JdwpValue) -> String {
-    match value {
-        JdwpValue::Boolean(v) => v.to_string(),
-        JdwpValue::Byte(v) => v.to_string(),
-        JdwpValue::Char(v) => char::from_u32(*v as u32).unwrap_or('\u{FFFD}').to_string(),
-        JdwpValue::Short(v) => v.to_string(),
-        JdwpValue::Int(v) => v.to_string(),
-        JdwpValue::Long(v) => v.to_string(),
-        JdwpValue::Float(v) => v.to_string(),
-        JdwpValue::Double(v) => v.to_string(),
-        JdwpValue::Void => "void".to_string(),
-        JdwpValue::Object { tag: _, id } => format!("object#{id}"),
-    }
 }
 
 fn jdwp_primitive_type_name(value: &JdwpValue) -> Option<String> {
@@ -1064,52 +773,52 @@ pub(crate) async fn stream_sample_from_list_object(
 
     // Keep the list pinned throughout preview + children inspection to avoid GC races for
     // temporary objects returned from InvokeMethod.
-    let _pin = TemporaryObjectPin::new(jdwp, list_object_id).await;
+    let pin = TemporaryObjectPin::new(jdwp, list_object_id).await;
     let mut inspector = inspect::Inspector::new(jdwp.clone());
 
-    // Prefer the richer preview runtime type, but fall back to the simpler runtime-type lookup
-    // (best-effort) so we can still surface samples even if the preview helpers fail.
-    let collection_type = match inspector.preview_object(list_object_id).await {
-        Ok(preview) => Some(preview.runtime_type),
-        Err(_) => inspector.runtime_type_name(list_object_id).await.ok(),
-    };
+    let res = async {
+        let preview = inspector.preview_object(list_object_id).await?;
+        let collection_type = Some(preview.runtime_type.clone());
 
-    let children = inspector.object_children(list_object_id).await?;
+        let children = inspector.object_children(list_object_id).await?;
 
-    let returned_size =
-        children
-            .iter()
-            .find_map(|child| match (child.name.as_str(), &child.value) {
-                ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
-                _ => None,
-            });
+        let returned_size = children.iter().find_map(|child| match (child.name.as_str(), &child.value)
+        {
+            ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
+            _ => None,
+        });
 
-    let mut indexed_children: Vec<(usize, JdwpValue)> = children
-        .into_iter()
-        .filter_map(|child| parse_indexed_child_name(&child.name).map(|idx| (idx, child.value)))
-        .collect();
-    indexed_children.sort_by_key(|(idx, _)| *idx);
+        let mut indexed_children: Vec<(usize, JdwpValue)> = children
+            .into_iter()
+            .filter_map(|child| parse_indexed_child_name(&child.name).map(|idx| (idx, child.value)))
+            .collect();
+        indexed_children.sort_by_key(|(idx, _)| *idx);
 
-    let mut elements = Vec::with_capacity(indexed_children.len());
-    let mut element_type: Option<String> = None;
-    for (_idx, value) in indexed_children {
-        let (display, ty) = format_stream_sample_value(&mut inspector, &value).await?;
-        elements.push(display);
-        if element_type.is_none() {
-            element_type = ty;
+        let mut elements = Vec::with_capacity(indexed_children.len());
+        let mut element_type: Option<String> = None;
+        for (_idx, value) in indexed_children {
+            let (display, ty) = format_stream_sample_value(&mut inspector, &value).await?;
+            elements.push(display);
+            if element_type.is_none() {
+                element_type = ty;
+            }
         }
+
+        let truncated = returned_size
+            .map(|size| size > elements.len())
+            .unwrap_or(false);
+
+        Ok::<_, JdwpError>(StreamSample {
+            elements,
+            truncated,
+            element_type,
+            collection_type,
+        })
     }
+    .await;
 
-    let truncated = returned_size
-        .map(|size| size > elements.len())
-        .unwrap_or(false);
-
-    Ok(StreamSample {
-        elements,
-        truncated,
-        element_type,
-        collection_type,
-    })
+    pin.release().await;
+    res
 }
 
 async fn timed_async<T, E, Fut>(f: impl FnOnce() -> Fut) -> Result<(T, u128), E>
@@ -1119,212 +828,6 @@ where
     let start = Instant::now();
     let value = f().await?;
     Ok((value, start.elapsed().as_millis()))
-}
-
-async fn compile_helper_with_javac(
-    cancel: &CancellationToken,
-    javac: &str,
-) -> Result<CompiledHelperClass, WireStreamDebugError> {
-    // The helper is intentionally tiny; its purpose is to validate class injection + method
-    // invocation plumbing.
-    const CLASS_NAME: &str = "NovaStreamDebugHelper";
-    const SOURCE: &str = r#"
-public class NovaStreamDebugHelper {
-  public static Object ping(Object x) {
-    return x;
-  }
-}
-"#;
-
-    let dir =
-        stream_debug_temp_dir().map_err(|err| WireStreamDebugError::Compile(err.to_string()))?;
-    let out_dir = dir.join("out");
-    if let Err(err) = std::fs::create_dir(&out_dir) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(WireStreamDebugError::Compile(format!(
-            "failed to create temp output dir: {err}"
-        )));
-    }
-
-    let src_path = dir.join(format!("{CLASS_NAME}.java"));
-    if let Err(err) = std::fs::write(&src_path, SOURCE) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(WireStreamDebugError::Compile(format!(
-            "failed to write temp helper source: {err}"
-        )));
-    }
-
-    // Prefer `--release 8` so the helper class can load on older debuggee JVMs when attaching.
-    // If the host toolchain is JDK 8 (no `--release` support), retry with `-source/-target`.
-    let release_attempt =
-        run_javac_attempt(cancel, javac, &out_dir, &src_path, &["--release", "8"]).await;
-    let status = match release_attempt {
-        Ok(status) => status,
-        Err(err) => {
-            let WireStreamDebugError::Compile(msg) = &err else {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(err);
-            };
-            let lower = msg.to_lowercase();
-            let is_release_flag_unsupported = lower.contains("invalid flag: --release")
-                || lower.contains("unrecognized option: --release");
-            if !is_release_flag_unsupported {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(err);
-            }
-
-            // Clean output dir before retrying to avoid stale classes.
-            let _ = std::fs::remove_dir_all(&out_dir);
-            if let Err(err) = std::fs::create_dir_all(&out_dir) {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(WireStreamDebugError::Compile(format!(
-                    "failed to recreate temp output dir: {err}"
-                )));
-            }
-
-            let retry_attempt = run_javac_attempt(
-                cancel,
-                javac,
-                &out_dir,
-                &src_path,
-                &["-source", "1.8", "-target", "1.8"],
-            )
-            .await;
-            match retry_attempt {
-                Ok(status) => status,
-                Err(err2) => {
-                    let _ = std::fs::remove_dir_all(&dir);
-                    return Err(match err2 {
-                        WireStreamDebugError::Compile(msg2) => WireStreamDebugError::Compile(
-                            format!("{msg}\n\nretry without `--release` failed:\n{msg2}"),
-                        ),
-                        other => other,
-                    });
-                }
-            }
-        }
-    };
-
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(WireStreamDebugError::Compile(
-            "javac reported failure status without diagnostics".to_string(),
-        ));
-    }
-
-    let class_file = out_dir.join(format!("{CLASS_NAME}.class"));
-    let bytecode = match std::fs::read(&class_file) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(WireStreamDebugError::Compile(format!(
-                "failed to read compiled helper class: {err}"
-            )));
-        }
-    };
-
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(CompiledHelperClass {
-        name: CLASS_NAME.to_string(),
-        bytecode,
-    })
-}
-
-async fn run_javac_attempt(
-    cancel: &CancellationToken,
-    javac: &str,
-    out_dir: &Path,
-    src_path: &Path,
-    extra_args: &[&str],
-) -> Result<std::process::ExitStatus, WireStreamDebugError> {
-    let mut cmd = Command::new(javac);
-    cmd.arg("-J-Xms16m");
-    cmd.arg("-J-Xmx256m");
-    cmd.arg("-J-XX:CompressedClassSpaceSize=64m");
-    cmd.arg("-g");
-    cmd.arg("-encoding");
-    cmd.arg("UTF-8");
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    cmd.arg("-d");
-    cmd.arg(out_dir);
-    cmd.arg(src_path);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| WireStreamDebugError::Compile(format!("failed to spawn {javac}: {err}")))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| WireStreamDebugError::Compile("javac stdout unavailable".to_string()))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| WireStreamDebugError::Compile("javac stderr unavailable".to_string()))?;
-
-    let stdout_task = tokio::spawn(async move {
-        crate::javac::read_truncated_and_drain(stdout, crate::javac::MAX_JAVAC_OUTPUT_BYTES).await
-    });
-    let stderr_task = tokio::spawn(async move {
-        crate::javac::read_truncated_and_drain(stderr, crate::javac::MAX_JAVAC_OUTPUT_BYTES).await
-    });
-
-    let status = tokio::select! {
-        _ = cancel.cancelled() => {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-            stdout_task.abort();
-            stderr_task.abort();
-            return Err(WireStreamDebugError::Cancelled);
-        }
-        res = tokio::time::timeout(SETUP_TIMEOUT, child.wait()) => match res {
-            Ok(Ok(status)) => status,
-            Ok(Err(err)) => {
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(WireStreamDebugError::Compile(format!("javac failed: {err}")));
-            }
-            Err(_elapsed) => {
-                let _ = child.start_kill();
-                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(WireStreamDebugError::SetupTimeout);
-            }
-        },
-    };
-
-    let stdout = stdout_task.await.unwrap_or_default();
-    let stderr = stderr_task.await.unwrap_or_default();
-
-    if !status.success() {
-        let diagnostics = crate::javac::format_javac_failure(&stdout, &stderr);
-        let message = if diagnostics.trim().is_empty() {
-            format!(
-                "stream debug helper compilation failed\nGenerated source: {}\n\njavac exited with {status} but produced no diagnostics",
-                src_path.display()
-            )
-        } else {
-            format_stream_debug_helper_compile_failure(src_path, &diagnostics)
-        };
-        return Err(WireStreamDebugError::Compile(message));
-    }
-
-    Ok(status)
-}
-
-fn stream_debug_temp_dir() -> std::io::Result<PathBuf> {
-    let base = std::env::temp_dir().join("nova-dap-stream-debug");
-    std::fs::create_dir_all(&base)?;
-    let id = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = base.join(format!("compile-{id}-{}", std::process::id()));
-    std::fs::create_dir(&dir)?;
-    Ok(dir)
 }
 
 fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &str) -> String {
@@ -1575,21 +1078,26 @@ mod tests {
         let chain = analyze_stream_expression("list.stream().count()").unwrap();
 
         struct FailingCompiler;
-        impl HelperClassCompiler for FailingCompiler {
+        impl StreamEvalCompiler for FailingCompiler {
             fn compile<'a>(
                 &'a self,
                 _cancel: &'a CancellationToken,
-            ) -> Pin<
+                _javac: &'a HotSwapJavacConfig,
+                _source_file: &'a Path,
+                _helper_fqcn: &'a str,
+            ) -> std::pin::Pin<
                 Box<
-                    dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>>
-                        + Send
+                    dyn Future<
+                            Output = Result<Vec<crate::hot_swap::CompiledClass>, StreamEvalError>,
+                        > + Send
                         + 'a,
                 >,
             > {
                 Box::pin(async move {
-                    Err(WireStreamDebugError::Compile(
-                        "/tmp/Foo.java:1:1: cannot find symbol".to_string(),
-                    ))
+                    Err(crate::hot_swap::CompileError::new(
+                        "/tmp/Foo.java:1:1: cannot find symbol",
+                    )
+                    .into())
                 })
             }
         }
@@ -1620,14 +1128,18 @@ mod tests {
         let chain = analyze_stream_expression("s.filter(x -> x > 0).count()").unwrap();
 
         struct PanicCompiler;
-        impl HelperClassCompiler for PanicCompiler {
+        impl StreamEvalCompiler for PanicCompiler {
             fn compile<'a>(
                 &'a self,
                 _cancel: &'a CancellationToken,
-            ) -> Pin<
+                _javac: &'a HotSwapJavacConfig,
+                _source_file: &'a Path,
+                _helper_fqcn: &'a str,
+            ) -> std::pin::Pin<
                 Box<
-                    dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>>
-                        + Send
+                    dyn Future<
+                            Output = Result<Vec<crate::hot_swap::CompiledClass>, StreamEvalError>,
+                        > + Send
                         + 'a,
                 >,
             > {
@@ -1788,21 +1300,29 @@ mod tests {
         delay: Duration,
     }
 
-    impl HelperClassCompiler for TestCompiler {
+    impl StreamEvalCompiler for TestCompiler {
         fn compile<'a>(
             &'a self,
             cancel: &'a CancellationToken,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>> + Send + 'a>,
+            _javac: &'a HotSwapJavacConfig,
+            _source_file: &'a Path,
+            helper_fqcn: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<Output = Result<Vec<crate::hot_swap::CompiledClass>, StreamEvalError>>
+                    + Send
+                    + 'a,
+            >,
         > {
+            let delay = self.delay;
             Box::pin(async move {
                 tokio::select! {
-                    _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-                    _ = tokio::time::sleep(self.delay) => Ok(CompiledHelperClass {
-                        name: "NovaStreamDebugHelper".to_string(),
+                    _ = cancel.cancelled() => Err(StreamEvalError::Jdwp(JdwpError::Cancelled)),
+                    _ = tokio::time::sleep(delay) => Ok(vec![crate::hot_swap::CompiledClass {
+                        class_name: helper_fqcn.to_string(),
                         // The mock JDWP server does not validate class bytes.
                         bytecode: vec![0xCA, 0xFE, 0xBA, 0xBE],
-                    }),
+                    }]),
                 }
             })
         }

@@ -147,45 +147,66 @@ async fn collect_in_scope_locals(
     frame_id: FrameId,
     location: &Location,
 ) -> Result<Vec<StreamEvalBinding>, JdwpError> {
-    let vars = match jdwp
+    // Prefer `Method.VariableTableWithGeneric` when available so generic local types show up in the
+    // injected helper signature.
+    //
+    // Some targets (including Nova's mock JDWP server) only expose *some* locals via the generic
+    // table. In that case, we merge in any locals missing from the erased table.
+    let generic_vars = match jdwp
         .method_variable_table_with_generic(location.class_id, location.method_id)
         .await
     {
-        Ok((_argc, vars)) => vars
-            .into_iter()
-            .map(VarInfo::from_generic)
-            .collect::<Vec<_>>(),
-        Err(err) if is_unsupported_command_error(&err) => {
-            let (_argc, vars) = jdwp
-                .method_variable_table(location.class_id, location.method_id)
-                .await?;
-            vars.into_iter().map(VarInfo::from_erased).collect()
-        }
+        Ok((_argc, vars)) => Some(vars.into_iter().map(VarInfo::from_generic).collect::<Vec<_>>()),
+        Err(err) if is_unsupported_command_error(&err) => None,
         Err(err) => return Err(err),
     };
 
-    let in_scope: Vec<VarInfo> = vars
-        .into_iter()
-        .filter(|var| is_var_in_scope(var.code_index, var.length, location.index))
-        .filter(|var| !var.name.trim().is_empty())
-        // Avoid binding the synthetic `this` local; we always bind it separately and rewrite `this`
-        // tokens in the expression.
-        .filter(|var| var.name != "this")
-        .collect();
+    let erased_vars = match jdwp
+        .method_variable_table(location.class_id, location.method_id)
+        .await
+    {
+        Ok((_argc, vars)) => Some(vars.into_iter().map(VarInfo::from_erased).collect::<Vec<_>>()),
+        Err(err) if is_unsupported_command_error(&err) => None,
+        Err(err) => return Err(err),
+    };
+
+    let filter_in_scope = |vars: Vec<VarInfo>| {
+        vars.into_iter()
+            .filter(|var| is_var_in_scope(var.code_index, var.length, location.index))
+            .filter(|var| !var.name.trim().is_empty())
+            // Avoid binding the synthetic `this` local; we always bind it separately and rewrite
+            // `this` tokens in the expression.
+            .filter(|var| var.name != "this")
+            .collect::<Vec<_>>()
+    };
 
     // If multiple variables with the same name are in scope, prefer the one that starts latest
     // (inner-most scope).
-    let mut by_name: HashMap<String, VarInfo> = HashMap::new();
-    for var in in_scope {
-        match by_name.get(&var.name) {
-            Some(existing) if existing.code_index >= var.code_index => {}
-            _ => {
-                by_name.insert(var.name.clone(), var);
+    fn select_innermost(in_scope: Vec<VarInfo>) -> HashMap<String, VarInfo> {
+        let mut by_name: HashMap<String, VarInfo> = HashMap::new();
+        for var in in_scope {
+            match by_name.get(&var.name) {
+                Some(existing) if existing.code_index >= var.code_index => {}
+                _ => {
+                    by_name.insert(var.name.clone(), var);
+                }
             }
+        }
+        by_name
+    }
+
+    let mut selected: HashMap<String, VarInfo> = HashMap::new();
+    if let Some(generic) = generic_vars {
+        selected.extend(select_innermost(filter_in_scope(generic)));
+    }
+    if let Some(erased) = erased_vars {
+        for (name, var) in select_innermost(filter_in_scope(erased)) {
+            // If a variable exists in both tables, prefer the generic version.
+            selected.entry(name).or_insert(var);
         }
     }
 
-    let mut vars: Vec<VarInfo> = by_name.into_values().collect();
+    let mut vars: Vec<VarInfo> = selected.into_values().collect();
     vars.sort_by(|a, b| a.name.cmp(&b.name));
 
     let slots: Vec<(u32, String)> = vars.iter().map(|v| (v.slot, v.signature.clone())).collect();
@@ -542,7 +563,7 @@ mod tests {
                 .iter()
                 .map(|b| b.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["arr", "list", "s", "x"]
+            vec!["arr", "list", "obj", "s", "x"]
         );
 
         let by_name: HashMap<&str, &StreamEvalBinding> = bindings
@@ -575,7 +596,6 @@ mod tests {
             matches!(&by_name["arr"].value, JdwpValue::Object { tag: b'[', id } if *id != 0),
             "expected array object value for `arr`"
         );
-
         // Instance fields on `this` are bound after locals.
         assert_eq!(bindings.fields.len(), 1);
         assert_eq!(bindings.fields[0].name, "field");
@@ -594,12 +614,15 @@ mod tests {
             1 + bindings.locals.len() + bindings.fields.len() + bindings.static_fields.len()
         );
         assert_eq!(args[0], bindings.this.value);
-        assert_eq!(args[1], by_name["arr"].value.clone());
-        assert_eq!(args[2], by_name["list"].value.clone());
-        assert_eq!(args[3], by_name["s"].value.clone());
-        assert_eq!(args[4], by_name["x"].value.clone());
-        assert_eq!(args[5], bindings.fields[0].value);
-        assert_eq!(args[6], bindings.static_fields[0].value);
+        // Locals appear in the helper args in the same order as `bindings.locals`.
+        for (idx, local) in bindings.locals.iter().enumerate() {
+            assert_eq!(args[idx + 1], local.value);
+        }
+        assert_eq!(args[1 + bindings.locals.len()], bindings.fields[0].value);
+        assert_eq!(
+            args[1 + bindings.locals.len() + bindings.fields.len()],
+            bindings.static_fields[0].value
+        );
     }
 
     #[tokio::test]
