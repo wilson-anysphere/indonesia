@@ -835,6 +835,19 @@ fn ast_formatting_is_idempotent_on_unterminated_text_block() {
 }
 
 #[test]
+fn ast_formatting_is_idempotent_on_unterminated_string_template() {
+    assert_ast_idempotent("class Foo{void m(){String s=STR.\"unterminated\n");
+}
+
+#[test]
+fn ast_formatting_is_idempotent_on_unterminated_string_template_interpolation() {
+    // The interpolation expression itself is unterminated, which means the template never
+    // produces a `StringTemplateEnd` token. The AST formatter should preserve the remainder of the
+    // file verbatim to keep formatting deterministic across passes.
+    assert_ast_idempotent("class Foo{void m(String name){String s=STR.\"Hello \\{name\n");
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     assert_ast_idempotent(
         r#"
