@@ -136,6 +136,32 @@ class C {
 }
 
 #[test]
+fn go_to_implementation_on_static_receiver_call_resolves_type_name() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo {
+    static void $1bar() {}
+}
+//- /Main.java
+class Main {
+    void m() {
+        Foo.$0bar();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_does_not_trigger_on_constructor_call() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -307,3 +333,4 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     (out, markers)
 }
+

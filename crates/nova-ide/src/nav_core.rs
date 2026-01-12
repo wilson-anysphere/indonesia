@@ -245,7 +245,11 @@ where
     } else if call.receiver == "super" {
         containing_type.super_class.clone()
     } else {
-        resolve_name_type(parsed, offset, &call.receiver)
+        resolve_name_type(parsed, offset, &call.receiver).or_else(|| {
+            lookup_type_info(&call.receiver)
+                .is_some()
+                .then(|| call.receiver.clone())
+        })
     };
 
     let Some(receiver_ty) = receiver_ty else {
