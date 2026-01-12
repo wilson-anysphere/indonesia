@@ -3293,8 +3293,8 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
     assert!(
         all_new_texts
             .iter()
-            .any(|text| text.contains("ExampleTest")),
-        "expected edits to contain ExampleTest, got: {edit:#?}"
+            .any(|text| text.contains("class ExampleTest")),
+        "expected edits to contain `class ExampleTest`, got: {edit:#?}"
     );
 
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
