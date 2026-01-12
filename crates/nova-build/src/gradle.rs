@@ -292,6 +292,27 @@ impl GradleBuild {
             let module = data.modules.entry("<root>".to_string()).or_default();
             module.java_compile_config = Some(union.clone());
             module.classpath = Some(union.compile_classpath.clone());
+
+            // Best-effort: persist a root `":"` compile config entry even when the root project is
+            // an aggregator (no Java plugin). This allows `nova-project` to reuse a workspace-level
+            // classpath in `.nova/queries/gradle.json`.
+            snapshot_configs.insert(
+                ":".to_string(),
+                GradleSnapshotJavaCompileConfig {
+                    project_dir: project_root.to_path_buf(),
+                    compile_classpath: union.compile_classpath.clone(),
+                    test_classpath: union.test_classpath.clone(),
+                    module_path: union.module_path.clone(),
+                    main_source_roots: union.main_source_roots.clone(),
+                    test_source_roots: union.test_source_roots.clone(),
+                    main_output_dir: union.main_output_dir.clone(),
+                    test_output_dir: union.test_output_dir.clone(),
+                    source: union.source.clone(),
+                    target: union.target.clone(),
+                    release: union.release.clone(),
+                    enable_preview: union.enable_preview,
+                },
+            );
         } else if let Some(root) = root_config {
             let module = data.modules.entry("<root>".to_string()).or_default();
             module.java_compile_config = Some(root.clone());

@@ -335,3 +335,96 @@ NOVA_JSON_END
         .expect("config for root project");
     assert_eq!(cfg.project_dir, project_root);
 }
+
+#[test]
+fn writes_gradle_snapshot_for_aggregator_root_union_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    // Ensure `gradle_settings_suggest_multi_project` returns true so root queries use the batch
+    // `printNovaAllJavaCompileConfigs` task.
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+
+    let app_dir = project_root.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let dep_jar = project_root.join("deps/dep.jar");
+    std::fs::create_dir_all(dep_jar.parent().unwrap()).unwrap();
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let payload = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": project_root.to_string_lossy(),
+                "config": {
+                    "projectPath": ":",
+                    "projectDir": project_root.to_string_lossy(),
+                    // Simulate an aggregator root with no Java plugin applied.
+                    "compileClasspath": null,
+                    "testCompileClasspath": null,
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false,
+                }
+            },
+            {
+                "path": ":app",
+                "projectDir": app_dir.to_string_lossy(),
+                "config": {
+                    "projectPath": ":app",
+                    "projectDir": app_dir.to_string_lossy(),
+                    "compileClasspath": [dep_jar.to_string_lossy()],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false,
+                }
+            }
+        ]
+    });
+
+    let stdout = format!(
+        "NOVA_ALL_JSON_BEGIN\n{}\nNOVA_ALL_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeRunner {
+        output: CommandOutput {
+            status: exit_status(0),
+            stdout,
+            stderr: String::new(),
+            truncated: false,
+        },
+    });
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner);
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, None, &cache)
+        .expect("java compile config");
+
+    let snapshot_path = project_root.join(".nova/queries/gradle.json");
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+
+    let cfg = snapshot
+        .java_compile_configs
+        .get(":")
+        .expect("config for root project");
+    assert_eq!(cfg.project_dir, project_root);
+    assert!(
+        cfg.compile_classpath.contains(&dep_jar),
+        "expected union root classpath to include subproject dependency"
+    );
+}
