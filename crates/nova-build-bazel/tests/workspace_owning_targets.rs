@@ -77,13 +77,12 @@ fn java_owning_targets_for_file_resolves_package_from_build() {
 
     let file_label = "//java:com/Hello.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-    let java_expr =
-        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), String::new());
     outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
 
     let runner = TestRunner::new(outputs);
@@ -97,7 +96,6 @@ fn java_owning_targets_for_file_resolves_package_from_build() {
     assert_eq!(
         calls,
         vec![
-            vec!["query".to_string(), filegroups_expr, "--output=label".to_string()],
             vec!["query".to_string(), java_expr, "--output=label".to_string()],
         ]
     );
@@ -115,13 +113,12 @@ fn java_owning_targets_for_file_resolves_package_from_build_bazel_and_accepts_re
 
     let file_label = "//java:com/Hello.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-    let java_expr =
-        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), String::new());
     outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
 
     let runner = TestRunner::new(outputs);
@@ -141,14 +138,12 @@ fn java_owning_targets_for_file_includes_filegroups_in_owning_query() {
 
     let file_label = "//java:Foo.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
     let java_expr = format!(
-        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + //java:srcs), 1))"#
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
     );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), "//java:srcs\n".to_string());
     outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
 
     let runner = TestRunner::new(outputs);
@@ -164,7 +159,6 @@ fn java_owning_targets_for_file_includes_filegroups_in_owning_query() {
     assert_eq!(
         calls,
         vec![
-            vec!["query".to_string(), filegroups_expr],
             vec!["query".to_string(), java_expr],
         ]
     );
@@ -181,13 +175,12 @@ fn java_owning_targets_for_file_returns_sorted_deduped_targets() {
 
     let file_label = "//java:Foo.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-    let java_expr =
-        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), String::new());
     outputs.insert(
         java_expr.clone(),
         "//java:bin\n//java:lib\n//java:lib\n".to_string(),
@@ -221,13 +214,12 @@ fn java_owning_targets_for_file_normalizes_dotdots_within_workspace() {
 
     let file_label = "//java:com/Hello.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-    let java_expr =
-        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), String::new());
     outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
 
     let runner = TestRunner::new(outputs);
@@ -258,13 +250,12 @@ fn java_owning_targets_for_file_normalizes_dotdots_that_escape_and_reenter_works
 
     let file_label = "//java:com/Hello.java";
     let universe = "//java:all";
-    let filegroups_expr =
-        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-    let java_expr =
-        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
 
     let mut outputs = HashMap::new();
-    outputs.insert(filegroups_expr.clone(), String::new());
     outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
 
     let runner = TestRunner::new(outputs);
@@ -334,5 +325,5 @@ fn java_owning_targets_for_file_errors_when_bazel_query_fails() {
     let err = workspace.java_owning_targets_for_file(src.as_path()).unwrap_err();
     assert!(err
         .to_string()
-        .contains("bazel query failed while resolving filegroups"));
+        .contains("bazel query failed while resolving owning java targets"));
 }

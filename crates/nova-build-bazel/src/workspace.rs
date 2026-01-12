@@ -298,26 +298,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             format!("//{package}:all")
         };
 
-        // 1) Find filegroups in the same package that include this file (directly or indirectly).
+        // Find java rules in the same package that directly depend on the file itself or on a
+        // `filegroup(...)` that contains the file.
+        //
+        // This stays package-scoped via `universe=//pkg:all` to avoid `rdeps(//..., ...)`
+        // explosions, and uses `depth=1` to return only rules that can plausibly compile the file
+        // (avoiding `java_binary`/`java_test` that merely depend on a `java_library` which owns the
+        // source).
         let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-        let filegroups = self
-            .query_labels(&filegroups_expr)
-            .with_context(|| format!("bazel query failed while resolving filegroups for {file_label}"))?;
-
-        // 2) Find java rules in the same package that directly depend on the file or any matching
-        // filegroup. Depth=1 keeps the query local and avoids pulling in unrelated reverse deps
-        // (e.g. `java_binary` that depends on a `java_library` that owns the file).
-        let mut roots_expr = file_label.clone();
-        for fg in &filegroups {
-            roots_expr.push_str(" + ");
-            roots_expr.push_str(fg);
-        }
-        let java_expr = format!(
-            r#"kind("java_.* rule", rdeps({universe}, ({roots_expr}), 1))"#
-        );
-        let mut owning = self
-            .query_labels(&java_expr)
-            .with_context(|| format!("bazel query failed while resolving owning java targets for {file_label}"))?;
+        let roots_expr = format!("({file_label} + {filegroups_expr})");
+        let java_expr =
+            format!(r#"kind("java_.* rule", rdeps({universe}, {roots_expr}, 1))"#);
+        let mut owning = self.query_labels(&java_expr).with_context(|| {
+            format!("bazel query failed while resolving owning java targets for {file_label}")
+        })?;
 
         owning.sort();
         owning.dedup();
