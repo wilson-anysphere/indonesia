@@ -1,5 +1,13 @@
 use std::path::{Path, PathBuf};
 
+fn normalize_watch_path(path: impl Into<PathBuf>) -> PathBuf {
+    match nova_vfs::VfsPath::local(path.into()) {
+        nova_vfs::VfsPath::Local(path) => path,
+        // `VfsPath::local` always returns the local variant.
+        _ => unreachable!("VfsPath::local produced a non-local path"),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum ChangeCategory {
     Source,
@@ -37,10 +45,24 @@ pub struct WatchConfig {
 
 impl WatchConfig {
     pub fn new(workspace_root: PathBuf) -> Self {
+        Self::with_roots(workspace_root, Vec::new(), Vec::new())
+    }
+
+    pub fn with_roots(
+        workspace_root: PathBuf,
+        source_roots: Vec<PathBuf>,
+        generated_source_roots: Vec<PathBuf>,
+    ) -> Self {
         Self {
-            workspace_root,
-            source_roots: Vec::new(),
-            generated_source_roots: Vec::new(),
+            workspace_root: normalize_watch_path(workspace_root),
+            source_roots: source_roots
+                .into_iter()
+                .map(|root| normalize_watch_path(root))
+                .collect(),
+            generated_source_roots: generated_source_roots
+                .into_iter()
+                .map(|root| normalize_watch_path(root))
+                .collect(),
         }
     }
 }
@@ -419,5 +441,31 @@ mod tests {
             ),
             Some(ChangeCategory::Build)
         );
+    }
+
+    #[test]
+    fn configured_root_with_dotdot_segments_matches_equivalent_event_path() {
+        let config = WatchConfig::with_roots(
+            PathBuf::from("/tmp/ws"),
+            Vec::new(),
+            vec![PathBuf::from("/tmp/ws/module/../gen")],
+        );
+
+        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/gen/A.java"));
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_root_drive_letter_case_does_not_affect_matching() {
+        let config = WatchConfig::with_roots(
+            PathBuf::from(r"c:\ws"),
+            vec![PathBuf::from(r"c:\ws\src")],
+            Vec::new(),
+        );
+
+        // Intentionally use the opposite drive-letter case from the configured root.
+        let event = NormalizedEvent::Modified(PathBuf::from(r"C:\ws\src\A.java"));
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 }

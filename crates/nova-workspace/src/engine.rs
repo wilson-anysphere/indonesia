@@ -530,7 +530,10 @@ impl WorkspaceEngine {
                 .workspace_root
                 .clone()
                 .context("workspace root not set")?;
-            root
+            match VfsPath::local(root) {
+                VfsPath::Local(path) => path,
+                _ => unreachable!("VfsPath::local produced a non-local path"),
+            }
         };
 
         let watch_config = Arc::clone(&self.watch_config);
@@ -1958,9 +1961,11 @@ fn reload_project_and_sync(
         let mut cfg = watch_config
             .write()
             .expect("workspace watch config lock poisoned");
-        cfg.workspace_root = workspace_root.to_path_buf();
-        cfg.source_roots = watch_source_roots.clone();
-        cfg.generated_source_roots = watch_generated_roots.clone();
+        *cfg = WatchConfig::with_roots(
+            workspace_root.to_path_buf(),
+            watch_source_roots.clone(),
+            watch_generated_roots.clone(),
+        );
     }
 
     // If the watcher is running, ensure it begins watching any newly discovered roots outside the
