@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
+use nova_hir::ast_id::AstId;
 use nova_index::{
     load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol,
@@ -632,10 +633,6 @@ impl Workspace {
         files_to_index: &[String],
         cancel: &CancellationToken,
     ) -> Result<(usize, u64, std::collections::BTreeMap<String, Fingerprint>)> {
-        use nova_core::{LineIndex, TextSize};
-        use nova_db::NovaHir;
-        use nova_hir::ast_id::AstId;
-
         let db = SalsaDatabase::new_with_persistence(
             snapshot.project_root(),
             PersistenceConfig::from_env(),
@@ -659,8 +656,10 @@ impl Workspace {
             let shard = shard_id_for_path(file, shard_count) as usize;
             let indexes = &mut shards[shard];
             let full_path = snapshot.project_root().join(file);
-            let content = fs::read_to_string(&full_path)
-                .with_context(|| format!("failed to read {}", full_path.display()))?;
+            let content = Arc::new(
+                fs::read_to_string(&full_path)
+                    .with_context(|| format!("failed to read {}", full_path.display()))?,
+            );
             files_indexed += 1;
             bytes_indexed += content.len() as u64;
             let fingerprint = Fingerprint::from_bytes(content.as_bytes());
@@ -671,58 +670,12 @@ impl Workspace {
             // Set `file_rel_path` first so `set_file_text` doesn't synthesize (and then discard) a
             // default rel-path like `file-123.java`.
             db.set_file_rel_path(file_id, rel_path);
-            // `set_file_text` consumes the text; keep `content` for (line, col) patching below.
-            db.set_file_text(file_id, content.clone());
+            // `set_file_text` clones from `&str`; keep `content` for (line, col) patching below.
+            db.set_file_text(file_id, content.as_str());
 
-            let (delta, hir) = db.with_snapshot(|snap| {
-                let delta = snap.file_index_delta(file_id);
-                let hir = snap.hir_item_tree(file_id);
-                (delta, hir)
-            });
-
-            // Patch (line, col) from HIR name ranges, using UTF-16 positions.
-            let line_index = LineIndex::new(&content);
+            let delta = db.with_snapshot(|snap| snap.file_index_delta(file_id));
             let mut delta = (*delta).clone();
-            for symbols in delta.symbols.symbols.values_mut() {
-                for entry in symbols.iter_mut() {
-                    let ast_id = AstId::new(entry.ast_id);
-                    let offset = match entry.kind {
-                        nova_index::IndexSymbolKind::Class => {
-                            hir.classes.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Interface => {
-                            hir.interfaces.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Enum => {
-                            hir.enums.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Record => {
-                            hir.records.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Annotation => {
-                            hir.annotations.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Field => {
-                            hir.fields.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Method => {
-                            hir.methods.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                        nova_index::IndexSymbolKind::Constructor => {
-                            hir.constructors.get(&ast_id).map(|it| it.name_range.start)
-                        }
-                    };
-
-                    let Some(offset) = offset else {
-                        continue;
-                    };
-
-                    let pos = line_index.position(&content, TextSize::from(offset as u32));
-                    entry.location.line = pos.line;
-                    entry.location.column = pos.character;
-                }
-            }
-
+            patch_indexed_symbol_locations(&content, file_id, &mut delta);
             indexes.merge_from(delta);
         }
 
@@ -741,6 +694,11 @@ impl Workspace {
 
         Ok((files_indexed, bytes_indexed, file_fingerprints))
     }
+
+    // NOTE: We intentionally keep the underlying `file_index_delta` Salsa query range-insensitive
+    // (it stores `(line, column) = (0, 0)` for all symbols). Workspace indexing patches the
+    // locations out-of-band using a fresh parse of the current file text so `workspace/symbol`
+    // can jump to the correct definition position without breaking Salsa early-cutoff behavior.
 
     pub fn diagnostics(&self, path: impl AsRef<Path>) -> Result<DiagnosticsReport> {
         let path = path.as_ref();
@@ -1476,6 +1434,39 @@ mod fuzzy_symbol_tests {
     }
 
     #[test]
+    fn workspace_symbols_report_real_utf16_positions() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let java_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&java_dir).expect("mkdir");
+
+        // Ensure:
+        // - The class name is not on line 0.
+        // - There is at least one non-ASCII character before the name on the same line so UTF-16
+        //   column conversion is exercised.
+        let content = "package com.example;\n\npublic class /* 💖 */ ClassName {}\n";
+        fs::write(java_dir.join("ClassName.java"), content).expect("write");
+
+        let ws = Workspace::open(root).expect("workspace open");
+        let results = ws.workspace_symbols("ClassName").expect("workspace symbols");
+
+        let name_offset = content.find("ClassName").expect("class name");
+        let line_index = nova_core::LineIndex::new(content);
+        let expected =
+            line_index.position(content, nova_core::TextSize::from(name_offset as u32));
+
+        let symbol = results
+            .iter()
+            .find(|sym| sym.name == "ClassName" && sym.kind == nova_index::IndexSymbolKind::Class)
+            .expect("expected ClassName class symbol");
+
+        assert_eq!(symbol.location.line, expected.line);
+        assert_eq!(symbol.location.column, expected.character);
+    }
+
+    #[test]
     fn workspace_symbol_search_empty_query_is_deterministic_and_includes_duplicates() {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
         let searcher = WorkspaceSymbolSearcher::new(&memory);
@@ -1790,6 +1781,61 @@ fn parse_java_errors(text: &str) -> Vec<ParseError> {
             }
         })
         .collect()
+}
+
+fn patch_indexed_symbol_locations(content: &str, file_id: FileId, delta: &mut ProjectIndexes) {
+    let line_index = nova_core::LineIndex::new(content);
+
+    // Parse + lower outside Salsa so we can reliably recover fresh `name_range` values even when
+    // Salsa early-cutoff reuses memoized HIR values that intentionally ignore ranges.
+    let parse = nova_syntax::parse_java(content);
+    let root = parse.syntax();
+    let ast_id_map = nova_hir::ast_id::AstIdMap::new(&root);
+    let lowered = nova_syntax::java::parse_with_syntax(&root, content.len());
+    let tree = nova_hir::lowering::lower_item_tree_with(
+        file_id,
+        lowered.compilation_unit(),
+        &parse,
+        &ast_id_map,
+        &mut || {},
+    );
+
+    for symbols in delta.symbols.symbols.values_mut() {
+        for symbol in symbols.iter_mut() {
+            let ast_id = AstId::new(symbol.ast_id);
+            let name_range = match symbol.kind {
+                nova_index::IndexSymbolKind::Class => tree.classes.get(&ast_id).map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Interface => tree
+                    .interfaces
+                    .get(&ast_id)
+                    .map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Enum => tree.enums.get(&ast_id).map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Record => tree.records.get(&ast_id).map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Annotation => tree
+                    .annotations
+                    .get(&ast_id)
+                    .map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Method => tree.methods.get(&ast_id).map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Field => tree.fields.get(&ast_id).map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Constructor => tree
+                    .constructors
+                    .get(&ast_id)
+                    .map(|it| it.name_range),
+            };
+
+            let Some(name_range) = name_range else {
+                continue;
+            };
+
+            let Ok(offset) = u32::try_from(name_range.start) else {
+                continue;
+            };
+
+            let pos = line_index.position(content, nova_core::TextSize::from(offset));
+            symbol.location.line = pos.line;
+            symbol.location.column = pos.character;
+        }
+    }
 }
 
 fn debug_dump_syntax(node: &SyntaxNode) -> String {

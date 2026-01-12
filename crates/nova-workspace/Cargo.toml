@@ -14,8 +14,8 @@ nova-framework-jpa = { path = "../nova-framework-jpa" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }
-nova-ide = { path = "../nova-ide" }
 nova-hir = { path = "../nova-hir" }
+nova-ide = { path = "../nova-ide" }
 nova-index = { path = "../nova-index" }
 nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
