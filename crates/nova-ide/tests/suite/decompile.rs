@@ -1,8 +1,10 @@
 use nova_decompile::{decompile_classfile, parse_decompiled_uri, SymbolKey};
 use nova_ide::canonical_decompiled_definition_location;
 
-const FOO_CLASS: &[u8] =
-    include_bytes!("../../../nova-decompile/tests/fixtures/com/example/Foo.class");
+const FOO_CLASS: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../nova-decompile/tests/fixtures/com/example/Foo.class"
+));
 const FOO_INTERNAL_NAME: &str = "com/example/Foo";
 
 #[test]
