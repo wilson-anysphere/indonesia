@@ -52,8 +52,8 @@ back to a full project reload, for example:
 
 - when it receives `WatchEvent::Rescan` (backend overflow/backpressure),
 - when its own internal watcher batching pipeline overflows, and
-- when the OS watcher reports a **directory-level** operation (directory rename/move/delete), which
-  is difficult to map safely into per-file VFS operations.
+- when the OS watcher reports a **directory-level** operation (directory create/modify/move/delete),
+  which is difficult to map safely into per-file VFS operations.
 
 ## Watch paths and modes (`WatchMode`)
 
