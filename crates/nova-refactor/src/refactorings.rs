@@ -1576,7 +1576,6 @@ pub fn extract_variable(
             }
         }
     }
-
     // Side-effectful expressions are tricky:
     // - Evaluating them once and replacing multiple occurrences is never safe.
     // - Even evaluating them once can be unsafe when extracting to `var` because target typing for

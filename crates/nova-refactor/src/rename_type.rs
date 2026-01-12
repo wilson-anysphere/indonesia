@@ -747,17 +747,17 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt);
                 }
             }
+            Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
             Stmt::Let { initializer, .. } => {
                 if let Some(expr) = initializer {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
             Stmt::Expr { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
-            Stmt::Yield { expr, .. } => {
-                if let Some(expr) = expr {
-                    visit_expr(body, *expr, offset, best_expr, best_stmt);
-                }
-            }
             Stmt::Assert {
                 condition, message, ..
             } => {

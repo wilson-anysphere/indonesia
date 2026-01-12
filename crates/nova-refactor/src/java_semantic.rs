@@ -122,6 +122,22 @@ struct TypeParamKey {
     index: usize,
 }
 
+trait IntoMethodId {
+    fn into_method_id(self) -> MethodId;
+}
+
+impl IntoMethodId for MethodId {
+    fn into_method_id(self) -> MethodId {
+        self
+    }
+}
+
+impl IntoMethodId for nova_resolve::types::MethodDef {
+    fn into_method_id(self) -> MethodId {
+        self.id
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SymbolCandidate {
     key: ResolutionKey,
@@ -5499,9 +5515,10 @@ fn resolve_member_in_type(
     }
     if accept_methods {
         if let Some(methods) = ty.methods.get(&name) {
-            return methods
-                .first()
-                .map(|method| ResolutionKey::Method(method.id));
+            return methods.first().copied().map(|method| {
+                let method = method.into_method_id();
+                ResolutionKey::Method(method)
+            });
         }
     }
     None
@@ -6922,13 +6939,16 @@ fn record_syntax_only_references(
                 let name_range = syntax_token_range(&name_tok);
                 let element_name = Name::from(name_tok.text());
                 if let Some(methods) = anno_def.methods.get(&element_name) {
-                    if let Some(method) =
-                        methods.iter().find(|m| tree.method(m.id).params.is_empty())
+                    if let Some(method) = methods
+                        .iter()
+                        .copied()
+                        .map(IntoMethodId::into_method_id)
+                        .find(|method| tree.method(*method).params.is_empty())
                     {
                         record_reference(
                             file,
                             name_range,
-                            ResolutionKey::Method(method.id),
+                            ResolutionKey::Method(method),
                             resolution_to_symbol,
                             references,
                             spans,
