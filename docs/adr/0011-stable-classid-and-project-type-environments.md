@@ -14,7 +14,8 @@ external types are loaded on-demand via
 [`crates/nova-types-bridge/src/lib.rs:ExternalTypeLoader`](../../crates/nova-types-bridge/src/lib.rs),
 which reserves ids by calling `TypeStore::intern_class_id` as new binary names are encountered.
 
-If each body/query builds its own fresh `TypeStore`, this has an important (and undesirable) property:
+Historically, `typeck_body` built a fresh `TypeStore` per body. Because `TypeStore` assigns ids by
+insertion order, that approach has an important (and undesirable) property:
 
 - The numeric `ClassId` assigned to a given Java binary name (e.g. `java.lang.String`) depends on
   **which classes happened to be interned first**.
@@ -72,12 +73,14 @@ Implement a *project-level* base type environment and make all body checkers sta
 Concrete shape:
 
 - Introduce a project query like `project_base_type_store(project: ProjectId) -> Arc<TypeStore>`
-  (implemented today as `crates/nova-db/src/salsa/typeck.rs:project_base_type_store`)
+  (implemented today as
+  [`crates/nova-db/src/salsa/typeck.rs:project_base_type_store`](../../crates/nova-db/src/salsa/typeck.rs))
   that:
   - seeds well-known JDK types (today: `TypeStore::with_minimal_jdk()`),
   - **pre-interns** class ids for a deterministic set of binary names:
     - workspace source types (from item trees / project index),
-    - classpath types (from `ClasspathIndex`),
+    - types referenced from signatures and bodies (so “body-only” dependencies are stable too),
+    - classpath types (from `ClasspathIndex` / `TypeProvider` as available),
     - and optionally the JDK index.
   - performs interning in a deterministic order (e.g. lexicographic sort of binary names).
 

@@ -162,6 +162,11 @@ When it can be safe:
 - if it is rebuilt deterministically from tracked inputs at well-defined times (effectively making
   it a derived cache, not an oracle).
 
+**Implementation note (current repo):** Nova currently has a process-lifetime
+`ClassIdInterner` prototype in `crates/nova-db/src/salsa/class_ids.rs`. It is explicitly documented
+as *not tracked by Salsa* and therefore must be used carefully to avoid introducing evaluation-order
+dependence inside queries.
+
 ### D) Deterministic derived mapping from tracked inputs (sorted enumeration)
 
 Pros:
