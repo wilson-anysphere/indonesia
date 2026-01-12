@@ -54,6 +54,8 @@ pub enum WireServerError {
 
 type Result<T> = std::result::Result<T, WireServerError>;
 
+const OUTGOING_DAP_QUEUE_CAPACITY: usize = 1024;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EvaluateArguments {
@@ -160,7 +162,7 @@ where
     #[cfg(unix)]
     ignore_sigpipe();
 
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let (out_tx, mut out_rx) = mpsc::channel::<Value>(OUTGOING_DAP_QUEUE_CAPACITY);
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let exited_sent = Arc::new(AtomicBool::new(false));
@@ -176,7 +178,7 @@ where
     let server_shutdown = CancellationToken::new();
     let (initialized_tx, initialized_rx) = watch::channel(false);
 
-    let writer_task = tokio::spawn(async move {
+    let mut writer_task = tokio::spawn(async move {
         let mut writer = DapWriter::new(writer);
         while let Some(msg) = out_rx.recv().await {
             let _ = writer.write_value(&msg).await;
@@ -272,14 +274,22 @@ where
     terminate_existing_process(&launched_process).await;
 
     drop(out_tx);
-    let _ = writer_task.await;
+    match tokio::time::timeout(Duration::from_secs(2), &mut writer_task).await {
+        Ok(res) => {
+            let _ = res;
+        }
+        Err(_elapsed) => {
+            writer_task.abort();
+            let _ = writer_task.await;
+        }
+    }
     Ok(())
 }
 
 async fn handle_request(
     request: Request,
     cancel: CancellationToken,
-    out_tx: mpsc::UnboundedSender<Value>,
+    out_tx: mpsc::Sender<Value>,
     seq: Arc<AtomicI64>,
     next_debugger_id: Arc<AtomicU64>,
     suppress_termination_debugger_id: Arc<AtomicU64>,
@@ -365,7 +375,16 @@ async fn handle_request(
                     }
                 }
 
-                send_response(&out_tx, &seq, &request, false, None, Some(message));
+                send_response(
+                    &out_tx,
+                    &seq,
+                    &request,
+                    false,
+                    None,
+                    Some(message),
+                    &server_shutdown,
+                )
+                .await;
             } else {
                 // Aborted tasks are rare (generally shutdown), but still respond best-effort so
                 // clients don't hang.
@@ -376,7 +395,9 @@ async fn handle_request(
                     false,
                     None,
                     Some("internal error".to_string()),
-                );
+                    &server_shutdown,
+                )
+                .await;
             }
         }
     }
@@ -389,7 +410,7 @@ async fn handle_request(
 async fn handle_request_inner(
     request: &Request,
     cancel: &CancellationToken,
-    out_tx: &mpsc::UnboundedSender<Value>,
+    out_tx: &mpsc::Sender<Value>,
     seq: &Arc<AtomicI64>,
     next_debugger_id: &Arc<AtomicU64>,
     suppress_termination_debugger_id: &Arc<AtomicU64>,
@@ -413,7 +434,9 @@ async fn handle_request_inner(
                 false,
                 None,
                 Some("cancelled".to_string()),
-            );
+                server_shutdown,
+            )
+            .await;
             return;
         }
     }
@@ -462,17 +485,31 @@ async fn handle_request_inner(
                 "supportsHitConditionalBreakpoints": true,
                 "supportsLogPoints": true,
             });
-            send_response(out_tx, seq, request, true, Some(body), None);
+            send_response(out_tx, seq, request, true, Some(body), None, server_shutdown).await;
 
             if !*initialized_rx.borrow() {
-                send_event(out_tx, seq, "initialized", None);
+                send_event(out_tx, seq, "initialized", None, server_shutdown).await;
                 let _ = initialized_tx.send(true);
             }
         }
         "nova/metrics" => {
             match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
-                Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(snapshot) => {
+                    send_response(out_tx, seq, request, true, Some(snapshot), None, server_shutdown)
+                        .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         // Test-only escape hatch for validating panic isolation. Note that `nova-dap` is compiled
@@ -495,7 +532,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -543,9 +582,22 @@ async fn handle_request_inner(
                             "archivePath": archive_path,
                         })),
                         None,
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             };
         }
         "cancel" => {
@@ -558,7 +610,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancel.requestId is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -570,7 +624,7 @@ async fn handle_request_inner(
                 token.cancel();
             }
             // Best-effort: DAP `cancel` doesn't guarantee the target is still running.
-            send_response(out_tx, seq, request, true, None, None);
+            send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
         }
         "configurationDone" => {
             // When `supportsConfigurationDoneRequest` is true, VS Code sends this request
@@ -598,7 +652,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -610,19 +666,23 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("not attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
                 match dbg.continue_(cancel, None).await {
                     Ok(()) => {
-                        send_response(out_tx, seq, request, true, None, None);
+                        send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
                         send_event(
                             out_tx,
                             seq,
                             "continued",
                             Some(json!({ "allThreadsContinued": true })),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         let mut sess = session.lock().await;
                         sess.lifecycle = LifecycleState::Running;
                     }
@@ -634,14 +694,25 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                     }
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(err.to_string()),
+                            server_shutdown,
+                        )
+                        .await
                     }
                 }
             } else {
-                send_response(out_tx, seq, request, true, None, None);
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
             }
         }
         "launch" => {
@@ -656,7 +727,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("launch arguments are invalid: {err}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -671,7 +744,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("launch is only valid after initialize".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 if sess.kind.is_some() {
@@ -682,7 +757,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("debug session already started".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -702,7 +779,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("already attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -711,7 +790,16 @@ async fn handle_request_inner(
                 match resolve_source_roots(request.command.as_str(), &request.arguments) {
                     Ok(roots) => roots,
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(err.to_string()),
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -737,7 +825,9 @@ async fn handle_request_inner(
                         "launch must specify either {command,cwd} or {mainClass,classpath}"
                             .to_string(),
                     ),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -774,7 +864,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("launch.cwd is required".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     };
                     let Some(command) = args.command.as_deref() else {
@@ -785,7 +877,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("launch.command is required".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     };
 
@@ -804,7 +898,9 @@ async fn handle_request_inner(
                                 Some(format!(
                                     "failed to resolve host {host_label:?}: no addresses found"
                                 )),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         }
                         Err(err) => {
@@ -815,7 +911,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some(format!("invalid host {host_label:?}: {err}")),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -844,7 +942,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some(format!("failed to spawn {command:?}: {err}")),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -856,7 +956,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("failed to determine launched process pid".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     };
 
@@ -906,7 +1008,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("launch.classpath is required for Java launch".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     };
 
@@ -922,7 +1026,9 @@ async fn handle_request_inner(
                                     false,
                                     None,
                                     Some(format!("failed to select debug port: {err}")),
-                                );
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                         },
@@ -937,7 +1043,8 @@ async fn handle_request_inner(
                     let cp_joined = match join_classpath(&classpath) {
                         Ok(cp) => cp,
                         Err(err) => {
-                            send_response(out_tx, seq, request, false, None, Some(err));
+                            send_response(out_tx, seq, request, false, None, Some(err), server_shutdown)
+                                .await;
                             return;
                         }
                     };
@@ -984,7 +1091,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some(format!("failed to spawn java: {err}")),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -996,7 +1105,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("failed to determine launched process pid".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     };
 
@@ -1063,7 +1174,16 @@ async fn handle_request_inner(
                         let _ = tx.send(Some(false));
                     }
                     terminate_existing_process(launched_process).await;
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 res = attach_fut => match res {
@@ -1080,7 +1200,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some(format!("failed to attach to {attach_target_label}: {err}")),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -1142,7 +1264,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -1164,7 +1288,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("not attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -1192,7 +1318,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                     Err(err) => {
@@ -1208,22 +1336,39 @@ async fn handle_request_inner(
                             sess.kind = None;
                             sess.awaiting_configuration_done_resume = false;
                         }
-                        send_response(out_tx, seq, request, false, None, Some(msg));
+                        send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown)
+                            .await;
                         return;
                     }
                 }
 
-                send_response(out_tx, seq, request, true, None, None);
-                send_event(out_tx, seq, "process", Some(process_event_body));
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+                send_event(
+                    out_tx,
+                    seq,
+                    "process",
+                    Some(process_event_body),
+                    server_shutdown,
+                )
+                .await;
                 send_event(
                     out_tx,
                     seq,
                     "continued",
                     Some(json!({ "allThreadsContinued": true })),
-                );
+                    server_shutdown,
+                )
+                .await;
             } else {
-                send_response(out_tx, seq, request, true, None, None);
-                send_event(out_tx, seq, "process", Some(process_event_body));
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+                send_event(
+                    out_tx,
+                    seq,
+                    "process",
+                    Some(process_event_body),
+                    server_shutdown,
+                )
+                .await;
             }
 
             if let Some(tx) = launch_outcome_tx.take() {
@@ -1241,7 +1386,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("attach is only valid after initialize".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 if sess.kind.is_some() {
@@ -1252,7 +1399,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("debug session already started".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1271,7 +1420,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some(format!("{}.port is required", request.command)),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
             let port = match u16::try_from(port) {
@@ -1284,7 +1435,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("{}.port must be between 0-65535", request.command)),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1297,10 +1450,10 @@ async fn handle_request_inner(
                         request,
                         false,
                         None,
-                        Some(format!(
-                            "failed to resolve host {host_label:?}: no addresses found"
-                        )),
-                    );
+                        Some(format!("failed to resolve host {host_label:?}: no addresses found")),
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 Err(err) => {
@@ -1311,7 +1464,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("invalid host {host_label:?}: {err}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1327,7 +1482,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("already attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1336,7 +1493,16 @@ async fn handle_request_inner(
                 match resolve_source_roots(request.command.as_str(), &request.arguments) {
                     Ok(roots) => roots,
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(err.to_string()),
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -1368,7 +1534,7 @@ async fn handle_request_inner(
                     .unwrap_or_else(|| {
                         format!("failed to attach to {host_label}:{port}: no addresses resolved")
                     });
-                send_response(out_tx, seq, request, false, None, Some(msg));
+                send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown).await;
                 return;
             };
 
@@ -1399,13 +1565,20 @@ async fn handle_request_inner(
 
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
-            send_response(out_tx, seq, request, true, None, None);
+            send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
             // For attach sessions we don't generally know the target process name or PID.
             // Use the attach target itself as a stable label.
             let process_name = format!("{host_label}:{port}");
             let process_event_body =
                 make_process_event_body(&process_name, None, is_local_process, "attach");
-            send_event(out_tx, seq, "process", Some(process_event_body));
+            send_event(
+                out_tx,
+                seq,
+                "process",
+                Some(process_event_body),
+                server_shutdown,
+            )
+            .await;
         }
         "restart" => {
             let (launch_cfg, previous_debugger_id) = {
@@ -1418,7 +1591,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("restart is only supported for launch sessions".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
 
@@ -1430,7 +1605,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("restart requires a previous successful launch".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -1477,7 +1654,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("already attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1515,7 +1694,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some("launch.cwd is required".to_string()),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         };
                         let Some(command) = args.command.as_deref() else {
@@ -1526,7 +1707,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some("launch.command is required".to_string()),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         };
 
@@ -1545,7 +1728,9 @@ async fn handle_request_inner(
                                     Some(format!(
                                         "failed to resolve host {host_label:?}: no addresses found"
                                     )),
-                                );
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                             Err(err) => {
@@ -1556,7 +1741,9 @@ async fn handle_request_inner(
                                     false,
                                     None,
                                     Some(format!("invalid host {host_label:?}: {err}")),
-                                );
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -1585,7 +1772,9 @@ async fn handle_request_inner(
                                     false,
                                     None,
                                     Some(format!("failed to spawn {command:?}: {err}")),
-                                );
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -1597,7 +1786,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some("failed to determine launched process pid".to_string()),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         };
 
@@ -1634,13 +1825,7 @@ async fn handle_request_inner(
                             *guard = Some(proc);
                         }
 
-                        (
-                            resolved_hosts,
-                            port,
-                            attach_target_label,
-                            command.to_string(),
-                            pid,
-                        )
+                        (resolved_hosts, port, attach_target_label, command.to_string(), pid)
                     }
                     LaunchMode::Java => {
                         let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -1652,7 +1837,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some("launch.classpath is required for Java launch".to_string()),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         };
 
@@ -1668,11 +1855,14 @@ async fn handle_request_inner(
                                         false,
                                         None,
                                         Some(format!("failed to select debug port: {err}")),
-                                    );
+                                        server_shutdown,
+                                    )
+                                    .await;
                                     return;
                                 }
                             },
                         };
+                        // Persist the resolved port for restart so we can re-use it.
                         args.port = Some(port);
                         let host: IpAddr = "127.0.0.1".parse().unwrap();
                         let attach_target_label = format!("{host}:{port}");
@@ -1682,15 +1872,16 @@ async fn handle_request_inner(
                         let cp_joined = match join_classpath(&classpath) {
                             Ok(cp) => cp,
                             Err(err) => {
-                                send_response(out_tx, seq, request, false, None, Some(err));
+                                send_response(out_tx, seq, request, false, None, Some(err), server_shutdown)
+                                    .await;
                                 return;
                             }
                         };
 
                         let suspend = if args.stop_on_entry { "y" } else { "n" };
                         let debug_arg = format!(
-                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
-                    );
+                            "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
+                        );
 
                         let mut cmd = Command::new(java);
                         cmd.stdin(Stdio::null());
@@ -1729,7 +1920,9 @@ async fn handle_request_inner(
                                     false,
                                     None,
                                     Some(format!("failed to spawn java: {err}")),
-                                );
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -1741,7 +1934,9 @@ async fn handle_request_inner(
                                 false,
                                 None,
                                 Some("failed to determine launched process pid".to_string()),
-                            );
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         };
 
@@ -1814,7 +2009,16 @@ async fn handle_request_inner(
                         let _ = tx.send(Some(false));
                     }
                     terminate_existing_process(launched_process).await;
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 res = attach_fut => match res {
@@ -1831,7 +2035,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some(format!("failed to attach to {attach_target_label}: {err}")),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -1891,7 +2097,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -1914,7 +2122,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("not attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -1943,7 +2153,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                     Err(err) => {
@@ -1960,22 +2172,39 @@ async fn handle_request_inner(
                             sess.debugger_id = None;
                             sess.awaiting_configuration_done_resume = false;
                         }
-                        send_response(out_tx, seq, request, false, None, Some(msg));
+                        send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown)
+                            .await;
                         return;
                     }
                 }
 
-                send_response(out_tx, seq, request, true, None, None);
-                send_event(out_tx, seq, "process", Some(process_event_body));
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+                send_event(
+                    out_tx,
+                    seq,
+                    "process",
+                    Some(process_event_body),
+                    server_shutdown,
+                )
+                .await;
                 send_event(
                     out_tx,
                     seq,
                     "continued",
                     Some(json!({ "allThreadsContinued": true })),
-                );
+                    server_shutdown,
+                )
+                .await;
             } else {
-                send_response(out_tx, seq, request, true, None, None);
-                send_event(out_tx, seq, "process", Some(process_event_body));
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+                send_event(
+                    out_tx,
+                    seq,
+                    "process",
+                    Some(process_event_body),
+                    server_shutdown,
+                )
+                .await;
                 if !args.stop_on_entry {
                     // The debuggee is expected to be running immediately after attach.
                     send_event(
@@ -1983,7 +2212,9 @@ async fn handle_request_inner(
                         seq,
                         "continued",
                         Some(json!({ "allThreadsContinued": true })),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
             }
 
@@ -2000,7 +2231,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -2051,7 +2284,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2076,7 +2311,9 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "breakpoints": pending_bps })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2089,16 +2326,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                ),
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2107,9 +2350,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "setBreakpoints" => {
@@ -2121,7 +2377,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -2184,7 +2442,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2207,7 +2467,9 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "breakpoints": pending_bps })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2220,16 +2482,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                ),
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2238,9 +2506,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "breakpointLocations" => {
@@ -2252,7 +2533,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -2271,7 +2554,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("breakpointLocations.line is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2284,7 +2569,9 @@ async fn handle_request_inner(
                 true,
                 Some(json!({ "breakpoints": breakpoints })),
                 None,
-            );
+                server_shutdown,
+            )
+            .await;
         }
         "setExceptionBreakpoints" => {
             let filters: Vec<String> = request
@@ -2344,18 +2631,20 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
                 // Cache the configuration and apply it once the debugger is attached.
-                send_response(out_tx, seq, request, true, None, None);
+                send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
                 return;
             };
 
             match dbg.set_exception_breakpoints(caught, uncaught).await {
-                Ok(()) => send_response(out_tx, seq, request, true, None, None),
+                Ok(()) => send_response(out_tx, seq, request, true, None, None, server_shutdown).await,
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2364,9 +2653,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "threads" => {
@@ -2380,7 +2682,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2392,7 +2696,9 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "threads": [] })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2405,7 +2711,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Ok(threads) => {
                     let threads: Vec<Value> = threads
@@ -2419,7 +2727,9 @@ async fn handle_request_inner(
                         true,
                         Some(json!({ "threads": threads })),
                         None,
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -2429,9 +2739,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "stackTrace" => {
@@ -2443,7 +2766,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("stackTrace.threadId is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2456,7 +2781,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("stackTrace.startFrame must be >= 0".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -2469,7 +2796,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("stackTrace.levels must be >= 0".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -2483,7 +2812,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2495,7 +2826,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2511,7 +2844,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Ok((frames, total_frames)) => {
                     let mut body = serde_json::Map::new();
@@ -2519,7 +2854,16 @@ async fn handle_request_inner(
                     if let Some(total_frames) = total_frames {
                         body.insert("totalFrames".to_string(), json!(total_frames));
                     }
-                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None)
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(Value::Object(body)),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -2529,9 +2873,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "scopes" => {
@@ -2543,7 +2900,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("scopes.frameId is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2557,7 +2916,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2569,20 +2930,37 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "scopes": [] })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
             match dbg.scopes(frame_id) {
-                Ok(scopes) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "scopes": scopes })),
-                    None,
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(scopes) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "scopes": scopes })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "stepInTargets" => {
@@ -2594,7 +2972,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("stepInTargets.frameId is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2608,7 +2988,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2620,36 +3002,61 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "targets": [] })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
             match dbg.step_in_targets(cancel, frame_id).await {
-                Ok(targets) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(targets) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "targets": targets })),
-                    None,
-                ),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(targets) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Ok(targets) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "targets": targets })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "variables" => {
@@ -2665,7 +3072,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("variables.variablesReference is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
             let start = request.arguments.get("start").and_then(|v| v.as_i64());
@@ -2681,7 +3090,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2693,7 +3104,9 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "variables": [] })),
                     None,
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2709,16 +3122,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Ok(vars) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "variables": vars })),
-                    None,
-                ),
+                Ok(vars) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "variables": vars })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2727,9 +3146,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "setVariable" => {
@@ -2743,7 +3175,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2755,7 +3189,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2770,7 +3206,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("invalid setVariable arguments: {err}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2779,24 +3217,43 @@ async fn handle_request_inner(
                 .set_variable(cancel, args.variables_reference, &args.name, &args.value)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(body) => send_response(out_tx, seq, request, true, body, None),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Ok(body) => send_response(out_tx, seq, request, true, body, None, server_shutdown).await,
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "exceptionInfo" => {
@@ -2808,7 +3265,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("exceptionInfo.threadId is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2822,7 +3281,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2834,7 +3295,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2847,7 +3310,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Ok(Some(info)) => {
                     let full_type_name = info.exception_id;
@@ -2874,16 +3339,29 @@ async fn handle_request_inner(
                     body.insert("details".to_string(), Value::Object(details));
 
                     body.insert("breakMode".to_string(), json!(break_mode));
-                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None);
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(Value::Object(body)),
+                        None,
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Ok(None) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some(format!("no exception context for threadId {thread_id}")),
-                ),
+                Ok(None) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("no exception context for threadId {thread_id}")),
+                        server_shutdown,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2892,9 +3370,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "continue" => {
@@ -2910,7 +3401,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2922,7 +3415,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -2936,7 +3431,9 @@ async fn handle_request_inner(
                         true,
                         Some(json!({ "allThreadsContinued": all_threads_continued })),
                         None,
-                    );
+                        server_shutdown,
+                    )
+                    .await;
 
                     let mut body = serde_json::Map::new();
                     body.insert(
@@ -2946,7 +3443,8 @@ async fn handle_request_inner(
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }
-                    send_event(out_tx, seq, "continued", Some(Value::Object(body)));
+                    send_event(out_tx, seq, "continued", Some(Value::Object(body)), server_shutdown)
+                        .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -2956,9 +3454,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "pause" => {
@@ -2974,7 +3485,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -2986,21 +3499,24 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
             let all_threads_stopped = thread_id.is_none();
             match dbg.pause(cancel, thread_id).await {
                 Ok(()) => {
-                    send_response(out_tx, seq, request, true, None, None);
+                    send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
                     let mut body = serde_json::Map::new();
                     body.insert("reason".to_string(), json!("pause"));
                     body.insert("allThreadsStopped".to_string(), json!(all_threads_stopped));
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }
-                    send_event(out_tx, seq, "stopped", Some(Value::Object(body)));
+                    send_event(out_tx, seq, "stopped", Some(Value::Object(body)), server_shutdown)
+                        .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -3010,9 +3526,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "next" | "stepIn" | "stepOut" => {
@@ -3024,7 +3553,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some(format!("{}.threadId is required", request.command)),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
             let depth = match request.command.as_str() {
@@ -3046,7 +3577,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3058,7 +3591,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3068,7 +3603,7 @@ async fn handle_request_inner(
             };
 
             match step_result {
-                Ok(()) => send_response(out_tx, seq, request, true, None, None),
+                Ok(()) => send_response(out_tx, seq, request, true, None, None, server_shutdown).await,
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3077,9 +3612,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         "evaluate" => {
@@ -3093,7 +3641,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3105,7 +3655,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3119,7 +3671,8 @@ async fn handle_request_inner(
                         evaluate_name: None,
                         presentation_hint: None,
                     };
-                    send_response(out_tx, seq, request, true, Some(json!(body)), None);
+                    send_response(out_tx, seq, request, true, Some(json!(body)), None, server_shutdown)
+                        .await;
                     return;
                 }
             };
@@ -3133,7 +3686,8 @@ async fn handle_request_inner(
                     evaluate_name: None,
                     presentation_hint: None,
                 };
-                send_response(out_tx, seq, request, true, Some(json!(body)), None);
+                send_response(out_tx, seq, request, true, Some(json!(body)), None, server_shutdown)
+                    .await;
                 return;
             };
 
@@ -3143,24 +3697,43 @@ async fn handle_request_inner(
                 .evaluate(cancel, frame_id, &args.expression, options)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(body) => send_response(out_tx, seq, request, true, body, None),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Ok(body) => send_response(out_tx, seq, request, true, body, None, server_shutdown).await,
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
         STREAM_DEBUG_COMMAND => {
@@ -3172,7 +3745,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3187,7 +3762,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("invalid streamDebug arguments: {err}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3210,7 +3787,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -3222,7 +3801,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("not attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -3238,7 +3819,9 @@ async fn handle_request_inner(
                             "This request requires a stack frame. Retry while stopped or pass frameId."
                                 .to_string(),
                         ),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -3250,7 +3833,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("unknown frameId {frame_id}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
                 let eval_guard = dbg.begin_internal_evaluation(thread_id);
@@ -3267,37 +3852,79 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(err.to_string()),
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 }
             };
 
             match fut.await {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(body) => send_response(out_tx, seq, request, true, Some(json!(body)), None),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(_body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Ok(body) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!(body)),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await
+                }
             }
         }
+
         "nova/pinObject" => {
             let Some(variables_reference) = request
                 .arguments
@@ -3311,7 +3938,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("pinObject.variablesReference is required".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
             let pinned = request
@@ -3330,7 +3959,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3342,7 +3973,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3358,16 +3991,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Ok(pinned) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "pinned": pinned })),
-                    None,
-                ),
+                Ok(pinned) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "pinned": pinned })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await;
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3376,9 +4015,22 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                 }
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
             }
         }
         // Data breakpoints / watchpoints (requires JDWP canWatchField* capabilities).
@@ -3400,7 +4052,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3414,7 +4068,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3427,7 +4083,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3443,25 +4101,29 @@ async fn handle_request_inner(
                         "watchpoints are not supported by the target VM (JDWP canWatchFieldModification={}, canWatchFieldAccess={})",
                         caps.can_watch_field_modification, caps.can_watch_field_access
                     )),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
-            let args: DataBreakpointInfoArguments =
-                match serde_json::from_value(request.arguments.clone()) {
-                    Ok(args) => args,
-                    Err(err) => {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some(format!("invalid dataBreakpointInfo arguments: {err}")),
-                        );
-                        return;
-                    }
-                };
+            let args: DataBreakpointInfoArguments = match serde_json::from_value(request.arguments.clone())
+            {
+                Ok(args) => args,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                        server_shutdown,
+                    )
+                    .await;
+                    return;
+                }
+            };
 
             // `frameId` is optional in the DAP spec; the debugger can resolve the field based on
             // the variables reference alone.
@@ -3471,24 +4133,45 @@ async fn handle_request_inner(
                 .data_breakpoint_info(cancel, args.variables_reference, &args.name)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(body) => send_response(out_tx, seq, request, true, Some(body), None),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(_body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
+                Ok(body) => {
+                    send_response(out_tx, seq, request, true, Some(body), None, server_shutdown).await;
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
             }
         }
         "setDataBreakpoints" => {
@@ -3507,7 +4190,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3521,7 +4206,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3534,7 +4221,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3550,7 +4239,9 @@ async fn handle_request_inner(
                         "watchpoints are not supported by the target VM (JDWP canWatchFieldModification={}, canWatchFieldAccess={})",
                         caps.can_watch_field_modification, caps.can_watch_field_access
                     )),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3565,37 +4256,62 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some(format!("invalid setDataBreakpoints arguments: {err}")),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
 
             match dbg.set_data_breakpoints(cancel, args.breakpoints).await {
-                Ok(bps) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                ),
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                ),
-                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                Ok(_bps) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                        server_shutdown,
+                    )
+                    .await;
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(err.to_string()),
+                        server_shutdown,
+                    )
+                    .await;
+                }
             }
         }
         // Hot swap support (class redefinition).
@@ -3710,7 +4426,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3725,7 +4443,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 };
@@ -3738,7 +4458,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("not attached".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 };
 
@@ -3757,7 +4479,9 @@ async fn handle_request_inner(
                         "hot swap is not supported by the target VM (JDWP canRedefineClasses={}, canUnrestrictedlyRedefineClasses={})",
                         caps.can_redefine_classes, caps.can_unrestrictedly_redefine_classes
                     )),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3771,7 +4495,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some(format!("invalid arguments: {err}")),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3860,7 +4586,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
 
@@ -3883,7 +4611,9 @@ async fn handle_request_inner(
                             false,
                             None,
                             Some("cancelled".to_string()),
-                        );
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                     outputs.insert(file.clone(), CompileOutputMulti { file, result });
@@ -3896,7 +4626,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("expected either `classes` or `changedFiles`".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3904,7 +4636,16 @@ async fn handle_request_inner(
             let mut engine = HotSwapEngine::new(build, jdwp);
             let mut result = tokio::select! {
                 _ = cancel.cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
                 result = engine.hot_swap_multi_async(&changed_files) => result,
@@ -3929,7 +4670,9 @@ async fn handle_request_inner(
                 true,
                 Some(serde_json::to_value(result).unwrap_or_else(|_| json!({}))),
                 None,
-            );
+                server_shutdown,
+            )
+            .await;
         }
         // Method return values (e.g. step-out with return value).
         "nova/enableMethodReturnValues" => {
@@ -3941,7 +4684,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("cancelled".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3955,7 +4700,9 @@ async fn handle_request_inner(
                         false,
                         None,
                         Some("cancelled".to_string()),
-                    );
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3968,7 +4715,9 @@ async fn handle_request_inner(
                     false,
                     None,
                     Some("not attached".to_string()),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3984,7 +4733,9 @@ async fn handle_request_inner(
                         "method return values are not supported by the target VM (JDWP canGetMethodReturnValues={})",
                         caps.can_get_method_return_values
                     )),
-                );
+                    server_shutdown,
+                )
+                .await;
                 return;
             }
 
@@ -3995,7 +4746,9 @@ async fn handle_request_inner(
                 true,
                 Some(json!({ "enabled": true })),
                 None,
-            );
+                server_shutdown,
+            )
+            .await;
         }
         "terminate" => {
             let has_launched_process = launched_process.lock().await.is_some();
@@ -4014,8 +4767,8 @@ async fn handle_request_inner(
                 }
             }
 
-            send_response(out_tx, seq, request, true, None, None);
-            send_terminated_once(out_tx, seq, terminated_sent);
+            send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+            send_terminated_once(out_tx, seq, terminated_sent, server_shutdown).await;
             server_shutdown.cancel();
         }
         "disconnect" => {
@@ -4055,8 +4808,8 @@ async fn handle_request_inner(
                 }
             }
 
-            send_response(out_tx, seq, request, true, None, None);
-            send_terminated_once(out_tx, seq, terminated_sent);
+            send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+            send_terminated_once(out_tx, seq, terminated_sent, server_shutdown).await;
             server_shutdown.cancel();
         }
         _ => {
@@ -4067,7 +4820,9 @@ async fn handle_request_inner(
                 false,
                 None,
                 Some(format!("unhandled request {}", request.command)),
-            );
+                server_shutdown,
+            )
+            .await;
         }
     }
 }
@@ -4371,7 +5126,7 @@ fn ignore_sigpipe() {
 
 fn spawn_output_task<R>(
     reader: R,
-    tx: mpsc::UnboundedSender<Value>,
+    tx: mpsc::Sender<Value>,
     seq: Arc<AtomicI64>,
     category: &'static str,
     server_shutdown: CancellationToken,
@@ -4412,7 +5167,9 @@ fn spawn_output_task<R>(
                         &seq,
                         "output",
                         Some(json!({ "category": category, "output": output })),
-                    );
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 return;
             }
@@ -4431,7 +5188,9 @@ fn spawn_output_task<R>(
                             &seq,
                             "output",
                             Some(json!({ "category": category, "output": output })),
-                        );
+                            &server_shutdown,
+                        )
+                        .await;
                         buf.clear();
                         discarding_until_newline = false;
                     } else {
@@ -4459,7 +5218,9 @@ fn spawn_output_task<R>(
                             &seq,
                             "output",
                             Some(json!({ "category": category, "output": output })),
-                        );
+                            &server_shutdown,
+                        )
+                        .await;
                         buf.clear();
                     }
                     continue;
@@ -4480,7 +5241,9 @@ fn spawn_output_task<R>(
                         &seq,
                         "output",
                         Some(json!({ "category": category, "output": output })),
-                    );
+                        &server_shutdown,
+                    )
+                    .await;
                     buf.clear();
                 } else {
                     // No newline yet; keep discarding until we encounter one.
@@ -4495,7 +5258,7 @@ fn spawn_output_task<R>(
 
 fn spawn_launched_process_exit_task(
     mut child: Child,
-    tx: mpsc::UnboundedSender<Value>,
+    tx: mpsc::Sender<Value>,
     seq: Arc<AtomicI64>,
     exited_sent: Arc<AtomicBool>,
     terminated_sent: Arc<AtomicBool>,
@@ -4553,8 +5316,8 @@ fn spawn_launched_process_exit_task(
             }
         }
 
-        send_exited_once(&tx, &seq, &exited_sent, exit_code);
-        send_terminated_once(&tx, &seq, &terminated_sent);
+        send_exited_once(&tx, &seq, &exited_sent, exit_code, &server_shutdown).await;
+        send_terminated_once(&tx, &seq, &terminated_sent, &server_shutdown).await;
         server_shutdown.cancel();
     });
 
@@ -4649,15 +5412,23 @@ async fn lock_or_cancel<'a, T>(
     }
 }
 
-fn send_event(
-    tx: &mpsc::UnboundedSender<Value>,
+async fn send_event(
+    tx: &mpsc::Sender<Value>,
     seq: &Arc<AtomicI64>,
     event: impl Into<String>,
     body: Option<Value>,
+    server_shutdown: &CancellationToken,
 ) {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event, body);
-    let _ = tx.send(serde_json::to_value(evt).unwrap_or_else(|_| json!({})));
+    let msg = serde_json::to_value(evt).unwrap_or_else(|_| json!({}));
+    tokio::select! {
+        biased;
+        res = tx.send(msg) => {
+            let _ = res;
+        }
+        _ = server_shutdown.cancelled() => {}
+    }
 }
 
 fn make_process_event_body(
@@ -4676,20 +5447,28 @@ fn make_process_event_body(
     Value::Object(body)
 }
 
-fn send_response(
-    tx: &mpsc::UnboundedSender<Value>,
+async fn send_response(
+    tx: &mpsc::Sender<Value>,
     seq: &Arc<AtomicI64>,
     request: &Request,
     success: bool,
     body: Option<Value>,
     message: Option<String>,
+    server_shutdown: &CancellationToken,
 ) {
     if !success {
         nova_metrics::MetricsRegistry::global().record_error(&request.command);
     }
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
-    let _ = tx.send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})));
+    let msg = serde_json::to_value(resp).unwrap_or_else(|_| json!({}));
+    tokio::select! {
+        biased;
+        res = tx.send(msg) => {
+            let _ = res;
+        }
+        _ = server_shutdown.cancelled() => {}
+    }
 }
 
 #[cfg(all(not(test), not(debug_assertions)))]
@@ -4787,36 +5566,45 @@ impl Drop for RequestMetricsGuard<'_> {
     }
 }
 
-fn send_exited_once(
-    tx: &mpsc::UnboundedSender<Value>,
+async fn send_exited_once(
+    tx: &mpsc::Sender<Value>,
     seq: &Arc<AtomicI64>,
     exited_sent: &Arc<AtomicBool>,
     exit_code: i64,
+    server_shutdown: &CancellationToken,
 ) {
     if exited_sent
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        send_event(tx, seq, "exited", Some(json!({ "exitCode": exit_code })));
+        send_event(
+            tx,
+            seq,
+            "exited",
+            Some(json!({ "exitCode": exit_code })),
+            server_shutdown,
+        )
+        .await;
     }
 }
 
-fn send_terminated_once(
-    tx: &mpsc::UnboundedSender<Value>,
+async fn send_terminated_once(
+    tx: &mpsc::Sender<Value>,
     seq: &Arc<AtomicI64>,
     terminated_sent: &Arc<AtomicBool>,
+    server_shutdown: &CancellationToken,
 ) {
     if terminated_sent
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        send_event(tx, seq, "terminated", None);
+        send_event(tx, seq, "terminated", None, server_shutdown).await;
     }
 }
 
 fn spawn_event_task(
     debugger: Arc<Mutex<Option<Debugger>>>,
-    tx: mpsc::UnboundedSender<Value>,
+    tx: mpsc::Sender<Value>,
     seq: Arc<AtomicI64>,
     terminated_sent: Arc<AtomicBool>,
     server_shutdown: CancellationToken,
@@ -4869,7 +5657,7 @@ fn spawn_event_task(
                         return;
                     }
 
-                    send_terminated_once(&tx, &seq, &terminated_sent);
+                    send_terminated_once(&tx, &seq, &terminated_sent, &server_shutdown).await;
                     server_shutdown.cancel();
                     return;
                 }
@@ -4883,7 +5671,7 @@ fn spawn_event_task(
                             return;
                         }
 
-                        send_terminated_once(&tx, &seq, &terminated_sent);
+                        send_terminated_once(&tx, &seq, &terminated_sent, &server_shutdown).await;
                         server_shutdown.cancel();
                         return;
                     }
@@ -5004,7 +5792,9 @@ fn spawn_event_task(
                     &seq,
                     "breakpoint",
                     Some(json!({ "reason": "changed", "breakpoint": breakpoint })),
-                );
+                    &server_shutdown,
+                )
+                .await;
             }
 
             if suppress_stopped_event {
@@ -5046,7 +5836,9 @@ fn spawn_event_task(
                                     &seq,
                                     "output",
                                     Some(json!({"category": "console", "output": output})),
-                                );
+                                    &server_shutdown,
+                                )
+                                .await;
                             }
 
                             send_event(
@@ -5056,7 +5848,9 @@ fn spawn_event_task(
                                 Some(
                                     json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
                                 ),
-                            );
+                                &server_shutdown,
+                            )
+                            .await;
                         }
                         BreakpointDisposition::Continue => {}
                         BreakpointDisposition::Log { message } => {
@@ -5068,7 +5862,9 @@ fn spawn_event_task(
                                     "category": "console",
                                     "output": format!("{message}\n")
                                 })),
-                            );
+                                &server_shutdown,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -5084,7 +5880,9 @@ fn spawn_event_task(
                             &seq,
                             "output",
                             Some(json!({"category": "console", "output": output})),
-                        );
+                            &server_shutdown,
+                        )
+                        .await;
                     }
                     send_event(
                         &tx,
@@ -5093,7 +5891,9 @@ fn spawn_event_task(
                         Some(
                             json!({"reason": "step", "threadId": thread as i64, "allThreadsStopped": false}),
                         ),
-                    );
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::Exception { thread, .. } => {
                     if let Some(value) = step_value {
@@ -5107,7 +5907,9 @@ fn spawn_event_task(
                             &seq,
                             "output",
                             Some(json!({"category": "console", "output": output})),
-                        );
+                            &server_shutdown,
+                        )
+                        .await;
                     }
                     let mut body = serde_json::Map::new();
                     body.insert("reason".to_string(), json!("exception"));
@@ -5116,7 +5918,7 @@ fn spawn_event_task(
                     if let Some(text) = exception_text {
                         body.insert("text".to_string(), json!(text));
                     }
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
                 }
                 nova_jdwp::wire::JdwpEvent::FieldAccess {
                     thread,
@@ -5136,7 +5938,7 @@ fn spawn_event_task(
                             format_value(&value)
                         )),
                     );
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
                 }
                 nova_jdwp::wire::JdwpEvent::FieldModification {
                     thread,
@@ -5156,7 +5958,7 @@ fn spawn_event_task(
                             format_value(&value_to_be)
                         )),
                     );
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
                     send_event(
@@ -5164,7 +5966,9 @@ fn spawn_event_task(
                         &seq,
                         "thread",
                         Some(json!({"reason": "started", "threadId": thread as i64})),
-                    );
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadDeath { thread, .. } => {
                     send_event(
@@ -5172,7 +5976,9 @@ fn spawn_event_task(
                         &seq,
                         "thread",
                         Some(json!({"reason": "exited", "threadId": thread as i64})),
-                    );
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::VmDeath | nova_jdwp::wire::JdwpEvent::VmDisconnect => {
                     if suppress_termination_debugger_id
@@ -5181,7 +5987,7 @@ fn spawn_event_task(
                     {
                         return;
                     }
-                    send_terminated_once(&tx, &seq, &terminated_sent);
+                    send_terminated_once(&tx, &seq, &terminated_sent, &server_shutdown).await;
                     server_shutdown.cancel();
                     return;
                 }
@@ -5413,7 +6219,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 
@@ -5465,7 +6271,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines_without_newline() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 
@@ -5504,7 +6310,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines_on_stderr() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 

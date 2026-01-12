@@ -14,6 +14,8 @@ fn main() {
     let mut print_line_len_stderr: Option<usize> = None;
     let mut heartbeat: bool = false;
     let mut heartbeat_file_path: Option<String> = None;
+    let mut spam_stdout_lines: u64 = 0;
+    let mut spam_stderr_lines: u64 = 0;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -41,7 +43,22 @@ fn main() {
                 print_line_len_stderr = args.next().and_then(|v| v.parse::<usize>().ok());
             }
             "--heartbeat" => heartbeat = true,
-            "--heartbeat-file" => heartbeat_file_path = args.next(),
+            "--heartbeat-file" => {
+                heartbeat_file_path = args.next();
+                heartbeat = true;
+            }
+            "--spam-stdout-lines" => {
+                spam_stdout_lines = args
+                    .next()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(spam_stdout_lines);
+            }
+            "--spam-stderr-lines" => {
+                spam_stderr_lines = args
+                    .next()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(spam_stderr_lines);
+            }
             _ => {}
         }
     }
@@ -68,6 +85,21 @@ fn main() {
         write_repeated(&mut err, b'b', len).expect("write long stderr line");
         writeln!(&mut err).expect("write long stderr newline");
         err.flush().expect("flush long stderr line");
+    }
+
+    if spam_stdout_lines > 0 {
+        let mut stdout = io::BufWriter::new(io::stdout());
+        for idx in 0..spam_stdout_lines {
+            let _ = writeln!(stdout, "nova-dap test helper stdout spam idx={idx} pid={pid}");
+        }
+        let _ = stdout.flush();
+    }
+    if spam_stderr_lines > 0 {
+        let mut stderr = io::BufWriter::new(io::stderr());
+        for idx in 0..spam_stderr_lines {
+            let _ = writeln!(stderr, "nova-dap test helper stderr spam idx={idx} pid={pid}");
+        }
+        let _ = stderr.flush();
     }
 
     if let Some(exit_after_ms) = exit_after_ms {

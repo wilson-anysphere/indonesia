@@ -20,6 +20,7 @@ mod dap_launch;
 mod dap_launch_detach;
 mod dap_restart;
 mod dap_session;
+mod outgoing_backpressure;
 mod debugger_ux;
 mod enable_method_return_values;
 mod exception_breakpoints;

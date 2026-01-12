@@ -772,7 +772,16 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 
-    let leaked = hot_swap_compile_temp_dirs();
+    // Tests run in parallel; give other hot-swap/stream-eval compilation paths a moment to drop
+    // their temp dirs before asserting on global filesystem state.
+    let mut leaked = Vec::new();
+    for _ in 0..100 {
+        leaked = hot_swap_compile_temp_dirs();
+        if leaked.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
         leaked.is_empty(),
         "expected hot-swap compilation temp dirs to be cleaned up, found: {leaked:?}"
