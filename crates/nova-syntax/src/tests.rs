@@ -3999,6 +3999,37 @@ fn incremental_edit_creating_unterminated_string_template_falls_back_to_full_rep
 }
 
 #[test]
+fn incremental_edit_creating_unterminated_string_template_interpolation_falls_back_to_full_reparse()
+{
+    // Similar to `incremental_edit_creating_unterminated_string_template_falls_back_to_full_reparse`,
+    // but the inserted text starts a *template interpolation* (`\{`) inside an argument list.
+    //
+    // If we only reparsed the argument list fragment, the lexer would hit fragment EOF while still
+    // inside template-interpolation mode, even though the full file would eventually see a `}` (and
+    // other tokens) and continue lexing.
+    let old_text =
+        "class Foo {\n  void m() { f(STR.length()); }\n  String tail = \"end\";\n}\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    // Insert right after the `.` in `STR.length()` to start a string template interpolation.
+    let insert_offset = old_text.find("STR.length").unwrap() as u32 + 4; // after `STR.`
+    let inserted = r#""\{x"#;
+    let edit = TextEdit::insert(insert_offset, inserted);
+
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, inserted);
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        !green_ptr_eq(&old_bar, &new_bar),
+        "expected unterminated template interpolation in fragment to force full reparse"
+    );
+}
+
+#[test]
 fn incremental_edit_does_not_duplicate_errors_at_eof() {
     // When reparsing a region that reaches EOF, the Java parser can emit errors that are anchored
     // at a zero-length range at the end of the file (e.g. missing `}`).
