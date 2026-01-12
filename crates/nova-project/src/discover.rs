@@ -758,6 +758,21 @@ mod tests {
     }
 
     #[test]
+    fn simple_build_file_detection_includes_gradle_wrapper_jar() {
+        assert!(
+            is_build_file(
+                BuildSystem::Simple,
+                Path::new("gradle/wrapper/gradle-wrapper.jar")
+            ),
+            "expected gradle/wrapper/gradle-wrapper.jar to be treated as a Simple build marker so simple workspaces can reload/reclassify"
+        );
+        assert!(
+            !is_build_file(BuildSystem::Simple, Path::new("gradle-wrapper.jar")),
+            "misplaced gradle-wrapper.jar at workspace root should not be treated as a build file for Simple workspaces"
+        );
+    }
+
+    #[test]
     fn reload_project_reloads_when_gradle_snapshot_changes() {
         use sha2::{Digest, Sha256};
 
