@@ -50,7 +50,35 @@ fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, work
     if !buildsrc_root.is_dir() {
         return;
     }
-    if !root_project_has_sources(&buildsrc_root) {
+
+    // `buildSrc` can be either a single-module build (sources under `buildSrc/src/**`) or a
+    // multi-project build (sources only in subprojects declared by `buildSrc/settings.gradle(.kts)`).
+    // Include `buildSrc` as a module whenever it (or any of its subprojects) contains Java sources
+    // so Nova can index build logic sources.
+    let mut has_sources = root_project_has_sources(&buildsrc_root);
+    if !has_sources {
+        let buildsrc_settings_path = ["settings.gradle.kts", "settings.gradle"]
+            .into_iter()
+            .map(|name| buildsrc_root.join(name))
+            .find(|p| p.is_file());
+        if let Some(settings_path) = buildsrc_settings_path {
+            if let Ok(contents) = std::fs::read_to_string(&settings_path) {
+                for module_ref in parse_gradle_settings_projects(&contents) {
+                    let module_root = if module_ref.dir_rel == "." {
+                        buildsrc_root.clone()
+                    } else {
+                        buildsrc_root.join(&module_ref.dir_rel)
+                    };
+                    if root_project_has_sources(&module_root) {
+                        has_sources = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_sources {
         return;
     }
 
