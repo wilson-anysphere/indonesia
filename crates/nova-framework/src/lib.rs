@@ -10,6 +10,15 @@
 //! Framework analyzers should gracefully degrade when this information is not
 //! available (e.g. `all_files` returning an empty list) by skipping cross-file
 //! scanning and returning no project-wide diagnostics.
+//!
+//! ## IDE integration note
+//!
+//! `nova_framework::Database` is intentionally separate from Nova's IDE-facing
+//! `nova_db::Database` (which is primarily "file text in → analysis out"). Running
+//! framework analyzers in the IDE typically requires an adapter that can supply
+//! `nova_hir::framework::ClassData` for `Database::class(ClassId)`. See
+//! `crates/nova-ide/src/framework_db.rs` and `crates/nova-ide/src/lombok_intel.rs`
+//! for in-repo examples.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
