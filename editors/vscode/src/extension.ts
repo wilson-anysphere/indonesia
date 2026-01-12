@@ -3221,6 +3221,21 @@ function hasExplicitWorkspaceRoutingHint(method: string, params: unknown): boole
       return true;
     }
 
+    const workspaceFolder = obj.workspaceFolder ?? obj.workspace_folder;
+    if (typeof workspaceFolder === 'string' && workspaceFolder.trim().length > 0) {
+      return true;
+    }
+    if (workspaceFolder && typeof workspaceFolder === 'object') {
+      const wfUri = (workspaceFolder as Record<string, unknown>).uri;
+      if (typeof wfUri === 'string' && wfUri.trim().length > 0) {
+        return true;
+      }
+      const wfFsPath = (workspaceFolder as Record<string, unknown>).fsPath ?? (workspaceFolder as Record<string, unknown>).fs_path;
+      if (typeof wfFsPath === 'string' && wfFsPath.trim().length > 0) {
+        return true;
+      }
+    }
+
     return false;
   };
 

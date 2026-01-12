@@ -85,6 +85,45 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[1].uri);
   });
 
+  it('routes by params.workspaceFolder.uri', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/test/discover',
+        params: { workspaceFolder: { uri: folders[1].uri } },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.workspaceFolder (fsPath string)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/test/discover',
+        params: { workspaceFolder: folders[0].fsPath },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
+  it('routes by params.workspace_folder.uri (snake_case)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/test/discover',
+        params: { workspace_folder: { uri: folders[0].uri } },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
   it('routes nested projectRoot paths to the containing workspace folder', () => {
     const { folders } = makeWorkspaceFolders();
     const nested = path.join(folders[0].fsPath, 'subproject');

@@ -98,6 +98,25 @@ function extractRoutingHintFromValue(params: unknown): RoutingHint {
     return { kind: 'projectRoot', projectRoot };
   }
 
+  const workspaceFolder = record.workspaceFolder ?? record.workspace_folder;
+  if (typeof workspaceFolder === 'string') {
+    const trimmed = workspaceFolder.trim();
+    if (trimmed) {
+      return looksLikeUriString(trimmed) ? { kind: 'uri', uri: trimmed } : { kind: 'projectRoot', projectRoot: trimmed };
+    }
+  }
+  if (workspaceFolder && typeof workspaceFolder === 'object') {
+    const wfRecord = workspaceFolder as Record<string, unknown>;
+    const wfUri = normalizeString(wfRecord.uri);
+    if (wfUri) {
+      return { kind: 'uri', uri: wfUri };
+    }
+    const wfFsPath = normalizeString(wfRecord.fsPath) ?? normalizeString(wfRecord.fs_path);
+    if (wfFsPath) {
+      return { kind: 'projectRoot', projectRoot: wfFsPath };
+    }
+  }
+
   return { kind: 'none' };
 }
 
@@ -126,6 +145,11 @@ function extractRoutingHintFromExecuteCommandArguments(params: unknown): Routing
   }
 
   return projectRootHint ? { kind: 'projectRoot', projectRoot: projectRootHint } : { kind: 'none' };
+}
+
+function looksLikeUriString(value: string): boolean {
+  // `scheme:` is the only required part of a URI. Special-case Windows drive letters.
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value);
 }
 
 function normalizeString(value: unknown): string | undefined {
