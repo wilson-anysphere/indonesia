@@ -290,6 +290,13 @@ fn verify_method_usage(
         }
     }
 
+    // Type-aware short-circuit: if we can prove this call cannot match the target overload,
+    // drop it. This prevents calls to other same-arity overloads (e.g. `foo(1)` vs `foo(String)`)
+    // from being treated as usages.
+    if call_is_definitely_not_target_overload(index, target, text, candidate.range) {
+        return None;
+    }
+
     let receiver = parse_receiver_expression(text, candidate.range.start);
 
     let receiver_class = match receiver {
@@ -332,6 +339,276 @@ fn verify_method_usage(
         range: candidate.range,
         kind,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArgCategory {
+    PrimitiveLiteral,
+    StringLiteral,
+    NullLiteral,
+    Other,
+}
+
+fn call_is_definitely_not_target_overload(
+    index: &Index,
+    target: &SafeDeleteSymbol,
+    candidate_text: &str,
+    candidate_range: IndexTextRange,
+) -> bool {
+    let Some(target_param_types) = index.method_param_types(target.id) else {
+        return false;
+    };
+
+    let Some(call_args) = parse_call_arg_categories(candidate_text, candidate_range.end) else {
+        return false;
+    };
+
+    if !arity_compatible(target_param_types, &call_args) {
+        return true;
+    }
+
+    for (param_ty, arg) in target_param_types.iter().zip(call_args.iter()) {
+        if arg_definitely_incompatible_with_param(arg, param_ty) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn arity_compatible(param_types: &[String], args: &[ArgCategory]) -> bool {
+    if param_types.len() == args.len() {
+        return true;
+    }
+
+    // Very small varargs support: `T... args` can accept >= (n-1) arguments.
+    if let Some(last) = param_types.last() {
+        if last.trim_end().ends_with("...") {
+            return args.len() + 1 >= param_types.len();
+        }
+    }
+
+    false
+}
+
+fn arg_definitely_incompatible_with_param(arg: &ArgCategory, param_type: &str) -> bool {
+    let base_param = normalize_type_token(param_type);
+
+    if base_param == "String" {
+        return matches!(arg, ArgCategory::PrimitiveLiteral);
+    }
+
+    if is_java_primitive_type(base_param) {
+        return matches!(arg, ArgCategory::StringLiteral | ArgCategory::NullLiteral);
+    }
+
+    false
+}
+
+fn normalize_type_token(token: &str) -> &str {
+    let token = token.trim();
+    let token = token.strip_suffix("...").unwrap_or(token);
+    let token = token.trim_end_matches("[]");
+    token
+}
+
+fn is_java_primitive_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "boolean" | "byte" | "short" | "int" | "long" | "char" | "float" | "double"
+    )
+}
+
+fn parse_call_arg_categories(text: &str, name_end: usize) -> Option<Vec<ArgCategory>> {
+    let open_paren = find_open_paren(text, name_end)?;
+    let close_paren = find_matching_paren(text, open_paren)?;
+    let inside = &text[open_paren + 1..close_paren - 1];
+
+    let mut out = Vec::new();
+    for arg in split_top_level_commas(inside) {
+        out.push(classify_arg(arg));
+    }
+    Some(out)
+}
+
+fn find_open_paren(text: &str, mut offset: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    while offset < bytes.len() && bytes[offset].is_ascii_whitespace() {
+        offset += 1;
+    }
+    if bytes.get(offset) == Some(&b'(') {
+        Some(offset)
+    } else {
+        None
+    }
+}
+
+fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open_paren;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    // return exclusive end
+                    return Some(i + 1);
+                }
+            }
+            b'"' => {
+                // Skip strings
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                // Skip char literals
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                // Skip line comment
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                // Skip block comment
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    if s.trim().is_empty() {
+        return Vec::new();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'<' => angle_depth += 1,
+            b'>' => angle_depth = angle_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b',' if paren_depth == 0
+                && angle_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0 =>
+            {
+                out.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    out.push(s[start..].trim());
+    out
+}
+
+fn classify_arg(arg: &str) -> ArgCategory {
+    let s = arg.trim();
+    if s.is_empty() {
+        return ArgCategory::Other;
+    }
+
+    if s == "null" {
+        return ArgCategory::NullLiteral;
+    }
+
+    if s.starts_with('"') {
+        return ArgCategory::StringLiteral;
+    }
+
+    if s.starts_with('\'') {
+        return ArgCategory::PrimitiveLiteral;
+    }
+
+    if s == "true" || s == "false" {
+        return ArgCategory::PrimitiveLiteral;
+    }
+
+    if s
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_digit() || *b == b'-')
+    {
+        return ArgCategory::PrimitiveLiteral;
+    }
+
+    ArgCategory::Other
 }
 
 fn find_override_usages(index: &Index, target: &SafeDeleteSymbol) -> Vec<Usage> {

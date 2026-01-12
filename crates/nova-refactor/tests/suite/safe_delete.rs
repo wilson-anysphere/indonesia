@@ -270,6 +270,59 @@ class A {
 }
 
 #[test]
+fn safe_delete_ignores_overload_declarations_as_usages() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void foo(int x) {
+    }
+
+    public void foo(String s) {
+    }
+
+    public void entry() {
+        foo(1);
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let target = index
+        .method_overload_by_param_types("A", "foo", &[String::from("String")])
+        .expect("foo(String) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
+        SafeDeleteOutcome::Preview { report } => {
+            panic!("expected direct application (no usages), got: {report:?}")
+        }
+    };
+
+    let updated = apply_workspace_edit(&files, &edit);
+    let a = updated.get("A.java").unwrap();
+    assert!(
+        !a.contains("foo(String"),
+        "foo(String) declaration should be removed: {a}"
+    );
+    assert!(
+        a.contains("foo(int x)"),
+        "other overload should remain: {a}"
+    );
+    assert!(a.contains("foo(1)"), "call site should remain: {a}");
+}
+
+#[test]
 fn safe_delete_blocks_when_target_overload_called() {
     let mut files = BTreeMap::new();
     files.insert(
