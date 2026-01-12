@@ -301,7 +301,16 @@ async fn debug_stream_wire_with_compiler(
     let started = Instant::now();
 
     // --- Setup phase (excluded from max_total_time) -------------------------
-    let (thread, helper_class, helper_method) = setup_helper(jdwp, cancel, compiler).await?;
+    let (thread, helper_class, helper_method) = match setup_helper(jdwp, cancel, compiler).await {
+        Ok(res) => res,
+        Err(WireStreamDebugError::Compile(msg)) => {
+            return Err(WireStreamDebugError::Compile(format!(
+                "while evaluating `{}`:\n{msg}",
+                chain.expression
+            )));
+        }
+        Err(other) => return Err(other),
+    };
 
     // --- Evaluation phase (budgeted by max_total_time) ----------------------
     let eval_started = Instant::now();
@@ -729,6 +738,51 @@ mod tests {
             message.contains("java.util.stream.Collectors"),
             "expected Collectors hint:\n{message}"
         );
+    }
+
+    #[tokio::test]
+    async fn compile_failures_include_user_expression_context() {
+        let jdwp_server = MockJdwpServer::spawn().await.unwrap();
+        let jdwp = JdwpClient::connect(jdwp_server.addr()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let cfg = StreamDebugConfig::default();
+        let chain = analyze_stream_expression("list.stream().count()").unwrap();
+
+        struct FailingCompiler;
+        impl HelperClassCompiler for FailingCompiler {
+            fn compile<'a>(
+                &'a self,
+                _cancel: &'a CancellationToken,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<CompiledHelperClass, WireStreamDebugError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    Err(WireStreamDebugError::Compile(
+                        "/tmp/Foo.java:1:1: cannot find symbol".to_string(),
+                    ))
+                })
+            }
+        }
+
+        let result = debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &FailingCompiler)
+            .await;
+        match result {
+            Err(WireStreamDebugError::Compile(msg)) => {
+                assert!(
+                    msg.contains("while evaluating `list.stream().count()`"),
+                    "expected expression context in message:\n{msg}"
+                );
+                assert!(
+                    msg.contains("cannot find symbol"),
+                    "expected original diagnostics to be preserved:\n{msg}"
+                );
+            }
+            other => panic!("expected Compile error, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
