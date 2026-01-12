@@ -128,7 +128,13 @@ export function registerNovaBuildIntegration(
 
   const workspaceStates = new Map<WorkspaceKey, WorkspaceBuildState>();
 
-  let pollingEnabled = false;
+  // Track which workspace folders are currently opted into build-status polling.
+  //
+  // In multi-root workspaces, polling every folder would start one nova-lsp per folder (via
+  // `sendNovaRequest`), defeating lazy workspace-client startup. Instead, we enable polling for a
+  // folder only once the user has opened a Java file in that folder or explicitly invoked a build
+  // command targeting it.
+  const pollingWorkspaceKeys = new Set<WorkspaceKey>();
 
   const getWorkspaceKey = (folder: vscode.WorkspaceFolder): WorkspaceKey => folder.uri.toString();
 
@@ -170,8 +176,9 @@ export function registerNovaBuildIntegration(
     }
 
     const supportedStates = folders
-      .map((folder) => ({ folder, state: workspaceStates.get(getWorkspaceKey(folder)) }))
-      .filter((entry): entry is { folder: vscode.WorkspaceFolder; state: WorkspaceBuildState } => Boolean(entry.state))
+      // Ensure each workspace folder gets a state entry so the status bar renders a neutral
+      // "unavailable" message until we've polled at least once.
+      .map((folder) => ({ folder, state: getWorkspaceState(folder) }))
       .filter((entry) => entry.state.statusSupported !== false);
 
     if (supportedStates.length === 0) {
@@ -205,7 +212,7 @@ export function registerNovaBuildIntegration(
   };
 
   const scheduleStatusPoll = (folder: vscode.WorkspaceFolder, delayMs: number): void => {
-    if (!pollingEnabled) {
+    if (!pollingWorkspaceKeys.has(getWorkspaceKey(folder))) {
       return;
     }
 
@@ -226,6 +233,9 @@ export function registerNovaBuildIntegration(
     folder: vscode.WorkspaceFolder,
     token?: vscode.CancellationToken,
   ): Promise<NovaBuildStatusResult | undefined> => {
+    if (!pollingWorkspaceKeys.has(getWorkspaceKey(folder))) {
+      return undefined;
+    }
     if (!isWorkspaceFolderActive(folder)) {
       return undefined;
     }
@@ -313,6 +323,9 @@ export function registerNovaBuildIntegration(
     folder: vscode.WorkspaceFolder,
     token?: vscode.CancellationToken,
   ): Promise<NovaBuildStatusResult | undefined> => {
+    if (!pollingWorkspaceKeys.has(getWorkspaceKey(folder))) {
+      return undefined;
+    }
     if (!isWorkspaceFolderActive(folder)) {
       return undefined;
     }
@@ -334,24 +347,27 @@ export function registerNovaBuildIntegration(
     return result;
   };
 
-  const startPolling = (): void => {
-    if (pollingEnabled) {
+  const startPollingForWorkspaceFolder = (folder: vscode.WorkspaceFolder): void => {
+    if (!isWorkspaceFolderActive(folder)) {
       return;
     }
-    pollingEnabled = true;
-    for (const folder of getWorkspaceFolders()) {
-      void pollBuildStatusAndSchedule(folder);
+    const key = getWorkspaceKey(folder);
+    if (!pollingWorkspaceKeys.has(key)) {
+      pollingWorkspaceKeys.add(key);
     }
+    void pollBuildStatusAndSchedule(folder);
+    updateStatusBarItem();
   };
 
   const maybeStartPolling = (): void => {
-    if (pollingEnabled) {
-      return;
-    }
-
-    const hasJavaDoc = vscode.workspace.textDocuments.some((doc) => doc.languageId === 'java');
-    if (hasJavaDoc) {
-      startPolling();
+    for (const doc of vscode.workspace.textDocuments) {
+      if (doc.languageId !== 'java') {
+        continue;
+      }
+      const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+      if (folder) {
+        startPollingForWorkspaceFolder(folder);
+      }
     }
   };
 
@@ -360,7 +376,10 @@ export function registerNovaBuildIntegration(
       if (doc.languageId !== 'java') {
         return;
       }
-      startPolling();
+      const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+      if (folder) {
+        startPollingForWorkspaceFolder(folder);
+      }
     }),
   );
 
@@ -368,6 +387,7 @@ export function registerNovaBuildIntegration(
     vscode.workspace.onDidChangeWorkspaceFolders((event) => {
       for (const folder of event.removed) {
         const key = getWorkspaceKey(folder);
+        pollingWorkspaceKeys.delete(key);
         const state = workspaceStates.get(key);
         if (!state) {
           continue;
@@ -381,7 +401,7 @@ export function registerNovaBuildIntegration(
 
       for (const folder of event.added) {
         getWorkspaceState(folder);
-        if (pollingEnabled) {
+        if (pollingWorkspaceKeys.has(getWorkspaceKey(folder))) {
           void pollBuildStatusAndSchedule(folder);
         }
       }
@@ -824,8 +844,6 @@ export function registerNovaBuildIntegration(
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.buildProject', async (args?: unknown) => {
-      startPolling();
-
       const selector = parseProjectSelector(args);
 
       const folder = await resolveWorkspaceFolderForSelector(selector, 'Select workspace folder to build');
@@ -841,6 +859,8 @@ export function registerNovaBuildIntegration(
       // When building an explicit Bazel target, always use `buildTool=auto` and skip any prompt.
       // `nova/buildProject` only supports Bazel builds when `buildTool` is unset/auto.
       const buildTool: BuildTool = target ? 'auto' : await getBuildBuildTool(folder);
+
+      startPollingForWorkspaceFolder(folder);
 
       const workspaceState = getWorkspaceState(folder);
       workspaceState.buildCommandInFlight = true;
@@ -1128,8 +1148,6 @@ export function registerNovaBuildIntegration(
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.reloadProject', async (args?: unknown) => {
-      startPolling();
-
       const selector = parseProjectSelector(args);
 
       const folder = await resolveWorkspaceFolderForSelector(selector, 'Select workspace folder to reload');
@@ -1145,6 +1163,8 @@ export function registerNovaBuildIntegration(
       // When reloading a Bazel target, always use `buildTool=auto` and skip any prompt (matching
       // `nova.buildProject` behaviour for Bazel selectors).
       const buildTool: BuildTool = target ? 'auto' : await getBuildBuildTool(folder);
+
+      startPollingForWorkspaceFolder(folder);
 
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Nova: Reloading project (${folder.name})…`, cancellable: true },
