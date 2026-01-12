@@ -226,7 +226,10 @@ fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::Path;
+    use zip::write::FileOptions;
+    use zip::ZipWriter;
 
     #[test]
     fn stable_module_path_entry_detects_jars() {
@@ -300,6 +303,55 @@ mod tests {
         )
         .unwrap();
         assert!(stable_module_path_entry(&exploded_manifest));
+
+        // Multi-release module-info (`META-INF/versions/9/module-info.class`).
+        let multirelease = root.join("multirelease");
+        std::fs::create_dir_all(multirelease.join("META-INF").join("versions").join("9")).unwrap();
+        std::fs::write(
+            multirelease
+                .join("META-INF")
+                .join("versions")
+                .join("9")
+                .join("module-info.class"),
+            b"cafebabe",
+        )
+        .unwrap();
+        assert!(stable_module_path_entry(&multirelease));
+    }
+
+    #[test]
+    fn stable_module_path_entry_detects_archives_with_nonstandard_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let options = FileOptions::default();
+
+        // Multi-release module-info (`META-INF/versions/9/module-info.class`).
+        let mr_jar = root.join("mr.jar");
+        {
+            let file = std::fs::File::create(&mr_jar).unwrap();
+            let mut zip = ZipWriter::new(file);
+            zip.start_file("META-INF/versions/9/module-info.class", options)
+                .unwrap();
+            zip.write_all(b"cafebabe").unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(stable_module_path_entry(&mr_jar));
+
+        // Exploded-jmod style manifest inside an archive (`classes/META-INF/MANIFEST.MF`).
+        let classes_manifest_jar = root.join("classes-manifest.jar");
+        {
+            let file = std::fs::File::create(&classes_manifest_jar).unwrap();
+            let mut zip = ZipWriter::new(file);
+            zip.start_file("classes/META-INF/MANIFEST.MF", options)
+                .unwrap();
+            zip.write_all(
+                "Manifest-Version: 1.0\nAutomatic-Module-Name: com.example.jar\n\n".as_bytes(),
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(stable_module_path_entry(&classes_manifest_jar));
     }
 
     #[test]
