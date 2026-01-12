@@ -41,6 +41,10 @@ pub struct WatchConfig {
     pub workspace_root: PathBuf,
     pub source_roots: Vec<PathBuf>,
     pub generated_source_roots: Vec<PathBuf>,
+    /// Path to the Nova config file used for this workspace (if any).
+    ///
+    /// This may point outside of `workspace_root` when `NOVA_CONFIG_PATH` is set.
+    pub nova_config_path: Option<PathBuf>,
 }
 
 impl WatchConfig {
@@ -63,12 +67,20 @@ impl WatchConfig {
                 .into_iter()
                 .map(|root| normalize_watch_path(root))
                 .collect(),
+            nova_config_path: None,
         }
     }
 }
 
 pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option<ChangeCategory> {
     for path in event.paths() {
+        if config
+            .nova_config_path
+            .as_ref()
+            .is_some_and(|config_path| config_path == path)
+        {
+            return Some(ChangeCategory::Build);
+        }
         // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
         // like a build change so we reload the project config instead of only updating file
         // contents.

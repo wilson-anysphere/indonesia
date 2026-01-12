@@ -75,7 +75,7 @@
 //! Instead, prefer a deterministic injected watcher (see [`ManualFileWatcher`]) or direct calls
 //! into higher-level "apply events" APIs. See `docs/file-watching.md` for guidance.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -121,6 +121,18 @@ impl WatchEvent {
     }
 }
 
+/// Controls whether a directory watch should recurse into subdirectories.
+///
+/// This enum is owned by `nova-vfs` so downstream crates don't need to depend on a specific
+/// filesystem watcher backend (e.g. `notify`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WatchMode {
+    /// Watch the given directory and all descendants.
+    Recursive,
+    /// Only watch the given path itself (for directories, this does **not** include descendants).
+    NonRecursive,
+}
+
 /// Message type delivered by a [`FileWatcher`].
 ///
 /// OS watcher backends may surface errors asynchronously; these are delivered as `Err(io::Error)`
@@ -131,7 +143,7 @@ pub type WatchMessage = io::Result<WatchEvent>;
 ///
 /// Consumers are expected to:
 ///
-/// 1. Register roots to watch with [`watch_root`](FileWatcher::watch_root).
+/// 1. Register paths to watch with [`watch_path`](FileWatcher::watch_path).
 /// 2. Consume events from [`receiver`](FileWatcher::receiver).
 ///
 /// Notes:
@@ -140,11 +152,14 @@ pub type WatchMessage = io::Result<WatchEvent>;
 /// - Consumers should treat events as *hints* and consult the filesystem/VFS for the authoritative
 ///   state.
 pub trait FileWatcher: Send {
-    /// Begin watching `root` recursively.
-    fn watch_root(&mut self, root: &Path) -> io::Result<()>;
+    /// Begin watching `path`.
+    ///
+    /// `path` may be either a directory path or a file path. For file paths, `mode` is treated as
+    /// [`WatchMode::NonRecursive`] since recursion is not meaningful.
+    fn watch_path(&mut self, path: &Path, mode: WatchMode) -> io::Result<()>;
 
-    /// Stop watching `root`.
-    fn unwatch_root(&mut self, root: &Path) -> io::Result<()>;
+    /// Stop watching `path`.
+    fn unwatch_path(&mut self, path: &Path) -> io::Result<()>;
 
     /// Returns the receiver used to consume watcher events.
     fn receiver(&self) -> &channel::Receiver<WatchMessage>;
@@ -173,9 +188,9 @@ pub trait FileWatcher: Send {
 pub struct ManualFileWatcher {
     tx: channel::Sender<WatchMessage>,
     rx: channel::Receiver<WatchMessage>,
-    watch_calls: Vec<PathBuf>,
+    watch_calls: Vec<(PathBuf, WatchMode)>,
     unwatch_calls: Vec<PathBuf>,
-    watched: HashSet<PathBuf>,
+    watched: HashMap<PathBuf, WatchMode>,
 }
 
 /// Cloneable handle for injecting events into a [`ManualFileWatcher`] after it has been moved into
@@ -215,7 +230,7 @@ impl ManualFileWatcher {
             rx,
             watch_calls: Vec::new(),
             unwatch_calls: Vec::new(),
-            watched: HashSet::new(),
+            watched: HashMap::new(),
         }
     }
 
@@ -237,36 +252,44 @@ impl ManualFileWatcher {
         self.handle().push_error(error)
     }
 
-    /// Paths passed to [`FileWatcher::watch_root`] (in call order).
-    pub fn watch_calls(&self) -> &[PathBuf] {
+    /// Paths passed to [`FileWatcher::watch_path`] (in call order).
+    pub fn watch_calls(&self) -> &[(PathBuf, WatchMode)] {
         &self.watch_calls
     }
 
-    /// Paths passed to [`FileWatcher::unwatch_root`] (in call order).
+    /// Paths passed to [`FileWatcher::unwatch_path`] (in call order).
     pub fn unwatch_calls(&self) -> &[PathBuf] {
         &self.unwatch_calls
     }
 
     /// Returns the set of currently watched roots (sorted for determinism).
     pub fn watched_roots(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = self.watched.iter().cloned().collect();
+        let mut roots: Vec<PathBuf> = self.watched.keys().cloned().collect();
         roots.sort();
         roots
+    }
+
+    /// Returns the currently watched paths and their modes (sorted for determinism).
+    pub fn watched_paths(&self) -> Vec<(PathBuf, WatchMode)> {
+        let mut out: Vec<(PathBuf, WatchMode)> =
+            self.watched.iter().map(|(p, m)| (p.clone(), *m)).collect();
+        out.sort_by(|(a, _), (b, _)| a.cmp(b));
+        out
     }
 }
 
 impl FileWatcher for ManualFileWatcher {
-    fn watch_root(&mut self, root: &Path) -> io::Result<()> {
-        let root = root.to_path_buf();
-        self.watch_calls.push(root.clone());
-        self.watched.insert(root);
+    fn watch_path(&mut self, path: &Path, mode: WatchMode) -> io::Result<()> {
+        let path = path.to_path_buf();
+        self.watch_calls.push((path.clone(), mode));
+        self.watched.insert(path, mode);
         Ok(())
     }
 
-    fn unwatch_root(&mut self, root: &Path) -> io::Result<()> {
-        let root = root.to_path_buf();
-        self.unwatch_calls.push(root.clone());
-        self.watched.remove(&root);
+    fn unwatch_path(&mut self, path: &Path) -> io::Result<()> {
+        let path = path.to_path_buf();
+        self.unwatch_calls.push(path.clone());
+        self.watched.remove(&path);
         Ok(())
     }
 
@@ -283,6 +306,11 @@ mod notify_impl {
     use notify::EventKind;
     use std::collections::VecDeque;
     use std::time::{Duration, Instant};
+
+    #[cfg(feature = "watch-notify")]
+    use notify::{RecursiveMode, Watcher};
+    #[cfg(feature = "watch-notify")]
+    use std::collections::HashMap;
 
     #[derive(Debug, Default)]
     pub struct EventNormalizer {
@@ -534,11 +562,21 @@ mod notify_impl {
     }
 
     #[cfg(feature = "watch-notify")]
+    #[derive(Debug, Clone, Copy)]
+    struct ActualWatch {
+        mode: WatchMode,
+        ref_count: usize,
+    }
+
+    #[cfg(feature = "watch-notify")]
     pub struct NotifyFileWatcher {
         watcher: notify::RecommendedWatcher,
         events_rx: channel::Receiver<WatchMessage>,
         stop_tx: channel::Sender<()>,
         thread: Option<std::thread::JoinHandle<()>>,
+        requested_paths: HashMap<PathBuf, PathBuf>,
+        actual_watches: HashMap<PathBuf, ActualWatch>,
+
         #[cfg(test)]
         raw_tx_for_tests: channel::Sender<notify::Result<notify::Event>>,
         #[cfg(test)]
@@ -605,6 +643,8 @@ mod notify_impl {
                 events_rx,
                 stop_tx,
                 thread: Some(thread),
+                requested_paths: HashMap::new(),
+                actual_watches: HashMap::new(),
             })
         }
 
@@ -659,10 +699,93 @@ mod notify_impl {
                 events_rx,
                 stop_tx,
                 thread: Some(thread),
+                requested_paths: HashMap::new(),
+                actual_watches: HashMap::new(),
                 raw_tx_for_tests: raw_tx,
                 overflowed_for_tests: overflowed,
                 start_tx_for_tests: start_tx,
             })
+        }
+
+        fn ensure_actual_watch(&mut self, path: &Path, mode: WatchMode) -> io::Result<()> {
+            let desired = match self.actual_watches.get(path) {
+                Some(existing) => combine_modes(existing.mode, mode),
+                None => mode,
+            };
+
+            match self.actual_watches.get_mut(path) {
+                None => {
+                    self.watcher
+                        .watch(path, to_recursive_mode(desired))
+                        .map_err(notify_error_to_io)?;
+                    self.actual_watches.insert(
+                        path.to_path_buf(),
+                        ActualWatch {
+                            mode: desired,
+                            ref_count: 0,
+                        },
+                    );
+                }
+                Some(existing) => {
+                    if existing.mode != desired {
+                        // Upgrade the mode (e.g. NonRecursive -> Recursive).
+                        self.watcher.unwatch(path).map_err(notify_error_to_io)?;
+                        self.watcher
+                            .watch(path, to_recursive_mode(desired))
+                            .map_err(notify_error_to_io)?;
+                        existing.mode = desired;
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        fn add_requested_watch(
+            &mut self,
+            requested: PathBuf,
+            actual: PathBuf,
+            mode: WatchMode,
+        ) -> io::Result<()> {
+            if let Some(existing_actual) = self.requested_paths.get(&requested) {
+                if existing_actual == &actual {
+                    // Idempotent watch call; ensure we've upgraded modes if needed.
+                    self.ensure_actual_watch(&actual, mode)?;
+                    return Ok(());
+                }
+                self.remove_requested_watch(&requested)?;
+            }
+
+            self.ensure_actual_watch(&actual, mode)?;
+
+            let entry = self
+                .actual_watches
+                .get_mut(&actual)
+                .expect("ensure_actual_watch inserted entry");
+            entry.mode = combine_modes(entry.mode, mode);
+            entry.ref_count = entry.ref_count.saturating_add(1);
+
+            self.requested_paths.insert(requested, actual);
+            Ok(())
+        }
+
+        fn remove_requested_watch(&mut self, requested: &Path) -> io::Result<()> {
+            let Some(actual) = self.requested_paths.remove(requested) else {
+                return Ok(());
+            };
+
+            let Some(mut watch) = self.actual_watches.remove(&actual) else {
+                return Ok(());
+            };
+
+            watch.ref_count = watch.ref_count.saturating_sub(1);
+            if watch.ref_count > 0 {
+                self.actual_watches.insert(actual, watch);
+                return Ok(());
+            }
+
+            self.watcher.unwatch(&actual).map_err(notify_error_to_io)?;
+            Ok(())
         }
     }
 
@@ -678,20 +801,57 @@ mod notify_impl {
 
     #[cfg(feature = "watch-notify")]
     impl FileWatcher for NotifyFileWatcher {
-        fn watch_root(&mut self, root: &Path) -> io::Result<()> {
-            use notify::Watcher;
-            self.watcher
-                .watch(root, notify::RecursiveMode::Recursive)
-                .map_err(notify_error_to_io)
+        fn watch_path(&mut self, path: &Path, mode: WatchMode) -> io::Result<()> {
+            // When the caller requests a recursive watch, treat this as a directory watch even if
+            // the directory doesn't exist yet (this allows higher layers to retry NotFound errors
+            // deterministically for generated roots).
+            let meta = std::fs::metadata(path);
+            let is_dir = matches!(meta, Ok(ref meta) if meta.is_dir());
+            let is_file = matches!(meta, Ok(ref meta) if meta.is_file());
+
+            if is_dir || (mode == WatchMode::Recursive && !is_file) {
+                return self.add_requested_watch(path.to_path_buf(), path.to_path_buf(), mode);
+            }
+
+            // Treat as a file watch (or a non-existent path the caller wants to treat as a file).
+            // Recursion is not meaningful for file paths, so we clamp to NonRecursive.
+            let file_mode = WatchMode::NonRecursive;
+            let requested = path.to_path_buf();
+
+            match self.add_requested_watch(requested.clone(), requested.clone(), file_mode) {
+                Ok(()) => Ok(()),
+                Err(_err) => {
+                    let parent = path.parent().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "path has no parent")
+                    })?;
+                    self.add_requested_watch(requested, parent.to_path_buf(), WatchMode::NonRecursive)
+                }
+            }
         }
 
-        fn unwatch_root(&mut self, root: &Path) -> io::Result<()> {
-            use notify::Watcher;
-            self.watcher.unwatch(root).map_err(notify_error_to_io)
+        fn unwatch_path(&mut self, path: &Path) -> io::Result<()> {
+            self.remove_requested_watch(path)
         }
 
         fn receiver(&self) -> &channel::Receiver<WatchMessage> {
             &self.events_rx
+        }
+    }
+
+    #[cfg(feature = "watch-notify")]
+    fn combine_modes(a: WatchMode, b: WatchMode) -> WatchMode {
+        if a == WatchMode::Recursive || b == WatchMode::Recursive {
+            WatchMode::Recursive
+        } else {
+            WatchMode::NonRecursive
+        }
+    }
+
+    #[cfg(feature = "watch-notify")]
+    fn to_recursive_mode(mode: WatchMode) -> RecursiveMode {
+        match mode {
+            WatchMode::Recursive => RecursiveMode::Recursive,
+            WatchMode::NonRecursive => RecursiveMode::NonRecursive,
         }
     }
 
@@ -801,6 +961,17 @@ mod notify_impl {
             while !overflowed.load(Ordering::Acquire) {
                 if started_at.elapsed() > Duration::from_secs(1) {
                     panic!("expected overflow flag to be set");
+                }
+                std::thread::yield_now();
+            }
+
+            // Ensure the drain loop has actually observed the overflow before we start receiving
+            // messages. If we block on `recv` too early, the sender may deliver events directly to a
+            // waiting receiver (bypassing the bounded queue) and we won't overflow deterministically.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !overflowed.load(Ordering::Acquire) {
+                if Instant::now() >= deadline {
+                    panic!("expected watcher events queue overflow");
                 }
                 std::thread::yield_now();
             }
@@ -1213,11 +1384,17 @@ mod tests {
         let root_b = tmp.path().join("b");
 
         let mut watcher = ManualFileWatcher::new();
-        watcher.watch_root(&root_a).unwrap();
-        watcher.watch_root(&root_b).unwrap();
-        watcher.unwatch_root(&root_a).unwrap();
+        watcher.watch_path(&root_a, WatchMode::Recursive).unwrap();
+        watcher.watch_path(&root_b, WatchMode::NonRecursive).unwrap();
+        watcher.unwatch_path(&root_a).unwrap();
 
-        assert_eq!(watcher.watch_calls(), &[root_a.clone(), root_b.clone()]);
+        assert_eq!(
+            watcher.watch_calls(),
+            &[
+                (root_a.clone(), WatchMode::Recursive),
+                (root_b.clone(), WatchMode::NonRecursive)
+            ]
+        );
         assert_eq!(watcher.unwatch_calls(), std::slice::from_ref(&root_a));
         assert_eq!(watcher.watched_roots(), vec![root_b.clone()]);
 

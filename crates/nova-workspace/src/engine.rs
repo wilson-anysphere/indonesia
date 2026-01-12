@@ -27,8 +27,8 @@ use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, 
 use nova_syntax::SyntaxTreeStore;
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
-    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, LocalFs,
-    FileWatcher, NotifyFileWatcher, Vfs, VfsPath, WatchEvent,
+    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
+    LocalFs, NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
 
@@ -37,46 +37,57 @@ use crate::watch::{
 };
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
-fn prune_overlapping_watch_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
-    // Deterministic ordering across platforms.
-    roots.sort();
-    roots.dedup();
+fn compute_watch_roots(workspace_root: &Path, watch_config: &WatchConfig) -> Vec<(PathBuf, WatchMode)> {
+    let mut roots: Vec<(PathBuf, WatchMode)> = Vec::new();
+    roots.push((workspace_root.to_path_buf(), WatchMode::Recursive));
 
-    // The watcher currently only supports recursive roots, so any nested root is guaranteed to be
-    // covered by its parent.
-    let mut pruned: Vec<PathBuf> = Vec::new();
-    'outer: for root in roots {
-        for parent in &pruned {
-            if root.starts_with(parent) {
-                continue 'outer;
-            }
-        }
-        pruned.push(root);
-    }
-
-    pruned
-}
-
-fn compute_watch_roots(workspace_root: &Path, watch_config: &WatchConfig) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = Vec::new();
-    roots.push(workspace_root.to_path_buf());
-
-    let explicit_external: Vec<PathBuf> = watch_config
+    // Explicit external roots are watched recursively. Roots under the workspace root are already
+    // covered by the workspace recursive watch.
+    for root in watch_config
         .source_roots
         .iter()
         .chain(watch_config.generated_source_roots.iter())
-        // Roots under the workspace root are already covered by the workspace recursive watch.
-        .filter(|root| !root.starts_with(workspace_root))
-        .cloned()
-        .collect();
+    {
+        if root.starts_with(workspace_root) {
+            continue;
+        }
+        roots.push((root.clone(), WatchMode::Recursive));
+    }
 
-    roots.extend(prune_overlapping_watch_roots(explicit_external));
+    // Watch the discovered config file when it lives outside the workspace root. Use a non-recursive
+    // watch so we don't accidentally watch huge trees like `$HOME`.
+    if let Some(config_path) = watch_config.nova_config_path.as_ref() {
+        if !config_path.starts_with(workspace_root) {
+            roots.push((config_path.clone(), WatchMode::NonRecursive));
+        }
+    }
 
-    // Deterministic ordering for watcher setup.
-    roots.sort();
-    roots.dedup();
+    // Deterministic ordering.
+    roots.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    roots
+    // Deduplicate paths, preferring Recursive mode.
+    roots.dedup_by(|(a, mode_a), (b, mode_b)| {
+        if a != b {
+            return false;
+        }
+        if *mode_a == WatchMode::Recursive || *mode_b == WatchMode::Recursive {
+            *mode_a = WatchMode::Recursive;
+        }
+        true
+    });
+
+    // Prune paths covered by a prior recursive watch.
+    let mut pruned: Vec<(PathBuf, WatchMode)> = Vec::new();
+    'outer: for (root, mode) in roots {
+        for (parent, parent_mode) in &pruned {
+            if *parent_mode == WatchMode::Recursive && root.starts_with(parent) {
+                continue 'outer;
+            }
+        }
+        pruned.push((root, mode));
+    }
+
+    pruned
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -653,12 +664,11 @@ impl WorkspaceEngine {
                 }
             }
 
-            let desired_roots =
-                |workspace_root: &Path, config: &WatchConfig| -> HashSet<PathBuf> {
-                    compute_watch_roots(workspace_root, config)
-                        .into_iter()
-                        .collect()
-                };
+            let desired_roots = |workspace_root: &Path,
+                                 config: &WatchConfig|
+             -> std::collections::HashMap<PathBuf, WatchMode> {
+                compute_watch_roots(workspace_root, config).into_iter().collect()
+            };
 
             let now = Instant::now();
             for err in watch_root_manager.set_desired_roots(
@@ -1823,7 +1833,7 @@ fn publish_watch_root_error(
     err: WatchRootError,
 ) {
     match err {
-        WatchRootError::WatchFailed { root, error } => {
+        WatchRootError::WatchFailed { root, mode: _, error } => {
             publish_to_subscribers(
                 subscribers,
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -2110,6 +2120,7 @@ fn reload_project_and_sync(
     };
     let source_roots = build_source_roots(&config);
     let (watch_source_roots, watch_generated_roots) = watch_roots_from_project_config(&config);
+    let nova_config_path = options.nova_config_path.clone();
     let next_classpath_fingerprint = classpath_fingerprint(&config);
     let classpath_changed = match &previous_classpath_fingerprint {
         Some(prev) => prev != &next_classpath_fingerprint,
@@ -2135,6 +2146,7 @@ fn reload_project_and_sync(
             watch_source_roots.clone(),
             watch_generated_roots.clone(),
         );
+        cfg.nova_config_path = nova_config_path.clone();
     }
 
     // If the watcher is running, ensure it begins watching any newly discovered roots outside the
@@ -2877,7 +2889,10 @@ mod tests {
         let roots = compute_watch_roots(&workspace_root, &config);
         assert_eq!(
             roots,
-            vec![PathBuf::from("/ext/src"), PathBuf::from("/ws")]
+            vec![
+                (PathBuf::from("/ext/src"), WatchMode::Recursive),
+                (PathBuf::from("/ws"), WatchMode::Recursive)
+            ]
         );
     }
 
@@ -2909,7 +2924,7 @@ mod tests {
 
         let roots = compute_watch_roots(&workspace_root, &config);
         assert!(
-            roots.iter().all(|root| root != &workspace_src),
+            roots.iter().all(|(root, _)| root != &workspace_src),
             "expected {} to not be watched explicitly (workspace root watch should cover it)",
             workspace_src.display()
         );
@@ -3000,6 +3015,43 @@ mod tests {
             .find(|c| c.name == "workspace_project_indexes")
             .expect("workspace_project_indexes registered");
         assert_eq!(component.bytes, 0);
+    }
+
+    #[test]
+    fn external_config_path_adds_non_recursive_watch_for_parent_directory() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env mutex poisoned");
+
+        let old = std::env::var_os(nova_config::NOVA_CONFIG_ENV_VAR);
+
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace_root = workspace_dir.path().canonicalize().unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("myconfig.toml");
+        fs::write(&config_path, b"[generated_sources]\nenabled = true\n").unwrap();
+        let config_path = config_path.canonicalize().unwrap();
+
+        std::env::set_var(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
+
+        let mut watch_config = WatchConfig::new(workspace_root.clone());
+        watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
+        assert_eq!(watch_config.nova_config_path.as_deref(), Some(config_path.as_path()));
+
+        let roots = compute_watch_roots(&workspace_root, &watch_config);
+        assert!(roots.contains(&(workspace_root.clone(), WatchMode::Recursive)));
+        assert!(
+            roots.contains(&(config_path.clone(), WatchMode::NonRecursive)),
+            "expected roots {roots:?} to include non-recursive watch for config path"
+        );
+
+        match old {
+            Some(value) => std::env::set_var(nova_config::NOVA_CONFIG_ENV_VAR, value),
+            None => std::env::remove_var(nova_config::NOVA_CONFIG_ENV_VAR),
+        }
     }
 
     #[test]

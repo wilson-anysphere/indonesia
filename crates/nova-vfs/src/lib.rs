@@ -35,7 +35,7 @@ pub use vfs::Vfs;
 pub use virtual_documents::VirtualDocumentStore;
 pub use virtual_documents_fs::VirtualDocumentsFs;
 pub use watch::{
-    FileWatcher, ManualFileWatcher, ManualFileWatcherHandle, WatchEvent, WatchMessage,
+    FileWatcher, ManualFileWatcher, ManualFileWatcherHandle, WatchEvent, WatchMessage, WatchMode,
 };
 
 #[cfg(feature = "watch-notify")]
