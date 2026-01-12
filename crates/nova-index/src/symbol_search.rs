@@ -297,8 +297,9 @@ impl SymbolSearchIndex {
 
             // Keep at most `limit` matches while scoring candidates, to avoid large
             // allocations and O(n log n) sorts for short queries.
+            let heap_capacity = limit.min(candidates_considered);
             let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> =
-                BinaryHeap::with_capacity(limit);
+                BinaryHeap::with_capacity(heap_capacity);
             let mut matcher = FuzzyMatcher::new(query);
 
             #[inline]
