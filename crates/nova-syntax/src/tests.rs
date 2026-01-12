@@ -607,6 +607,36 @@ fn lexer_string_templates_lex_interpolations_without_escape_errors() {
 }
 
 #[test]
+fn lexer_string_templates_allow_unicode_escape_backslash_in_interpolation_start() {
+    // Unicode escape translation happens before lexing. `\u005C` is `\`, so this should behave
+    // like `\{` and start an interpolation (but remain lossless in the original source text).
+    let input = r#"STR."hello \u005C{name}""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, "hello ".into()),
+            (SyntaxKind::StringTemplateExprStart, r"\u005C{".into()),
+            (SyntaxKind::Identifier, "name".into()),
+            (SyntaxKind::StringTemplateExprEnd, "}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
 fn lexer_non_template_strings_still_reject_escape_brace() {
     let input = r#""hello \{name}""#;
     let (tokens, errors) = lex_with_errors(input);
