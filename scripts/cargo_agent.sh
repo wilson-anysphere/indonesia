@@ -10,8 +10,9 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/cargo_agent.sh build --release
+#   scripts/cargo_agent.sh check -p nova-syntax
 #   scripts/cargo_agent.sh test -p nova-core --lib
-#   scripts/cargo_agent.sh check -p nova-parser
+#   scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
 #
 # Tuning knobs (env vars):
 #   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
@@ -25,10 +26,10 @@ usage() {
 usage: scripts/cargo_agent.sh <cargo-subcommand> [args...]
 
 Examples:
-  scripts/cargo_agent.sh check --quiet
+  scripts/cargo_agent.sh check -p nova-syntax --quiet
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test -p nova-core --lib
-  scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+  scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
@@ -43,6 +44,7 @@ Notes:
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
   - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
     To override (rare): NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 scripts/cargo_agent.sh test ...
+  - For faster iteration, further scope tests with --lib, --bin <name>, or --test <name>.
 EOF
 }
 
