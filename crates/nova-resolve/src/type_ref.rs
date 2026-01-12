@@ -1128,7 +1128,7 @@ fn is_ident_start(ch: char) -> bool {
 }
 
 fn is_ident_part(ch: char) -> bool {
-    is_ident_start(ch) || unicode_ident::is_xid_continue(ch)
+    ch == '$' || ch == '_' || unicode_ident::is_xid_continue(ch)
 }
 
 fn reconcile_class_args(

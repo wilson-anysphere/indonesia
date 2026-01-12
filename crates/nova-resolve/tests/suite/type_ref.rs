@@ -353,10 +353,12 @@ fn resolves_parameterized_qualifying_nested_type() {
 
     let mut env = TypeStore::with_minimal_jdk();
     let object = env.well_known().object;
+    let tp1 = env.add_type_param("T1", vec![Type::class(object, vec![])]);
+    let tp2 = env.add_type_param("T2", vec![Type::class(object, vec![])]);
     let inner_id = env.add_class(ClassDef {
         name: "com.example.Outer$Inner".to_string(),
         kind: ClassKind::Class,
-        type_params: vec![],
+        type_params: vec![tp1, tp2],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
         fields: vec![],
