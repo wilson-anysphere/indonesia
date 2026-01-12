@@ -441,7 +441,18 @@ fn gradle_workspace_root(start: &Path) -> Option<PathBuf> {
         }
 
         if nearest_build.is_none() && has_gradle_build(dir) {
-            nearest_build = Some(dir.to_path_buf());
+            // Gradle's special `buildSrc/` build has its own `build.gradle*`, but it should not be
+            // treated as the workspace root for the surrounding Gradle build.
+            //
+            // Without this, opening a file under `<workspace>/buildSrc/**` in a Gradle workspace
+            // that doesn't have `settings.gradle(.kts)` would incorrectly pick `buildSrc` as the
+            // workspace root (since it is the nearest directory with a `build.gradle*`).
+            let is_buildsrc_dir = dir
+                .file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("buildSrc"));
+            if !is_buildsrc_dir {
+                nearest_build = Some(dir.to_path_buf());
+            }
         }
 
         let Some(parent) = dir.parent() else {

@@ -105,6 +105,34 @@ fn load_project_finds_gradle_workspace_root_from_nested_file() {
 }
 
 #[test]
+fn load_project_finds_gradle_workspace_root_from_buildsrc_nested_file_without_settings() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    // No `settings.gradle`: Gradle workspace root detection falls back to the nearest `build.gradle`.
+    // Ensure `buildSrc/build.gradle` does not "steal" the workspace root when loading a file under
+    // `buildSrc/**`.
+    write(&root.join("build.gradle"), "// root build");
+    write(&root.join("buildSrc/build.gradle"), "// buildSrc build");
+
+    write(
+        &root.join("buildSrc/src/main/java/com/example/BuildLogic.java"),
+        "package com.example; class BuildLogic {}",
+    );
+
+    let expected_root = fs::canonicalize(root).expect("canonicalize root");
+    let nested = root.join("buildSrc/src/main/java/com/example/BuildLogic.java");
+
+    let config = load_project(&nested).expect("load project from buildSrc nested file");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.workspace_root, expected_root);
+    assert!(
+        config.modules.iter().any(|m| m.root.ends_with("buildSrc")),
+        "expected buildSrc to be loaded as a module"
+    );
+}
+
+#[test]
 fn load_project_finds_bazel_workspace_root_from_nested_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
