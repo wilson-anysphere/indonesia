@@ -1056,6 +1056,15 @@ class A {}
         labels.contains(&"max"),
         "expected completion list to contain Math.max; got {labels:?}"
     );
+    let max = items
+        .iter()
+        .find(|i| i.label == "max")
+        .expect("expected max completion item");
+    assert_eq!(
+        max.kind,
+        Some(lsp_types::CompletionItemKind::METHOD),
+        "expected Math.max to be classified as a method; got {max:#?}"
+    );
     assert!(
         !labels.contains(&"*"),
         "expected `*` to not be suggested while typing a member name; got {labels:?}"
@@ -1097,6 +1106,27 @@ class A {}
     assert!(
         labels.contains(&"max"),
         "expected completion list to contain Math.max; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_import_constant_kind() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.P<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let pi = items
+        .iter()
+        .find(|i| i.label == "PI")
+        .expect("expected PI completion item");
+    assert_eq!(
+        pi.kind,
+        Some(lsp_types::CompletionItemKind::CONSTANT),
+        "expected Math.PI to be classified as a constant; got {pi:#?}"
     );
 }
 
