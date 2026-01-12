@@ -566,6 +566,124 @@ class C {
 }
 
 #[test]
+fn ambiguous_static_single_imports_of_member_types_produce_diagnostics() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+    let c_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/a/Outer.java",
+        r#"
+package a;
+public class Outer {
+    public static class Entry {}
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/b/Outer.java",
+        r#"
+package b;
+public class Outer {
+    public static class Entry {}
+}
+"#,
+    );
+
+    let text = r#"
+package c;
+import static a.Outer.Entry;
+import static b.Outer.Entry;
+
+class C {
+    Entry field;
+}
+"#;
+    set_file(&mut db, project, c_file, "src/c/C.java", text);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file, c_file]));
+
+    let diags = db.import_diagnostics(c_file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "ambiguous-import")
+        .unwrap_or_else(|| panic!("expected ambiguous-import diagnostic, got {diags:?}"));
+    assert!(
+        diag.message.contains("`Entry`")
+            && diag.message.contains("a.Outer.Entry")
+            && diag.message.contains("b.Outer.Entry"),
+        "expected message to mention Entry and both candidates, got: {:?}",
+        diag.message
+    );
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("import static a.Outer.Entry"),
+        "expected diagnostic span to cover the first import; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+
+    let scopes = db.scope_graph(c_file);
+    let resolved = db.resolve_name(c_file, scopes.file_scope, Name::from("Entry"));
+    assert_eq!(resolved, None);
+}
+
+#[test]
+fn unresolved_static_import_of_member_type_produces_diagnostic_with_span() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import static java.util.Map.DoesNotExist;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("static java.util.Map.DoesNotExist"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected unresolved-import diagnostic for static java.util.Map.DoesNotExist, got {diags:?}"
+            )
+        });
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("java.util.Map.DoesNotExist"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
 fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
