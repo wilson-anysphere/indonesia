@@ -2496,7 +2496,7 @@ fn handle_request_json(
             })
         }
         #[cfg(debug_assertions)]
-        "nova/internal/interruptibleWork" => {
+        nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_METHOD => {
             #[derive(Debug, Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct InterruptibleWorkParams {
@@ -2519,7 +2519,7 @@ fn handle_request_json(
             // that `ra_salsa::Cancelled` is treated as a normal LSP request cancellation.
             use nova_db::NovaIde as _;
             let _ = client.notify(
-                "nova/internal/interruptibleWorkStarted",
+                nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
                 json!({ "id": id.clone() }),
             );
             let value = state

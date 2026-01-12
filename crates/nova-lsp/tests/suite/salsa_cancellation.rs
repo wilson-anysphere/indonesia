@@ -152,13 +152,13 @@ fn cancel_request_triggers_salsa_cancellation() {
         write_jsonrpc_message(
             &mut *stdin,
             &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "nova/internal/interruptibleWork",
-                // The query checks cancellation every 256 steps, so the exact step count is not
-                // important as long as it's large enough that the request wouldn't finish before we
-                // cancel it.
-                "params": { "steps": 1_000_000_000u32 }
+                 "jsonrpc": "2.0",
+                 "id": 2,
+                 "method": nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_METHOD,
+                 // The query checks cancellation every 256 steps, so the exact step count is not
+                 // important as long as it's large enough that the request wouldn't finish before we
+                 // cancel it.
+                 "params": { "steps": 1_000_000_000u32 }
             }),
         );
     }
@@ -168,7 +168,7 @@ fn cancel_request_triggers_salsa_cancellation() {
     // we're validating mid-query Salsa cancellation (not the request-token guard in `handle_request_json`).
     messages
         .recv_notification_with_method(
-            "nova/internal/interruptibleWorkStarted",
+            nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
             Duration::from_secs(5),
         )
         .expect("interruptibleWorkStarted notification");

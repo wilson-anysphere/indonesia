@@ -1612,6 +1612,61 @@ VS Code extension expects:
 
 ---
 
+### `nova/internal/interruptibleWork`
+
+- **Kind:** request
+- **Stability:** internal (debug-only)
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; debug builds only)
+
+This request is used by `crates/nova-lsp/tests/suite/salsa_cancellation.rs` to validate that
+`$/cancelRequest` triggers Salsa cancellation.
+
+#### Request params
+
+```json
+{ "steps": 1000 }
+```
+
+- `steps` (u32, required) — number of loop iterations to perform.
+
+#### Response
+
+```json
+{ "value": 0 }
+```
+
+#### Errors
+
+- `-32602` for invalid params.
+- `-32800` when cancelled.
+
+#### Notes
+
+- When the handler begins, the server emits a `nova/internal/interruptibleWorkStarted` notification
+  containing the request id.
+- Release builds do not implement this endpoint.
+
+---
+
+### `nova/internal/interruptibleWorkStarted`
+
+- **Kind:** notification
+- **Stability:** internal (debug-only)
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; debug builds only)
+
+Emitted when the server begins handling `nova/internal/interruptibleWork`. This allows tests to
+send `$/cancelRequest` after the request has entered the handler.
+
+#### Notification params
+
+```json
+{ "id": 2 }
+```
+
+- `id` is the JSON-RPC request id for the in-flight `nova/internal/interruptibleWork` request.
+
+---
+
 ### `nova/refactor/changeSignature` (experimental)
 
 - **Kind:** request
