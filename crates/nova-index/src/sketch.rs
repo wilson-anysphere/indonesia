@@ -559,6 +559,15 @@ impl Index {
         sym.param_types.as_deref()
     }
 
+    /// Best-effort parameter names for a method symbol.
+    pub fn method_param_names(&self, id: SymbolId) -> Option<&[String]> {
+        let sym = self.find_symbol(id)?;
+        if sym.kind != SymbolKind::Method {
+            return None;
+        }
+        sym.param_names.as_deref()
+    }
+
     /// Return all methods in the workspace that override `target`.
     ///
     /// This is a best-effort lexical query intended for refactorings. It does *not* require an

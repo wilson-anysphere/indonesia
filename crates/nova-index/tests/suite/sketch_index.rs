@@ -28,6 +28,7 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
         .method_overload_by_param_types("A", "foo", &sig_int)
         .expect("foo(int) should be indexed");
     assert_eq!(index.method_param_types(id_int).unwrap(), ["int"]);
+    assert_eq!(index.method_param_names(id_int).unwrap(), ["x".to_string()]);
 
     let sig_map = vec!["Map<String, Integer>".to_string()];
     let id_map = index
@@ -37,6 +38,10 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
         index.method_param_types(id_map).unwrap(),
         ["Map<String, Integer>"]
     );
+    assert_eq!(
+        index.method_param_names(id_map).unwrap(),
+        ["m".to_string()]
+    );
 
     let sig_string_int = vec!["String".to_string(), "int".to_string()];
     let id_string_int = index
@@ -45,6 +50,10 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
     assert_eq!(
         index.method_param_types(id_string_int).unwrap(),
         ["String", "int"]
+    );
+    assert_eq!(
+        index.method_param_names(id_string_int).unwrap(),
+        ["s".to_string(), "y".to_string()]
     );
 
     // Existing API should still return *some* method symbol id for the name.
@@ -78,6 +87,10 @@ fn method_param_splitting_handles_generic_commas_and_string_literals() {
         index.method_param_types(id).unwrap(),
         ["String", "Map<String, Integer>"]
     );
+    assert_eq!(
+        index.method_param_names(id).unwrap(),
+        ["s".to_string(), "m".to_string()]
+    );
 }
 
 #[test]
@@ -98,6 +111,10 @@ fn method_param_parsing_ignores_block_comments_with_parens() {
         .method_overload_by_param_types("A", "baz", &sig)
         .expect("baz(int, int) should be indexed");
     assert_eq!(index.method_param_types(id).unwrap(), ["int", "int"]);
+    assert_eq!(
+        index.method_param_names(id).unwrap(),
+        ["a".to_string(), "b".to_string()]
+    );
 }
 
 #[test]
