@@ -445,6 +445,7 @@ impl SymbolSearchIndex {
         self.search_with_stats(query, limit).0
     }
 
+    #[inline]
     fn score_candidate(
         &self,
         entry: &SymbolEntry,
@@ -468,13 +469,12 @@ impl SymbolSearchIndex {
                     // it actually starts with the query.
                     if starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), q_bytes)
                     {
-                        let qual_score = MatchScore {
+                        // Prefix scores are `1_000_000 - candidate.len()`, so a shorter
+                        // candidate always outranks a longer one for the same query.
+                        return Some(MatchScore {
                             kind: MatchKind::Prefix,
                             score: 1_000_000 - entry.symbol.qualified_name.len() as i32,
-                        };
-                        if qual_score.rank_key() > score.rank_key() {
-                            return Some(qual_score);
-                        }
+                        });
                     }
 
                     return Some(score);
