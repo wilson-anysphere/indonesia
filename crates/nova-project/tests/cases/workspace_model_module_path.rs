@@ -9,9 +9,9 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path();
 
-    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
     std::fs::write(
-        root.join("module-info.java"),
+        root.join("src/main/java/module-info.java"),
         "module mod.a { requires mod.b; }",
     )
     .expect("write module-info.java");
@@ -40,6 +40,43 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
     assert!(
         !module.classpath.iter().any(|e| e.path == dep_dir),
         "dependency override directory should not remain on the classpath when JPMS is enabled"
+    );
+}
+
+#[test]
+fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_workspaces() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
+    std::fs::write(
+        root.join("src/main/java/module-info.java"),
+        "module mod.a { requires mod.b; }",
+    )
+    .expect("write module-info.java");
+
+    // Do not create the jar on disk: loaders often synthesize dependency jar paths without
+    // downloading them, and JPMS needs jar deps on the module-path (automatic module name).
+    let jar_path = root.join("deps/mod-b.jar");
+
+    let mut options = LoadOptions::default();
+    options.classpath_overrides.push(jar_path.clone());
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Simple);
+    assert_eq!(model.modules.len(), 1);
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .any(|e| e.path == jar_path && e.kind == ClasspathEntryKind::Jar),
+        "missing jar override should be placed on module-path when JPMS is enabled"
+    );
+    assert!(
+        !module.classpath.iter().any(|e| e.path == jar_path),
+        "missing jar override should not remain on classpath when JPMS is enabled"
     );
 }
 
