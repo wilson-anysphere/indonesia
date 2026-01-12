@@ -1836,6 +1836,171 @@ fn module_info_package_segment_completions(
     items
 }
 
+fn module_info_type_path_completions(
+    db: &dyn Database,
+    file: FileId,
+    qualifier: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    const MAX_JDK_PACKAGES: usize = 2048;
+    const MAX_JDK_TYPES: usize = 500;
+    const MAX_COMPLETIONS: usize = 200;
+
+    let parent_prefix = qualifier.trim_end_matches('.');
+    let parent_segments: Vec<&str> = if parent_prefix.is_empty() {
+        Vec::new()
+    } else {
+        parent_prefix.split('.').collect()
+    };
+
+    let mut package_candidates: HashMap<String, bool> = HashMap::new();
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        for pkg in env.workspace_index().packages() {
+            add_package_segment_candidates(&mut package_candidates, pkg, &parent_segments, prefix);
+        }
+    }
+
+    // Include JDK package segments once the user has started typing a package prefix (or has an
+    // existing qualifier) to avoid returning an enormous completion list for an empty prefix.
+    if !qualifier.is_empty() || prefix.len() >= 2 {
+        let pkg_prefix = if parent_prefix.is_empty() {
+            prefix.to_string()
+        } else if prefix.is_empty() {
+            format!("{parent_prefix}.")
+        } else {
+            format!("{parent_prefix}.{prefix}")
+        };
+
+        if !pkg_prefix.is_empty() {
+            let jdk = JDK_INDEX
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+            if let Ok(pkgs) = jdk.packages_with_prefix(&pkg_prefix) {
+                for pkg in pkgs.into_iter().take(MAX_JDK_PACKAGES) {
+                    add_package_segment_candidates(
+                        &mut package_candidates,
+                        &pkg,
+                        &parent_segments,
+                        prefix,
+                    );
+                }
+            }
+        }
+    }
+
+    let mut items = Vec::new();
+
+    // Package segments (e.g. `com.`) when the current path still looks like a package name.
+    let mut entries: Vec<(String, bool)> = package_candidates.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (segment, has_children) in entries {
+        let insert_text = if has_children {
+            format!("{segment}.")
+        } else {
+            segment.clone()
+        };
+        let label = insert_text.clone();
+        items.push(CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::MODULE),
+            insert_text: Some(insert_text),
+            ..Default::default()
+        });
+    }
+
+    // Types in the current parent package (e.g. `java.util.List` when parent is `java.util`).
+    if !parent_prefix.is_empty() {
+        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+            let mut last_simple: Option<&str> = None;
+            for ty in env.workspace_index().types() {
+                if ty.package != parent_prefix {
+                    continue;
+                }
+                if ty.simple.contains('$') {
+                    continue;
+                }
+                if !prefix.is_empty() && !ty.simple.starts_with(prefix) {
+                    continue;
+                }
+
+                // Avoid duplicate labels if multiple FQNs share the same simple name.
+                if last_simple == Some(ty.simple.as_str()) {
+                    continue;
+                }
+                last_simple = Some(ty.simple.as_str());
+
+                let mut item = CompletionItem {
+                    label: ty.simple.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(ty.qualified.clone()),
+                    ..Default::default()
+                };
+                if !ty.qualified.starts_with("java.")
+                    && !ty.qualified.starts_with("javax.")
+                    && !ty.qualified.starts_with("jdk.")
+                {
+                    mark_workspace_completion_item(&mut item);
+                }
+                items.push(item);
+                if items.len() >= MAX_COMPLETIONS {
+                    break;
+                }
+            }
+        }
+
+        let jdk = JDK_INDEX
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+        let fallback_jdk = JdkIndex::new();
+        let class_names: &[String] = jdk
+            .all_binary_class_names()
+            .or_else(|_| fallback_jdk.all_binary_class_names())
+            .unwrap_or(&[]);
+
+        let parent_prefix_with_dot = format!("{parent_prefix}.");
+        let start = class_names
+            .partition_point(|name| name.as_str() < parent_prefix_with_dot.as_str());
+        let mut added = 0usize;
+        for name in &class_names[start..] {
+            if added >= MAX_JDK_TYPES || items.len() >= MAX_COMPLETIONS {
+                break;
+            }
+            if !name.starts_with(parent_prefix_with_dot.as_str()) {
+                break;
+            }
+
+            let name = name.as_str();
+            let rest = &name[parent_prefix_with_dot.len()..];
+            // Only expose direct members, not subpackages.
+            if rest.contains('.') {
+                break;
+            }
+            if rest.contains('$') {
+                continue;
+            }
+            if !prefix.is_empty() && !rest.starts_with(prefix) {
+                continue;
+            }
+
+            items.push(CompletionItem {
+                label: rest.to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(name.to_string()),
+                ..Default::default()
+            });
+            added += 1;
+        }
+    }
+
+    deduplicate_completion_items(&mut items);
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ranking_ctx);
+    items.truncate(MAX_COMPLETIONS);
+    items
+}
+
 fn module_info_completion_items(
     db: &dyn Database,
     file: FileId,
@@ -1986,12 +2151,40 @@ fn module_info_completion_items(
             let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
             module_info_module_name_completions(&candidates, &qualifier, prefix)
         }
+        "uses" => {
+            let mut saw_uses = false;
+            let mut service_span: Option<Span> = None;
+            for tok in &tokens {
+                match tok.kind {
+                    TokKind::Ident("uses") => {
+                        saw_uses = true;
+                    }
+                    TokKind::Ident(name) if saw_uses && service_span.is_none() => {
+                        if name != "uses" {
+                            service_span = Some(tok.span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(service) = service_span {
+                if offset > service.end {
+                    return Vec::new();
+                }
+            }
+
+            let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+            module_info_type_path_completions(db, file, &qualifier, prefix)
+        }
         "provides" => {
             let has_with = tokens
                 .iter()
                 .any(|t| matches!(t.kind, TokKind::Ident("with")));
+
             if has_with {
-                return Vec::new();
+                let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+                return module_info_type_path_completions(db, file, &qualifier, prefix);
             }
 
             let mut saw_provides = false;
@@ -2016,7 +2209,8 @@ fn module_info_completion_items(
                 }
             }
 
-            Vec::new()
+            let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+            module_info_type_path_completions(db, file, &qualifier, prefix)
         }
         _ => Vec::new(),
     }

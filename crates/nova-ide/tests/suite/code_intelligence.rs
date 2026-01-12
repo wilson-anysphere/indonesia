@@ -1339,6 +1339,71 @@ fn completion_in_module_info_provides_suggests_with_keyword() {
 }
 
 #[test]
+fn completion_in_module_info_uses_suggests_workspace_service_type() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let service_path = PathBuf::from("/workspace/src/main/java/com/example/spi/MyService.java");
+    let service_text = "package com.example.spi; public interface MyService {}".to_string();
+
+    let (db, file, pos) = fixture_multi(
+        module_path,
+        "module my.mod { uses com.example.spi.My<|> }",
+        vec![(service_path, service_text)],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"MyService"),
+        "expected uses completion to suggest workspace type MyService; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_provides_suggests_workspace_service_type_before_with() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let service_path = PathBuf::from("/workspace/src/main/java/com/example/spi/MyService.java");
+    let service_text = "package com.example.spi; public interface MyService {}".to_string();
+
+    let (db, file, pos) = fixture_multi(
+        module_path,
+        "module my.mod { provides com.example.spi.My<|> }",
+        vec![(service_path, service_text)],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"MyService"),
+        "expected provides completion to suggest workspace type MyService; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_provides_suggests_workspace_impl_type_after_with() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let service_path = PathBuf::from("/workspace/src/main/java/com/example/spi/MyService.java");
+    let impl_path = PathBuf::from("/workspace/src/main/java/com/example/impl/MyServiceImpl.java");
+
+    let service_text = "package com.example.spi; public interface MyService {}".to_string();
+    let impl_text =
+        "package com.example.impl; public class MyServiceImpl implements com.example.spi.MyService {}"
+            .to_string();
+
+    let (db, file, pos) = fixture_multi(
+        module_path,
+        "module my.mod { provides com.example.spi.MyService with com.example.impl.My<|> }",
+        vec![(service_path, service_text), (impl_path, impl_text)],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"MyServiceImpl"),
+        "expected provides completion to suggest impl type MyServiceImpl; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ new Arr<|> } }");
 
