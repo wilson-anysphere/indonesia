@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use once_cell::sync::Lazy;
 
-use nova_classpath::ClasspathIndex;
+use nova_classpath::{ClasspathIndex, IndexOptions};
 use nova_core::ProjectId;
 use nova_db::{Database as TextDatabase, FileId};
 use nova_framework::Database as FrameworkDatabase;
@@ -379,6 +379,69 @@ fn build_classpath_index(config: &nova_project::ProjectConfig) -> Option<Arc<Cla
     }
 
     // Indexing is best-effort; failures should not crash the IDE.
-    let index = ClasspathIndex::build(&entries, None).ok()?;
+    let target_release = Some(config.java.target.0)
+        .filter(|release| *release >= 1)
+        .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
+    let index = ClasspathIndex::build_with_options(&entries, None, IndexOptions { target_release }).ok()?;
     Some(Arc::new(index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_project::{BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaVersion, Module, ProjectConfig};
+
+    #[test]
+    fn classpath_index_respects_java_target_release_for_multi_release_jars() {
+        let mr_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/multirelease.jar");
+        assert!(mr_jar.is_file(), "fixture missing: {}", mr_jar.display());
+
+        fn cfg_for_target(target: u16, jar: &Path) -> ProjectConfig {
+            ProjectConfig {
+                workspace_root: PathBuf::new(),
+                build_system: BuildSystem::Simple,
+                java: JavaConfig {
+                    source: JavaVersion(target),
+                    target: JavaVersion(target),
+                    enable_preview: false,
+                },
+                modules: vec![Module {
+                    name: "dummy".to_string(),
+                    root: PathBuf::new(),
+                    annotation_processing: Default::default(),
+                }],
+                jpms_modules: Vec::new(),
+                jpms_workspace: None,
+                source_roots: Vec::new(),
+                module_path: Vec::new(),
+                classpath: vec![ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: jar.to_path_buf(),
+                }],
+                output_dirs: Vec::new(),
+                dependencies: Vec::new(),
+                workspace_model: None,
+            }
+        }
+
+        // `multirelease.jar` contains only a `META-INF/versions/9/...` class (no base entry). It
+        // should therefore be invisible when targeting Java 8, but visible when targeting Java 17.
+        let idx_java8 = build_classpath_index(&cfg_for_target(8, &mr_jar))
+            .expect("classpath index should build");
+        assert!(
+            idx_java8.lookup_binary("com.example.mr.MultiReleaseOnly").is_none(),
+            "expected MR-only class to be absent when targeting Java 8"
+        );
+
+        let idx_java17 = build_classpath_index(&cfg_for_target(17, &mr_jar))
+            .expect("classpath index should build");
+        assert!(
+            idx_java17
+                .lookup_binary("com.example.mr.MultiReleaseOnly")
+                .is_some(),
+            "expected MR-only class to be present when targeting Java 17"
+        );
+    }
 }
