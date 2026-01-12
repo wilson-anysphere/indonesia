@@ -16,6 +16,7 @@ pub mod format;
 pub mod framework_class_data;
 pub mod framework_cache;
 pub mod framework_db;
+pub mod framework_db_adapter;
 pub mod java_semantics;
 pub mod semantics;
 

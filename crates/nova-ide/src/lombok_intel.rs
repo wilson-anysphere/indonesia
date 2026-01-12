@@ -448,7 +448,6 @@ fn is_lombok_annotation(name: &str) -> bool {
             | "Log4j"
     )
 }
-
 fn simplify_type_name(raw: &str) -> String {
     let raw = normalize_type_name(raw);
     let raw = raw.trim();

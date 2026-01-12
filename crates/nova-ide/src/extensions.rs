@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::text::TextIndex;
+pub use crate::framework_db_adapter::FrameworkIdeDatabase;
 
 trait AsDynNovaDb {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database;
