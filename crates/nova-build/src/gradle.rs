@@ -2507,6 +2507,13 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
                     out.push(path);
                 }
             }
+            // Gradle version catalogs can define dependency versions and thus affect resolved
+            // classpaths.
+            //
+            // The default catalog file is `gradle/libs.versions.toml` (covered by the
+            // `*.versions.toml` + parent `gradle/` check above), but some workspaces place a
+            // `libs.versions.toml` at the workspace root and reference it from `settings.gradle*`.
+            "libs.versions.toml" => out.push(path),
             "gradlew" | "gradlew.bat" => {
                 if path == root.join(name) {
                     out.push(path);

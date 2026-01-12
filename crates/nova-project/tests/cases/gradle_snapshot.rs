@@ -62,6 +62,28 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
 
         let name = file_name.as_ref();
+
+        // Gradle dependency locking can change resolved classpaths without modifying any build
+        // scripts, so include lockfiles in the fingerprint.
+        //
+        // Patterns:
+        // - `gradle.lockfile` at any depth.
+        // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
+        //   `gradle/dependency-locks/` location).
+        if name == "gradle.lockfile" {
+            out.push(path);
+            continue;
+        }
+        if name.ends_with(".lockfile")
+            && path.parent().is_some_and(|parent| {
+                parent
+                    .ancestors()
+                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+            })
+        {
+            out.push(path);
+            continue;
+        }
         if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
             out.push(path);
             continue;
@@ -83,6 +105,7 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
         match name {
             "gradle.properties" => out.push(path),
+            "libs.versions.toml" => out.push(path),
             "gradlew" | "gradlew.bat" => {
                 if path == root.join(name) {
                     out.push(path);
@@ -118,8 +141,24 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     // Extra build files that `nova-build` includes in the Gradle build fingerprint. Prior to
     // aligning `nova-project`'s fingerprinting logic, their presence would cause a fingerprint
     // mismatch and the snapshot handoff would be ignored.
+    std::fs::write(
+        workspace_root.join("libs.versions.toml"),
+        "[versions]\nroot = \"1.0\"\n",
+    )
+    .unwrap();
     std::fs::write(workspace_root.join("deps.gradle"), "").unwrap();
     std::fs::write(workspace_root.join("deps.gradle.kts"), "").unwrap();
+
+    // Dependency lockfiles can change resolved classpaths without modifying build scripts; ensure
+    // the snapshot fingerprint includes them.
+    let dependency_locks_dir = workspace_root.join("gradle/dependency-locks");
+    std::fs::create_dir_all(&dependency_locks_dir).unwrap();
+    std::fs::write(
+        dependency_locks_dir.join("compileClasspath.lockfile"),
+        "locked=1\n",
+    )
+    .unwrap();
+    std::fs::write(workspace_root.join("gradle.lockfile"), "locked=1\n").unwrap();
 
     // Nested applied script plugin (ensures fingerprinting includes `.gradle` script plugins that
     // are not at the workspace root).

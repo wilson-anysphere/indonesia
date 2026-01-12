@@ -79,6 +79,13 @@ fn writes_gradle_snapshot_after_java_compile_config() {
     std::fs::create_dir_all(&project_root).unwrap();
     std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
 
+    // Root-level `libs.versions.toml` can be referenced from `settings.gradle*` via
+    // `dependencyResolutionManagement.versionCatalogs.create(...)`.
+    //
+    // Ensure it contributes to the build fingerprint so snapshots are invalidated when it changes.
+    let version_catalog = project_root.join("libs.versions.toml");
+    std::fs::write(&version_catalog, "[versions]\nexample = \"1.0\"\n").unwrap();
+
     // Gradle dependency locking can change resolved classpaths without modifying build scripts.
     // Ensure snapshot fingerprinting includes lockfiles.
     let dependency_locks_dir = project_root.join("gradle/dependency-locks");
@@ -149,6 +156,10 @@ NOVA_JSON_END
     assert!(
         build_files.contains(&dependency_lockfile),
         "expected collect_gradle_build_files to include gradle/dependency-locks/*.lockfile"
+    );
+    assert!(
+        build_files.contains(&version_catalog),
+        "expected collect_gradle_build_files to include libs.versions.toml at workspace root"
     );
     let expected_fingerprint =
         BuildFileFingerprint::from_files(&project_root, build_files).expect("fingerprint");

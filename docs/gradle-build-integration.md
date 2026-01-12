@@ -144,8 +144,12 @@ Included inputs (current `nova-build` implementation):
 - `settings.gradle*` (e.g. `settings.gradle`, `settings.gradle.kts`)
 - any `*.gradle` / `*.gradle.kts` file (script plugins like `apply from: "deps.gradle"`)
 - `gradle.properties`
-- Gradle version catalogs under `gradle/*.versions.toml` (e.g. `gradle/libs.versions.toml`,
-  `gradle/foo.versions.toml`)
+- Gradle dependency lockfiles:
+  - `gradle.lockfile` (at any depth)
+  - `*.lockfile` under any `dependency-locks/` directory (e.g. `gradle/dependency-locks/compileClasspath.lockfile`)
+- Gradle version catalogs:
+  - `libs.versions.toml` (at any depth; commonly `gradle/libs.versions.toml`, but some builds reference a root-level catalog)
+  - custom catalogs under `gradle/*.versions.toml` (e.g. `gradle/foo.versions.toml`)
 - `gradlew` / `gradlew.bat` (only when located at the workspace root)
 - `gradle/wrapper/gradle-wrapper.properties`
 - `gradle/wrapper/gradle-wrapper.jar`
