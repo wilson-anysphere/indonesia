@@ -635,6 +635,9 @@ export async function activate(context: vscode.ExtensionContext) {
       clientStart = undefined;
       currentServerCommand = undefined;
       resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
+      for (const workspace of vscode.workspace.workspaceFolders ?? []) {
+        resetNovaExperimentalCapabilities(workspace.uri.toString());
+      }
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
@@ -645,6 +648,9 @@ export async function activate(context: vscode.ExtensionContext) {
   async function startLanguageClient(serverCommand: string): Promise<void> {
     currentServerCommand = serverCommand;
     resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
+    for (const workspace of vscode.workspace.workspaceFolders ?? []) {
+      resetNovaExperimentalCapabilities(workspace.uri.toString());
+    }
     const launchConfig = readLspLaunchConfig();
     const serverOptions: ServerOptions = {
       command: serverCommand,
@@ -658,10 +664,16 @@ export async function activate(context: vscode.ExtensionContext) {
     clientStart = started.then(() => {
       // If the client restarted while we were awaiting initialization, don't overwrite the
       // active client's capabilities.
-       if (client !== languageClient) {
-         return;
-       }
+      if (client !== languageClient) {
+        return;
+      }
       setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
+      // Until multi-root language clients land (one client per workspace folder), Nova still runs
+      // a single server for all workspace folders. Mirror the same capability set under each
+      // workspace folder key so per-workspace feature gating can use `workspaceFolder.uri.toString()`.
+      for (const workspace of vscode.workspace.workspaceFolders ?? []) {
+        setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
+      }
     });
 
     attachObservability(languageClient, clientStart);
@@ -1618,10 +1630,16 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (event.newState === State.Starting || event.newState === State.Stopped) {
           resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
+          for (const workspace of vscode.workspace.workspaceFolders ?? []) {
+            resetNovaExperimentalCapabilities(workspace.uri.toString());
+          }
           return;
         }
         if (event.newState === State.Running) {
           setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
+          for (const workspace of vscode.workspace.workspaceFolders ?? []) {
+            setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
+          }
         }
       }),
     );
