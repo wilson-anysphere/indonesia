@@ -5,8 +5,8 @@
 
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, Uri};
 use nova_refactor::{
-    extract_constant, extract_field, inline_method, workspace_edit_to_lsp, ExtractError,
-    ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
+    extract_constant, extract_field, inline_method, position_to_offset_utf16, workspace_edit_to_lsp,
+    ExtractError, ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +38,9 @@ pub fn extract_member_code_actions(
     source: &str,
     selection: Range,
 ) -> Vec<CodeActionOrCommand> {
-    let selection = lsp_range_to_text_range(source, selection);
+    let Some(selection) = lsp_range_to_text_range(source, selection) else {
+        return Vec::new();
+    };
     let file = uri.to_string();
 
     let mut actions = Vec::new();
@@ -96,7 +98,9 @@ pub fn inline_method_code_actions(
     source: &str,
     position: Position,
 ) -> Vec<CodeActionOrCommand> {
-    let offset = position_to_offset_utf16(source, position);
+    let Some(offset) = position_to_offset_utf16(source, position) else {
+        return Vec::new();
+    };
     let file = uri.to_string();
 
     let mut actions = Vec::new();
@@ -171,49 +175,113 @@ pub fn resolve_extract_member_code_action(
     Ok(())
 }
 
-fn lsp_range_to_text_range(source: &str, range: Range) -> TextRange {
-    TextRange::new(
-        position_to_offset_utf16(source, range.start),
-        position_to_offset_utf16(source, range.end),
-    )
+fn lsp_range_to_text_range(source: &str, range: Range) -> Option<TextRange> {
+    let start = position_to_offset_utf16(source, range.start)?;
+    let end = position_to_offset_utf16(source, range.end)?;
+    Some(TextRange::new(start, end))
 }
 
-fn position_to_offset_utf16(text: &str, position: Position) -> usize {
-    let mut line = 0u32;
-    let mut line_start = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if line == position.line {
-            line_start = idx;
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-        }
-    }
-    if line < position.line {
-        return text.len();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_range_to_text_range_handles_non_bmp_chars() {
+        // 😀 is a surrogate pair in UTF-16 (2 code units, 4 bytes in UTF-8).
+        let source = "a😀b";
+
+        // Select `b` (after the emoji).
+        let range = Range {
+            start: Position {
+                line: 0,
+                character: 3,
+            },
+            end: Position {
+                line: 0,
+                character: 4,
+            },
+        };
+
+        assert_eq!(
+            lsp_range_to_text_range(source, range),
+            Some(TextRange::new(5, 6))
+        );
     }
 
-    let mut col_utf16 = 0u32;
-    let mut last = line_start;
-    for (rel_idx, ch) in text[line_start..].char_indices() {
-        let abs = line_start + rel_idx;
-        if col_utf16 == position.character {
-            return abs;
-        }
-        if ch == '\n' {
-            break;
-        }
-        let len16 = ch.len_utf16() as u32;
-        if col_utf16 + len16 > position.character {
-            // Clamp to the next boundary.
-            return abs + ch.len_utf8();
-        }
-        col_utf16 += len16;
-        last = abs + ch.len_utf8();
+    #[test]
+    fn out_of_bounds_positions_are_handled_deterministically() {
+        let uri: Uri = "file:///Test.java".parse().unwrap();
+        let source = "class Test { int x = 1; }\n";
+
+        // Out-of-bounds line.
+        let actions = extract_member_code_actions(
+            &uri,
+            source,
+            Range {
+                start: Position {
+                    line: 10,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 5,
+                },
+            },
+        );
+        assert!(actions.is_empty());
+
+        let actions = inline_method_code_actions(
+            &uri,
+            source,
+            Position {
+                line: 10,
+                character: 0,
+            },
+        );
+        assert!(actions.is_empty());
+
+        // Out-of-bounds UTF-16 column.
+        assert_eq!(
+            lsp_range_to_text_range(
+                source,
+                Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 10_000,
+                    },
+                }
+            ),
+            None
+        );
+
+        let actions = extract_member_code_actions(
+            &uri,
+            source,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10_000,
+                },
+            },
+        );
+        assert!(actions.is_empty());
+
+        let actions = inline_method_code_actions(
+            &uri,
+            source,
+            Position {
+                line: 0,
+                character: 10_000,
+            },
+        );
+        assert!(actions.is_empty());
     }
-    last
 }
-
-// Byte-offset -> UTF-16 position conversion lives in `nova-refactor::lsp` so both nova-lsp and
-// nova-ide can share the same implementation.
