@@ -62,6 +62,9 @@ Under the hood, `nova-build`:
 
 Implementation: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*` helpers).
 
+The snapshot is written **atomically** (write to a unique temp file in the same directory, then
+rename over the destination) to avoid leaving partially-written JSON on disk.
+
 ### Reader
 
 `nova-project` attempts to load the snapshot during Gradle project discovery. If it can’t load or
@@ -201,3 +204,10 @@ See:
 After `nova-build` updates the snapshot, callers must trigger a project reload to pick up the new
 classpath/source roots (e.g. by restarting, or by having file watching treat
 `.nova/queries/gradle.json` as a “build change” that invalidates the current project model).
+
+Today this is already wired in the reload heuristics:
+
+- `nova-project`: `crates/nova-project/src/discover.rs:is_build_file` treats `.nova/queries/gradle.json`
+  as a Gradle “build file” so `reload_project()` reloads configuration when it changes.
+- `nova-workspace`: `crates/nova-workspace/src/watch.rs:is_build_file` classifies the snapshot as a
+  build change so watchers can trigger a reload when it updates.
