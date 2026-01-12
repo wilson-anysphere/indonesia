@@ -92,6 +92,9 @@ pub fn is_build_file(path: &Path) -> bool {
         return false;
     };
 
+    // Nova's generated-source roots discovery reads a snapshot under
+    // `.nova/apt-cache/generated-roots.json`. Updates to this file should
+    // trigger a project reload so newly discovered generated roots are watched.
     if name == "generated-roots.json"
         && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
     {
@@ -119,13 +122,6 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     if name == "config.toml" && path.ends_with(Path::new(".nova/config.toml")) {
-        return true;
-    }
-
-    // Nova's generated-source roots discovery reads a snapshot under
-    // `.nova/apt-cache/generated-roots.json`. Updates to this file should
-    // trigger a project reload so newly discovered generated roots are watched.
-    if name == "generated-roots.json" && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json")) {
         return true;
     }
 
@@ -238,6 +234,23 @@ mod tests {
             "expected {} to be categorized as Build",
             path.display()
         );
+
+        let non_build_files = [
+            root.join("generated-roots.json"),
+            root.join("apt-cache").join("generated-roots.json"),
+            root.join(".nova").join("generated-roots.json"),
+            root.join(".nova")
+                .join("apt-cache")
+                .join("generated-roots.json.bak"),
+        ];
+
+        for path in non_build_files {
+            assert!(
+                !is_build_file(&path),
+                "expected {} to NOT be treated as a build file",
+                path.display()
+            );
+        }
     }
 
     #[test]
