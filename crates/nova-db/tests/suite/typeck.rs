@@ -1705,6 +1705,24 @@ class C {
 }
 
 #[test]
+fn inc_requires_variable_operand() {
+    let src = r#"
+class C {
+    void m() {
+        1++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-lvalue"),
+        "expected invalid-lvalue diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn post_inc_preserves_byte_type() {
     let src = r#"
 class C {

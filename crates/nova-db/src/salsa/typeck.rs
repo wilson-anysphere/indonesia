@@ -4894,6 +4894,71 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
+    fn is_lvalue_expr(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        expr: HirExprId,
+        is_type_ref: bool,
+    ) -> bool {
+        if is_type_ref {
+            return false;
+        }
+
+        match &self.body.exprs[expr] {
+            HirExpr::Name { name, .. } => {
+                let scope = self
+                    .expr_scopes
+                    .scope_for_expr(expr)
+                    .unwrap_or_else(|| self.expr_scopes.root_scope());
+                if self
+                    .expr_scopes
+                    .resolve_name(scope, &Name::from(name.as_str()))
+                    .is_some()
+                {
+                    true
+                } else {
+                    match self.resolver.resolve_name_detailed(
+                        self.scopes,
+                        self.scope_id,
+                        &Name::from(name.as_str()),
+                    ) {
+                        NameResolution::Resolved(res) => match res {
+                            Resolution::Local(_) | Resolution::Parameter(_) | Resolution::Field(_) => true,
+                            Resolution::StaticMember(member) => match member {
+                                StaticMemberResolution::SourceField(_) => true,
+                                StaticMemberResolution::SourceMethod(_) => false,
+                                StaticMemberResolution::External(id) => match id.as_str().split_once("::") {
+                                    Some((owner, member)) => {
+                                        let receiver = self
+                                            .ensure_workspace_class(loader, owner)
+                                            .or_else(|| loader.ensure_class(owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.to_string()));
+                                        self.ensure_type_loaded(loader, &receiver);
+                                        let env_ro: &dyn TypeEnv = &*loader.store;
+                                        let mut ctx = TyContext::new(env_ro);
+                                        ctx.resolve_field(&receiver, member, CallKind::Static)
+                                            .is_some()
+                                    }
+                                    None => false,
+                                },
+                            },
+                            Resolution::Methods(_)
+                            | Resolution::Constructors(_)
+                            | Resolution::Type(_)
+                            | Resolution::Package(_) => false,
+                        },
+                        // Prefer the name-resolution diagnostics produced while inferring the name
+                        // itself.
+                        NameResolution::Ambiguous(_) | NameResolution::Unresolved => true,
+                    }
+                }
+            }
+            HirExpr::FieldAccess { .. } | HirExpr::ArrayAccess { .. } => true,
+            _ => false,
+        }
+    }
+
     fn range_is_wrapped_in_parens(&self, range: Span) -> bool {
         let file = def_file(self.owner);
         let Ok(start) = u32::try_from(range.start) else {
@@ -6405,6 +6470,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let operand_info = self.infer_expr(loader, *operand);
                 let mut inner = operand_info.ty.clone();
                 let span = self.body.exprs[expr].range();
+                let operand_range = self.body.exprs[*operand].range();
+                let operand_is_lvalue = matches!(
+                    op,
+                    UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
+                ) && self.is_lvalue_expr(loader, *operand, operand_info.is_type_ref);
                 let env_ro: &dyn TypeEnv = &*loader.store;
 
                 if matches!(op, UnaryOp::Minus) && inner.is_errorish() {
@@ -6452,50 +6522,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let inner_prim = primitive_like(env_ro, &inner);
-                let operand_range = self.body.exprs[*operand].range();
-                let operand_is_lvalue = !operand_info.is_type_ref
-                    && match &self.body.exprs[*operand] {
-                        HirExpr::Name { name, .. } => {
-                            let scope = self
-                                .expr_scopes
-                                .scope_for_expr(*operand)
-                                .unwrap_or_else(|| self.expr_scopes.root_scope());
-                            if self
-                                .expr_scopes
-                                .resolve_name(scope, &Name::from(name.as_str()))
-                                .is_some()
-                            {
-                                true
-                            } else {
-                                match self.resolver.resolve_name_detailed(
-                                    self.scopes,
-                                    self.scope_id,
-                                    &Name::from(name.as_str()),
-                                ) {
-                                    NameResolution::Resolved(res) => match res {
-                                        Resolution::Local(_)
-                                        | Resolution::Parameter(_)
-                                        | Resolution::Field(_) => true,
-                                        Resolution::StaticMember(member) => {
-                                            matches!(member, StaticMemberResolution::SourceField(_))
-                                        }
-                                        Resolution::Methods(_)
-                                        | Resolution::Constructors(_)
-                                        | Resolution::Type(_)
-                                        | Resolution::Package(_) => false,
-                                    },
-                                    // Prefer the name-resolution diagnostics produced while inferring
-                                    // the name itself.
-                                    NameResolution::Ambiguous(_) | NameResolution::Unresolved => {
-                                        true
-                                    }
-                                }
-                            }
-                        }
-                        HirExpr::FieldAccess { .. } => true,
-                        HirExpr::ArrayAccess { .. } => true,
-                        _ => false,
-                    };
                 let ty = match op {
                     UnaryOp::Not => {
                         if !inner.is_errorish()
@@ -6657,73 +6683,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
                 let lhs_range = self.body.exprs[*lhs].range();
-                let is_lvalue = !lhs_info.is_type_ref
-                    && match &self.body.exprs[*lhs] {
-                        HirExpr::Name { name, .. } => {
-                            let scope = self
-                                .expr_scopes
-                                .scope_for_expr(*lhs)
-                                .unwrap_or_else(|| self.expr_scopes.root_scope());
-                            if self
-                                .expr_scopes
-                                .resolve_name(scope, &Name::from(name.as_str()))
-                                .is_some()
-                            {
-                                true
-                            } else {
-                                match self.resolver.resolve_name_detailed(
-                                    self.scopes,
-                                    self.scope_id,
-                                    &Name::from(name.as_str()),
-                                ) {
-                                    NameResolution::Resolved(res) => match res {
-                                        Resolution::Local(_)
-                                        | Resolution::Parameter(_)
-                                        | Resolution::Field(_) => true,
-                                        Resolution::StaticMember(member) => match member {
-                                            StaticMemberResolution::SourceField(_) => true,
-                                            StaticMemberResolution::SourceMethod(_) => false,
-                                            StaticMemberResolution::External(id) => {
-                                                match id.as_str().split_once("::") {
-                                                    Some((owner, member)) => {
-                                                        let receiver = self
-                                                            .ensure_workspace_class(loader, owner)
-                                                            .or_else(|| loader.ensure_class(owner))
-                                                            .map(|id| Type::class(id, vec![]))
-                                                            .unwrap_or_else(|| {
-                                                                Type::Named(owner.to_string())
-                                                            });
-                                                        self.ensure_type_loaded(loader, &receiver);
-                                                        let env_ro: &dyn TypeEnv = &*loader.store;
-                                                        let mut ctx = TyContext::new(env_ro);
-                                                        ctx.resolve_field(
-                                                            &receiver,
-                                                            member,
-                                                            CallKind::Static,
-                                                        )
-                                                        .is_some()
-                                                    }
-                                                    None => false,
-                                                }
-                                            }
-                                        },
-                                        Resolution::Methods(_)
-                                        | Resolution::Constructors(_)
-                                        | Resolution::Type(_)
-                                        | Resolution::Package(_) => false,
-                                    },
-                                    // Prefer the name-resolution diagnostics produced while inferring
-                                    // the name itself.
-                                    NameResolution::Ambiguous(_) | NameResolution::Unresolved => {
-                                        true
-                                    }
-                                }
-                            }
-                        }
-                        HirExpr::FieldAccess { .. } => true,
-                        HirExpr::ArrayAccess { .. } => true,
-                        _ => false,
-                    };
+                let is_lvalue = self.is_lvalue_expr(loader, *lhs, lhs_info.is_type_ref);
 
                 let rhs_expected = if is_lvalue {
                     match op {
