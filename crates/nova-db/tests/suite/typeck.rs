@@ -919,6 +919,46 @@ class C {
 }
 
 #[test]
+fn static_context_allows_unqualified_enum_constant_access() {
+    let src = r#"
+enum E {
+    A;
+    static E m() {
+        return A;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"
+            && d.code.as_ref() != "unresolved-name"),
+        "expected enum constant to resolve as an implicit static field, got {diags:?}"
+    );
+}
+
+#[test]
+fn static_context_allows_unqualified_interface_field_access() {
+    let src = r#"
+interface I {
+    int X = 1;
+    static int m() {
+        return X;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"
+            && d.code.as_ref() != "unresolved-name"),
+        "expected interface field to resolve as an implicit static field, got {diags:?}"
+    );
+}
+
+#[test]
 fn system_out_println_has_no_unresolved_member_diags() {
     let src = r#"
 class C {
