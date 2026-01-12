@@ -8,7 +8,6 @@ anyhow = "1"
 async-channel = "2"
 nova-cache = { path = "../nova-cache" }
 crossbeam-channel = "0.5"
-notify = "6.1"
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-framework-spring = { path = "../nova-framework-spring" }
 nova-framework-jpa = { path = "../nova-framework-jpa" }
@@ -22,7 +21,7 @@ nova-project = { path = "../nova-project" }
 nova-scheduler = { path = "../nova-scheduler" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
-nova-vfs = { path = "../nova-vfs" }
+nova-vfs = { path = "../nova-vfs", features = ["watch-notify"] }
 nova-jdk = { path = "../nova-jdk" }
 nova-classpath = { path = "../nova-classpath" }
 rowan = "0.15.17"

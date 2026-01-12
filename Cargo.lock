@@ -4351,7 +4351,6 @@ dependencies = [
  "async-channel 2.5.0",
  "crossbeam-channel",
  "lsp-types",
- "notify",
  "nova-cache",
  "nova-classpath",
  "nova-config",

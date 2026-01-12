@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender};
 use crossbeam_channel as channel;
 use lsp_types::Position;
-use notify::{RecursiveMode, Watcher};
 use nova_cache::{normalize_rel_path, Fingerprint};
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
@@ -24,12 +23,13 @@ use nova_project::{
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
-    ChangeEvent, ContentChange, DocumentError, FileId, FileSystem, LocalFs, Vfs, VfsPath,
+    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, LocalFs,
+    FileWatcher, NotifyFileWatcher, Vfs, VfsPath, WatchEvent,
 };
 use walkdir::WalkDir;
 
 use crate::watch::{
-    categorize_event, ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig,
+    categorize_event, ChangeCategory, NormalizedEvent, WatchConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,19 +264,15 @@ impl WorkspaceEngine {
         let (batch_tx, batch_rx) = channel::unbounded::<(ChangeCategory, Vec<NormalizedEvent>)>();
 
         let (watcher_stop_tx, watcher_stop_rx) = channel::bounded::<()>(0);
-        let (raw_tx, raw_rx) = channel::unbounded::<notify::Result<notify::Event>>();
 
         let subscribers = Arc::clone(&self.subscribers);
         let watcher_thread = thread::spawn(move || {
-            let mut normalizer = EventNormalizer::new();
             let mut debouncer = Debouncer::new([
                 (ChangeCategory::Source, Duration::from_millis(200)),
                 (ChangeCategory::Build, Duration::from_millis(200)),
             ]);
 
-            let mut watcher = match notify::recommended_watcher(move |res| {
-                let _ = raw_tx.send(res);
-            }) {
+            let mut watcher = match NotifyFileWatcher::new() {
                 Ok(watcher) => watcher,
                 Err(err) => {
                     publish_to_subscribers(
@@ -288,9 +284,30 @@ impl WorkspaceEngine {
                     return;
                 }
             };
+            let watch_rx = watcher.receiver().clone();
 
-            let mut roots: Vec<(PathBuf, RecursiveMode)> = Vec::new();
-            roots.push((watch_root.clone(), RecursiveMode::Recursive));
+            fn vfs_change_to_normalized(change: FileChange) -> Option<NormalizedEvent> {
+                fn to_pathbuf(path: VfsPath) -> Option<PathBuf> {
+                    path.as_local_path().map(|path| path.to_path_buf())
+                }
+
+                match change {
+                    FileChange::Created { path } => {
+                        Some(NormalizedEvent::Created(to_pathbuf(path)?))
+                    }
+                    FileChange::Modified { path } => {
+                        Some(NormalizedEvent::Modified(to_pathbuf(path)?))
+                    }
+                    FileChange::Deleted { path } => Some(NormalizedEvent::Deleted(to_pathbuf(path)?)),
+                    FileChange::Moved { from, to } => Some(NormalizedEvent::Moved {
+                        from: to_pathbuf(from)?,
+                        to: to_pathbuf(to)?,
+                    }),
+                }
+            }
+
+            let mut roots: Vec<PathBuf> = Vec::new();
+            roots.push(watch_root.clone());
             for root in watch_config
                 .source_roots
                 .iter()
@@ -302,26 +319,17 @@ impl WorkspaceEngine {
                 if root.starts_with(&watch_root) {
                     continue;
                 }
-                roots.push((root.clone(), RecursiveMode::Recursive));
+                roots.push(root.clone());
             }
 
-            roots.sort_by(|(a, _), (b, _)| a.cmp(b));
-            roots.dedup_by(|(a, mode_a), (b, mode_b)| {
-                if a != b {
-                    return false;
-                }
-                // Prefer recursive mode when duplicates exist.
-                if *mode_a == RecursiveMode::Recursive || *mode_b == RecursiveMode::Recursive {
-                    *mode_a = RecursiveMode::Recursive;
-                }
-                true
-            });
+            roots.sort();
+            roots.dedup();
 
-            for (root, mode) in roots {
+            for root in roots {
                 if !root.exists() {
                     continue;
                 }
-                if let Err(err) = watcher.watch(&root, mode) {
+                if let Err(err) = watcher.watch_root(&root) {
                     publish_to_subscribers(
                         &subscribers,
                         WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -347,12 +355,15 @@ impl WorkspaceEngine {
                         }
                         break;
                     }
-                    recv(raw_rx) -> msg => {
+                    recv(watch_rx) -> msg => {
                         let Ok(res) = msg else { break };
                         match res {
-                            Ok(event) => {
+                            Ok(WatchEvent { changes }) => {
                                 let now = Instant::now();
-                                for norm in normalizer.push(event, now) {
+                                for change in changes {
+                                    let Some(norm) = vfs_change_to_normalized(change) else {
+                                        continue;
+                                    };
                                     if let Some(cat) = categorize_event(&watch_config, &norm) {
                                         debouncer.push(&cat, norm, now);
                                     }

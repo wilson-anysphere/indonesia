@@ -25,7 +25,7 @@ mod watch;
 
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
 pub use snapshot::WorkspaceSnapshot;
-pub use watch::{ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig};
+pub use watch::{ChangeCategory, NormalizedEvent, WatchConfig};
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
