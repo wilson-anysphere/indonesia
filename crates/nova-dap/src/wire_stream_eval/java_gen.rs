@@ -379,7 +379,7 @@ pub fn generate_stream_eval_helper_java_source(
         if stage_is_void {
             out.push_str("void ");
         } else {
-            out.push_str("Object ");
+            out.push_str("java.util.List<?> ");
         }
         out.push_str(&stage_name);
         out.push('(');
@@ -844,8 +844,8 @@ mod tests {
         assert!(src.contains("int foo_bar"));
 
         // Ensure stages are generated and `this` is rewritten.
-        assert!(src.contains("public static Object stage0"));
-        assert!(src.contains("public static Object stage1"));
+        assert!(src.contains("public static java.util.List<?> stage0"));
+        assert!(src.contains("public static java.util.List<?> stage1"));
         assert!(
             src.contains("return sampleStream(__this.foo(), 5);"),
             "expected stage0 to sample stream via helper:\n{src}"
@@ -982,7 +982,7 @@ mod tests {
 
         // `__this` always comes first.
         assert!(
-            src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums, java.util.List<java.lang.Integer> MY_LIST)")
+            src.contains("public static java.util.List<?> stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums, java.util.List<java.lang.Integer> MY_LIST)")
         );
         assert!(src.contains("return sampleStream(nums.stream(), 25);"));
     }
