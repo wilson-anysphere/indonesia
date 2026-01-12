@@ -12257,10 +12257,10 @@ fn find_enclosing_target_typed_expr_in_expr(
                     best,
                 );
             }
-            if let Some(init_expr) = initializer {
+            if let Some(initializer) = initializer {
                 find_enclosing_target_typed_expr_in_expr(
                     body,
-                    *init_expr,
+                    *initializer,
                     target,
                     target_range,
                     best,

@@ -13178,8 +13178,7 @@ fn maybe_add_lambda_snippet_completion(
         expected_type_for_completion(&mut fast_types, None, text, analysis, prefix_start, offset);
 
     let needs_workspace_fallback = if let Some(expected) = expected_fast {
-        ensure_type_methods_loaded(&mut fast_types, &expected);
-        if let Some(param_count) = sam_param_count(&fast_types, &expected) {
+        if let Some(param_count) = sam_param_count(&mut fast_types, &expected) {
             push_lambda_snippet_item(items, label, param_count);
             return;
         }
@@ -13217,8 +13216,7 @@ fn maybe_add_lambda_snippet_completion(
         return;
     };
 
-    ensure_type_methods_loaded(&mut types, &expected);
-    let Some(param_count) = sam_param_count(&types, &expected) else {
+    let Some(param_count) = sam_param_count(&mut types, &expected) else {
         return;
     };
     push_lambda_snippet_item(items, label, param_count);
@@ -13541,30 +13539,138 @@ fn parse_source_type_for_expected(
     }
 }
 
-fn sam_param_count(types: &TypeStore, ty: &Type) -> Option<usize> {
-    let class_id = match ty {
-        Type::Class(nova_types::ClassType { def, .. }) => *def,
-        Type::Named(name) => types.class_id(name)?,
-        _ => return None,
-    };
+fn infer_receiver_for_expected(
+    types: &mut TypeStore,
+    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
+    analysis: &Analysis,
+    receiver: &str,
+) -> (Type, CallKind) {
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
+    if receiver.starts_with('"') {
+        return (
+            types
+                .class_id("java.lang.String")
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
+            CallKind::Instance,
+        );
+    }
 
+    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
+        return (
+            parse_source_type_for_expected(types, &file_ctx, workspace_index, &var.ty),
+            CallKind::Instance,
+        );
+    }
+    if let Some(param) = analysis
+        .methods
+        .iter()
+        .flat_map(|m| m.params.iter())
+        .find(|p| p.name == receiver)
+    {
+        return (
+            parse_source_type_for_expected(types, &file_ctx, workspace_index, &param.ty),
+            CallKind::Instance,
+        );
+    }
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+        return (
+            parse_source_type_for_expected(types, &file_ctx, workspace_index, &field.ty),
+            CallKind::Instance,
+        );
+    }
+
+    // Allow `Foo.bar()` to treat `Foo` as a type reference.
+    (
+        parse_source_type_for_expected(types, &file_ctx, workspace_index, receiver),
+        CallKind::Static,
+    )
+}
+
+fn sam_param_count(types: &mut TypeStore, ty: &Type) -> Option<usize> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    #[derive(Debug, Clone, Copy)]
+    struct MethodSigInfo {
+        min_depth: usize,
+        saw_abstract: bool,
+        saw_concrete: bool,
+    }
+
+    fn class_id_for_sam(types: &mut TypeStore, ty: &Type) -> Option<ClassId> {
+        match ty {
+            Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+            Type::Named(name) => ensure_class_id(types, name),
+            _ => None,
+        }
+    }
+
+    let class_id = class_id_for_sam(types, ty)?;
     let class = types.class(class_id)?;
     if class.kind != ClassKind::Interface {
         return None;
     }
 
-    let mut abstract_instance_methods = class
-        .methods
-        .iter()
-        .filter(|m| m.is_abstract && !m.is_static)
-        .filter(|m| !is_object_method(m))
-        .collect::<Vec<_>>();
+    let mut sigs: HashMap<(String, usize), MethodSigInfo> = HashMap::new();
+    let mut visited: HashSet<ClassId> = HashSet::new();
+    let mut queue: VecDeque<(ClassId, usize)> = VecDeque::new();
+    queue.push_back((class_id, 0));
+    visited.insert(class_id);
 
-    if abstract_instance_methods.len() != 1 {
+    while let Some((iface_id, depth)) = queue.pop_front() {
+        ensure_type_methods_loaded(types, &Type::class(iface_id, vec![]));
+
+        let (methods, interfaces) = match types.class(iface_id) {
+            Some(def) => (def.methods.clone(), def.interfaces.clone()),
+            None => continue,
+        };
+
+        for m in &methods {
+            if m.is_static || is_object_method(m) {
+                continue;
+            }
+            let key = (m.name.clone(), m.params.len());
+            let entry = sigs.entry(key).or_insert(MethodSigInfo {
+                min_depth: depth,
+                saw_abstract: false,
+                saw_concrete: false,
+            });
+
+            if depth < entry.min_depth {
+                entry.min_depth = depth;
+                entry.saw_abstract = false;
+                entry.saw_concrete = false;
+            }
+
+            if depth == entry.min_depth {
+                if m.is_abstract {
+                    entry.saw_abstract = true;
+                } else {
+                    entry.saw_concrete = true;
+                }
+            }
+        }
+
+        for iface in interfaces {
+            let Some(next_id) = class_id_for_sam(types, &iface) else {
+                continue;
+            };
+            if visited.insert(next_id) {
+                queue.push_back((next_id, depth + 1));
+            }
+        }
+    }
+
+    let mut abstract_sigs = sigs
+        .iter()
+        .filter(|(_sig, info)| info.saw_abstract && !info.saw_concrete)
+        .map(|(sig, _)| sig)
+        .collect::<Vec<_>>();
+    if abstract_sigs.len() != 1 {
         return None;
     }
 
-    Some(abstract_instance_methods.remove(0).params.len())
+    Some(abstract_sigs.pop().unwrap().1)
 }
 
 fn is_object_method(method: &MethodDef) -> bool {
@@ -19272,6 +19378,58 @@ fn define_local_interfaces(types: &mut TypeStore, tokens: &[Token]) {
                 continue;
             };
 
+            // Best-effort parse for `interface Foo extends Bar, Baz {}`.
+            let mut interfaces = Vec::<Type>::new();
+            {
+                let header = &tokens[(i + 2)..open_idx];
+                let mut k = 0usize;
+                while k < header.len() {
+                    if header[k].kind == TokenKind::Ident && header[k].text == "extends" {
+                        k += 1;
+                        while k < header.len() {
+                            let mut parts: Vec<String> = Vec::new();
+                            let mut depth = 0i32;
+                            while k < header.len() {
+                                match header[k].kind {
+                                    TokenKind::Ident => {
+                                        if depth == 0 {
+                                            parts.push(header[k].text.clone());
+                                        }
+                                        k += 1;
+                                    }
+                                    TokenKind::Symbol('.') => k += 1,
+                                    TokenKind::Symbol('<') => {
+                                        depth += 1;
+                                        k += 1;
+                                    }
+                                    TokenKind::Symbol('>') => {
+                                        if depth > 0 {
+                                            depth -= 1;
+                                        }
+                                        k += 1;
+                                    }
+                                    TokenKind::Symbol(',') if depth == 0 => break,
+                                    _ if depth == 0 => break,
+                                    _ => k += 1,
+                                }
+                            }
+
+                            if !parts.is_empty() {
+                                interfaces.push(parse_source_type(types, &parts.join(".")));
+                            }
+
+                            if k < header.len() && header[k].kind == TokenKind::Symbol(',') {
+                                k += 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        break;
+                    }
+                    k += 1;
+                }
+            }
+
             let Some((end_idx, _span)) = find_matching_brace(tokens, open_idx) else {
                 i += 1;
                 continue;
@@ -19289,7 +19447,7 @@ fn define_local_interfaces(types: &mut TypeStore, tokens: &[Token]) {
                     kind: ClassKind::Interface,
                     type_params: Vec::new(),
                     super_class: Some(Type::class(object, vec![])),
-                    interfaces: Vec::new(),
+                    interfaces,
                     fields: Vec::new(),
                     constructors: Vec::new(),
                     methods,

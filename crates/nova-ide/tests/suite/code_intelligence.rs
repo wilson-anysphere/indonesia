@@ -1549,6 +1549,33 @@ class A {
 }
 
 #[test]
+fn completion_includes_lambda_snippet_for_inherited_sam_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+interface Base { int apply(int x); }
+interface Fun extends Base {}
+class A {
+  void m() {
+    Fun f = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|item| {
+            item.kind == Some(lsp_types::CompletionItemKind::SNIPPET)
+                && item
+                    .insert_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("->"))
+        }),
+        "expected completion list to contain a lambda snippet item for inherited SAM expected type; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_lambda_snippet_in_receiver_call_argument_expected_type() {
     let (db, file, pos) = fixture(
         r#"
