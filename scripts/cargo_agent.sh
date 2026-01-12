@@ -185,6 +185,10 @@ if [[ -n "${jobs}" ]]; then
 fi
 
 limit_as="${NOVA_CARGO_LIMIT_AS:-${LIMIT_AS:-4G}}"
+limit_as_is_default=1
+if [[ -n "${NOVA_CARGO_LIMIT_AS:-}" || -n "${LIMIT_AS:-}" ]]; then
+  limit_as_is_default=0
+fi
 
 lock_dir="${NOVA_CARGO_LOCK_DIR:-${repo_root}/target/.cargo_agent_locks}"
 mkdir -p "${lock_dir}"
@@ -193,6 +197,7 @@ run_cargo() {
   local cargo_cmd=(cargo)
   local toolchain_arg=""
   local subcommand=""
+  local limit_as_effective="${limit_as}"
 
   if [[ $# -lt 1 ]]; then
     echo "missing cargo subcommand" >&2
@@ -229,6 +234,18 @@ run_cargo() {
   cargo_cmd+=("${subcommand}")
   shift
 
+  # `cargo fuzz` builds and runs targets under ASAN by default. AddressSanitizer requires a very
+  # large virtual address space to reserve its shadow memory, so applying a low RLIMIT_AS (our
+  # default is 4G) causes the fuzzer to fail at startup with errors like:
+  #
+  #   AddressSanitizer failed to allocate ... ReserveShadowMemoryRange failed ...
+  #
+  # Prefer correctness here: if the user didn't explicitly set a tighter address-space limit,
+  # disable RLIMIT_AS for fuzzing commands.
+  if [[ "${subcommand}" == "fuzz" && "${limit_as_is_default}" -eq 1 ]]; then
+    limit_as_effective="unlimited"
+  fi
+
   # Cap RUST_TEST_THREADS for test runs
   if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
     local rust_test_threads="${NOVA_RUST_TEST_THREADS:-}"
@@ -258,12 +275,12 @@ run_cargo() {
 
   cargo_cmd+=("$@")
 
-  if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" || "${limit_as}" == "unlimited" ]]; then
+  if [[ -z "${limit_as_effective}" || "${limit_as_effective}" == "0" || "${limit_as_effective}" == "off" || "${limit_as_effective}" == "unlimited" ]]; then
     "${cargo_cmd[@]}"
     return $?
   fi
 
-  bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
+  bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as_effective}" -- "${cargo_cmd[@]}"
   return $?
 }
 

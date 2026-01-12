@@ -136,6 +136,16 @@ cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
 
 This target feeds arbitrary bytes into `nova_classfile::ClassFile::parse`.
 
+### Decompile JVM classfiles (classfile-to-source fallback)
+
+```bash
+cargo +nightly fuzz run fuzz_decompile_classfile -- -max_total_time=60 -max_len=262144
+```
+
+This target feeds arbitrary bytes into `nova_decompile::decompile_classfile` and (when
+decompilation succeeds) asserts that all `SymbolRange` mappings are in-bounds and convertible back
+to byte ranges via `nova_core::LineIndex`.
+
 ### Parse JUnit XML reports
 
 ```bash

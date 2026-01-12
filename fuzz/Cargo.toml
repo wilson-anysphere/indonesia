@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 lsp-types = "0.97"
 nova-classfile = { path = "../crates/nova-classfile" }
+nova-decompile = { path = "../crates/nova-decompile" }
 nova-config-metadata = { path = "../crates/nova-config-metadata" }
 nova-core = { path = "../crates/nova-core" }
 nova-db = { path = "../crates/nova-db" }
@@ -28,6 +29,13 @@ refactor = ["dep:nova-refactor"]
 [[bin]]
 name = "fuzz_classfile"
 path = "fuzz_targets/fuzz_classfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decompile_classfile"
+path = "fuzz_targets/fuzz_decompile_classfile.rs"
 test = false
 doc = false
 bench = false

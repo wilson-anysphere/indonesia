@@ -124,6 +124,10 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
 
+      - name: fuzz_decompile_classfile
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_decompile_classfile -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: fuzz_junit_report
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_junit_report -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
