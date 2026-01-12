@@ -120,11 +120,13 @@ impl CtSymReleaseIndex {
             .map(|name| ModuleName::new(name.clone()))
             .collect();
         // Stable ordering with `java.base` first (mirrors `.jmod` indexing).
-        modules.sort_by(|a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.as_str().cmp(b.as_str()),
-        });
+        modules.sort_by(
+            |a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.as_str().cmp(b.as_str()),
+            },
+        );
 
         let mut class_to_module = HashMap::new();
         let mut internal_to_zip_path = HashMap::new();
@@ -353,6 +355,156 @@ impl CtSymReleaseIndex {
         self.module_graph.as_ref()?.get(name)
     }
 
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub(crate) fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn add_string(bytes: &mut u64, s: &String) {
+            *bytes = bytes.saturating_add(s.capacity() as u64);
+        }
+
+        fn add_opt_string(bytes: &mut u64, s: &Option<String>) {
+            if let Some(s) = s {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_vec_string(bytes: &mut u64, v: &Vec<String>) {
+            *bytes = bytes.saturating_add((v.capacity() * size_of::<String>()) as u64);
+            for s in v {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_field_stub(bytes: &mut u64, stub: &crate::JdkFieldStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+        }
+
+        fn add_method_stub(bytes: &mut u64, stub: &crate::JdkMethodStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+        }
+
+        fn class_stub_bytes(stub: &JdkClassStub) -> u64 {
+            let mut bytes = 0u64;
+            add_string(&mut bytes, &stub.internal_name);
+            add_string(&mut bytes, &stub.binary_name);
+            add_opt_string(&mut bytes, &stub.super_internal_name);
+            add_vec_string(&mut bytes, &stub.interfaces_internal_names);
+            add_opt_string(&mut bytes, &stub.signature);
+
+            bytes = bytes
+                .saturating_add((stub.fields.capacity() * size_of::<crate::JdkFieldStub>()) as u64);
+            for field in &stub.fields {
+                add_field_stub(&mut bytes, field);
+            }
+
+            bytes = bytes.saturating_add(
+                (stub.methods.capacity() * size_of::<crate::JdkMethodStub>()) as u64,
+            );
+            for method in &stub.methods {
+                add_method_stub(&mut bytes, method);
+            }
+
+            bytes
+        }
+
+        fn lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+            match mutex.lock() {
+                Ok(guard) => Some(guard),
+                Err(poisoned) => Some(poisoned.into_inner()),
+            }
+        }
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(self.ct_sym_path.as_os_str().len() as u64);
+
+        bytes = bytes.saturating_add((self.modules.capacity() * size_of::<ModuleName>()) as u64);
+        // `ModuleName` does not expose its backing `String` capacity, so we fall back
+        // to `len()` for a best-effort approximation.
+        for module in &self.modules {
+            bytes = bytes.saturating_add(module.as_str().len() as u64);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.class_to_module.capacity() * size_of::<(String, usize)>()) as u64,
+        );
+        for (k, _) in &self.class_to_module {
+            add_string(&mut bytes, k);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.internal_to_zip_path.capacity() * size_of::<(String, String)>()) as u64,
+        );
+        for (k, v) in &self.internal_to_zip_path {
+            add_string(&mut bytes, k);
+            add_string(&mut bytes, v);
+        }
+
+        let mut seen_stubs: HashSet<usize> = HashSet::new();
+        let mut add_stub = |bytes: &mut u64, stub: &Arc<JdkClassStub>| {
+            let ptr = Arc::as_ptr(stub) as usize;
+            if seen_stubs.insert(ptr) {
+                *bytes = bytes.saturating_add(class_stub_bytes(stub.as_ref()));
+            }
+        };
+
+        if let Some(map) = lock_best_effort(&self.by_internal) {
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
+            for (k, v) in map.iter() {
+                add_string(&mut bytes, k);
+                add_stub(&mut bytes, v);
+            }
+        }
+
+        if let Some(map) = lock_best_effort(&self.by_binary) {
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
+            for (k, v) in map.iter() {
+                add_string(&mut bytes, k);
+                add_stub(&mut bytes, v);
+            }
+        }
+
+        if let Some(set) = lock_best_effort(&self.missing) {
+            bytes = bytes.saturating_add((set.capacity() * size_of::<String>()) as u64);
+            for entry in set.iter() {
+                add_string(&mut bytes, entry);
+            }
+        }
+
+        if let Some(pkgs) = self.packages.get() {
+            bytes = bytes.saturating_add((pkgs.capacity() * size_of::<String>()) as u64);
+            for pkg in pkgs {
+                add_string(&mut bytes, pkg);
+            }
+        }
+
+        if let Some(names) = self.binary_names_sorted.get() {
+            bytes = bytes.saturating_add((names.capacity() * size_of::<String>()) as u64);
+            for name in names {
+                add_string(&mut bytes, name);
+            }
+        }
+
+        if let Some(java_lang) = self.java_lang.get() {
+            bytes = bytes
+                .saturating_add((java_lang.capacity() * size_of::<Arc<JdkClassStub>>()) as u64);
+            for stub in java_lang {
+                add_stub(&mut bytes, stub);
+            }
+        }
+
+        bytes
+    }
+
     pub(crate) fn module_of_type(
         &self,
         binary_or_internal: &str,
@@ -392,7 +544,10 @@ impl CtSymReleaseIndex {
     /// Lookup a type by binary name (`java.lang.String`), internal name
     /// (`java/lang/String`), or an unqualified simple name (`String`) which is
     /// resolved against the implicit `java.lang.*` universe scope.
-    pub(crate) fn lookup_type(&self, name: &str) -> Result<Option<Arc<JdkClassStub>>, JdkIndexError> {
+    pub(crate) fn lookup_type(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<JdkClassStub>>, JdkIndexError> {
         let internal = if name.contains('/') {
             name.to_owned()
         } else if name.contains('.') {
@@ -494,7 +649,9 @@ impl CtSymReleaseIndex {
         let internal_names: Vec<String> = self
             .class_to_module
             .keys()
-            .filter(|internal| internal.starts_with("java/lang/") && is_direct_java_lang_member(internal))
+            .filter(|internal| {
+                internal.starts_with("java/lang/") && is_direct_java_lang_member(internal)
+            })
             .cloned()
             .collect();
 
@@ -531,7 +688,10 @@ impl CtSymReleaseIndex {
         Ok(out)
     }
 
-    pub(crate) fn class_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
+    pub(crate) fn class_names_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<String>, JdkIndexError> {
         let prefix = normalize_binary_prefix(prefix);
         let names = self.binary_names_sorted()?;
 
@@ -560,7 +720,10 @@ impl CtSymReleaseIndex {
 
     fn read_zip_entry(&self, zip_path: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
         let mut archive = self.archive.lock().expect("mutex poisoned");
-        Ok(ct_sym::read_entry_bytes_from_archive(&mut archive, zip_path)?)
+        Ok(ct_sym::read_entry_bytes_from_archive(
+            &mut archive,
+            zip_path,
+        )?)
     }
 
     fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {

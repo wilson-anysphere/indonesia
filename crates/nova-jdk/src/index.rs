@@ -12,9 +12,9 @@ use nova_process::{run_command, RunOptions};
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 
-use crate::discovery::{JdkDiscoveryError, JdkInstallation};
 use crate::ct_sym;
 use crate::ct_sym_index::CtSymReleaseIndex;
+use crate::discovery::{JdkDiscoveryError, JdkInstallation};
 use crate::jar;
 use crate::jmod;
 use crate::persist;
@@ -1054,12 +1054,14 @@ impl JmodSymbolIndex {
             add_vec_string(&mut bytes, &stub.interfaces_internal_names);
             add_opt_string(&mut bytes, &stub.signature);
 
-            bytes = bytes.saturating_add((stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64);
+            bytes =
+                bytes.saturating_add((stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64);
             for field in &stub.fields {
                 add_field_stub(&mut bytes, field);
             }
 
-            bytes = bytes.saturating_add((stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64);
+            bytes =
+                bytes.saturating_add((stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64);
             for method in &stub.methods {
                 add_method_stub(&mut bytes, method);
             }
@@ -1076,7 +1078,8 @@ impl JmodSymbolIndex {
 
         let mut bytes = 0u64;
 
-        bytes = bytes.saturating_add((self.containers.capacity() * size_of::<JdkContainer>()) as u64);
+        bytes =
+            bytes.saturating_add((self.containers.capacity() * size_of::<JdkContainer>()) as u64);
         for container in &self.containers {
             bytes = bytes.saturating_add(container.path.as_os_str().len() as u64);
             if let Some(module) = container.kind.module_name() {
@@ -1093,9 +1096,8 @@ impl JmodSymbolIndex {
         };
 
         if let Some(map) = lock_best_effort(&self.by_internal) {
-            bytes = bytes.saturating_add(
-                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
-            );
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, v) in map.iter() {
                 add_string(&mut bytes, k);
                 add_stub(&mut bytes, v);
@@ -1103,9 +1105,8 @@ impl JmodSymbolIndex {
         }
 
         if let Some(map) = lock_best_effort(&self.by_binary) {
-            bytes = bytes.saturating_add(
-                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
-            );
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, v) in map.iter() {
                 add_string(&mut bytes, k);
                 add_stub(&mut bytes, v);
@@ -1141,7 +1142,8 @@ impl JmodSymbolIndex {
         }
 
         if let Some(java_lang) = self.java_lang.get() {
-            bytes = bytes.saturating_add((java_lang.capacity() * size_of::<Arc<JdkClassStub>>()) as u64);
+            bytes = bytes
+                .saturating_add((java_lang.capacity() * size_of::<Arc<JdkClassStub>>()) as u64);
             for stub in java_lang {
                 add_stub(&mut bytes, stub);
             }
@@ -1288,7 +1290,10 @@ fn scan_class_dir(dir: &Path) -> Result<Vec<String>, JdkIndexError> {
     Ok(out)
 }
 
-fn read_class_bytes_from_dir(dir: &Path, internal_name: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
+fn read_class_bytes_from_dir(
+    dir: &Path,
+    internal_name: &str,
+) -> Result<Option<Vec<u8>>, JdkIndexError> {
     let path = dir_class_path(dir, internal_name);
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
