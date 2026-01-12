@@ -69,7 +69,7 @@ pub(crate) fn create_symbol_quick_fixes_from_diagnostics(
             continue;
         };
 
-        if !spans_intersect(span, selection) {
+        if !crate::quick_fix::spans_intersect(span, selection) {
             continue;
         }
 
@@ -129,13 +129,6 @@ pub(crate) fn create_symbol_quick_fixes_from_diagnostics(
     }
 
     actions
-}
-
-fn spans_intersect(a: Span, b: Span) -> bool {
-    if b.start == b.end {
-        return a.start <= b.start && b.start <= a.end;
-    }
-    a.start < b.end && b.start < a.end
 }
 
 fn file_uri(db: &dyn Database, file: FileId) -> lsp_types::Uri {
@@ -359,7 +352,7 @@ pub(crate) fn unresolved_static_member_quick_fixes(
             )
         })
         .filter_map(|diag| diag.span)
-        .filter(|span| spans_intersect(*span, selection))
+        .filter(|span| crate::quick_fix::spans_intersect(*span, selection))
         .collect();
 
     // Best-effort fallback: some file regions (e.g. field initializers) are not yet part of the
