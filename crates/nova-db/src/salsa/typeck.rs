@@ -592,7 +592,7 @@ fn type_of_expr_demand_result(
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this body and cross-file member resolution works.
-    let source_types = define_workspace_source_types(db, project, &resolver, &mut loader);
+    let source_types = define_workspace_source_types(db, project, file, &resolver, &mut loader);
     let type_vars = type_vars_for_owner(
         &resolver,
         owner,
@@ -1423,7 +1423,7 @@ fn resolve_method_call_demand(
         field_owners,
         method_owners,
         source_type_vars,
-    } = define_workspace_source_types(db, project, &resolver, &mut loader);
+    } = define_workspace_source_types(db, project, file, &resolver, &mut loader);
 
     let type_vars = type_vars_for_owner(
         &resolver,
@@ -3380,7 +3380,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this body and cross-file member resolution works.
-    let source_types = define_workspace_source_types(db, project, &resolver, &mut loader);
+    let source_types = define_workspace_source_types(db, project, file, &resolver, &mut loader);
     let type_vars = type_vars_for_owner(
         &resolver,
         owner,
@@ -8791,6 +8791,7 @@ impl SourceTypes {
 fn define_workspace_source_types<'idx>(
     db: &dyn NovaTypeck,
     project: ProjectId,
+    from_file: FileId,
     resolver: &nova_resolve::Resolver<'idx>,
     loader: &mut ExternalTypeLoader<'_>,
 ) -> SourceTypes {
@@ -8805,12 +8806,48 @@ fn define_workspace_source_types<'idx>(
     }
 
     // Second pass: define skeleton class defs + collect member typing/ownership info.
+    //
+    // In JPMS mode, only expose members for workspace types that are accessible from the module
+    // owning `from_file`. This prevents member resolution from "rescuing" otherwise
+    // `unresolved-type` references to unreadable/unexported workspace modules.
+    let jpms_env = db.jpms_compilation_env(project);
+    let jpms_ctx = jpms_env.as_deref().map(|env| {
+        let cfg = db.project_config(project);
+        let file_rel = db.file_rel_path(from_file);
+        let from = module_for_file(&cfg, file_rel.as_str());
+        (cfg, from, &env.env.graph)
+    });
+
     let mut out = SourceTypes::default();
     for (idx, file) in files.iter().copied().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 32);
-        let tree = db.hir_item_tree(file);
-        let scopes = db.scope_graph(file);
-        out.extend(define_source_types(resolver, &scopes, &tree, loader));
+
+        if let Some((cfg, from, graph)) = jpms_ctx.as_ref() {
+            let file_rel = db.file_rel_path(file);
+            let to = module_for_file(cfg, file_rel.as_str());
+            if !graph.can_read(from, &to) {
+                continue;
+            }
+
+            let tree = db.hir_item_tree(file);
+            let package = tree
+                .package
+                .as_ref()
+                .map(|p| p.name.as_str())
+                .unwrap_or("");
+            if let Some(info) = graph.get(&to) {
+                if !info.exports_package_to(package, from) {
+                    continue;
+                }
+            }
+
+            let scopes = db.scope_graph(file);
+            out.extend(define_source_types(resolver, &scopes, &tree, loader));
+        } else {
+            let tree = db.hir_item_tree(file);
+            let scopes = db.scope_graph(file);
+            out.extend(define_source_types(resolver, &scopes, &tree, loader));
+        }
     }
 
     out
