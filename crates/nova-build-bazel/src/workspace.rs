@@ -233,25 +233,35 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
         // Prefer a purely lexical check first; fall back to canonicalization for common symlink
         // cases (e.g. editor reports canonical paths while the workspace root comes from a symlink).
-        let (workspace_root, file_abs) = if file_abs.strip_prefix(&self.root).is_ok() {
-            (self.root.clone(), file_abs)
-        } else {
-            let workspace_root = std::fs::canonicalize(&self.root).with_context(|| {
-                format!(
-                    "failed to canonicalize Bazel workspace root {}",
-                    self.root.display()
-                )
-            })?;
-            let file_abs = std::fs::canonicalize(&file_abs)
-                .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
-            if file_abs.strip_prefix(&workspace_root).is_err() {
-                bail!(
-                    "file {} is outside the Bazel workspace root {}",
-                    file_abs.display(),
-                    workspace_root.display()
-                );
+        let (workspace_root, file_abs) = match file_abs.strip_prefix(&self.root) {
+            Ok(rel) => {
+                let rel = normalize_workspace_relative_path(rel).map_err(|err| {
+                    anyhow::anyhow!(
+                        "file {} is outside the Bazel workspace root {} ({err})",
+                        file_abs.display(),
+                        self.root.display()
+                    )
+                })?;
+                (self.root.clone(), self.root.join(rel))
             }
-            (workspace_root, file_abs)
+            Err(_) => {
+                let workspace_root = std::fs::canonicalize(&self.root).with_context(|| {
+                    format!(
+                        "failed to canonicalize Bazel workspace root {}",
+                        self.root.display()
+                    )
+                })?;
+                let file_abs = std::fs::canonicalize(&file_abs)
+                    .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
+                if file_abs.strip_prefix(&workspace_root).is_err() {
+                    bail!(
+                        "file {} is outside the Bazel workspace root {}",
+                        file_abs.display(),
+                        workspace_root.display()
+                    );
+                }
+                (workspace_root, file_abs)
+            }
         };
 
         let package_dir = find_bazel_package_dir(&workspace_root, &file_abs).with_context(|| {
@@ -685,6 +695,30 @@ fn find_bazel_package_dir(workspace_root: &Path, file: &Path) -> Result<PathBuf>
         "no Bazel package found for {} (no BUILD/BUILD.bazel between file and workspace root)",
         file.display()
     )
+}
+
+fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => out.push(part),
+            Component::ParentDir => {
+                if !out.pop() {
+                    bail!("path escapes workspace root: {}", path.display());
+                }
+            }
+            other => {
+                bail!(
+                    "expected a workspace-relative path, found unsupported component {other:?} in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn path_to_bazel_path(path: &Path) -> Result<String> {

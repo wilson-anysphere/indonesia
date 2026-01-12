@@ -202,3 +202,100 @@ fn java_owning_targets_for_file_returns_sorted_deduped_targets() {
     );
 }
 
+#[test]
+fn java_owning_targets_for_file_normalizes_dotdots_within_workspace() {
+    let root = tempdir().unwrap();
+    let build = root.path().join("java").join("BUILD");
+    let src = root.path().join("java").join("com").join("Hello.java");
+
+    write_file(&build, "java_library(name = \"lib\", srcs = glob([\"**/*.java\"]))\n");
+    write_file(&src, "class Hello {}\n");
+
+    let messy_path = root
+        .path()
+        .join("java")
+        .join("..")
+        .join("java")
+        .join("com")
+        .join("Hello.java");
+
+    let file_label = "//java:com/Hello.java";
+    let universe = "//java:all";
+    let filegroups_expr =
+        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr =
+        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+
+    let mut outputs = HashMap::new();
+    outputs.insert(filegroups_expr.clone(), String::new());
+    outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
+
+    let runner = TestRunner::new(outputs);
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let owning = workspace
+        .java_owning_targets_for_file(messy_path.as_path())
+        .unwrap();
+    assert_eq!(owning, vec!["//java:lib".to_string()]);
+}
+
+#[test]
+fn java_owning_targets_for_file_errors_for_file_outside_workspace() {
+    let root = tempdir().unwrap();
+    let runner = TestRunner::new(HashMap::new());
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+
+    let err = workspace
+        .java_owning_targets_for_file(PathBuf::from("..").join("outside").join("Foo.java"))
+        .unwrap_err();
+    assert!(err.to_string().contains("outside the Bazel workspace root"));
+}
+
+#[test]
+fn java_owning_targets_for_file_errors_when_no_bazel_package_found() {
+    let root = tempdir().unwrap();
+    let src = root.path().join("java").join("Foo.java");
+    write_file(&src, "class Foo {}\n");
+
+    let runner = TestRunner::new(HashMap::new());
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let err = workspace.java_owning_targets_for_file(src.as_path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no Bazel package found") || msg.contains("failed to locate Bazel package"),
+        "unexpected error message: {msg}"
+    );
+}
+
+#[test]
+fn java_owning_targets_for_file_errors_when_bazel_query_fails() {
+    #[derive(Clone)]
+    struct FailingRunner;
+
+    impl CommandRunner for FailingRunner {
+        fn run(&self, _cwd: &Path, _program: &str, _args: &[&str]) -> Result<CommandOutput> {
+            unreachable!("workspace uses run_with_stdout for owning target queries")
+        }
+
+        fn run_with_stdout<R>(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+            _f: impl FnOnce(&mut dyn BufRead) -> Result<R>,
+        ) -> Result<R> {
+            Err(anyhow::anyhow!("bazel query failed"))
+        }
+    }
+
+    let root = tempdir().unwrap();
+    let build = root.path().join("java").join("BUILD");
+    let src = root.path().join("java").join("Foo.java");
+    write_file(&build, "java_library(name = \"lib\", srcs = [\"Foo.java\"])\n");
+    write_file(&src, "class Foo {}\n");
+
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), FailingRunner).unwrap();
+    let err = workspace.java_owning_targets_for_file(src.as_path()).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("bazel query failed while resolving filegroups"));
+}
