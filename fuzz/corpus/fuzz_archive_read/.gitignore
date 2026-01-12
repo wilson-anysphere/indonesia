@@ -2,8 +2,8 @@
 #
 # libFuzzer will write new corpus entries directly into the corpus directory.
 # These are typically extensionless (e.g. sha1-like names or `id:...`), while
-# our checked-in seeds are `*.jar`.
+# our checked-in seeds are `*.jar` / `*.jmod`.
 *
 !*.jar
+!*.jmod
 !.gitignore
-
