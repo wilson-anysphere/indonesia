@@ -7743,18 +7743,32 @@ mod tests {
         )
         .expect("code action response");
         let excluded_actions = excluded_actions.as_array().expect("array");
+        // `ai.privacy.excluded_paths` should prevent code from being sent to the LLM.
+        //
+        // We still offer "Explain this error" (but without a code snippet) so users can
+        // get help with the diagnostic message itself. Code-editing actions are omitted.
+        let explain = excluded_actions
+            .iter()
+            .find(|action| action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN))
+            .expect("expected explain action for excluded file");
+        let explain_code = explain
+            .get("command")
+            .and_then(|cmd| cmd.get("arguments"))
+            .and_then(|args| args.get(0))
+            .and_then(|arg0| arg0.get("code"))
+            .expect("expected ExplainErrorArgs.code field");
+        assert!(
+            explain_code.is_null(),
+            "expected explain action to omit code snippet for excluded file; got: {explain_code:?}"
+        );
         assert!(
             !excluded_actions.iter().any(|action| {
                 action
                     .get("kind")
                     .and_then(|kind| kind.as_str())
-                    .is_some_and(|kind| {
-                        kind == CODE_ACTION_KIND_EXPLAIN
-                            || kind == CODE_ACTION_KIND_AI_GENERATE
-                            || kind == CODE_ACTION_KIND_AI_TESTS
-                    })
+                    .is_some_and(|kind| kind == CODE_ACTION_KIND_AI_GENERATE || kind == CODE_ACTION_KIND_AI_TESTS)
             }),
-            "expected no AI code actions for excluded file"
+            "expected no AI code-edit actions for excluded file"
         );
 
         let allowed_actions = handle_code_action(
@@ -7772,11 +7786,19 @@ mod tests {
         )
         .expect("code action response");
         let allowed_actions = allowed_actions.as_array().expect("array");
+        let explain = allowed_actions
+            .iter()
+            .find(|action| action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN))
+            .expect("expected explain action for non-excluded file when AI is configured");
+        let explain_code = explain
+            .get("command")
+            .and_then(|cmd| cmd.get("arguments"))
+            .and_then(|args| args.get(0))
+            .and_then(|arg0| arg0.get("code"))
+            .expect("expected ExplainErrorArgs.code field");
         assert!(
-            allowed_actions.iter().any(|action| {
-                action.get("kind").and_then(|kind| kind.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN)
-            }),
-            "expected AI code actions for non-excluded file when AI is configured"
+            explain_code.is_string(),
+            "expected explain action to include code snippet for non-excluded file; got: {explain_code:?}"
         );
     }
 
