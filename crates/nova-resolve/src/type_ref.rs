@@ -869,35 +869,14 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
         // Type-use annotation names can appear anywhere inside a type reference (`@A String`,
-        // `Outer.@A Inner`, `String @A []`, ...). Nova does not model these in `nova_types::Type`,
-        // so type refs should parse/resolve as if the annotation were absent.
+        // `Outer.@A Inner`, `String @A []`, ...).
         //
-        // However, when we have a reliable `base_span` (i.e. the caller provided a span whose
-        // length matches the `TypeRef.text` length) we can still surface best-effort diagnostics
-        // for missing annotation types without risking mis-anchored spans.
-        let Some(base_span) = self.base_span else {
-            return;
-        };
-        if base_span.len() != self.text.len() {
-            return;
-        }
-
-        let Some(name_text) = self.text.get(name_range.clone()) else {
-            return;
-        };
-
-        let qname = QualifiedName::from_dotted(name_text);
-        if self
-            .resolver
-            .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
-            .is_none()
-        {
-            self.diagnostics.push(Diagnostic::error(
-                "unresolved-type",
-                format!("unresolved type `{}`", name_text),
-                self.anchor_span(name_range),
-            ));
-        }
+        // Nova currently ignores type-use annotation types when resolving `TypeRef`s, and we
+        // intentionally do not emit diagnostics for missing annotation types.
+        //
+        // We still *parse* and skip the annotation syntax so the base type can be interpreted
+        // correctly.
+        let _ = name_range;
     }
 
     fn find_best_annotation_name_end(
