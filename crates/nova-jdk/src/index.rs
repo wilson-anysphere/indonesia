@@ -218,7 +218,10 @@ impl JdkSymbolIndex {
     pub(crate) fn estimated_bytes(&self) -> u64 {
         match self {
             Self::Jmods(index) => index.estimated_bytes(),
-            Self::CtSym(index) => index.estimated_bytes(),
+            // `ct.sym` indices are backed by a ZIP archive plus a handful of maps/caches.
+            // We don't currently track that heap usage in a structured way, so report
+            // zero and keep memory accounting best-effort.
+            Self::CtSym(_) => 0,
         }
     }
 }
