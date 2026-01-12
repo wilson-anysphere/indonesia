@@ -9573,7 +9573,6 @@ fn mask_type_use_annotations(text: &str) -> Cow<'_, str> {
 
     Cow::Owned(String::from_utf8(bytes).unwrap_or_else(|_| text.to_string()))
 }
-
 fn for_each_resolved_type_name<'idx>(
     resolver: &nova_resolve::Resolver<'idx>,
     scopes: &nova_resolve::ScopeGraph,

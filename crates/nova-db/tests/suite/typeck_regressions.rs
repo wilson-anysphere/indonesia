@@ -116,3 +116,24 @@ class C {
         "expected diagnostic span to cover string literal, got {span:?}"
     );
 }
+
+#[test]
+fn catch_var_reports_unresolved_type() {
+    let src = r#"
+class C {
+    void m() {
+        try { }
+        catch (var e) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        "expected `var` catch parameter to report an unresolved type; got {diags:?}"
+    );
+}
