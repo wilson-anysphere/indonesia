@@ -7,7 +7,7 @@ use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::queries::HirDatabase;
 use nova_resolve::{
-    BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
+    BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult, ScopeKind,
 };
 
 use crate::edit::{FileId, TextRange};
@@ -226,15 +226,14 @@ impl RefactorJavaDatabase {
                 }
             }
 
-            // Locals live in block scopes. We intern each block scope exactly once (in allocation
-            // order) so global scope IDs are deterministic.
-            let mut body_cache: HashMap<BodyOwner, Arc<hir::Body>> = HashMap::new();
-            for &block_scope in scope_result.block_scopes.iter() {
-                let scope = scope_interner.intern(*file_id, block_scope);
-                let data = scope_result.scopes.scope(block_scope);
-                for res in data.values().values() {
-                    let Resolution::Local(local_ref) = res else {
-                        continue;
+        // Locals live in block scopes. We intern each block scope exactly once (in allocation
+        // order) so global scope IDs are deterministic.
+        let mut body_cache: HashMap<BodyOwner, Arc<hir::Body>> = HashMap::new();
+        for &block_scope in scope_result.block_scopes.iter() {
+            let data = scope_result.scopes.scope(block_scope);
+            for res in data.values().values() {
+                let Resolution::Local(local_ref) = res else {
+                    continue;
                     };
 
                     let body = body_cache
@@ -245,6 +244,20 @@ impl RefactorJavaDatabase {
                             BodyOwner::Initializer(i) => snap.hir_initializer_body(i),
                         });
                     let local = &body.locals[local_ref.local];
+
+                    // For locals introduced by `let` statements, `nova-resolve` models Java's
+                    // order-sensitive scoping by threading a chain of nested scopes through the
+                    // block. This means a later local lives in a *child* scope, and is therefore
+                    // not visible when checking the original local's declaration scope. For
+                    // refactoring conflict checks (e.g. renaming `foo` to `bar` when `bar` is
+                    // declared later in the same block), we want a scope that represents the
+                    // full lexical region where the local is visible.
+                    //
+                    // We approximate this by using the scope at the end of the enclosing block
+                    // statement (i.e. the scope of the block's final statement), which will have
+                    // later locals in-scope via the parent chain and/or its own entries.
+                    let scope_id = refactor_local_scope(&scope_result, body.as_ref(), block_scope);
+                    let scope = scope_interner.intern(*file_id, scope_id);
 
                     candidates.push(SymbolCandidate {
                         key: ResolutionKey::Local(*local_ref),
@@ -385,6 +398,45 @@ impl RefactorJavaDatabase {
     fn decode_scope(&self, scope: u32) -> Option<(DbFileId, nova_resolve::ScopeId)> {
         self.scope_interner.lookup(scope)
     }
+}
+
+fn refactor_local_scope(
+    scope_result: &ScopeBuildResult,
+    body: &hir::Body,
+    local_scope: nova_resolve::ScopeId,
+) -> nova_resolve::ScopeId {
+    let is_let_scope = matches!(
+        scope_result.scopes.scope(local_scope).kind(),
+        ScopeKind::Block { stmt, .. } if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. })
+    );
+
+    if !is_let_scope {
+        return local_scope;
+    }
+
+    let mut current = Some(local_scope);
+    while let Some(scope_id) = current {
+        let ScopeKind::Block { stmt, .. } = scope_result.scopes.scope(scope_id).kind() else {
+            current = scope_result.scopes.scope(scope_id).parent();
+            continue;
+        };
+        let hir::Stmt::Block { statements, .. } = &body.stmts[*stmt] else {
+            current = scope_result.scopes.scope(scope_id).parent();
+            continue;
+        };
+
+        if let Some(last_stmt) = statements.last() {
+            return scope_result
+                .stmt_scopes
+                .get(last_stmt)
+                .copied()
+                .unwrap_or(scope_id);
+        }
+
+        return scope_id;
+    }
+
+    local_scope
 }
 
 impl RefactorDatabase for RefactorJavaDatabase {

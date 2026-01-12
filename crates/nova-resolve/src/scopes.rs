@@ -445,14 +445,7 @@ impl<'a> ScopeBuilder<'a> {
     ) -> ScopeId {
         match &body.stmts[stmt_id] {
             hir::Stmt::Block { statements, .. } => {
-                let block_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: stmt_id,
-                    },
-                );
-                self.block_scopes.push(block_scope);
+                let block_scope = self.alloc_block_scope(parent, owner, stmt_id);
                 self.stmt_scopes.insert(stmt_id, block_scope);
 
                 let mut current_scope = block_scope;
@@ -467,13 +460,7 @@ impl<'a> ScopeBuilder<'a> {
                 local, initializer, ..
             } => {
                 // Java: a local variable is in scope within its own initializer.
-                let let_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: stmt_id,
-                    },
-                );
+                let let_scope = self.alloc_block_scope(parent, owner, stmt_id);
                 self.stmt_scopes.insert(stmt_id, let_scope);
                 let local_data = &body.locals[*local];
                 self.scopes[let_scope].values.insert(
@@ -514,18 +501,11 @@ impl<'a> ScopeBuilder<'a> {
 
                 // Ensure any locals introduced by malformed/unsupported statements do not leak
                 // into the parent scope.
-                let then_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: *then_branch,
-                    },
-                );
+                let then_scope = self.alloc_block_scope(parent, owner, *then_branch);
                 self.build_stmt_scopes(then_scope, owner, body, *then_branch);
 
                 if let Some(stmt) = else_branch {
-                    let else_scope =
-                        self.alloc_scope(Some(parent), ScopeKind::Block { owner, stmt: *stmt });
+                    let else_scope = self.alloc_block_scope(parent, owner, *stmt);
                     self.build_stmt_scopes(else_scope, owner, body, *stmt);
                 }
 
@@ -539,13 +519,7 @@ impl<'a> ScopeBuilder<'a> {
                 self.stmt_scopes.insert(stmt_id, parent);
                 self.record_expr_scopes(parent, owner, body, *condition);
 
-                let loop_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: *loop_body,
-                    },
-                );
+                let loop_scope = self.alloc_block_scope(parent, owner, *loop_body);
                 self.build_stmt_scopes(loop_scope, owner, body, *loop_body);
                 parent
             }
@@ -558,13 +532,7 @@ impl<'a> ScopeBuilder<'a> {
             } => {
                 // The `for` init variables are scoped to the entire `for` statement (condition,
                 // update and body), but must not leak outside the loop.
-                let for_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: stmt_id,
-                    },
-                );
+                let for_scope = self.alloc_block_scope(parent, owner, stmt_id);
                 self.stmt_scopes.insert(stmt_id, for_scope);
 
                 let mut current_scope = for_scope;
@@ -581,13 +549,7 @@ impl<'a> ScopeBuilder<'a> {
 
                 // The loop body can declare additional locals; keep them nested under the scope
                 // produced by the init statements so they do not appear in the header expressions.
-                let body_scope = self.alloc_scope(
-                    Some(current_scope),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: *loop_body,
-                    },
-                );
+                let body_scope = self.alloc_block_scope(current_scope, owner, *loop_body);
                 self.build_stmt_scopes(body_scope, owner, body, *loop_body);
                 parent
             }
@@ -601,13 +563,7 @@ impl<'a> ScopeBuilder<'a> {
                 // The foreach variable is not in scope for the iterable expression.
                 self.record_expr_scopes(parent, owner, body, *iterable);
 
-                let loop_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: stmt_id,
-                    },
-                );
+                let loop_scope = self.alloc_block_scope(parent, owner, stmt_id);
 
                 let local_data = &body.locals[*local];
                 self.scopes[loop_scope].values.insert(
@@ -629,13 +585,7 @@ impl<'a> ScopeBuilder<'a> {
                 self.stmt_scopes.insert(stmt_id, parent);
                 self.record_expr_scopes(parent, owner, body, *selector);
 
-                let switch_scope = self.alloc_scope(
-                    Some(parent),
-                    ScopeKind::Block {
-                        owner,
-                        stmt: *switch_body,
-                    },
-                );
+                let switch_scope = self.alloc_block_scope(parent, owner, *switch_body);
                 self.build_stmt_scopes(switch_scope, owner, body, *switch_body);
                 parent
             }
@@ -651,13 +601,7 @@ impl<'a> ScopeBuilder<'a> {
                 self.build_stmt_scopes(parent, owner, body, *try_body);
 
                 for clause in catches {
-                    let catch_scope = self.alloc_scope(
-                        Some(parent),
-                        ScopeKind::Block {
-                            owner,
-                            stmt: clause.body,
-                        },
-                    );
+                    let catch_scope = self.alloc_block_scope(parent, owner, clause.body);
 
                     let local_data = &body.locals[clause.param];
                     self.scopes[catch_scope].values.insert(
@@ -814,6 +758,17 @@ impl<'a> ScopeBuilder<'a> {
             types: HashMap::new(),
         });
         id
+    }
+
+    fn alloc_block_scope(
+        &mut self,
+        parent: ScopeId,
+        owner: BodyOwner,
+        stmt: hir::StmtId,
+    ) -> ScopeId {
+        let scope = self.alloc_scope(Some(parent), ScopeKind::Block { owner, stmt });
+        self.block_scopes.push(scope);
+        scope
     }
 }
 
