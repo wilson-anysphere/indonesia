@@ -101,6 +101,9 @@ fn bench_fuzzy_score(c: &mut Criterion) {
     for (id, case) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(id), &case, |b, case| {
             let mut matcher = FuzzyMatcher::new(case.query);
+            // Warm up internal buffers so the benchmark primarily measures the scoring work,
+            // not one-time allocations.
+            black_box(matcher.score(case.candidate));
             b.iter(|| black_box(matcher.score(black_box(case.candidate))))
         });
     }
@@ -146,6 +149,7 @@ fn bench_trigram_candidates(c: &mut Criterion) {
     for (id, query) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
             let mut scratch = TrigramCandidateScratch::default();
+            // Warm up scratch buffer capacities outside the timed loop.
             black_box(index.candidates_with_scratch(*query, &mut scratch).len());
             b.iter(|| {
                 let candidates = index.candidates_with_scratch(black_box(*query), &mut scratch);
