@@ -1450,6 +1450,41 @@ pub fn file_diagnostics_with_semantic_db(
         }
     }
 
+    // 9) MapStruct diagnostics (best-effort, filesystem-based).
+    if is_java
+        && (text.contains("@Mapper")
+            || text.contains("@org.mapstruct.Mapper")
+            || text.contains("@Mapping")
+            || text.contains("org.mapstruct"))
+    {
+        if let Some(path) = db.file_path(file) {
+            let root = crate::framework_cache::project_root_for_path(path);
+            let has_mapstruct_dependency = crate::framework_cache::project_config(&root)
+                .filter(|cfg| cfg.build_system != nova_project::BuildSystem::Simple)
+                .map(|cfg| {
+                    cfg.dependencies.iter().any(|dep| {
+                        dep.group_id == "org.mapstruct"
+                            && matches!(
+                                dep.artifact_id.as_str(),
+                                "mapstruct" | "mapstruct-processor"
+                            )
+                    })
+                })
+                // Default to `true` when build metadata is unknown; we don't want to emit a noisy
+                // missing-dependency diagnostic in that case.
+                .unwrap_or(true);
+
+            if let Ok(mapstruct_diags) = nova_framework_mapstruct::diagnostics_for_file(
+                &root,
+                path,
+                db.file_content(file),
+                has_mapstruct_dependency,
+            ) {
+                diagnostics.extend(mapstruct_diags);
+            }
+        }
+    }
+
     sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
