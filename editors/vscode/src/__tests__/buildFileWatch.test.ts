@@ -214,4 +214,61 @@ describe('buildFileWatch', () => {
 
     vi.useRealTimers();
   });
+
+  it('does not auto-reload for changes under node_modules', async () => {
+    vi.useFakeTimers();
+
+    const watchers: MockFileSystemWatcher[] = [];
+
+    const workspaceFolder = {
+      uri: { fsPath: '/workspace', toString: () => 'file:///workspace' },
+      name: 'workspace',
+      index: 0,
+    };
+
+    const ignoredUri = {
+      fsPath: '/workspace/node_modules/some/pkg/build.gradle',
+      toString: () => 'file:///workspace/node_modules/some/pkg/build.gradle',
+    };
+
+    const output = { appendLine: vi.fn() };
+    const request = vi.fn(async () => undefined);
+    const executeCommand = vi.fn(async () => undefined);
+
+    vi.doMock(
+      'vscode',
+      () => ({
+        workspace: {
+          getConfiguration: () => ({ get: (_key: string, defaultValue: unknown) => defaultValue }),
+          getWorkspaceFolder: () => workspaceFolder,
+          createFileSystemWatcher: () => {
+            const watcher = new MockFileSystemWatcher();
+            watchers.push(watcher);
+            return watcher;
+          },
+        },
+        commands: { executeCommand },
+        Disposable: MockDisposable,
+      }),
+      { virtual: true },
+    );
+
+    const { registerNovaBuildFileWatchers } = await import('../buildFileWatch');
+
+    const context = { subscriptions: [] as unknown[] };
+
+    registerNovaBuildFileWatchers(context as never, request as never, {
+      output: output as never,
+      formatError: (err: unknown) => String(err),
+      isMethodNotFoundError: () => false,
+    });
+
+    watchers[0].fireDidChange(ignoredUri);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
 });

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import { getNovaBuildFileGlobPatterns } from './fileWatchers';
 
 export type NovaRequestOptions = {
@@ -128,6 +129,26 @@ export function registerNovaBuildFileWatchers(
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     if (!folder) {
       return;
+    }
+
+    // Avoid noisy reload loops from build outputs or vendored directories (e.g. node_modules, bazel-*).
+    // Nova's own build-file fingerprinting intentionally skips these trees.
+    const rel = path.relative(folder.uri.fsPath, uri.fsPath);
+    const normalizedRel = rel.replace(/\\/g, '/');
+    if (normalizedRel === '.nova/config.toml' || normalizedRel === '.nova/apt-cache/generated-roots.json') {
+      // Allowlisted `.nova/` inputs that genuinely affect project configuration.
+    } else {
+      const segments = normalizedRel.split('/').filter(Boolean);
+      const ignoredDirNames = new Set(['.git', '.gradle', 'build', 'target', '.nova', '.idea', 'node_modules']);
+      if (segments.length > 0 && segments[0].startsWith('bazel-')) {
+        return;
+      }
+      // Ignore if any directory segment matches an ignored name.
+      for (const segment of segments.slice(0, -1)) {
+        if (ignoredDirNames.has(segment)) {
+          return;
+        }
+      }
     }
     scheduleReload(folder);
   };
