@@ -214,7 +214,9 @@ stable_harness_checks=(
   "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
   # `nova-testing` docs instruct updating fixtures by running the schema harness by name.
   "crates/nova-testing/tests:crates/nova-testing/tests/schema_json.rs:move additional files into crates/nova-testing/tests/suite/ and add them to crates/nova-testing/tests/suite/mod.rs"
-  "crates/nova-workspace/tests:crates/nova-workspace/tests/workspace_events.rs:move additional files into crates/nova-workspace/tests/suite/ and add them to crates/nova-workspace/tests/suite/mod.rs"
+  # The workspace integration tests have historically used a few harness names; allow either to
+  # keep `--test <harness>` entrypoints stable across refactors.
+  "crates/nova-workspace/tests:crates/nova-workspace/tests/workspace_events.rs|crates/nova-workspace/tests/harness.rs:move additional files into crates/nova-workspace/tests/suite/ and add them to crates/nova-workspace/tests/suite/mod.rs"
   "crates/nova-resolve/tests:crates/nova-resolve/tests/resolve.rs:move additional files into crates/nova-resolve/tests/suite/ and add them to crates/nova-resolve/tests/suite/mod.rs"
 )
 
@@ -226,7 +228,16 @@ for check in "${stable_harness_checks[@]}"; do
     root_tests+=("$file")
   done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
 
-  if [[ ${#root_tests[@]} -ne 1 || "${root_tests[0]}" != "${expected_file}" ]]; then
+  expected_ok=false
+  IFS="|" read -r -a expected_files <<<"${expected_file}"
+  for expected in "${expected_files[@]}"; do
+    if [[ "${root_tests[0]:-}" == "${expected}" ]]; then
+      expected_ok=true
+      break
+    fi
+  done
+
+  if [[ ${#root_tests[@]} -ne 1 || "${expected_ok}" != "true" ]]; then
     echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
