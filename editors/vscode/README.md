@@ -16,7 +16,7 @@ Nova also manages the `nova-dap` debug adapter binary. When you start a Nova deb
 
 ## Multi-root workspaces
 
-Nova supports VS Code multi-root workspaces by running one `nova-lsp` instance per workspace folder.
+Nova supports VS Code multi-root workspaces and routes most Nova commands/requests to a **target workspace folder**.
 
 - Settings that accept paths (like `nova.server.path`, `nova.dap.path`, and `nova.lsp.configPath`) support `~`, `${workspaceFolder}`, and relative paths. `${workspaceFolder}` and relative paths are resolved against the **target workspace folder** (the workspace folder the command/request is routed to).
 - These path settings are **resource-scoped**, so you can configure different values per workspace folder in a multi-root workspace.
