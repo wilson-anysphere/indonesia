@@ -290,7 +290,7 @@ pub enum Type {
     
     /// Reference to a class/interface with type arguments
     Class {
-        def: TypeId,
+        def: ClassId,
         args: Vec<Type>,
     },
     
@@ -322,6 +322,16 @@ pub enum WildcardBound {
     Super(Box<Type>),
 }
 ```
+
+**Implementation note (current repo):** the real implementation lives in
+[`crates/nova-types/src/lib.rs`](../crates/nova-types/src/lib.rs) as `nova_types::Type`.
+It differs slightly from the simplified sketch above:
+
+- `Type::Class` is a tuple variant: `Type::Class(ClassType { def: ClassId, args: Vec<Type> })`.
+- There are additional variants used by IDE/error recovery (`Void`, `Named`, `VirtualInner`, `Unknown`, etc.).
+- Correctness depends on `ClassId` being stable and project-scoped across queries/bodies; see:
+  - [`ADR 0011 — Stable ClassId and project-level type environments`](adr/0011-stable-classid-and-project-type-environments.md)
+  - [`ADR 0012 — ClassId stability and interning policy`](adr/0012-classid-interning.md)
 
 ### Subtyping
 
