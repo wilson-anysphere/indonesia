@@ -35,6 +35,7 @@ mod jpa_intel;
 mod lombok_intel;
 mod mapstruct_completions;
 mod mapstruct_diagnostics;
+mod mapstruct_false_positives;
 mod mapstruct_file_diagnostics;
 mod mapstruct_goto_definition;
 mod mapstruct_navigation;
