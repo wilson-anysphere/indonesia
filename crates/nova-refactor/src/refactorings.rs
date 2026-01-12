@@ -979,6 +979,12 @@ pub fn inline_variable(
                 end += 2;
             } else if tail.starts_with('\n') || tail.starts_with('\r') {
                 end += 1;
+            } else if let Some(comment_end) = statement_end_including_trailing_inline_comment(text, end)
+            {
+                // When deleting a mid-line statement (e.g. after `case 1:`), also delete any trailing
+                // inline comments (`// ...` or `/* ... */`) that occur before the line break. This
+                // avoids leaving a dangling comment behind after removing the statement.
+                end = comment_end;
             } else if matches!(text.as_bytes().get(end), Some(b' ')) {
                 // If there is a single space after the statement and another token follows on the
                 // same line, delete that one space (e.g. `; System.out...`).
@@ -2572,6 +2578,80 @@ fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usiz
     offset
 }
 
+fn statement_end_including_trailing_inline_comment(text: &str, stmt_end: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut cursor = stmt_end.min(bytes.len());
+    let line_end = line_break_start(text, cursor);
+    let mut end = stmt_end;
+    let mut saw_comment = false;
+
+    loop {
+        while cursor < line_end && matches!(bytes[cursor], b' ' | b'\t') {
+            cursor += 1;
+        }
+
+        if cursor + 1 >= line_end {
+            break;
+        }
+
+        if bytes[cursor] == b'/' && bytes[cursor + 1] == b'/' {
+            // Line comment: delete to (but not including) the line break.
+            saw_comment = true;
+            end = line_end;
+            break;
+        }
+
+        if bytes[cursor] == b'/' && bytes[cursor + 1] == b'*' {
+            let mut i = cursor + 2;
+            let mut found = None;
+            while i + 1 < line_end {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    found = Some(i + 2);
+                    break;
+                }
+                i += 1;
+            }
+            let Some(comment_end) = found else {
+                break;
+            };
+            saw_comment = true;
+            end = comment_end;
+            cursor = comment_end;
+            continue;
+        }
+
+        break;
+    }
+
+    if !saw_comment {
+        return None;
+    }
+
+    // If the trailing comment reached the end of the line (modulo whitespace), also delete the
+    // remaining whitespace so we don't leave a whitespace-only line tail behind.
+    let mut i = end.min(bytes.len());
+    while i < line_end && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
+    }
+    if i == line_end {
+        end = line_end;
+    }
+
+    Some(end)
+}
+
+fn line_break_start(text: &str, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut i = offset.min(bytes.len());
+    while i < bytes.len() {
+        if bytes[i] == b'\n' || bytes[i] == b'\r' {
+            return i;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
 fn find_innermost_statement_containing_range(
     root: &nova_syntax::SyntaxNode,
     range: TextRange,
@@ -2640,7 +2720,6 @@ fn check_side_effectful_inline_order(
         _ => Err(RefactorError::InlineSideEffects),
     }
 }
-
 #[derive(Clone, Debug)]
 struct ImportDecl {
     is_static: bool,

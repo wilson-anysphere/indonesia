@@ -2671,6 +2671,90 @@ fn inline_variable_in_switch_case_label_declaration_at_eol_deletes_newline_crlf(
 }
 
 #[test]
+fn inline_variable_mid_line_switch_case_declaration_removes_line_comment() {
+    let file = FileId::new("C.java");
+    let src = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1: int a = 1 + 2; // temp
+              System.out.println(a);
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        !after.contains("// temp"),
+        "expected trailing line comment to be deleted with declaration: {after}"
+    );
+    assert!(
+        after.contains("case 1:"),
+        "expected switch case label to remain after inlining: {after}"
+    );
+    assert!(
+        after.contains("System.out.println((1 + 2));"),
+        "expected initializer to be inlined into usage: {after}"
+    );
+}
+
+#[test]
+fn inline_variable_mid_line_switch_case_declaration_removes_block_comment() {
+    let file = FileId::new("C.java");
+    let src = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1: int a = 1 + 2; /* temp */
+              System.out.println(a);
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        !after.contains("/* temp */"),
+        "expected trailing block comment to be deleted with declaration: {after}"
+    );
+    assert!(
+        after.contains("case 1:"),
+        "expected switch case label to remain after inlining: {after}"
+    );
+    assert!(
+        after.contains("System.out.println((1 + 2));"),
+        "expected initializer to be inlined into usage: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cleanly() {
     let file = FileId::new("Test.java");
     let src = r#"class C {
