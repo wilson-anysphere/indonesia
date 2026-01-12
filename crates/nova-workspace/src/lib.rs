@@ -1336,6 +1336,20 @@ mod fuzzy_symbol_tests {
         }
     }
 
+    fn indexed_qualified(
+        qualified_name: &str,
+        container_name: Option<&str>,
+        location: SymbolLocation,
+    ) -> nova_index::IndexedSymbol {
+        nova_index::IndexedSymbol {
+            qualified_name: qualified_name.to_string(),
+            kind: nova_index::IndexSymbolKind::Class,
+            container_name: container_name.map(|s| s.to_string()),
+            location,
+            ast_id: 0,
+        }
+    }
+
     #[test]
     fn workspace_symbol_search_uses_trigram_candidate_filtering() {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
@@ -1401,6 +1415,66 @@ mod fuzzy_symbol_tests {
         let (results, _stats) =
             fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "fb", 10, true);
         assert_eq!(results[0].name, "FooBar");
+    }
+
+    #[test]
+    fn workspace_symbol_search_query_returns_duplicates_as_distinct_definitions() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
+        let mut symbols = nova_index::SymbolIndex::default();
+
+        symbols.insert(
+            "Dup",
+            indexed_qualified(
+                "com.foo.Dup",
+                Some("com.foo"),
+                SymbolLocation {
+                    file: "com/foo/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
+        );
+        symbols.insert(
+            "Dup",
+            indexed_qualified(
+                "com.bar.Dup",
+                Some("com.bar"),
+                SymbolLocation {
+                    file: "com/bar/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
+        );
+
+        let (results, _stats) =
+            fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "Dup", 10, true);
+
+        assert_eq!(results.len(), 2);
+
+        let mut qualified_names = results
+            .iter()
+            .map(|sym| sym.qualified_name.clone())
+            .collect::<Vec<_>>();
+        qualified_names.sort();
+        assert_eq!(
+            qualified_names,
+            vec!["com.bar.Dup".to_string(), "com.foo.Dup".to_string()]
+        );
+
+        let mut files = results
+            .iter()
+            .map(|sym| sym.location.file.clone())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                "com/bar/Dup.java".to_string(),
+                "com/foo/Dup.java".to_string()
+            ]
+        );
     }
 
     #[test]
