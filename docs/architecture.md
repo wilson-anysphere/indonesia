@@ -83,22 +83,24 @@ Notable “delta” areas to be aware of:
 
 - **Incremental engine coverage (ADR 0001):**
   - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
-    - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, nova_vfs::Document>` for open documents.
-    - Refactorings use a Salsa-backed semantic snapshot (`nova_refactor::RefactorJavaDatabase`) and can run against open-document overlays (see `crates/nova-lsp/src/refactor_workspace.rs`), but the stdio server still maintains its own document store rather than using the full `nova-vfs` overlay model.
+    - `crates/nova-lsp/src/main.rs` tracks open documents in `ServerState::analysis: AnalysisState`, which wraps a `nova_vfs::Vfs<LocalFs>` overlay (plus small `HashMap` caches for file text/paths).
+    - Refactorings use a Salsa-backed semantic snapshot (`nova_refactor::RefactorJavaDatabase`) and can run against open-document overlays extracted from the VFS (see `ServerState::refactor_snapshot` in `crates/nova-lsp/src/main.rs` and `crates/nova-lsp/src/refactor_workspace.rs`).
     - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
 - **Syntax tree usage (ADR 0002):**
   - `crates/nova-syntax` provides both a token-level green tree (`parse`) and a rowan-based parser (`parse_java`).
   - Several subsystems still use non-rowan parsing approaches (e.g. `crates/nova-framework-mapstruct/` uses Tree-sitter; `crates/nova-framework-web/` and `crates/nova-workspace/` use regex/text scans).
 - **LSP transport framework (ADR 0003):**
-  - ADR 0003 selects `lsp-server`, but the current `nova-lsp` binary is a hand-rolled stdio JSON-RPC loop in `crates/nova-lsp/src/main.rs` + `crates/nova-lsp/src/codec.rs`.
-  - The `nova-lsp` library crate already exposes transport-agnostic dispatch helpers (`crates/nova-lsp/src/lib.rs`), but the binary does not yet use `lsp-server`.
+  - The shipped `nova-lsp` binary uses `lsp-server` for stdio framing and the `initialize` handshake (`lsp_server::Connection::stdio()` / `initialize_start` / `initialize_finish` in `crates/nova-lsp/src/main.rs`).
+  - Request/notification handling is still Nova-owned: a custom router for `$/cancelRequest` + a manual `match` dispatch on method strings lives in `crates/nova-lsp/src/main.rs` (rather than a higher-level framework).
 - **Persistence formats (ADR 0005):**
   - `rkyv` + validation is implemented in `crates/nova-storage/` and used by some persisted artifacts (e.g. dependency bundles in `crates/nova-deps-cache/`).
   - Some persistence remains serde/bincode-based (e.g. parts of classpath caching in `crates/nova-classpath/`), and not all editor-facing schemas are versioned yet.
 - **URIs + VFS model (ADR 0006):**
-  - `crates/nova-vfs/` has archive path types + overlay support. The current `nova-lsp` stdio server only uses `nova_vfs::Document`/`ContentChange` for open-document tracking; it does not yet use the full `Vfs` model for canonical archive/virtual document URIs.
-  - Virtual-document schemes exist in pieces (e.g. `crates/nova-decompile` defines `nova-decompile:`), but there is not yet a single canonical LSP-facing URI scheme for all virtual documents/archives.
+  - `crates/nova-vfs/` has archive path types + overlay support, and the current `nova-lsp` stdio server uses a `nova_vfs::Vfs<LocalFs>` overlay for open documents (`AnalysisState` in `crates/nova-lsp/src/main.rs`).
+  - Some LSP-facing features still assume `file:` URIs and/or legacy schemes:
+    - `crates/nova-lsp/src/refactor_workspace.rs` requires `file://` URIs for project-root discovery.
+    - Virtual decompiled documents are still primarily exposed via the legacy `nova-decompile:` scheme (`crates/nova-lsp/src/decompile.rs`), even though ADR0006 defines a canonical `nova:///decompiled/...` form.
 - **Distributed mode (docs/16-distributed-mode.md):**
   - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
 - **Protocol extensions:**
-  - Custom `nova/*` methods exist (mostly implemented under `crates/nova-lsp/src/extensions/`), but the server does not currently advertise them in `initialize.capabilities.experimental`; clients must gate via “optimistic call + fallback” (see [`protocol-extensions.md`](protocol-extensions.md)).
+  - Custom `nova/*` methods exist (mostly implemented under `crates/nova-lsp/src/extensions/`) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
