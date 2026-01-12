@@ -980,6 +980,64 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
 }
 
 #[test]
+fn type_use_annotation_missing_type_is_not_diagnosed_without_base_span() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let text = "List<@Missing String>";
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        text,
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn type_use_annotation_missing_type_is_not_diagnosed_when_base_span_len_mismatched() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let text = "List<@MissingString>";
+    // `TypeRef.text` is often whitespace-stripped. If callers pass a span derived from the
+    // original source, its length will not match the stripped text and annotation diagnostics
+    // should be skipped (to avoid mis-anchored spans).
+    let base_span = Span::new(0, text.len() + 1);
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        text,
+        Some(base_span),
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn type_use_annotations_on_arrays_are_ignored() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
