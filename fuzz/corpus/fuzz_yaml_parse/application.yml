@@ -1,0 +1,18 @@
+# Typical Spring Boot YAML configuration.
+server:
+  port: 8080 # HTTP port
+
+spring:
+  main:
+    banner-mode: console
+  datasource:
+    url: jdbc:h2:mem:test
+    username: sa
+    password: ""
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+

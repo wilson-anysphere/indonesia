@@ -14,8 +14,10 @@ nova-config-metadata = { path = "../crates/nova-config-metadata" }
 nova-core = { path = "../crates/nova-core" }
 nova-format = { path = "../crates/nova-format" }
 nova-refactor = { path = "../crates/nova-refactor", optional = true }
+nova-properties = { path = "../crates/nova-properties" }
 nova-syntax = { path = "../crates/nova-syntax" }
 nova-testing = { path = "../crates/nova-testing" }
+nova-yaml = { path = "../crates/nova-yaml" }
 
 [features]
 refactor = ["dep:nova-refactor"]
@@ -104,6 +106,20 @@ test = false
 doc = false
 bench = false
 required-features = ["refactor"]
+
+[[bin]]
+name = "fuzz_yaml_parse"
+path = "fuzz_targets/fuzz_yaml_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_properties_parse"
+path = "fuzz_targets/fuzz_properties_parse.rs"
+test = false
+doc = false
+bench = false
 
 [workspace]
 members = ["."]

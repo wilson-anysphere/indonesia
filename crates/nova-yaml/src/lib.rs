@@ -75,9 +75,12 @@ pub fn parse(text: &str) -> YamlDocument {
             }
         }
 
-        if let Some(rest) = content.strip_prefix("-") {
+        if let Some(after_dash) = content.strip_prefix("-") {
             // Sequence item.
-            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+            let (rest, rest_offset) = match after_dash.strip_prefix(' ') {
+                Some(rest) => (rest, 2),
+                None => (after_dash, 1),
+            };
             let base_path = render_path(&stack);
             let idx = {
                 let key = (base_path.clone(), indent);
@@ -97,7 +100,7 @@ pub fn parse(text: &str) -> YamlDocument {
             }
 
             if let Some((k, v, key_range, value_range)) =
-                parse_mapping_entry(rest, line_start + indent + 2)
+                parse_mapping_entry(rest, line_start + indent + rest_offset)
             {
                 let full_key = join_path_with(&stack[..stack.len() - 1], Segment::Index(idx), &k);
                 entries.push(YamlEntry {
@@ -114,7 +117,7 @@ pub fn parse(text: &str) -> YamlDocument {
                     continue;
                 }
                 let full_key = format!("{}[{}]", base_path, idx);
-                let value_start = (line_start + indent + 1)
+                let value_start = (line_start + indent + rest_offset)
                     + rest.as_bytes().iter().take_while(|b| **b == b' ').count();
                 let value_end = value_start + scalar_value.len();
                 entries.push(YamlEntry {

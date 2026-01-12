@@ -1,0 +1,14 @@
+# Nested maps + sequences (common in Spring Cloud Gateway config).
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: route1
+          uri: http://example.com
+          predicates:
+            - Path=/foo/**
+        - id: route2
+          uri: https://example.org
+          predicates:
+            - Path=/bar/**
+
