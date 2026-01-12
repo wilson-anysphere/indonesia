@@ -158,6 +158,80 @@ class C {
 }
 
 #[test]
+fn demand_type_of_expr_does_not_report_unrelated_type_mismatch_diagnostics() {
+    let src = r#"
+class C {
+    String m() {
+        int y = "no";
+        return "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let root = &body.stmts[body.root];
+    let return_expr = match root {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected a return expression"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+    let demand_res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: return_expr,
+        },
+    );
+    assert_eq!(
+        format_type(&*demand_res.env, &demand_res.ty),
+        "String",
+        "expected demand-driven inference to resolve the substring call return type"
+    );
+    assert!(
+        demand_res
+            .diagnostics
+            .iter()
+            .all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics from demand-driven query; got {:?}",
+        demand_res.diagnostics
+    );
+
+    let stats = db.query_stats();
+    assert!(
+        stats.by_query.get("typeck_body").is_none(),
+        "type_of_expr_demand_result should not execute typeck_body; stats: {:?}",
+        stats.by_query.get("typeck_body")
+    );
+
+    // Full diagnostics should still report the unrelated type mismatch.
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected full type checking to report a type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn demand_reports_unresolved_type_for_catch_var() {
     let src = r#"
 class C {
