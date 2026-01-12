@@ -13,7 +13,7 @@ fn write(path: &Path, contents: &str) {
 }
 
 #[test]
-fn maven_project_synthesizes_missing_dependency_jars_on_classpath() {
+fn maven_project_omits_missing_dependency_jars_from_classpath() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -56,23 +56,23 @@ fn maven_project_synthesizes_missing_dependency_jars_on_classpath() {
     let config = load_project_with_options(root, &options).expect("load maven project");
 
     assert!(
-        config
+        !config
             .classpath
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "expected missing jar path to be synthesized onto classpath"
+        "missing jar should not be added to classpath"
     );
     assert!(
         !config
             .module_path
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to module-path for non-JPMS projects"
+        "missing jar should not be added to module-path"
     );
 }
 
 #[test]
-fn maven_workspace_model_synthesizes_missing_dependency_jars_for_modules() {
+fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -117,11 +117,11 @@ fn maven_workspace_model_synthesizes_missing_dependency_jars_for_modules() {
 
     for module in &model.modules {
         assert!(
-            module
+            !module
                 .classpath
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "expected missing jar path to be synthesized onto module classpath ({})",
+            "missing jar should not be added to module classpath ({})",
             module.id
         );
         assert!(
@@ -129,7 +129,7 @@ fn maven_workspace_model_synthesizes_missing_dependency_jars_for_modules() {
                 .module_path
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module-path for non-JPMS modules ({})",
+            "missing jar should not be added to module module-path ({})",
             module.id
         );
     }

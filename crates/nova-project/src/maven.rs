@@ -1938,14 +1938,7 @@ fn home_dir() -> Option<PathBuf> {
 fn exists_as_jar(path: &Path) -> bool {
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
-    //
-    // Nova also keeps missing jar paths on the classpath as placeholders so downstream systems can
-    // fetch/populate them later (see `tests/cases/maven_missing_jars.rs`).
-    //
-    // As a result, treat any path that *looks* like a jar by extension as a valid jar path.
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    path.is_file() || path.is_dir()
 }
 
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
@@ -2068,13 +2061,6 @@ fn resolve_snapshot_jar_file_name(
     } else {
         format!("{artifact_id}-{value}.jar")
     })
-}
-
-fn exists_as_jar(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
-        && path.is_file()
 }
 
 fn child_element<'a>(
