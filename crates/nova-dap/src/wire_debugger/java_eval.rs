@@ -917,7 +917,7 @@ fn format_stream_eval_compile_failure(
 
     let (stage, expr) =
         stream_eval_stage_and_expression(source, stage_exprs, terminal_expr, &diagnostics);
-    let javac_loc = parse_first_formatted_javac_location(&diagnostics);
+    let javac_loc = crate::javac::parse_first_formatted_javac_location(&diagnostics);
     let user_expr = terminal_expr
         .or_else(|| stage_exprs.last().map(|s| s.as_str()))
         .filter(|s| !s.trim().is_empty());
@@ -971,7 +971,8 @@ fn stream_eval_stage_and_expression<'a>(
     terminal_expr: Option<&'a str>,
     javac_output: &str,
 ) -> (StreamEvalStage, Option<&'a str>) {
-    let Some((line, _col)) = parse_first_formatted_javac_location(javac_output) else {
+    let Some((line, _col)) = crate::javac::parse_first_formatted_javac_location(javac_output)
+    else {
         return (StreamEvalStage::Unknown, None);
     };
 
@@ -987,26 +988,6 @@ fn stream_eval_stage_and_expression<'a>(
         ),
         StageDecl::Unknown => (StreamEvalStage::Unknown, None),
     }
-}
-
-fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> {
-    // `format_javac_failure` emits one diagnostic per line in the form:
-    // `<file>:<line>:<col>: <message>`
-    let line = output.lines().find(|l| !l.trim().is_empty())?;
-
-    // Important: the message itself can contain `:` (e.g. `incompatible types: cannot infer...`),
-    // so we *must not* split on `:` across the whole line. Instead split once on the first
-    // `": "` separator between `<file>:<line>:<col>:` and the message.
-    let (location, _message) = line.split_once(": ")?;
-
-    let mut parts = location.rsplitn(3, ':');
-    let col_s = parts.next()?.trim();
-    let line_s = parts.next()?.trim();
-    let _file = parts.next()?; // may contain ':' on Windows; rsplitn keeps it intact.
-
-    let line_no = line_s.parse::<usize>().ok()?;
-    let col_no = col_s.parse::<usize>().ok()?;
-    Some((line_no, col_no))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

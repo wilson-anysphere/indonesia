@@ -807,7 +807,24 @@ fn stream_debug_temp_dir() -> std::io::Result<PathBuf> {
 fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &str) -> String {
     let mut out = String::new();
     out.push_str("stream debug helper compilation failed\n");
-    out.push_str(&format!("Generated source: {}\n\n", source_path.display()));
+    out.push_str(&format!("Generated source: {}\n", source_path.display()));
+
+    if let Some((line, col)) = crate::javac::parse_first_formatted_javac_location(diagnostics) {
+        if let Ok(source) = std::fs::read_to_string(source_path) {
+            if let Some(src_line) = source.lines().nth(line.saturating_sub(1)) {
+                let mut preview = src_line.trim_end().to_string();
+                const MAX_PREVIEW_LEN: usize = 200;
+                if preview.len() > MAX_PREVIEW_LEN {
+                    preview.truncate(MAX_PREVIEW_LEN);
+                    preview.push('…');
+                }
+                out.push_str(&format!(
+                    "Generated code (line {line}, col {col}): {preview}\n"
+                ));
+            }
+        }
+    }
+    out.push('\n');
     out.push_str("Javac diagnostics:\n");
     out.push_str(diagnostics);
 
@@ -868,6 +885,7 @@ mod tests {
     use super::*;
 
     use std::time::Duration;
+    use std::{io::Write, path::PathBuf};
 
     use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
 
@@ -903,6 +921,51 @@ mod tests {
         assert!(
             message.contains("java.util.stream.Collectors"),
             "expected Collectors hint:\n{message}"
+        );
+    }
+
+    #[test]
+    fn stream_debug_compile_failure_includes_generated_source_snippet_when_available() {
+        let mut file = tempfile::Builder::new()
+            .prefix("NovaStreamDebugHelper-")
+            .suffix(".java")
+            .tempfile()
+            .unwrap();
+
+        // Make the failing statement land on line 10.
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "        return list.stream().collect(Collectors.toList());").unwrap();
+
+        let path: PathBuf = file.path().to_path_buf();
+
+        let raw_javac_stderr = format!(
+            "{}:10: error: cannot find symbol\n\
+        return list.stream().collect(Collectors.toList());\n\
+                                    ^\n\
+  symbol:   variable Collectors\n\
+  location: class NovaStreamDebugHelper\n\
+1 error\n",
+            path.display()
+        );
+
+        let diagnostics = crate::javac::format_javac_failure(&[], raw_javac_stderr.as_bytes());
+        let message = format_stream_debug_helper_compile_failure(&path, &diagnostics);
+
+        assert!(
+            message.contains("Generated code (line 10"),
+            "expected generated source snippet:\n{message}"
+        );
+        assert!(
+            message.contains("return list.stream().collect(Collectors.toList());"),
+            "expected snippet to contain the offending line:\n{message}"
         );
     }
 

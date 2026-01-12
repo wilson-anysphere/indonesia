@@ -571,6 +571,26 @@ pub(crate) fn format_javac_failure(stdout: &[u8], stderr: &[u8]) -> String {
     truncate_message(message, 8 * 1024)
 }
 
+pub(crate) fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> {
+    // `format_javac_failure` emits one diagnostic per line in the form:
+    // `<file>:<line>:<col>: <message>`
+    let line = output.lines().find(|l| !l.trim().is_empty())?;
+
+    // Important: the message itself can contain `:` (e.g. `incompatible types: cannot infer...`),
+    // so we *must not* split on `:` across the whole line. Instead split once on the first
+    // `": "` separator between `<file>:<line>:<col>:` and the message.
+    let (location, _message) = line.split_once(": ")?;
+
+    let mut parts = location.rsplitn(3, ':');
+    let col_s = parts.next()?.trim();
+    let line_s = parts.next()?.trim();
+    let _file = parts.next()?; // may contain ':' on Windows; rsplitn keeps it intact.
+
+    let line_no = line_s.parse::<usize>().ok()?;
+    let col_no = col_s.parse::<usize>().ok()?;
+    Some((line_no, col_no))
+}
+
 fn truncate_message(mut message: String, max_len: usize) -> String {
     if message.len() <= max_len {
         return message;
