@@ -453,6 +453,16 @@ fn span(token: &SyntaxToken) -> Span {
 }
 
 fn feature_message(level: JavaLanguageLevel, feature: JavaFeature) -> String {
+    // Java 8 permitted `_` as an identifier (with a warning about Java 9+).
+    // Java 9+ forbids it, and later Java versions re-introduce `_` in some positions as part of
+    // the "unnamed patterns and variables" feature.
+    //
+    // For Java 9–20 we want to mirror javac's diagnostic ("`_` is a keyword since Java 9")
+    // instead of producing a technically-true-but-misleading "requires Java 22+" message.
+    if feature == JavaFeature::UnnamedVariables && (9..=20).contains(&level.major) {
+        return "as of Java 9, `_` is a keyword, and may not be used as an identifier".to_string();
+    }
+
     match level.availability(feature) {
         FeatureAvailability::Stable => {
             // Only called for disabled features.

@@ -1685,6 +1685,27 @@ fn java8_allows_single_underscore_identifier() {
 }
 
 #[test]
+fn java17_rejects_single_underscore_identifier_with_java9_keyword_diagnostic() {
+    let input = "class Foo { void m() { int _ = 0; } }";
+
+    let java17 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_17,
+        },
+    );
+    assert_eq!(java17.result.errors, Vec::new());
+
+    assert_eq!(java17.diagnostics.len(), 1);
+    let diag = &java17.diagnostics[0];
+    assert_eq!(diag.code.as_ref(), "JAVA_FEATURE_UNNAMED_VARIABLES");
+    assert_eq!(
+        diag.message,
+        "as of Java 9, `_` is a keyword, and may not be used as an identifier"
+    );
+}
+
+#[test]
 fn feature_gate_unnamed_variables_applies_to_local_vars_and_catch_params() {
     let input = r#"
 class Foo {
