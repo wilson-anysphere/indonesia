@@ -63,6 +63,8 @@ Framework discovery is **on-demand**: click the refresh button in the view title
 
 This is intentionally manual because these discovery requests run under a small watchdog time budget; repeatedly refreshing (or refreshing automatically while you type) could otherwise time out or trigger Nova safe mode.
 
+When Nova is in safe mode, framework discovery requests are unavailable; the view will show a safe-mode message with a shortcut to **Nova: Generate Bug Report** (`nova.bugReport`).
+
 ## Build + Project Explorer
 
 Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project model up to date and surface build errors.
