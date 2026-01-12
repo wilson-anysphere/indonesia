@@ -9,6 +9,45 @@ pub(crate) fn main_source_roots_have_module_info(main_source_roots: &[PathBuf]) 
         .any(|root| root.join("module-info.java").is_file())
 }
 
+/// Best-effort JPMS module-path inference for a build-derived Java compile config.
+///
+/// This helper is used by build system integrations (Gradle/Maven) to derive a reasonable
+/// `module_path` from build-provided classpath data.
+///
+/// - `resolved_compile_classpath` is the (absolute) list of classpath entries (jars/directories).
+/// - `main_source_roots` is used as a heuristic to decide whether JPMS is in play (via
+///   `module-info.java`).
+/// - `main_output_dir` is excluded from the inferred module-path (output directories should live on
+///   the compile classpath, not the module-path).
+/// - `compiler_args_looks_like_jpms` forces module-path inference even if no `module-info.java` is
+///   present (e.g. when the build tool is configured with explicit `--module-path` flags).
+pub(crate) fn infer_module_path_for_compile_config(
+    resolved_compile_classpath: &[PathBuf],
+    main_source_roots: &[PathBuf],
+    main_output_dir: Option<&PathBuf>,
+    compiler_args_looks_like_jpms: bool,
+) -> Vec<PathBuf> {
+    let should_infer_module_path =
+        compiler_args_looks_like_jpms || main_source_roots_have_module_info(main_source_roots);
+    if !should_infer_module_path {
+        return Vec::new();
+    }
+
+    let mut module_path: Vec<PathBuf> = resolved_compile_classpath
+        .iter()
+        .filter(|entry| {
+            if main_output_dir.is_some_and(|out| out == *entry) {
+                return false;
+            }
+            stable_module_path_entry(entry)
+        })
+        .cloned()
+        .collect();
+
+    dedupe_paths(&mut module_path);
+    module_path
+}
+
 pub(crate) fn infer_module_path_entries(classpath: &[PathBuf]) -> Vec<PathBuf> {
     let mut module_path = Vec::new();
     for entry in classpath {
