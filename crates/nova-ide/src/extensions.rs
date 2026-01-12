@@ -1564,6 +1564,60 @@ fn has_build_metadata(db: &dyn nova_db::Database, file: nova_ext::FileId) -> boo
     config.build_system != nova_project::BuildSystem::Simple
 }
 
+fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
+    db: &dyn nova_db::Database,
+    file: nova_ext::FileId,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let Some(path) = db.file_path(file) else {
+        return Vec::new();
+    };
+
+    let text = db.file_content(file);
+    let maybe_mapstruct_file = text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct");
+    if !maybe_mapstruct_file {
+        return Vec::new();
+    }
+
+    // Only attempt MapStruct missing dependency diagnostics when we have build metadata and it
+    // definitively indicates MapStruct isn't present. For "Simple" projects (no build metadata),
+    // suppress noisy false positives and rely on the legacy framework cache behavior.
+    let root = crate::framework_cache::project_root_for_path(path);
+    let Some(config) = crate::framework_cache::project_config(&root) else {
+        return Vec::new();
+    };
+    if config.build_system == nova_project::BuildSystem::Simple {
+        return Vec::new();
+    }
+
+    let has_mapstruct_dependency = config.dependencies.iter().any(|dep| {
+        dep.group_id == "org.mapstruct"
+            && matches!(
+                dep.artifact_id.as_str(),
+                "mapstruct" | "mapstruct-processor"
+            )
+    });
+    if has_mapstruct_dependency {
+        return Vec::new();
+    }
+
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    match nova_framework_mapstruct::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
+    {
+        Ok(diags) => diags,
+        Err(_) => Vec::new(),
+    }
+}
+
 impl<DB: ?Sized> DiagnosticProvider<DB> for FrameworkDiagnosticProvider
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
@@ -1579,7 +1633,15 @@ where
     ) -> Vec<Diagnostic> {
         let db = ctx.db.as_ref().as_dyn_nova_db();
         if has_build_metadata(db, params.file) {
-            return Vec::new();
+            // In "real" build system projects, most framework intelligence should be sourced from
+            // analyzer-based providers. However, keep MapStruct missing dependency diagnostics
+            // available even when MapStruct is not on the classpath (and therefore would not be
+            // considered applicable by the analyzer registry).
+            return mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
+                db,
+                params.file,
+                &ctx.cancel,
+            );
         }
         crate::framework_cache::framework_diagnostics(db, params.file, &ctx.cancel)
     }
