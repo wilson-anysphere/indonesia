@@ -622,10 +622,12 @@ impl SalsaInputFootprint {
         content: &Arc<String>,
         prev_content: &Arc<String>,
         last_edit: Option<&TextEdit>,
+        content_len_override: Option<u64>,
     ) {
+        let content_len = content_len_override.unwrap_or(content.len() as u64);
         let next = FileTextBytes {
             content_ptr: Arc::as_ptr(content) as usize,
-            content_len: content.len() as u64,
+            content_len,
             prev_content_ptr: Arc::as_ptr(prev_content) as usize,
             prev_content_len: prev_content.len() as u64,
             last_edit_len: last_edit
@@ -1884,6 +1886,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             input_footprint: Arc::new(SalsaInputFootprint::default()),
             jdk_index_tracker: Arc::new(InputIndexTracker::new("jdk_index")),
             classpath_index_tracker: Arc::new(InputIndexTracker::new("classpath_index")),
+            open_docs: Arc::new(OpenDocuments::default()),
         };
 
         for project in projects {
@@ -1997,6 +2000,7 @@ pub struct Database {
     input_footprint: Arc<SalsaInputFootprint>,
     jdk_index_tracker: Arc<InputIndexTracker>,
     classpath_index_tracker: Arc<InputIndexTracker>,
+    open_docs: Arc<OpenDocuments>,
 }
 
 impl Default for Database {
@@ -2023,6 +2027,7 @@ impl Default for Database {
             input_footprint,
             jdk_index_tracker,
             classpath_index_tracker,
+            open_docs: Arc::new(OpenDocuments::default()),
         }
     }
 }
@@ -2211,9 +2216,18 @@ impl Database {
             .record(file, TrackedSalsaMemo::ParseJava, bytes);
     }
 
-    pub fn new_with_persistence(
+    pub fn new_with_persistence(project_root: impl AsRef<Path>, persistence: PersistenceConfig) -> Self {
+        Self::new_with_persistence_with_open_documents(
+            project_root,
+            persistence,
+            Arc::new(OpenDocuments::default()),
+        )
+    }
+
+    pub fn new_with_persistence_with_open_documents(
         project_root: impl AsRef<Path>,
         persistence: PersistenceConfig,
+        open_docs: Arc<OpenDocuments>,
     ) -> Self {
         let db = RootDatabase::new_with_persistence(project_root, persistence);
         let memo_footprint = db.memo_footprint.clone();
@@ -2237,6 +2251,7 @@ impl Database {
             input_footprint,
             jdk_index_tracker,
             classpath_index_tracker,
+            open_docs,
         }
     }
 
@@ -2365,8 +2380,13 @@ impl Database {
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
         use std::collections::hash_map::Entry;
 
+        let content_len_override = if self.open_docs.is_open(file) {
+            Some(0)
+        } else {
+            None
+        };
         self.input_footprint
-            .record_file_text(file, &content, &content, None);
+            .record_file_text(file, &content, &content, None, content_len_override);
 
         let init_dirty = {
             let mut inputs = self.inputs.lock();
@@ -2398,8 +2418,13 @@ impl Database {
         use std::collections::hash_map::Entry;
 
         let text = Arc::new(text.into());
+        let content_len_override = if self.open_docs.is_open(file) {
+            Some(0)
+        } else {
+            None
+        };
         self.input_footprint
-            .record_file_text(file, &text, &text, None);
+            .record_file_text(file, &text, &text, None, content_len_override);
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
         let (
@@ -2653,8 +2678,18 @@ impl Database {
             )
         };
 
-        self.input_footprint
-            .record_file_text(file, &new_text, &old_text, Some(&syntax_edit));
+        let content_len_override = if self.open_docs.is_open(file) {
+            Some(0)
+        } else {
+            None
+        };
+        self.input_footprint.record_file_text(
+            file,
+            &new_text,
+            &old_text,
+            Some(&syntax_edit),
+            content_len_override,
+        );
         if let Some((project, files)) = project_files_update.as_ref() {
             let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
             self.input_footprint

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 
@@ -57,14 +58,13 @@ impl std::error::Error for DocumentError {}
 /// An in-memory document with versioning and incremental edits.
 #[derive(Debug, Clone)]
 pub struct Document {
-    text: String,
+    text: Arc<String>,
     version: i32,
     line_offsets: Vec<usize>,
 }
 
 impl Document {
-    pub fn new(text: impl Into<String>, version: i32) -> Self {
-        let text = text.into();
+    pub fn new(text: Arc<String>, version: i32) -> Self {
         let line_offsets = compute_line_offsets(&text);
         Self {
             text,
@@ -73,8 +73,16 @@ impl Document {
         }
     }
 
+    pub fn new_string(text: impl Into<String>, version: i32) -> Self {
+        Self::new(Arc::new(text.into()), version)
+    }
+
     pub fn text(&self) -> &str {
-        &self.text
+        self.text.as_str()
+    }
+
+    pub fn text_arc(&self) -> Arc<String> {
+        Arc::clone(&self.text)
     }
 
     pub fn version(&self) -> i32 {
@@ -113,8 +121,9 @@ impl Document {
             return Err(DocumentError::InvalidRange);
         }
 
-        self.text.replace_range(start..end, &replacement);
-        self.line_offsets = compute_line_offsets(&self.text);
+        let text = Arc::make_mut(&mut self.text);
+        text.replace_range(start..end, &replacement);
+        self.line_offsets = compute_line_offsets(text);
 
         let start = u32::try_from(start).map_err(|_| DocumentError::InvalidRange)?;
         let end = u32::try_from(end).map_err(|_| DocumentError::InvalidRange)?;
@@ -220,7 +229,7 @@ mod tests {
 
     #[test]
     fn applies_incremental_edit() {
-        let mut doc = Document::new("hello world\n", 1);
+        let mut doc = Document::new_string("hello world\n", 1);
         let range = Range::new(Position::new(0, 6), Position::new(0, 11));
         let edits = doc
             .apply_changes(2, &[ContentChange::replace(range, "nova")])
@@ -238,7 +247,7 @@ mod tests {
 
     #[test]
     fn applies_full_replacement_and_normalizes_range() {
-        let mut doc = Document::new("a\nb\n", 1);
+        let mut doc = Document::new_string("a\nb\n", 1);
         let edits = doc.apply_changes(2, &[ContentChange::full("x")]).unwrap();
 
         assert_eq!(doc.text(), "x");
@@ -253,7 +262,7 @@ mod tests {
     #[test]
     fn utf16_positions_are_supported() {
         // U+10400 (DESERET CAPITAL LETTER LONG I) is a surrogate pair in UTF-16.
-        let mut doc = Document::new("a𐐀b", 1);
+        let mut doc = Document::new_string("a𐐀b", 1);
         let range = Range::new(Position::new(0, 1), Position::new(0, 3));
         doc.apply_changes(2, &[ContentChange::replace(range, "X")])
             .unwrap();
@@ -263,7 +272,7 @@ mod tests {
 
     #[test]
     fn clamps_out_of_bounds_character_offsets() {
-        let mut doc = Document::new("a\r\nb", 1);
+        let mut doc = Document::new_string("a\r\nb", 1);
         // Line 0 is just "a" (CRLF is the line terminator and not part of the line).
         let range = Range::new(Position::new(0, 2), Position::new(0, 2));
         doc.apply_changes(2, &[ContentChange::replace(range, "X")])
@@ -273,7 +282,7 @@ mod tests {
 
     #[test]
     fn handles_cr_only_newlines() {
-        let mut doc = Document::new("a\rb", 1);
+        let mut doc = Document::new_string("a\rb", 1);
         // Line 0 is just "a" (CR is treated as the line terminator).
         let range = Range::new(Position::new(0, 2), Position::new(0, 2));
         doc.apply_changes(2, &[ContentChange::replace(range, "X")])
@@ -283,7 +292,7 @@ mod tests {
 
     #[test]
     fn clamps_positions_inside_surrogate_pairs() {
-        let mut doc = Document::new("a𐐀b", 1);
+        let mut doc = Document::new_string("a𐐀b", 1);
         // UTF-16 column 2 falls between the surrogate pair code units.
         let range = Range::new(Position::new(0, 2), Position::new(0, 2));
         doc.apply_changes(2, &[ContentChange::replace(range, "X")])

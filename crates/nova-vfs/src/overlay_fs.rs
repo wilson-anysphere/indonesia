@@ -33,7 +33,7 @@ impl<F: FileSystem> OverlayFs<F> {
         }
     }
 
-    pub fn open(&self, path: VfsPath, text: String, version: i32) {
+    pub fn open_arc(&self, path: VfsPath, text: Arc<String>, version: i32) {
         let bytes = text.len();
         let mut state = self.docs.lock().expect("overlay mutex poisoned");
         let old = state.docs.insert(path, Document::new(text, version));
@@ -41,6 +41,10 @@ impl<F: FileSystem> OverlayFs<F> {
             state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
         }
         state.text_bytes = state.text_bytes.saturating_add(bytes);
+    }
+
+    pub fn open(&self, path: VfsPath, text: String, version: i32) {
+        self.open_arc(path, Arc::new(text), version);
     }
 
     pub fn close(&self, path: &VfsPath) {
@@ -140,6 +144,11 @@ impl<F: FileSystem> OverlayFs<F> {
     pub fn document_text(&self, path: &VfsPath) -> Option<String> {
         let state = self.docs.lock().expect("overlay mutex poisoned");
         state.docs.get(path).map(|d| d.text().to_owned())
+    }
+
+    pub fn document_text_arc(&self, path: &VfsPath) -> Option<Arc<String>> {
+        let state = self.docs.lock().expect("overlay mutex poisoned");
+        state.docs.get(path).map(Document::text_arc)
     }
 }
 

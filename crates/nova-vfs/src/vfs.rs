@@ -139,11 +139,16 @@ impl<F: FileSystem> Vfs<F> {
     }
 
     /// Opens an in-memory overlay document and returns its `FileId`.
-    pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
+    pub fn open_document_arc(&self, path: VfsPath, text: Arc<String>, version: i32) -> FileId {
         let id = self.file_id(path.clone());
-        self.fs.open(path, text, version);
+        self.fs.open_arc(path, text, version);
         self.open_docs.open(id);
         id
+    }
+
+    /// Opens an in-memory overlay document and returns its `FileId`.
+    pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
+        self.open_document_arc(path, Arc::new(text), version)
     }
 
     /// Stores a virtual document (e.g. a decompiled source file) for later reads through the VFS.
@@ -157,6 +162,10 @@ impl<F: FileSystem> Vfs<F> {
     #[cfg(feature = "lsp")]
     pub fn open_document_lsp(&self, uri: lsp_types::Uri, text: String, version: i32) -> FileId {
         self.open_document(VfsPath::from(uri), text, version)
+    }
+
+    pub fn open_document_text_arc(&self, path: &VfsPath) -> Option<Arc<String>> {
+        self.fs.document_text_arc(path)
     }
 
     pub fn close_document(&self, path: &VfsPath) {

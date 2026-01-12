@@ -748,7 +748,11 @@ impl WorkspaceEngine {
 
         let syntax_trees = SyntaxTreeStore::new(&memory, open_docs.clone());
 
-        let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
+        let query_db = salsa::Database::new_with_persistence_with_open_documents(
+            &workspace_root,
+            persistence,
+            open_docs.clone(),
+        );
         query_db.register_salsa_memo_evictor(&memory);
         query_db.register_salsa_cancellation_on_memory_pressure(&memory);
         query_db.attach_item_tree_store(&memory, open_docs.clone());
@@ -1661,8 +1665,10 @@ impl WorkspaceEngine {
     }
 
     pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
-        let text_for_db = Arc::new(text.clone());
-        let file_id = self.vfs.open_document(path.clone(), text, version);
+        let text = Arc::new(text);
+        let file_id = self
+            .vfs
+            .open_document_arc(path.clone(), Arc::clone(&text), version);
         self.sync_overlay_documents_memory();
         self.ensure_file_inputs(file_id, &path);
         let was_evicted = self.closed_file_texts.is_evicted(file_id);
@@ -1702,7 +1708,7 @@ impl WorkspaceEngine {
                     };
 
                     match disk_text {
-                        Some(disk_text) => disk_text.as_str() != text_for_db.as_str(),
+                        Some(disk_text) => disk_text.as_str() != text.as_str(),
                         None => true,
                     }
                 }
@@ -1716,7 +1722,7 @@ impl WorkspaceEngine {
         };
 
         self.query_db.set_file_exists(file_id, true);
-        self.query_db.set_file_content(file_id, text_for_db);
+        self.query_db.set_file_content(file_id, text);
         self.query_db.set_file_is_dirty(file_id, dirty);
         self.update_project_files_membership(&path, file_id, true);
 
@@ -1774,8 +1780,11 @@ impl WorkspaceEngine {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
-        let old_text = self.vfs.read_to_string(path).ok();
-        let evt = match self.vfs.apply_document_changes(path, new_version, changes) {
+        let old_text = self.vfs.open_document_text_arc(path);
+        let evt = match self
+            .vfs
+            .apply_document_changes(path, new_version, changes)
+        {
             Ok(evt) => evt,
             Err(err) => {
                 // Best-effort: keep the memory report consistent even when edits fail.
@@ -1791,8 +1800,11 @@ impl WorkspaceEngine {
             }
         };
 
-        if let Ok(text) = self.vfs.read_to_string(path) {
-            let text_for_db = Arc::new(text);
+        let text_for_db = self
+            .vfs
+            .open_document_text_arc(path)
+            .or_else(|| self.vfs.read_to_string(path).ok().map(Arc::new));
+        if let Some(text_for_db) = text_for_db {
             self.ensure_file_inputs(file_id, path);
             self.closed_file_texts.on_open_document(file_id);
             self.query_db.set_file_exists(file_id, true);
@@ -1811,7 +1823,7 @@ impl WorkspaceEngine {
                 _ => {
                     let synthetic = old_text
                         .as_deref()
-                        .and_then(|old| synthetic_single_edit(old, text_for_db.as_str()));
+                        .and_then(|old| synthetic_single_edit(old.as_str(), text_for_db.as_str()));
                     if let Some(edit) = synthetic {
                         self.query_db
                             .apply_file_text_edit(file_id, edit, Arc::clone(&text_for_db));
@@ -2283,8 +2295,12 @@ impl WorkspaceEngine {
                 // The document is open in the editor (either because it was already open at `to`,
                 // or because it was moved there from `from`). Ensure Salsa sees the overlay contents
                 // so workspace analysis doesn't accidentally use stale disk state.
-                if let Ok(text) = self.vfs.read_to_string(&to_vfs) {
-                    self.query_db.set_file_content(file_id, Arc::new(text));
+                let text = self
+                    .vfs
+                    .open_document_text_arc(&to_vfs)
+                    .or_else(|| self.vfs.read_to_string(&to_vfs).ok().map(Arc::new));
+                if let Some(text) = text {
+                    self.query_db.set_file_content(file_id, text);
                 }
                 let disk_text = fs::read_to_string(to);
                 let overlay_text = self.vfs.overlay().document_text(&to_vfs);
@@ -4536,6 +4552,57 @@ mod tests {
                 "expected watch roots not to include the entire config directory; roots: {roots:?}"
             );
         })
+    }
+
+    #[test]
+    fn open_document_shares_text_arc_between_vfs_and_salsa() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
+
+        let engine = workspace.engine_for_tests();
+        let overlay = engine
+            .vfs
+            .open_document_text_arc(&path)
+            .expect("document is open in overlay");
+        let salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert!(
+            Arc::ptr_eq(&overlay, &salsa),
+            "VFS overlay and Salsa should share the same Arc<String>"
+        );
+    }
+
+    #[test]
+    fn apply_changes_updates_salsa_with_overlay_arc() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "hello world".to_string(), 1);
+
+        let engine = workspace.engine_for_tests();
+        let before_overlay = engine.vfs.open_document_text_arc(&path).unwrap();
+        let before_salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert!(Arc::ptr_eq(&before_overlay, &before_salsa));
+
+        workspace
+            .apply_changes(&path, 2, &[ContentChange::full("hello nova".to_string())])
+            .unwrap();
+
+        let after_overlay = engine.vfs.open_document_text_arc(&path).unwrap();
+        let after_salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert_eq!(after_salsa.as_str(), "hello nova");
+        assert!(Arc::ptr_eq(&after_overlay, &after_salsa));
+        assert!(
+            !Arc::ptr_eq(&before_salsa, &after_salsa),
+            "applying changes should produce a new Arc<String> (copy-on-write) so Salsa sees an input change"
+        );
     }
 
     #[test]
