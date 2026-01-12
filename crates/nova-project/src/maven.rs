@@ -1643,6 +1643,7 @@ fn java_from_maven_config(
         props
             .get(key)
             .map(|raw| resolve_placeholders(raw, props))
+            .filter(|resolved| !resolved.contains("${"))
             .and_then(|resolved| JavaVersion::parse(&resolved))
     };
 

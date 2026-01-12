@@ -1,0 +1,11 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>maven-java-property-placeholders</artifactId>
+  <version>1.0-SNAPSHOT</version>
+
+  <properties>
+    <java.version>21</java.version>
+    <maven.compiler.release>${java.version}</maven.compiler.release>
+  </properties>
+</project>

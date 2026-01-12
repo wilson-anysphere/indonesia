@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use nova_project::{
-    load_project, load_project_with_options, load_workspace_model, load_workspace_model_with_options,
-    BuildSystem, ClasspathEntryKind, JavaVersion, LanguageLevelProvenance, LoadOptions,
-    OutputDirKind, SourceRootKind, SourceRootOrigin,
+    load_project, load_project_with_options, load_workspace_model_with_options, BuildSystem,
+    ClasspathEntryKind, JavaVersion, LanguageLevelProvenance, LoadOptions, OutputDirKind,
+    SourceRootKind, SourceRootOrigin,
 };
 use tempfile::tempdir;
 
@@ -181,6 +181,20 @@ fn resolves_maven_java_version_placeholders() {
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.java.source, JavaVersion(11));
     assert_eq!(config.java.target, JavaVersion(11));
+}
+
+#[test]
+fn loads_maven_java_property_placeholders() {
+    let root = testdata_path("maven-java-property-placeholders");
+    let config = load_project(&root).expect("load maven project");
+
+    assert_eq!(config.build_system, BuildSystem::Maven);
+    assert_eq!(config.java.source, JavaVersion(21));
+    assert_eq!(config.java.target, JavaVersion(21));
+
+    // Ensure config is deterministic.
+    let config2 = load_project(&root).expect("load maven project again");
+    assert_eq!(config, config2);
 }
 
 #[test]
