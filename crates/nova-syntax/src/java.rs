@@ -4131,7 +4131,10 @@ mod tests {
         };
 
         assert!(
-            rule_body.statements.iter().any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
+            rule_body
+                .statements
+                .iter()
+                .any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
             "expected rule body block to contain a yield statement"
         );
     }
