@@ -188,6 +188,7 @@ pub(crate) struct Definition {
 enum OccurrenceKind {
     MemberCall { receiver: String },
     MemberField { receiver: String },
+    MethodRef { receiver: String },
     LocalCall,
     Ident,
 }
@@ -512,34 +513,49 @@ impl WorkspaceIndex {
             .collect();
         let &(first, first_is_call) = segments.first()?;
 
-        let mut cur_ty = if first_is_call {
+        let (last, last_is_call) = segments.last().copied()?;
+
+        let (mut cur_ty, base_is_type) = if first_is_call {
             // Best-effort: treat receiverless calls like `foo().bar` as `this.foo().bar`.
             let this_ty = containing_type.name.clone();
-            self.resolve_method_return_type_name(&this_ty, first)?
+            (
+                self.resolve_method_return_type_name(&this_ty, first)?,
+                false,
+            )
+        } else if first == "this" {
+            (containing_type.name.clone(), false)
+        } else if first == "super" {
+            (containing_type.super_class.clone()?, false)
+        } else if let Some(ty) = self.resolve_name_type(parsed, offset, first) {
+            (ty, false)
+        } else if self.type_info(first).is_some() {
+            // Type name (static access)
+            (first.to_string(), true)
         } else {
-            match first {
-                "this" => containing_type.name.clone(),
-                "super" => containing_type.super_class.clone()?,
-                name => {
-                    // locals/fields
-                    if let Some(ty) = self.resolve_name_type(parsed, offset, name) {
-                        ty
-                    } else if self.type_info(name).is_some() {
-                        // Type name (static access)
-                        name.to_string()
-                    } else {
-                        return None;
-                    }
-                }
+            // Qualified type name starting with a package segment: `pkg.Foo` (best-effort).
+            if segments.len() > 1 && !last_is_call && self.type_info(last).is_some() {
+                return Some(last.to_string());
             }
+            return None;
         };
 
-        for (seg, is_call) in segments.into_iter().skip(1) {
-            cur_ty = if is_call {
-                self.resolve_method_return_type_name(&cur_ty, seg)?
-            } else {
-                self.resolve_field_type_name(&cur_ty, seg)?
-            };
+        for (seg, is_call) in segments.iter().copied().skip(1) {
+            if is_call {
+                cur_ty = self.resolve_method_return_type_name(&cur_ty, seg)?;
+                continue;
+            }
+
+            match self.resolve_field_type_name(&cur_ty, seg) {
+                Some(next) => cur_ty = next,
+                None => {
+                    // Fallback for qualified type names / nested types like `pkg.Foo` or
+                    // `Outer.Inner` when the receiver starts with a type name.
+                    if base_is_type && !last_is_call && self.type_info(last).is_some() {
+                        return Some(last.to_string());
+                    }
+                    return None;
+                }
+            }
         }
 
         Some(cur_ty)
@@ -784,6 +800,30 @@ impl Resolver {
                         })
                 }
             }
+            OccurrenceKind::MethodRef { receiver } => {
+                if ident == "new" {
+                    // Constructor reference: `Type::new` best-effort resolves to the receiver type.
+                    let receiver_ty = receiver.rsplit('.').next().unwrap_or(&receiver);
+                    let def = self.index.resolve_type_definition(receiver_ty)?;
+                    return Some(ResolvedSymbol {
+                        name: receiver_ty.to_string(),
+                        kind: ResolvedKind::Type,
+                        def,
+                    });
+                }
+
+                let receiver_ty =
+                    self.index
+                        .resolve_receiver_type(parsed, ident_span.start, &receiver)?;
+                let def = self
+                    .index
+                    .resolve_method_definition(&receiver_ty, &ident)?;
+                Some(ResolvedSymbol {
+                    name: ident,
+                    kind: ResolvedKind::Method,
+                    def,
+                })
+            }
             OccurrenceKind::LocalCall => {
                 let receiver_ty =
                     self.index
@@ -918,12 +958,35 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
 
     let receiver = dot_idx.and_then(|dot_idx| receiver_before_dot(text, bytes, dot_idx));
 
+    // Look backwards for `::` (method reference), allowing whitespace between
+    // `::` and the identifier / type args, but requiring the `::` tokens to be
+    // adjacent.
+    //
+    // Supports:
+    // - `Type :: method`
+    // - `expr :: method`
+    // - `Type :: new`
+    // - `Type :: <T> method` (generic method reference)
+    let colon_colon_idx = if i >= 2 && bytes[i - 1] == b':' && bytes[i - 2] == b':' {
+        Some(i - 2)
+    } else if i > 0 && bytes[i - 1] == b'>' {
+        colon_colon_before_generic_invocation(bytes, i - 1)
+    } else {
+        None
+    };
+    let method_ref_receiver =
+        colon_colon_idx.and_then(|idx| receiver_before_colon_colon(text, bytes, idx));
+
     // Look forwards for `(`, allowing whitespace between the identifier and `(`.
     let mut j = ident_span.end;
     while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
         j += 1;
     }
     let is_call = j < bytes.len() && bytes[j] == b'(';
+
+    if let Some(receiver) = method_ref_receiver {
+        return Some(OccurrenceKind::MethodRef { receiver });
+    }
 
     match (dot_idx, receiver, is_call) {
         (Some(_), Some(receiver), true) => Some(OccurrenceKind::MemberCall { receiver }),
@@ -957,7 +1020,23 @@ fn is_import_statement_line(text: &str, offset: usize) -> bool {
         return false;
     };
 
-    rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_ascii_whitespace())
+    if !(rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_ascii_whitespace())) {
+        return false;
+    }
+
+    // `is_import_statement_line` is intentionally best-effort and historically assumed imports are
+    // written on their own line. Java allows multiple statements on one line though, e.g.
+    // `import p.Foo; class C { ... }`. In that case we should only treat the `import ...;` portion
+    // as an import statement so navigation keeps working after the semicolon.
+    let leading_ws = line.len() - trimmed.len();
+    if let Some(semi_idx) = trimmed.find(';') {
+        let semi_abs = line_start + leading_ws + semi_idx;
+        if offset > semi_abs {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {
@@ -1231,6 +1310,54 @@ fn parse_ident_chain_last_segment<'a>(
     }
 }
 
+fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Option<String> {
+    let mut recv_end = colon_idx;
+    while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
+        recv_end -= 1;
+    }
+    if recv_end == 0 {
+        return None;
+    }
+
+    // Best-effort parse of a qualified identifier chain: `a.b.C` (no generics, no method calls).
+    //
+    // We normalize whitespace by joining segments with `.`.
+    let mut segments_rev: Vec<String> = Vec::new();
+    let mut end = recv_end;
+    loop {
+        // Parse last identifier segment.
+        let mut seg_end = end;
+        while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
+            seg_end -= 1;
+        }
+        let mut seg_start = seg_end;
+        while seg_start > 0 && is_ident_continue(bytes[seg_start - 1]) {
+            seg_start -= 1;
+        }
+        if seg_start == seg_end {
+            break;
+        }
+        segments_rev.push(text[seg_start..seg_end].to_string());
+
+        // Look for a preceding `.`, allowing whitespace around it.
+        let mut k = seg_start;
+        while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+            k -= 1;
+        }
+        if k == 0 || bytes[k - 1] != b'.' {
+            break;
+        }
+        end = k - 1;
+    }
+
+    if segments_rev.is_empty() {
+        None
+    } else {
+        segments_rev.reverse();
+        Some(segments_rev.join("."))
+    }
+}
+
 fn dot_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
     // We are positioned at the `>` directly before an identifier. Walk backwards
     // to find the matching `<` and then check for a `.` before the type args.
@@ -1247,6 +1374,37 @@ fn dot_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option
                         k -= 1;
                     }
                     return (k > 0 && bytes[k - 1] == b'.').then_some(k - 1);
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    None
+}
+
+fn colon_colon_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
+    // We are positioned at the `>` directly before an identifier. Walk backwards
+    // to find the matching `<` and then check for a `::` before the type args.
+    let mut depth = 0usize;
+    let mut j = close_angle_idx;
+    loop {
+        match bytes.get(j)? {
+            b'>' => depth += 1,
+            b'<' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let mut k = j;
+                    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+                        k -= 1;
+                    }
+                    return (k >= 2 && bytes[k - 1] == b':' && bytes[k - 2] == b':')
+                        .then_some(k - 2);
                 }
             }
             _ => {}
