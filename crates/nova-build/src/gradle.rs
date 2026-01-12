@@ -2113,6 +2113,11 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
                     out.push(path);
                 }
             }
+            "gradle-wrapper.jar" => {
+                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")) {
+                    out.push(path);
+                }
+            }
             _ => {}
         }
     }

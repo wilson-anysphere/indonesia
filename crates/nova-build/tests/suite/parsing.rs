@@ -67,6 +67,32 @@ fn fingerprint_changes_on_maven_wrapper_edit() {
 }
 
 #[test]
+fn fingerprint_changes_on_maven_wrapper_jar_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let wrapper_dir = root.join(".mvn").join("wrapper");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let wrapper_jar = wrapper_dir.join("maven-wrapper.jar");
+    std::fs::write(&wrapper_jar, b"jar-a").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&wrapper_jar, b"jar-b").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_maven_maven_config_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
@@ -283,6 +309,28 @@ fn fingerprint_changes_on_gradle_wrapper_edit() {
         "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.1-bin.zip\n",
     )
     .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_gradle_wrapper_jar_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'\n").unwrap();
+
+    let wrapper_dir = root.join("gradle").join("wrapper");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let wrapper_jar = wrapper_dir.join("gradle-wrapper.jar");
+    std::fs::write(&wrapper_jar, b"jar-a").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+    std::fs::write(&wrapper_jar, b"jar-b").unwrap();
     let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
         .unwrap();
 

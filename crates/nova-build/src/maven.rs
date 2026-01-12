@@ -1589,6 +1589,11 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
                     out.push(wrapper_props);
                 }
 
+                let wrapper_jar = path.join("wrapper").join("maven-wrapper.jar");
+                if wrapper_jar.is_file() {
+                    out.push(wrapper_jar);
+                }
+
                 continue;
             }
 
