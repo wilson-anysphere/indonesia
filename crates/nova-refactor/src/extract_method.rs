@@ -843,9 +843,9 @@ fn find_enclosing_method(
             let span = body_range.len();
             if best
                 .as_ref()
-                .is_none_or(|(best_span, _, _)| span < *best_span)
+                .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::CompactConstructor(ctor), body));
+                best = Some((span, EnclosingMethod::CompactConstructor(ctor), body, None));
             }
         }
     }
