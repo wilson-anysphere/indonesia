@@ -3939,6 +3939,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "url",
  "zip 2.4.2",
 ]
 

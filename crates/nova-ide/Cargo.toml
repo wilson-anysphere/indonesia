@@ -39,6 +39,7 @@ nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 nova-framework-jpa = { path = "../nova-framework-jpa" }
 nova-framework-dagger = { path = "../nova-framework-dagger" }
 nova-framework-quarkus = { path = "../nova-framework-quarkus" }
+url = "2"
 
 [features]
 ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
