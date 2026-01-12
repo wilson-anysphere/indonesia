@@ -274,13 +274,6 @@ impl Default for MicronautAnalyzer {
 
 impl FrameworkAnalyzer for MicronautAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
-        // Prefer classpath-based detection (covers transitive deps).
-        if db.has_class_on_classpath_prefix(project, "io.micronaut.")
-            || db.has_class_on_classpath_prefix(project, "io/micronaut/")
-        {
-            return true;
-        }
-
         // Known Micronaut artifacts.
         const ARTIFACTS: &[&str] = &[
             "micronaut-runtime",
@@ -291,9 +284,17 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
             "micronaut-validation",
         ];
 
-        ARTIFACTS
+        // Prefer dependency-based detection (cheap).
+        if ARTIFACTS
             .iter()
             .any(|artifact| db.has_dependency(project, "io.micronaut", artifact))
+        {
+            return true;
+        }
+
+        // Fallback: classpath-based detection (covers transitive deps).
+        db.has_class_on_classpath_prefix(project, "io.micronaut.")
+            || db.has_class_on_classpath_prefix(project, "io/micronaut/")
     }
 
     fn diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
