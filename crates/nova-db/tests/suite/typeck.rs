@@ -4449,6 +4449,7 @@ enum E {
     A;
     void m() {
         this.ordinal();
+        this.name();
     }
 }
 "#;
@@ -4457,7 +4458,7 @@ enum E {
     let diags = db.type_diagnostics(file);
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
-        "expected Enum.ordinal() call to resolve via java.lang.Enum, got {diags:?}"
+        "expected Enum.ordinal()/name() calls to resolve via java.lang.Enum, got {diags:?}"
     );
 }
 

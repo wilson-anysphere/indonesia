@@ -948,51 +948,6 @@ impl TypeStore {
             },
         );
         store.define_class(
-            enum_,
-            ClassDef {
-                name: "java.lang.Enum".to_string(),
-                kind: ClassKind::Class,
-                type_params: vec![],
-                super_class: Some(object_ty.clone()),
-                interfaces: vec![],
-                fields: vec![],
-                constructors: vec![],
-                methods: vec![
-                    MethodDef {
-                        name: "name".to_string(),
-                        type_params: vec![],
-                        params: vec![],
-                        return_type: string_ty.clone(),
-                        is_static: false,
-                        is_varargs: false,
-                        is_abstract: false,
-                    },
-                    MethodDef {
-                        name: "ordinal".to_string(),
-                        type_params: vec![],
-                        params: vec![],
-                        return_type: Type::Primitive(PrimitiveType::Int),
-                        is_static: false,
-                        is_varargs: false,
-                        is_abstract: false,
-                    },
-                ],
-            },
-        );
-        store.define_class(
-            record,
-            ClassDef {
-                name: "java.lang.Record".to_string(),
-                kind: ClassKind::Class,
-                type_params: vec![],
-                super_class: Some(object_ty.clone()),
-                interfaces: vec![],
-                fields: vec![],
-                constructors: vec![],
-                methods: vec![],
-            },
-        );
-        store.define_class(
             throwable,
             ClassDef {
                 name: "java.lang.Throwable".to_string(),
@@ -1447,6 +1402,15 @@ impl TypeStore {
                 constructors: vec![],
                 methods: vec![
                     MethodDef {
+                        name: "name".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: string_ty.clone(),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
                         name: "ordinal".to_string(),
                         type_params: vec![],
                         params: vec![],
@@ -1511,25 +1475,6 @@ impl TypeStore {
                         is_abstract: true,
                     },
                 ],
-            },
-        );
-
-        // java.lang.annotation.Annotation
-        //
-        // Annotation type declarations (`@interface`) implicitly extend this interface. Include a
-        // minimal stub so source/workspace annotation supertypes can be modeled in environments
-        // without a full JDK symbol index.
-        store.define_class(
-            annotation,
-            ClassDef {
-                name: "java.lang.annotation.Annotation".to_string(),
-                kind: ClassKind::Interface,
-                type_params: vec![],
-                super_class: Some(object_ty.clone()),
-                interfaces: vec![],
-                fields: vec![],
-                constructors: vec![],
-                methods: vec![],
             },
         );
 
