@@ -164,31 +164,63 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
-        let Some(text) = db.file_text(file) else {
-            return Vec::new();
-        };
         let Some(path) = db.file_path(file) else {
             return Vec::new();
         };
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             return Vec::new();
         }
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
         if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
-        let Some(root) = nova_project::workspace_root(path) else {
-            return Vec::new();
-        };
-
         let project = db.project_of_file(file);
-        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
-            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+        let workspace = self.workspace.workspace(db, project);
+        let mut diagnostics: Vec<Diagnostic> = workspace
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.file.as_path() == path)
+            .map(|d| d.diagnostic.clone())
+            .collect();
 
-        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
-            Ok(diags) => diags,
-            Err(_) => Vec::new(),
+        // Best-effort: if the in-memory workspace model can't compute unmapped target
+        // properties (e.g. DTO sources aren't loaded in the DB), fall back to the
+        // filesystem-based analyzer for this file.
+        //
+        // This keeps the framework hook useful in real IDE scenarios where the DB
+        // may only have text for open buffers.
+        let has_unmapped = diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES");
+        if !has_unmapped {
+            let has_mapping_methods = workspace
+                .analysis
+                .mappers
+                .iter()
+                .any(|m| m.file.as_path() == path && !m.methods.is_empty());
+
+            if has_mapping_methods {
+                if let Some(root) = nova_project::workspace_root(path) {
+                    let has_mapstruct_dependency =
+                        db.has_dependency(project, "org.mapstruct", "mapstruct")
+                            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+
+                    if let Ok(extra) =
+                        crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
+                    {
+                        diagnostics.extend(extra.into_iter().filter(|d| {
+                            d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"
+                        }));
+                    }
+                }
+            }
         }
+
+        diagnostics
     }
 
     fn navigation(
