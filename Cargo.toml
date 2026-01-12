@@ -116,10 +116,11 @@ install-updater = false
 inherits = "release"
 lto = "thin"
 
-# The default `test` profile inherits from `dev`, which includes full debug info.
-# For large crates (like `nova-lsp`) that produces multi-gigabyte test binaries and
-# can push the linker over the 4G RLIMIT_AS budget enforced by `scripts/cargo_agent.sh`.
-# Disable debuginfo in `test` profile to reduce link-time memory pressure.
+# The default `test` profile inherits from `dev`, which includes debug info.
+# For large crates (like `nova-lsp`) and its transitive WASM/tooling dependencies,
+# debuginfo can produce multi-gigabyte test binaries and push the linker over the
+# 4G RLIMIT_AS budget enforced by `scripts/cargo_agent.sh`. Disable debuginfo in
+# `test` profile to reduce link-time memory pressure.
 [profile.test]
 debug = 0
 
