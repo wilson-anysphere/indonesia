@@ -22,6 +22,7 @@ mod file_navigation;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;
+mod quarkus_intel;
 pub mod refactor;
 mod spring_config;
 mod spring_config_intel;

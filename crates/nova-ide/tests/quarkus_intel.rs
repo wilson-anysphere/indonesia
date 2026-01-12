@@ -117,3 +117,30 @@ fn quarkus_config_property_completion_uses_application_properties() {
         "expected Quarkus config completion; got {labels:?}"
     );
 }
+
+#[test]
+fn quarkus_cdi_diagnostics_are_stable_across_requests() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("project");
+    write_quarkus_pom(&root);
+
+    let src = r#"
+        import jakarta.enterprise.context.ApplicationScoped;
+        import jakarta.inject.Inject;
+
+        @ApplicationScoped
+        public class ServiceA {
+          @Inject ServiceB missing;
+        }
+    "#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = root.join("src/main/java/com/example/ServiceA.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, src.to_string());
+
+    let first = file_diagnostics(&db, file);
+    let second = file_diagnostics(&db, file);
+
+    assert_eq!(first, second);
+}

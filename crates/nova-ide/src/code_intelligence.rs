@@ -31,6 +31,7 @@ use serde_json::json;
 use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
+use crate::quarkus_intel;
 use crate::spring_config;
 use crate::spring_di;
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
@@ -611,19 +612,8 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-        && is_quarkus_project(db, file, &[text])
     {
-        let (java_files, java_sources) = workspace_java_sources(db);
-        if let Some(source_idx) = java_files.iter().position(|id| *id == file) {
-            let analysis = nova_framework_quarkus::analyze_java_sources_with_spans(&java_sources);
-            diagnostics.extend(
-                analysis
-                    .diagnostics
-                    .into_iter()
-                    .filter(|d| d.source == source_idx)
-                    .map(|d| d.diagnostic),
-            );
-        }
+        diagnostics.extend(quarkus_intel::diagnostics_for_file(db, file));
     }
 
     // 8) Micronaut framework diagnostics (DI + validation).
