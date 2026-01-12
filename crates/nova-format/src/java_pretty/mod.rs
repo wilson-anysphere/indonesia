@@ -588,6 +588,11 @@ fn needs_space_between(last: Option<&LastSig<'_>>, next_kind: SyntaxKind, next_t
         return false;
     }
     if next_text == "@" {
+        // Do not insert whitespace between `<` and a type-argument annotation:
+        // `List<@A T>` (not `List< @A T>`).
+        if last.kind == SyntaxKind::Less {
+            return false;
+        }
         return true;
     }
     if is_control_keyword(last.text) && next_text == "(" {
@@ -598,6 +603,20 @@ fn needs_space_between(last: Option<&LastSig<'_>>, next_kind: SyntaxKind, next_t
     }
 
     if last.text == "]" && is_word_token(next_kind, next_text) {
+        return true;
+    }
+
+    // Generic closes (and record header `)`) should be separated from following identifiers/keywords.
+    if matches!(
+        last.kind,
+        SyntaxKind::Greater | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift
+    ) && is_word_token(next_kind, next_text)
+    {
+        return true;
+    }
+    if matches!(last.kind, SyntaxKind::RParen | SyntaxKind::Ellipsis)
+        && is_word_token(next_kind, next_text)
+    {
         return true;
     }
     is_word_token(last.kind, last.text) && is_word_token(next_kind, next_text)

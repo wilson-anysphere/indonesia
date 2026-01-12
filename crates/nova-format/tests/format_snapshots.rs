@@ -1013,6 +1013,29 @@ public @interface MyAnno {
 }
 
 #[test]
+fn pretty_inserts_spaces_after_generic_and_record_header_closes() {
+    let input = r#"class Foo<T>implements Bar{}
+record R(java.util.List<@Deprecated String>xs)implements java.io.Serializable{}
+"#;
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo<T> implements Bar {
+}
+record R(java.util.List<@Deprecated String> xs) implements java.io.Serializable {
+}
+"###
+    );
+}
+
+#[test]
 fn pretty_formats_trivial_class_block() {
     let input = "class Foo{int x;}\n";
     let edits = edits_for_document_formatting_with_strategy(
