@@ -1,0 +1,28 @@
+{
+  "properties": [
+    {
+      "name": "server.port",
+      "type": "java.lang.Integer",
+      "description": "Server HTTP port",
+      "defaultValue": 8080
+    },
+    {
+      "name": "spring.main.banner-mode",
+      "type": "java.lang.String",
+      "deprecation": {
+        "level": "warning",
+        "replacement": "spring.main.banner-mode2"
+      }
+    }
+  ],
+  "hints": [
+    {
+      "name": "spring.main.banner-mode",
+      "values": [
+        { "value": "off" },
+        { "value": "console" }
+      ]
+    }
+  ]
+}
+

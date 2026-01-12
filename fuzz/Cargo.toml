@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 nova-classfile = { path = "../crates/nova-classfile" }
+nova-config-metadata = { path = "../crates/nova-config-metadata" }
 nova-core = { path = "../crates/nova-core" }
 nova-format = { path = "../crates/nova-format" }
 nova-refactor = { path = "../crates/nova-refactor", optional = true }
@@ -78,6 +79,13 @@ bench = false
 [[bin]]
 name = "fuzz_junit_report"
 path = "fuzz_targets/fuzz_junit_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_config_metadata"
+path = "fuzz_targets/fuzz_config_metadata.rs"
 test = false
 doc = false
 bench = false
