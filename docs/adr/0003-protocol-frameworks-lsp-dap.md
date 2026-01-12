@@ -36,7 +36,8 @@ Implement a small **Nova-owned DAP message loop** (Content-Length framed JSON me
 
 ### Transport choices
 
-- Default transport for both LSP and DAP: **stdio** (`--stdio`) for maximum editor compatibility.
+- Default transport for both LSP and DAP: **stdio** (LSP accepts `--stdio`; DAP uses stdio by default)
+  for maximum editor compatibility.
 - Optional transport: **TCP** (`--listen <addr>`) for remote/headless use-cases.
 - Message framing:
   - LSP: `lsp-server`’s JSON-RPC framing.
