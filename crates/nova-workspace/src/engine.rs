@@ -1283,6 +1283,12 @@ impl WorkspaceEngine {
             return Vec::new();
         };
         let report = self.memory_report_for_work();
+        // Under critical pressure, even producing a truncated list can allocate
+        // a large intermediate candidate set. Prefer returning no completions to
+        // reduce memory churn and avoid worsening tail latency.
+        if matches!(report.pressure, MemoryPressure::Critical) {
+            return Vec::new();
+        }
         let cap = report.degraded.completion_candidate_cap;
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         let text = snapshot.file_content(file_id);
@@ -3791,6 +3797,51 @@ mod tests {
         let baseline_labels: Vec<&str> = baseline.iter().map(|item| item.label.as_str()).collect();
         let capped_labels: Vec<&str> = capped.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(capped_labels, baseline_labels.into_iter().take(cap).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn critical_pressure_returns_empty_completions() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(10 * nova_memory::GB));
+        let engine = new_test_engine(memory.clone());
+
+        let registration = engine
+            .memory
+            .register_tracker("test-pressure", MemoryCategory::Other);
+        let tracker = registration.tracker();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = VfsPath::local(dir.path().join("Main.java"));
+
+        let mut text = String::new();
+        text.push_str("class Main {\n");
+        for idx in 0..120usize {
+            text.push_str(&format!("  void m{idx}() {{}}\n"));
+        }
+        text.push_str("  void test() {\n    /*cursor*/\n  }\n}\n");
+        let offset = text.find("/*cursor*/").unwrap();
+
+        engine.open_document(path.clone(), text, 1);
+
+        tracker.set_bytes(0);
+        assert!(
+            !engine.completions(&path, offset).is_empty(),
+            "expected baseline completions under low pressure"
+        );
+
+        // Enter critical pressure (>95% budget usage).
+        tracker.set_bytes(memory.budget().total * 96 / 100);
+        let report = memory.report();
+        assert!(
+            matches!(report.pressure, MemoryPressure::Critical),
+            "expected critical pressure, got: {report:?}"
+        );
+
+        let completions = engine.completions(&path, offset);
+        assert!(
+            completions.is_empty(),
+            "expected no completions under critical pressure, got {}",
+            completions.len()
+        );
     }
 
     #[test]
