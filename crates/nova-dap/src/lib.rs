@@ -42,12 +42,6 @@ pub mod dap_tokio;
 
 /// Shared `javac` helpers used by hot swap and expression evaluation.
 pub(crate) mod javac;
-/// Stream-debug runtime for the wire-level JDWP adapter.
-///
-/// The legacy adapter relies on `JDI`'s built-in expression evaluation. The wire-level
-/// adapter needs to compile/load helper classes before it can evaluate user expressions,
-/// so timeout semantics differ slightly (see module docs).
-pub mod wire_stream_debug;
 
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;
@@ -57,6 +51,12 @@ pub mod wire_server;
 /// All bytecode generation, `javac` invocation, and JDWP `DefineClass` plumbing for
 /// stream-debug evaluation should live in this module (vs. ad-hoc helpers elsewhere).
 pub mod wire_stream_eval;
+/// Stream-debug runtime for the wire-level JDWP adapter.
+///
+/// The legacy adapter relies on `JDI`'s built-in expression evaluation. The wire-level
+/// adapter needs to compile/load helper classes before it can evaluate user expressions,
+/// so timeout semantics differ slightly (see module docs).
+mod wire_stream_debug;
 
 /// Crash hardening helpers (panic hook installation, safe-mode toggles).
 pub mod hardening;

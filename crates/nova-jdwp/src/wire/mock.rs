@@ -2377,9 +2377,7 @@ async fn handle_packet(
                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
-                    // JDWP spec: `exception` is a tagged object id.
-                    w.write_u8(b'L');
-                    w.write_object_id(0, sizes); // exception
+                    w.write_tagged_object_id(b'L', 0, sizes); // exception
                     (0, w.into_vec())
                 }
                 Err(_) => (1, Vec::new()),
@@ -2939,9 +2937,7 @@ async fn handle_packet(
                     );
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
-                    // JDWP spec: `exception` is a tagged object id.
-                    w.write_u8(b'L');
-                    w.write_object_id(0, sizes); // exception
+                    w.write_tagged_object_id(b'L', 0, sizes); // exception
                     (0, w.into_vec())
                 }
                 Err(_) => (1, Vec::new()),
@@ -2977,7 +2973,7 @@ async fn handle_packet(
                     );
                     let mut w = JdwpWriter::new();
                     w.write_object_id(object_id, sizes);
-                    w.write_object_id(0, sizes); // exception
+                    w.write_tagged_object_id(b'L', 0, sizes); // exception
                     (0, w.into_vec())
                 }
                 Err(_) => (1, Vec::new()),
@@ -3056,9 +3052,7 @@ async fn handle_packet(
 
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
-                    // JDWP spec: `exception` is a tagged object id.
-                    w.write_u8(b'L');
-                    w.write_object_id(0, sizes); // exception
+                    w.write_tagged_object_id(b'L', 0, sizes); // exception
                     (0, w.into_vec())
                 }
                 Err(_) => (1, Vec::new()),

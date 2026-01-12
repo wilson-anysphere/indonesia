@@ -1264,9 +1264,25 @@ impl JdwpClient {
         let payload = self.send_command_raw(3, 3, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
-        // JDWP spec: `exception` is a tagged object id.
-        let _exception_tag = r.read_u8()?;
-        let exception = r.read_object_id(&sizes)?;
+        // The JDWP specification (and HotSpot) represent invoke exceptions as a tagged-objectID
+        // (`tag` byte followed by an object ID). Some embedded implementations return the legacy
+        // untagged object ID. Decode both formats for compatibility.
+        let exception = match r.remaining() {
+            rem if rem == sizes.object_id => r.read_object_id(&sizes)?,
+            rem if rem == sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem if rem >= sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem => {
+                return Err(JdwpError::Protocol(format!(
+                    "invalid ClassType.InvokeMethod exception payload length: {rem}"
+                )));
+            }
+        };
         Ok((return_value, exception))
     }
 
@@ -1292,7 +1308,22 @@ impl JdwpClient {
         let payload = self.send_command_raw(3, 4, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let new_object = r.read_object_id(&sizes)?;
-        let exception = r.read_object_id(&sizes)?;
+        let exception = match r.remaining() {
+            rem if rem == sizes.object_id => r.read_object_id(&sizes)?,
+            rem if rem == sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem if rem >= sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem => {
+                return Err(JdwpError::Protocol(format!(
+                    "invalid ClassType.NewInstance exception payload length: {rem}"
+                )));
+            }
+        };
         Ok((new_object, exception))
     }
 
@@ -1333,9 +1364,22 @@ impl JdwpClient {
         let payload = self.send_command_raw(5, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
-        // JDWP spec: `exception` is a tagged object id.
-        let _exception_tag = r.read_u8()?;
-        let exception = r.read_object_id(&sizes)?;
+        let exception = match r.remaining() {
+            rem if rem == sizes.object_id => r.read_object_id(&sizes)?,
+            rem if rem == sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem if rem >= sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem => {
+                return Err(JdwpError::Protocol(format!(
+                    "invalid InterfaceType.InvokeMethod exception payload length: {rem}"
+                )));
+            }
+        };
         Ok((return_value, exception))
     }
 
@@ -1638,9 +1682,22 @@ impl JdwpClient {
         let payload = self.send_command_raw(9, 6, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
-        // JDWP spec: `exception` is a tagged object id.
-        let _exception_tag = r.read_u8()?;
-        let exception = r.read_object_id(&sizes)?;
+        let exception = match r.remaining() {
+            rem if rem == sizes.object_id => r.read_object_id(&sizes)?,
+            rem if rem == sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem if rem >= sizes.object_id + 1 => {
+                let (_tag, id) = r.read_tagged_object_id(&sizes)?;
+                id
+            }
+            rem => {
+                return Err(JdwpError::Protocol(format!(
+                    "invalid ObjectReference.InvokeMethod exception payload length: {rem}"
+                )));
+            }
+        };
         Ok((return_value, exception))
     }
 
@@ -1707,19 +1764,40 @@ impl JdwpClient {
             ))
         })?;
 
-        let is_primitive = matches!(
-            element_tag,
-            b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D'
-        );
-
-        if is_primitive {
-            for _ in 0..count {
-                values.push(r.read_value(element_tag, &sizes)?);
+        match element_tag {
+            // Primitive arrays return untagged primitives.
+            b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D' => {
+                for _ in 0..count {
+                    values.push(r.read_value(element_tag, &sizes)?);
+                }
             }
-        } else {
-            for _ in 0..count {
-                let tag = r.read_u8()?;
-                values.push(r.read_value(tag, &sizes)?);
+            // Object arrays vary between implementations:
+            // - HotSpot uses `tagged-objectID` values (each element carries its own tag).
+            // - The mock server (and some embedded stacks) use raw object IDs.
+            _ => {
+                let remaining = r.remaining();
+                let tagged_len = count.saturating_mul(1usize.saturating_add(sizes.object_id));
+                let untagged_len = count.saturating_mul(sizes.object_id);
+
+                if remaining == tagged_len || (remaining >= tagged_len && tagged_len != 0) {
+                    for _ in 0..count {
+                        let (elem_tag, elem_id) = r.read_tagged_object_id(&sizes)?;
+                        values.push(JdwpValue::Object {
+                            tag: elem_tag,
+                            id: elem_id,
+                        });
+                    }
+                } else if remaining == untagged_len
+                    || (remaining >= untagged_len && untagged_len != 0)
+                {
+                    for _ in 0..count {
+                        values.push(r.read_value(element_tag, &sizes)?);
+                    }
+                } else {
+                    return Err(JdwpError::Protocol(format!(
+                        "unexpected ArrayReference.GetValues payload length: tag={element_tag} count={count} remaining={remaining}"
+                    )));
+                }
             }
         }
 

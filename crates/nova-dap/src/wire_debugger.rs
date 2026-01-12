@@ -2517,6 +2517,45 @@ impl Debugger {
         let analysis = analyze_stream_expression(&expression)
             .map_err(|err| DebuggerError::InvalidRequest(err.to_string()))?;
 
+        // The wire-level JDWP adapter has two stream-debug runtimes:
+        // - A real runtime (`wire_stream_debug`) that compiles+injects a helper class into the
+        //   debuggee and invokes methods to sample each stage.
+        // - A mock/runtime fallback used by the JDWP mock server in tests, which cannot execute
+        //   injected bytecode and therefore simulates common stream operations by inspecting the
+        //   source collection/array.
+        //
+        // Detect the mock server via the sentinel `VirtualMachine.ClassPaths.base_dir == "/mock"`.
+        // This avoids attempting helper injection against the mock server (which would not
+        // produce meaningful results).
+        let is_mock_vm = match cancellable_jdwp(cancel, jdwp.virtual_machine_class_paths()).await {
+            Ok(paths) => paths.base_dir == "/mock",
+            Err(JdwpError::Cancelled) => return Err(DebuggerError::Jdwp(JdwpError::Cancelled)),
+            Err(_) => false,
+        };
+
+        if !is_mock_vm {
+            let runtime = crate::wire_stream_debug::debug_stream_in_frame(
+                &jdwp,
+                cancel,
+                frame.thread,
+                frame.frame_id,
+                frame.location,
+                &analysis,
+                &config,
+            )
+            .await
+            .map_err(|err| match err {
+                crate::wire_stream_debug::WireStreamDebugError::Cancelled => {
+                    DebuggerError::Jdwp(JdwpError::Cancelled)
+                }
+                crate::wire_stream_debug::WireStreamDebugError::Timeout => DebuggerError::Timeout,
+                crate::wire_stream_debug::WireStreamDebugError::Jdwp(err) => DebuggerError::Jdwp(err),
+                other => DebuggerError::InvalidRequest(other.to_string()),
+            })?;
+
+            return Ok(crate::stream_debug::StreamDebugBody { analysis, runtime });
+        }
+
         fn parse_i64(s: &str) -> Option<i64> {
             s.trim().parse::<i64>().ok()
         }

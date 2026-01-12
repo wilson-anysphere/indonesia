@@ -567,7 +567,10 @@ impl Default for StreamDebugConfig {
     fn default() -> Self {
         Self {
             max_sample_size: 25,
-            max_total_time: Duration::from_millis(250),
+            // Stream-debug on the wire debugger uses a compile+inject evaluator, which can take
+            // longer than a couple hundred milliseconds even for small expressions. Keep the
+            // default time limit conservative but large enough for typical debug sessions.
+            max_total_time: Duration::from_secs(5),
             allow_side_effects: false,
             allow_terminal_ops: false,
         }

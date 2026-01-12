@@ -96,6 +96,11 @@ impl JdwpWriter {
         self.write_id(id, sizes.object_id);
     }
 
+    pub fn write_tagged_object_id(&mut self, tag: u8, id: ObjectId, sizes: &JdwpIdSizes) {
+        self.write_u8(tag);
+        self.write_object_id(id, sizes);
+    }
+
     pub fn write_reference_type_id(&mut self, id: ReferenceTypeId, sizes: &JdwpIdSizes) {
         self.write_id(id, sizes.reference_type_id);
     }
@@ -298,6 +303,12 @@ impl<'a> JdwpReader<'a> {
 
     pub fn read_object_id(&mut self, sizes: &JdwpIdSizes) -> Result<ObjectId> {
         self.read_id(sizes.object_id)
+    }
+
+    pub fn read_tagged_object_id(&mut self, sizes: &JdwpIdSizes) -> Result<(u8, ObjectId)> {
+        let tag = self.read_u8()?;
+        let id = self.read_object_id(sizes)?;
+        Ok((tag, id))
     }
 
     pub fn read_reference_type_id(&mut self, sizes: &JdwpIdSizes) -> Result<ReferenceTypeId> {
