@@ -8018,12 +8018,15 @@ fn general_completions(
         ("try-finally", Some("try {\n    $0\n} finally {\n}")),
         ("else", None),
         ("return", None),
-        // Top-level / file-scoped keywords. Even though these are not valid in all contexts, they
-        // improve mid-edit completion when the user is still typing `import`/`package` and the
-        // specialized clause completions cannot trigger yet.
+        // Top-level / declaration keywords. Even though these are not valid in all contexts, they
+        // improve mid-edit completion when the user is still typing `import`/`package` (or a type
+        // declaration keyword) and the specialized clause completions cannot trigger yet.
         ("import", None),
         ("package", None),
         ("class", None),
+        ("interface", None),
+        ("enum", None),
+        ("record", None),
         ("new", None),
     ] {
         match snippet {
@@ -14083,6 +14086,8 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
         before = skip_whitespace_backwards(text, open);
     }
 
+    // Note: `bool::then_some` eagerly evaluates its argument, so we must not write
+    // `cond.then_some(before - 2)` here or we'll underflow when `before < 2`.
     (before >= 2
         && bytes.get(before - 1) == Some(&b':')
         && bytes.get(before - 2) == Some(&b':'))

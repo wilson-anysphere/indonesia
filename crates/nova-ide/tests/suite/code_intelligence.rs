@@ -244,6 +244,36 @@ fn completion_in_incomplete_package_keyword_suggests_package() {
 }
 
 #[test]
+fn completion_in_incomplete_interface_keyword_suggests_interface() {
+    let (db, file, pos) = fixture("interf<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "interface"),
+        "expected `interface` keyword completion for incomplete `interf`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_enum_keyword_suggests_enum() {
+    let (db, file, pos) = fixture("enu<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "enum"),
+        "expected `enum` keyword completion for incomplete `enu`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_record_keyword_suggests_record() {
+    let (db, file, pos) = fixture("recor<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "record"),
+        "expected `record` keyword completion for incomplete `recor`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"
