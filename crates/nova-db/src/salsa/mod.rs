@@ -2202,6 +2202,25 @@ class Foo {
     }
 
     #[test]
+    fn salsa_input_tracker_registers_via_memo_evictor_and_picks_up_existing_inputs() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new();
+
+        // Inputs set before registration should still be reflected once the tracker is registered.
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "abc");
+        assert_eq!(
+            manager.report().usage.other,
+            0,
+            "tracker is not registered yet"
+        );
+
+        // The workspace wires memory through memo eviction registration.
+        db.register_salsa_memo_evictor(&manager);
+        assert_eq!(manager.report().usage.other, 3);
+    }
+
+    #[test]
     fn salsa_memos_evict_under_memory_pressure_and_recompute() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
         let db = Database::new_with_memory_manager(&manager);
@@ -2230,6 +2249,12 @@ class Foo {
             manager.report().usage.query_cache,
             bytes_before,
             "memory manager should see tracked salsa memo usage"
+        );
+        let input_bytes_before = db.salsa_input_bytes();
+        assert_eq!(
+            manager.report().usage.other,
+            input_bytes_before,
+            "memory manager should see tracked salsa input usage"
         );
 
         let parse_exec_before = executions(&db.inner.lock(), "parse");
@@ -2261,6 +2286,11 @@ class Foo {
             db.salsa_memo_bytes(),
             0,
             "expected memo tracker to clear after eviction"
+        );
+        assert_eq!(
+            manager.report().usage.other,
+            input_bytes_before,
+            "input bytes should remain stable across memo eviction rebuilds"
         );
 
         // Subsequent queries should recompute after eviction.
