@@ -106,7 +106,8 @@ Implementation references:
 (via `nova-build`) during workspace load/reload for Maven/Gradle workspaces to compute accurate
 classpath/source roots.
 
-Today, `nova-workspace` refreshes build-tool-derived config when:
+Today, `nova-workspace` may refresh build-tool-derived config (from cache or by invoking build
+tools, depending on `NovaConfig.build.mode`) when:
 
 - the workspace is loaded/reloaded with an empty `changed_files` list (initial load / forced reload),
   or
@@ -117,25 +118,34 @@ Note: build-tool-produced snapshot outputs under `.nova/` (including `.nova/quer
 are treated as **build changes** for reload purposes, but are **not** considered build-tool inputs,
 so they trigger a reload without immediately re-running Maven/Gradle.
 
-There is a `nova.toml` configuration surface for build integration:
+Whether Maven/Gradle are actually invoked is controlled by `NovaConfig.build` (`[build]` in
+`nova.toml`, with legacy alias `[build_integration]`):
 
 ```toml
 [build]
-enabled = true
-timeout_ms = 30000
+# Default is "auto" (use cached metadata only; do not run build tools on cache misses).
+mode = "on"        # "off" | "auto" | "on"
+timeout_ms = 120000
 
-# Optional per-tool toggles (only apply when build.enabled = true)
+# Optional per-tool overrides:
 [build.maven]
-enabled = true
+mode = "on"
+timeout_ms = 120000
 
 [build.gradle]
-enabled = true
+mode = "on"
+timeout_ms = 120000
 ```
 
-As of today, `nova-workspace` loads and validates this config (it is available under
-`LoadOptions.nova_config.build`), but it does **not** currently use it to gate build-tool invocation
-or configure timeouts. Time-bounding is controlled by the `CommandRunner` used by the workspace
-engine (`WorkspaceEngineConfig.build_runner`).
+Notes:
+
+- `mode = "auto"` is the default to avoid surprising slow startup costs; it uses cached build
+  metadata when available but does not invoke Maven/Gradle when the cache is missing.
+- `mode = "on"` enables build-tool invocations during workspace load/reload (time-bounded by the
+  configured `timeout_ms`).
+- If a workspace host provides a custom `WorkspaceEngineConfig.build_runner`, it controls timeout
+  semantics; `nova-workspace` applies `NovaConfig.build.*timeout_ms` only when using the default
+  runner.
 
 Tradeoffs of invoking build tools:
 
