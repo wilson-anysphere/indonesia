@@ -676,12 +676,12 @@ fn initialize_result_json() -> serde_json::Value {
             "implementationProvider": true,
             "declarationProvider": true,
             "typeDefinitionProvider": true,
+            "referencesProvider": true,
             "documentHighlightProvider": true,
             "foldingRangeProvider": { "lineFoldingOnly": true },
             "selectionRangeProvider": true,
             "callHierarchyProvider": true,
             "typeHierarchyProvider": true,
-            "referencesProvider": true,
             "diagnosticProvider": {
                 "identifier": "nova",
                 "interFileDependencies": false,
