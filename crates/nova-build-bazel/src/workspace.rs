@@ -9,6 +9,7 @@ use std::{
     fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
+    sync::OnceLock,
 };
 
 #[cfg(feature = "bsp")]
@@ -114,6 +115,7 @@ impl BazelWorkspaceDiscovery {
 #[derive(Debug)]
 pub struct BazelWorkspace<R: CommandRunner> {
     root: PathBuf,
+    canonical_root: OnceLock<std::result::Result<PathBuf, String>>,
     runner: R,
     cache_path: Option<PathBuf>,
     cache: BazelCache,
@@ -130,6 +132,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     pub fn new(root: PathBuf, runner: R) -> Result<Self> {
         Ok(Self {
             root,
+            canonical_root: OnceLock::new(),
             runner,
             cache_path: None,
             cache: BazelCache::default(),
@@ -356,12 +359,18 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 // If the workspace root is a symlink, callers may pass canonical paths (e.g.
                 // editors that normalize paths). Fall back to canonicalization to avoid incorrectly
                 // rejecting files that are logically inside the workspace.
-                let root_canon = fs::canonicalize(&self.root).with_context(|| {
-                    format!(
-                        "failed to canonicalize Bazel workspace root {}",
-                        self.root.display()
-                    )
-                })?;
+                let root_canon = self.canonical_root.get_or_init(|| {
+                    fs::canonicalize(&self.root).map_err(|err| {
+                        format!(
+                            "failed to canonicalize Bazel workspace root {}: {err}",
+                            self.root.display()
+                        )
+                    })
+                });
+                let root_canon = match root_canon {
+                    Ok(path) => path,
+                    Err(message) => bail!("{message}"),
+                };
 
                 // First try a purely lexical prefix check against the canonical workspace root.
                 // This supports non-existent files (e.g. new files) as long as the path is
