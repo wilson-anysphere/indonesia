@@ -8805,6 +8805,8 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     };
 
     let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
+    // Always validate the incoming selection range (UTF-16 correctness, in-bounds) so we can
+    // produce deterministic errors when clients send malformed ranges.
     let selection_range =
         insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
 

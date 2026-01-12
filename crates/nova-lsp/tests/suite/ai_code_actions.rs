@@ -715,6 +715,7 @@ fn stdio_server_generate_tests_prompt_includes_target_and_source_when_editing_de
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
+            .body_contains("File: src/test/java/com/example/CalculatorTest.java")
             .body_contains("Test target:")
             .body_contains(expected_target)
             .body_contains("Selected source snippet:")
