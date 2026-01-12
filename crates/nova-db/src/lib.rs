@@ -10,6 +10,9 @@
 //!   parsing and per-file structural summaries.
 //! - [`salsa`]: the Salsa-powered incremental query database and snapshot
 //!   concurrency model described in `docs/04-incremental-computation.md`.
+//!
+//! See `docs/19-database-interfaces.md` for guidance on when to use
+//! [`SourceDatabase`] vs the legacy [`Database`] trait.
 
 mod query_cache;
 pub use query_cache::{PersistentQueryCache, QueryCache};
