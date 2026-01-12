@@ -8,4 +8,3 @@ mod suite;
 // Type-checker specific tests that don't fit the broader suite harness.
 #[path = "typeck/diagnostics.rs"]
 mod diagnostics;
-

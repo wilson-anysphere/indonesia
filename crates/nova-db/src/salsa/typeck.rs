@@ -284,9 +284,11 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     };
 
     let resolver = if let Some(index) = jpms_index.as_ref() {
-        nova_resolve::Resolver::new(index)
+        nova_resolve::Resolver::new(index).with_workspace(&workspace)
     } else {
-        nova_resolve::Resolver::new(&*jdk).with_classpath(&workspace_index)
+        nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&workspace_index)
+            .with_workspace(&workspace)
     };
 
     let scopes = db.scope_graph(file);
