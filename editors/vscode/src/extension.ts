@@ -26,6 +26,7 @@ import {
   resetNovaExperimentalCapabilities,
   setNovaExperimentalCapabilities,
 } from './novaCapabilities';
+import { sendRequestWithOptionalToken } from './novaRequest';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import { getNovaConfigChangeEffects } from './configChange';
@@ -468,7 +469,12 @@ export async function activate(context: vscode.ExtensionContext) {
       sendRequest: async (type, param, token, next) => {
         try {
           const result = await next(type, param, token);
-          if (typeof type === 'string' && type.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(type)) {
+          if (
+            typeof type === 'string' &&
+            type.startsWith('nova/') &&
+            !SAFE_MODE_EXEMPT_REQUESTS.has(type) &&
+            !token?.isCancellationRequested
+          ) {
             setSafeModeEnabled?.(false);
           }
           return result;
@@ -1289,9 +1295,9 @@ export async function activate(context: vscode.ExtensionContext) {
     context,
     testController,
     sendNovaRequest,
-    async () => {
+    async (token?: vscode.CancellationToken) => {
       if (testController && testController.items.size === 0) {
-        await refreshTests();
+        await refreshTests(undefined, { token });
       }
     },
     (id) => {
@@ -1479,9 +1485,9 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         const resp = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: 'Nova: Generating bug report…' },
-          async () => {
-            return await sendNovaRequest<BugReportResponse>(method, params);
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Generating bug report…', cancellable: true },
+          async (_progress, token) => {
+            return await sendNovaRequest<BugReportResponse>(method, params, { token });
           },
         );
         if (!resp) {
@@ -2182,7 +2188,7 @@ export function deactivate(): Thenable<void> | undefined {
   return client.stop().catch(() => undefined);
 }
 
-async function requireClient(): Promise<LanguageClient> {
+async function requireClient(_opts?: { token?: vscode.CancellationToken }): Promise<LanguageClient> {
   if (!client && ensureClientStarted) {
     await ensureClientStarted({ promptForInstall: true });
   }
@@ -2200,6 +2206,7 @@ type SendNovaRequestOptions = {
    * fallback request (e.g. alias methods).
    */
   allowMethodFallback?: boolean;
+  token?: vscode.CancellationToken;
 };
 
 function createMethodNotFoundError(method: string): Error & { code: number } {
@@ -2213,7 +2220,8 @@ async function sendNovaRequest<R>(
   params?: unknown,
   opts: SendNovaRequestOptions = {},
 ): Promise<R | undefined> {
-  const c = await requireClient();
+  const token = opts.token;
+  const c = await requireClient({ token });
   if (method.startsWith('nova/')) {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     const routedWorkspaceKey = routeWorkspaceFolderUri({
@@ -2241,9 +2249,8 @@ async function sendNovaRequest<R>(
     }
   }
   try {
-    const result =
-      typeof params === 'undefined' ? await c.sendRequest<R>(method) : await c.sendRequest<R>(method, params);
-    if (method.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(method)) {
+    const result = await sendRequestWithOptionalToken<R>(c, method, params, token);
+    if (method.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(method) && !token?.isCancellationRequested) {
       setSafeModeEnabled?.(false);
     }
     return result;
@@ -2267,12 +2274,21 @@ type DiscoveredWorkspaceTests = { workspaceFolder: vscode.WorkspaceFolder; respo
 
 async function discoverTestsForWorkspaces(
   workspaces: readonly vscode.WorkspaceFolder[],
+  opts?: { token?: vscode.CancellationToken },
 ): Promise<DiscoveredWorkspaceTests[] | undefined> {
   const discovered: DiscoveredWorkspaceTests[] = [];
+  const token = opts?.token;
   for (const workspace of workspaces) {
-    const response = await sendNovaRequest<DiscoverResponse | undefined>('nova/test/discover', {
-      projectRoot: workspace.uri.fsPath,
-    });
+    if (token?.isCancellationRequested) {
+      break;
+    }
+    const response = await sendNovaRequest<DiscoverResponse>(
+      'nova/test/discover',
+      {
+        projectRoot: workspace.uri.fsPath,
+      },
+      { token },
+    );
     if (!response) {
       return undefined;
     }
@@ -2281,7 +2297,10 @@ async function discoverTestsForWorkspaces(
   return discovered;
 }
 
-async function refreshTests(discovered?: DiscoverResponse | DiscoveredWorkspaceTests[]): Promise<void> {
+async function refreshTests(
+  discovered?: DiscoverResponse | DiscoveredWorkspaceTests[],
+  opts?: { token?: vscode.CancellationToken },
+): Promise<void> {
   if (!testController) {
     return;
   }
@@ -2297,14 +2316,14 @@ async function refreshTests(discovered?: DiscoverResponse | DiscoveredWorkspaceT
   } else if (discovered) {
     discoveredWorkspaces = [{ workspaceFolder: workspaces[0], response: discovered }];
     if (workspaces.length > 1) {
-      const remaining = await discoverTestsForWorkspaces(workspaces.slice(1));
+      const remaining = await discoverTestsForWorkspaces(workspaces.slice(1), opts);
       if (!remaining) {
         return;
       }
       discoveredWorkspaces = [...discoveredWorkspaces, ...remaining];
     }
   } else {
-    discoveredWorkspaces = await discoverTestsForWorkspaces(workspaces);
+    discoveredWorkspaces = await discoverTestsForWorkspaces(workspaces, opts);
   }
 
   if (!discoveredWorkspaces) {
@@ -2385,7 +2404,7 @@ async function runTestsFromTestExplorer(
   }
 
   if (testController.items.size === 0) {
-    await refreshTests();
+    await refreshTests(undefined, { token });
   }
 
   const run = testController.createTestRun(request);
@@ -2442,11 +2461,15 @@ async function runTestsFromTestExplorer(
         break;
       }
 
-      const resp = await sendNovaRequest<RunResponse | undefined>('nova/test/run', {
-        projectRoot: entry.projectRoot,
-        buildTool: await getTestBuildTool(entry.workspaceFolder),
-        tests: entry.lspIds,
-      });
+      const resp = await sendNovaRequest<RunResponse>(
+        'nova/test/run',
+        {
+          projectRoot: entry.projectRoot,
+          buildTool: await getTestBuildTool(entry.workspaceFolder),
+          tests: entry.lspIds,
+        },
+        { token },
+      );
       if (!resp) {
         return;
       }

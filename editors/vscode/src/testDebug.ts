@@ -5,7 +5,11 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { token?: vscode.CancellationToken },
+) => Promise<R | undefined>;
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
 
@@ -224,11 +228,11 @@ async function debugTestsFromTestExplorer(
   controller: vscode.TestController,
   output: vscode.OutputChannel,
   novaRequest: NovaRequest,
-  ensureTestsDiscovered: () => Promise<void>,
+  ensureTestsDiscovered: (token?: vscode.CancellationToken) => Promise<void>,
   resolveTestTarget: (id: string) => ResolvedTestTarget | undefined,
   processesByRunId: Map<string, SpawnedProcess>,
 ): Promise<void> {
-  await ensureTestsDiscovered();
+  await ensureTestsDiscovered(token);
 
   const exclude = request.exclude ?? [];
   const excludeIds = new Set(collectLeafIds(exclude));
@@ -281,11 +285,15 @@ async function debugTestsFromTestExplorer(
     const workspaceFolder = target.workspaceFolder;
     const buildTool = await getBuildToolFromUser(workspaceFolder);
 
-    const resp = (await novaRequest('nova/test/debugConfiguration', {
-      projectRoot: target.projectRoot,
-      buildTool,
-      test: testId,
-    })) as TestDebugResponse | undefined;
+    const resp = (await novaRequest(
+      'nova/test/debugConfiguration',
+      {
+        projectRoot: target.projectRoot,
+        buildTool,
+        test: testId,
+      },
+      { token },
+    )) as TestDebugResponse | undefined;
     if (!resp) {
       if (item) {
         run.skipped(item);
