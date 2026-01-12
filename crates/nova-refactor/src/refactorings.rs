@@ -3931,8 +3931,13 @@ fn find_replace_all_occurrences_same_execution_context(
         .ancestors()
         .find_map(ast::ClassBody::cast);
 
-    // Restrict to the closest statement-list-like scope to avoid replacing across execution entry
-    // points (e.g. traditional `switch` case groups) or into unrelated scopes.
+    // Restrict to the closest statement-list-like scope to avoid replacing occurrences where the
+    // extracted local would not be visible *or* would not have been evaluated yet.
+    //
+    // `switch` case groups (`case 1: ...`) are special: a local declared in one case group is in
+    // scope until the end of the switch block, but execution can jump directly to a later case
+    // label without running the earlier case group's statements. Replacing occurrences in other
+    // case groups would reference a local that was never initialized.
     let search_root = insertion_stmt
         .syntax()
         .ancestors()

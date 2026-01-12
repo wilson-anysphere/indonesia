@@ -780,7 +780,7 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
     let edit = extract_variable(
         &db,
         ExtractVariableParams {
-            file: file.clone(),
+            file,
             expr_range,
             name: "value".into(),
             use_var: true,
