@@ -138,7 +138,7 @@ If validation fails, the snapshot is ignored and Nova falls back to heuristics.
 `nova-build` also treats a fingerprint mismatch as “stale snapshot”: it will reset the in-memory
 snapshot object and write a fresh file for the new fingerprint the next time it updates any fields.
 
-### Build fingerprint inputs (must stay in sync)
+### Build fingerprint inputs (shared)
 
 `buildFingerprint` is computed by hashing the **relative path** and **file contents** of a set of
 Gradle build inputs (with `NUL` separators). The file set is discovered by walking the workspace
@@ -172,11 +172,13 @@ Included inputs (current implementation, shared via `nova-build-model`):
 Implementation references:
 
 - canonical (shared by writer + reader): `crates/nova-build-model/src/build_files.rs`
-  (`collect_gradle_build_files`, `BuildFileFingerprint::from_files`)
+  (`collect_gradle_build_files`, `BuildFileFingerprint`)
 - writer entry point: `crates/nova-build/src/gradle.rs` (`gradle_build_fingerprint`)
 - reader entry point: `crates/nova-project/src/gradle.rs` (`gradle_build_fingerprint`)
 
-These must remain aligned: if the file set diverges, `nova-project` will treat snapshots as stale.
+Because the fingerprinting logic is shared via `nova-build-model`, `nova-build` (writer) and
+`nova-project` (reader) stay aligned by construction. If you change what counts as a “Gradle build
+input”, existing snapshots will be treated as stale until they are regenerated.
 
 If you change what counts as a “Gradle build input”, also consider whether file watching should
 treat the same paths as **build changes** (so the workspace reloads when those inputs change). In
