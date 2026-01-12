@@ -5051,6 +5051,32 @@ fn record_lightweight_expr(
 ) {
     use java_syntax::ast::Expr;
     match expr {
+        Expr::ArrayCreation(array) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(array.elem_ty.range.start, array.elem_ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for dim_expr in &array.dim_exprs {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    dim_expr,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
         Expr::New(new_expr) => {
             record_type_names_in_range(
                 file,
