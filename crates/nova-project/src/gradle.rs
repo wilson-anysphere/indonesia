@@ -911,7 +911,6 @@ pub(crate) fn load_gradle_workspace_model(
                 path: entry.clone(),
             });
         }
-
         let project_path = module_ref.project_path.as_str();
         let mut ctx_root_project_path = ":";
         let mut ctx_props = &gradle_properties;
@@ -932,6 +931,15 @@ pub(crate) fn load_gradle_workspace_model(
         }
 
         let mut dependencies = parse_gradle_dependencies(&module_root, ctx_catalog, ctx_props);
+        // The root build script often declares dependency blocks under `subprojects { ... }`.
+        // Those dependencies should apply to subprojects, not to the root project itself.
+        //
+        // Since our dependency extraction is regex-based (and doesn't model Gradle's scoping
+        // semantics), best-effort filter those `subprojects` dependencies out of the root module
+        // for each build context (main build, included builds, buildSrc).
+        if project_path == ctx_root_project_path {
+            retain_dependencies_not_in(&mut dependencies, ctx_root_subprojects_deps);
+        }
         dependencies.extend(ctx_root_common_deps.iter().cloned());
         if project_path != ctx_root_project_path {
             dependencies.extend(ctx_root_subprojects_deps.iter().cloned());

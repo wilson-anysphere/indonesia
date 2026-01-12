@@ -83,3 +83,63 @@ fn gradle_root_subprojects_dependencies_propagate_into_modules() {
         );
     }
 }
+
+#[test]
+fn gradle_subprojects_dependencies_do_not_apply_to_root_module() {
+    let root = testdata_path("gradle-root-subprojects-deps-with-root-module");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    let root_module = model.module_by_id("gradle::").expect("root module");
+    assert!(
+        !root_module.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected root module dependencies to omit guava from root subprojects block"
+    );
+
+    for id in ["gradle::app", "gradle::lib"] {
+        let module = model.module_by_id(id).expect("module");
+        assert!(
+            module.dependencies.iter().any(|d| {
+                d.group_id == "com.google.guava"
+                    && d.artifact_id == "guava"
+                    && d.version.as_deref() == Some("33.0.0-jre")
+            }),
+            "expected {id} to include guava from root subprojects block"
+        );
+    }
+}
+
+#[test]
+fn gradle_allprojects_dependencies_apply_to_root_module() {
+    let root = testdata_path("gradle-root-allprojects-deps-with-root-module");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    for id in ["gradle::", "gradle::app", "gradle::lib"] {
+        let module = model.module_by_id(id).expect("module");
+        assert!(
+            module.dependencies.iter().any(|d| {
+                d.group_id == "com.google.guava"
+                    && d.artifact_id == "guava"
+                    && d.version.as_deref() == Some("33.0.0-jre")
+            }),
+            "expected {id} to include guava from root allprojects block"
+        );
+    }
+}
