@@ -614,7 +614,19 @@ function compareMicronautEndpoint(a: MicronautEndpoint, b: MicronautEndpoint): n
     return classCmp;
   }
 
-  return a.handler.methodName.localeCompare(b.handler.methodName);
+  const methodNameCmp = a.handler.methodName.localeCompare(b.handler.methodName);
+  if (methodNameCmp !== 0) {
+    return methodNameCmp;
+  }
+
+  const fileCmp = a.handler.file.localeCompare(b.handler.file);
+  if (fileCmp !== 0) {
+    return fileCmp;
+  }
+
+  const aStart = typeof a.handler.span?.start === 'number' ? a.handler.span.start : 0;
+  const bStart = typeof b.handler.span?.start === 'number' ? b.handler.span.start : 0;
+  return aStart - bStart;
 }
 
 function compareMicronautBean(a: MicronautBean, b: MicronautBean): number {
@@ -628,5 +640,17 @@ function compareMicronautBean(a: MicronautBean, b: MicronautBean): number {
     return tyCmp;
   }
 
-  return a.file.localeCompare(b.file);
+  const fileCmp = a.file.localeCompare(b.file);
+  if (fileCmp !== 0) {
+    return fileCmp;
+  }
+
+  const idCmp = a.id.localeCompare(b.id);
+  if (idCmp !== 0) {
+    return idCmp;
+  }
+
+  const aStart = typeof a.span?.start === 'number' ? a.span.start : 0;
+  const bStart = typeof b.span?.start === 'number' ? b.span.start : 0;
+  return aStart - bStart;
 }
