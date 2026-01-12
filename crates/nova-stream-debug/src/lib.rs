@@ -1121,6 +1121,33 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_double_stream_chain() {
+        let expr = "DoubleStream.of(1.0, 2.0).map(x -> x + 1).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "DoubleStream");
+                assert_eq!(stream_expr, "DoubleStream.of(1.0, 2.0)");
+                assert_eq!(method, "of");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::DoubleStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
     fn sample_suffix_boxes_primitive_streams() {
         assert_eq!(
             sample_suffix(StreamValueKind::Stream, 5),
@@ -1211,6 +1238,80 @@ mod tests {
         assert_eq!(
             result.terminal.as_ref().unwrap().value.as_deref(),
             Some("3")
+        );
+    }
+
+    #[test]
+    fn debug_double_stream_evaluates_each_stage_with_mock_jdwp() {
+        let expr = "DoubleStream.of(1.0, 2.0).map(x -> x + 1).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "DoubleStream.of(1.0, 2.0).limit(3).boxed().collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 30,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            30,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![JdwpValue::Double(1.0), JdwpValue::Double(2.0)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "DoubleStream.of(1.0, 2.0).map(x -> x + 1).limit(3).boxed().collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 31,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            31,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![JdwpValue::Double(2.0), JdwpValue::Double(3.0)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "DoubleStream.of(1.0, 2.0).map(x -> x + 1).limit(3).count()",
+            Ok(JdwpValue::Long(2)),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+
+        assert_eq!(result.source_sample.elements, vec!["1", "2"]);
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].output.elements, vec!["2", "3"]);
+        assert_eq!(
+            result.terminal.as_ref().unwrap().value.as_deref(),
+            Some("2")
         );
     }
 
