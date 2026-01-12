@@ -99,3 +99,35 @@ fn bsp_request_times_out_when_server_hangs() {
         "expected method name in error, got: {message}"
     );
 }
+
+#[test]
+fn bsp_connect_timeout_is_handshake_only() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _connect_timeout_guard = EnvVarGuard::set("NOVA_BSP_CONNECT_TIMEOUT_MS", Some("200"));
+    let _request_timeout_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", Some("1000"));
+
+    let root = tempdir().unwrap();
+
+    let fake_server_path = env!("CARGO_BIN_EXE_fake_bsp_server");
+    let config = BspServerConfig {
+        program: fake_server_path.to_string(),
+        args: Vec::new(),
+    };
+
+    let mut workspace = BspWorkspace::connect(root.path().to_path_buf(), config).unwrap();
+
+    // If the connect timeout was (incorrectly) applied as a lifetime timeout, this would
+    // likely kill the server before the next request.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let err = workspace
+        .build_targets()
+        .expect_err("fake server should not implement buildTargets");
+    let message = err.to_string();
+
+    // We expect a JSON-RPC method-not-found error, not a transport error like "closed the connection".
+    assert!(
+        message.contains("method not found") || message.contains("method not supported"),
+        "expected method-not-found error, got: {message}"
+    );
+}
