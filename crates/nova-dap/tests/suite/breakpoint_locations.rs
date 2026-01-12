@@ -1,6 +1,4 @@
-mod harness;
-
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -53,4 +51,3 @@ async fn breakpoint_locations_discovers_executable_statement_lines() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-
