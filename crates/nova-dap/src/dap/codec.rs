@@ -2,7 +2,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 
-use super::MAX_DAP_MESSAGE_BYTES;
+/// Maximum allowed DAP message payload size (in bytes).
+///
+/// DAP clients are untrusted. Without an upper bound, a hostile client can send a
+/// huge `Content-Length` header and trigger an unbounded allocation before we
+/// attempt to read the body.
+pub const MAX_DAP_MESSAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 /// Read a single DAP-framed JSON message from `reader`.
 ///
