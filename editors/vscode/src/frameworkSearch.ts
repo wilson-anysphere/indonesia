@@ -9,7 +9,8 @@ type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-
 interface WebEndpoint {
   path: string;
   methods: string[];
-  file: string;
+  // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
+  file?: string | null;
   line: number; // 1-based
 }
 

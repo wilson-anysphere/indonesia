@@ -5,7 +5,8 @@ import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT, uriFromFileLike } from './frameworkDas
 type WebEndpoint = {
   path: string;
   methods: string[];
-  file: string;
+  // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
+  file?: string | null;
   line: number;
 };
 
@@ -93,7 +94,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
     item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
-    item.tooltip = `${endpoint.file}:${endpoint.line}`;
+    const file = typeof endpoint.file === 'string' && endpoint.file.length > 0 ? endpoint.file : undefined;
+    item.tooltip = file ? `${file}:${endpoint.line}` : 'Location unavailable';
 
     const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
     if (uri) {
@@ -227,7 +229,6 @@ async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): P
     throw err;
   }
 }
-
 function formatError(err: unknown): string {
   if (err instanceof Error) {
     return err.message;
