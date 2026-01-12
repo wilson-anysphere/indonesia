@@ -79,12 +79,20 @@ function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; projectR
       return vscode.Uri.file(path.join(projectRoot, raw));
     }
 
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      return joinPathForUri(workspaceFolder.uri, raw);
+    // Avoid guessing in multi-root workspaces: resolving against the "first" workspace folder can
+    // open unrelated paths. Prefer returning `undefined` unless we have a strong hint.
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    if (workspaceFolders.length === 1) {
+      return joinPathForUri(workspaceFolders[0].uri, raw);
     }
 
-    return vscode.Uri.file(path.resolve(raw));
+    const activeEditorUri = vscode.window.activeTextEditor?.document.uri;
+    const activeWorkspaceFolder = activeEditorUri ? vscode.workspace.getWorkspaceFolder(activeEditorUri) : undefined;
+    if (activeWorkspaceFolder) {
+      return joinPathForUri(activeWorkspaceFolder.uri, raw);
+    }
+
+    return undefined;
   }
 
   // Absolute path: if we have a base URI with a non-file scheme, best-effort use it.
@@ -161,21 +169,52 @@ function projectRootFromItem(item: unknown): string | undefined {
   return asNonEmptyString(obj.projectRoot) ?? asNonEmptyString(obj.project_root);
 }
 
+function workspaceFolderUriFromItem(item: unknown): vscode.Uri | undefined {
+  const obj = asRecord(item);
+  if (!obj) {
+    return undefined;
+  }
+
+  const candidate = obj.workspaceFolder;
+  if (!candidate) {
+    return undefined;
+  }
+
+  if (candidate instanceof vscode.Uri) {
+    return candidate;
+  }
+
+  const candidateRecord = asRecord(candidate);
+  if (!candidateRecord) {
+    return undefined;
+  }
+
+  if (candidateRecord.uri instanceof vscode.Uri) {
+    return candidateRecord.uri;
+  }
+
+  const uriString = asNonEmptyString(candidateRecord.uri);
+  if (!uriString) {
+    return undefined;
+  }
+
+  try {
+    return vscode.Uri.parse(uriString);
+  } catch {
+    return undefined;
+  }
+}
+
 function fileUriFromItem(item: unknown): vscode.Uri | undefined {
   const obj = asRecord(item);
   if (!obj) {
     return undefined;
   }
 
-  const workspaceFolderUri =
-    typeof obj.workspaceFolder === 'object' &&
-    obj.workspaceFolder &&
-    (obj.workspaceFolder as { uri?: unknown }).uri instanceof vscode.Uri
-      ? ((obj.workspaceFolder as { uri: vscode.Uri }).uri as vscode.Uri)
-      : undefined;
+  const workspaceFolderUri = workspaceFolderUriFromItem(item);
 
-  const baseUri = workspaceFolderUri ?? (obj.baseUri instanceof vscode.Uri ? obj.baseUri : undefined);
-  const projectRoot = projectRootFromItem(item);
+  const baseUri = (obj.baseUri instanceof vscode.Uri ? obj.baseUri : undefined) ?? workspaceFolderUri;
+  const projectRoot = projectRootFromItem(item) ?? (workspaceFolderUri?.scheme === 'file' ? workspaceFolderUri.fsPath : undefined);
 
   const candidates: unknown[] = [
     obj.resourceUri,
