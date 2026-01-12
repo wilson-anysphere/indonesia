@@ -53,12 +53,13 @@ pub fn load_or_build_entry<F>(
     cache_dir: &Path,
     entry: &ClasspathEntry,
     fingerprint: ClasspathFingerprint,
+    target_release: Option<u16>,
     build: F,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError>
 where
     F: FnOnce() -> Result<Vec<ClasspathClassStub>, ClasspathError>,
 {
-    let cache_path = cache_file_path(cache_dir, fingerprint);
+    let cache_path = cache_file_path(cache_dir, fingerprint, target_release);
 
     // Best-effort persistence: failures and corruption degrade to a cache miss.
     let cached_entry = CachedClasspathEntry::from_entry(entry);
@@ -128,8 +129,15 @@ fn try_load(
     Some(value.stubs)
 }
 
-fn cache_file_path(cache_dir: &Path, fingerprint: ClasspathFingerprint) -> PathBuf {
-    cache_dir.join(format!("classpath-entry-{}.bin", fingerprint.to_hex()))
+fn cache_file_path(
+    cache_dir: &Path,
+    fingerprint: ClasspathFingerprint,
+    target_release: Option<u16>,
+) -> PathBuf {
+    match target_release {
+        Some(r) => cache_dir.join(format!("classpath-entry-{}-r{r}.bin", fingerprint.to_hex())),
+        None => cache_dir.join(format!("classpath-entry-{}.bin", fingerprint.to_hex())),
+    }
 }
 
 fn try_store(

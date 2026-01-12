@@ -81,6 +81,21 @@ pub struct IndexingStats {
     deps_cache_hits: AtomicUsize,
 }
 
+/// Options that control how classpath entries are indexed.
+///
+/// When `target_release` is set (e.g. the project's `--release` value),
+/// multi-release JARs (`META-INF/versions/<n>/...`) are resolved according to
+/// that release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IndexOptions {
+    /// Java feature release number (8, 11, 17, ...).
+    ///
+    /// When `None`, Nova preserves the legacy conservative behavior where base
+    /// entries always win and multi-release variants are only used when the base
+    /// class is missing.
+    pub target_release: Option<u16>,
+}
+
 impl IndexingStats {
     pub fn classfiles_parsed(&self) -> usize {
         self.classfiles_parsed.load(Ordering::Relaxed)
@@ -437,8 +452,16 @@ impl ClasspathIndex {
         entries: &[ClasspathEntry],
         cache_dir: Option<&Path>,
     ) -> Result<Self, ClasspathError> {
+        Self::build_with_options(entries, cache_dir, IndexOptions::default())
+    }
+
+    pub fn build_with_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        options: IndexOptions,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+        Self::build_with_deps_store_and_options(entries, cache_dir, deps_store.as_ref(), None, options)
     }
 
     pub fn build_with_deps_store(
@@ -446,6 +469,22 @@ impl ClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        Self::build_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_with_deps_store_and_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
@@ -456,15 +495,19 @@ impl ClasspathIndex {
                 ClasspathEntry::ClassDir(_) => {
                     let fingerprint = entry.fingerprint()?;
                     if let Some(cache_dir) = cache_dir {
-                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
-                            index_entry(&entry, deps_store, stats)
-                        })?
+                        persist::load_or_build_entry(
+                            cache_dir,
+                            &entry,
+                            fingerprint,
+                            options.target_release,
+                            || index_entry(&entry, deps_store, stats, options),
+                        )?
                     } else {
-                        index_entry(&entry, deps_store, stats)?
+                        index_entry(&entry, deps_store, stats, options)?
                     }
                 }
                 ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
-                    index_entry(&entry, deps_store, stats)?
+                    index_entry(&entry, deps_store, stats, options)?
                 }
             };
 
@@ -654,8 +697,16 @@ impl ModuleAwareClasspathIndex {
         entries: &[ClasspathEntry],
         cache_dir: Option<&Path>,
     ) -> Result<Self, ClasspathError> {
+        Self::build_with_options(entries, cache_dir, IndexOptions::default())
+    }
+
+    pub fn build_with_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        options: IndexOptions,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+        Self::build_with_deps_store_and_options(entries, cache_dir, deps_store.as_ref(), None, options)
     }
 
     pub fn build_with_deps_store(
@@ -663,6 +714,22 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        Self::build_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_with_deps_store_and_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
@@ -678,6 +745,7 @@ impl ModuleAwareClasspathIndex {
             cache_dir,
             deps_store,
             stats,
+            options,
             |entry| entry.module_meta(),
         )?;
 
@@ -699,8 +767,22 @@ impl ModuleAwareClasspathIndex {
         entries: &[ClasspathEntry],
         cache_dir: Option<&Path>,
     ) -> Result<Self, ClasspathError> {
+        Self::build_module_path_with_options(entries, cache_dir, IndexOptions::default())
+    }
+
+    pub fn build_module_path_with_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        options: IndexOptions,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_module_path_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+        Self::build_module_path_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store.as_ref(),
+            None,
+            options,
+        )
     }
 
     pub fn build_module_path_with_deps_store(
@@ -708,6 +790,22 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        Self::build_module_path_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_module_path_with_deps_store_and_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
@@ -723,6 +821,7 @@ impl ModuleAwareClasspathIndex {
             cache_dir,
             deps_store,
             stats,
+            options,
             |entry| entry.module_meta_for_module_path(),
         )?;
 
@@ -743,8 +842,22 @@ impl ModuleAwareClasspathIndex {
         entries: &[ClasspathEntry],
         cache_dir: Option<&Path>,
     ) -> Result<Self, ClasspathError> {
+        Self::build_classpath_with_options(entries, cache_dir, IndexOptions::default())
+    }
+
+    pub fn build_classpath_with_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        options: IndexOptions,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_classpath_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+        Self::build_classpath_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store.as_ref(),
+            None,
+            options,
+        )
     }
 
     pub fn build_classpath_with_deps_store(
@@ -752,6 +865,22 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        Self::build_classpath_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_classpath_with_deps_store_and_options(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
@@ -767,6 +896,7 @@ impl ModuleAwareClasspathIndex {
             cache_dir,
             deps_store,
             stats,
+            options,
             |_| {
                 Ok(EntryModuleMeta {
                     name: None,
@@ -794,13 +924,28 @@ impl ModuleAwareClasspathIndex {
         classpath_entries: &[ClasspathEntry],
         cache_dir: Option<&Path>,
     ) -> Result<Self, ClasspathError> {
+        Self::build_mixed_with_options(
+            module_path_entries,
+            classpath_entries,
+            cache_dir,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_mixed_with_options(
+        module_path_entries: &[ClasspathEntry],
+        classpath_entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        options: IndexOptions,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_mixed_with_deps_store(
+        Self::build_mixed_with_deps_store_and_options(
             module_path_entries,
             classpath_entries,
             cache_dir,
             deps_store.as_ref(),
             None,
+            options,
         )
     }
 
@@ -810,6 +955,24 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        Self::build_mixed_with_deps_store_and_options(
+            module_path_entries,
+            classpath_entries,
+            cache_dir,
+            deps_store,
+            stats,
+            IndexOptions::default(),
+        )
+    }
+
+    pub fn build_mixed_with_deps_store_and_options(
+        module_path_entries: &[ClasspathEntry],
+        classpath_entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
@@ -825,6 +988,7 @@ impl ModuleAwareClasspathIndex {
             cache_dir,
             deps_store,
             stats,
+            options,
             |entry| entry.module_meta_for_module_path(),
         )?;
 
@@ -837,6 +1001,7 @@ impl ModuleAwareClasspathIndex {
             cache_dir,
             deps_store,
             stats,
+            options,
             |_| {
                 Ok(EntryModuleMeta {
                     name: None,
@@ -892,6 +1057,7 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         deps_store: Option<&DependencyIndexStore>,
         stats: Option<&IndexingStats>,
+        options: IndexOptions,
         mut meta_fn: F,
     ) -> Result<(), ClasspathError>
     where
@@ -906,15 +1072,19 @@ impl ModuleAwareClasspathIndex {
                 ClasspathEntry::ClassDir(_) => {
                     let fingerprint = entry.fingerprint()?;
                     if let Some(cache_dir) = cache_dir {
-                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
-                            index_entry(&entry, deps_store, stats)
-                        })?
+                        persist::load_or_build_entry(
+                            cache_dir,
+                            &entry,
+                            fingerprint,
+                            options.target_release,
+                            || index_entry(&entry, deps_store, stats, options),
+                        )?
                     } else {
-                        index_entry(&entry, deps_store, stats)?
+                        index_entry(&entry, deps_store, stats, options)?
                     }
                 }
                 ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
-                    index_entry(&entry, deps_store, stats)?
+                    index_entry(&entry, deps_store, stats, options)?
                 }
             };
 
@@ -1084,20 +1254,29 @@ fn index_entry(
     entry: &ClasspathEntry,
     deps_store: Option<&DependencyIndexStore>,
     stats: Option<&IndexingStats>,
+    options: IndexOptions,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     match entry {
-        ClasspathEntry::ClassDir(dir) => index_class_dir(dir),
+        ClasspathEntry::ClassDir(dir) => index_class_dir(dir, options),
         ClasspathEntry::Jar(path) => {
-            index_zip_with_deps_cache(path, ZipKind::Jar, deps_store, stats)
+            index_zip_with_deps_cache(path, ZipKind::Jar, deps_store, stats, options)
         }
         ClasspathEntry::Jmod(path) => {
-            index_zip_with_deps_cache(path, ZipKind::Jmod, deps_store, stats)
+            index_zip_with_deps_cache(path, ZipKind::Jmod, deps_store, stats, options)
         }
     }
 }
 
-fn index_class_dir(dir: &Path) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
-    let mut out = Vec::new();
+fn index_class_dir(dir: &Path, options: IndexOptions) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+    // Exploded multi-release JARs typically include the manifest, but some build tooling may drop
+    // it when extracting. We treat the directory as multi-release if either:
+    // - the manifest opts into multi-release behavior, or
+    // - a `META-INF/versions` directory is present.
+    let is_multi_release =
+        dir_is_multi_release(dir) || dir.join("META-INF/versions").is_dir();
+
+    // Ensure deterministic directory iteration (WalkDir does not guarantee ordering).
+    let mut class_files: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
@@ -1109,14 +1288,67 @@ fn index_class_dir(dir: &Path) -> Result<Vec<ClasspathClassStub>, ClasspathError
         if entry.path().extension() != Some(OsStr::new("class")) {
             continue;
         }
+        class_files.push(entry.into_path());
+    }
+    class_files.sort();
 
-        let bytes = std::fs::read(entry.path())?;
+    let mut best: HashMap<String, (u32, ClasspathClassStub)> = HashMap::new();
+    let target_release = options.target_release.map(|r| r as u32);
+
+    for path in class_files {
+        let rel = path.strip_prefix(dir).unwrap_or(&path);
+        let mr_version = match mr_version_from_dir_path(rel, is_multi_release) {
+            Some(v) => v,
+            None => continue,
+        };
+        let version = mr_version.unwrap_or(0);
+
+        if let Some(target) = target_release {
+            if version > target {
+                continue;
+            }
+        }
+
+        let bytes = std::fs::read(&path)?;
         let cf = ClassFile::parse(&bytes)?;
         if is_ignored_class(&cf.this_class) {
             continue;
         }
-        out.push(stub_from_classfile(cf));
+        let stub = stub_from_classfile(cf);
+        let key = stub.binary_name.clone();
+
+        match target_release {
+            Some(_) => match best.get(&key) {
+                None => {
+                    best.insert(key, (version, stub));
+                }
+                Some((existing_version, _)) => {
+                    if version > *existing_version {
+                        best.insert(key, (version, stub));
+                    }
+                }
+            },
+            None => match best.get(&key) {
+                None => {
+                    best.insert(key, (version, stub));
+                }
+                Some((existing_version, _)) => {
+                    if *existing_version == 0 {
+                        // Base entry already exists; keep it.
+                        continue;
+                    }
+
+                    if version == 0 || version > *existing_version {
+                        // Prefer base over any MR entry, otherwise pick the highest MR version.
+                        best.insert(key, (version, stub));
+                    }
+                }
+            },
+        }
     }
+
+    let mut out: Vec<ClasspathClassStub> = best.into_values().map(|(_, stub)| stub).collect();
+    out.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
     Ok(out)
 }
 
@@ -1175,9 +1407,10 @@ fn index_zip_with_deps_cache(
     kind: ZipKind,
     deps_store: Option<&DependencyIndexStore>,
     stats: Option<&IndexingStats>,
+    options: IndexOptions,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     let Some(store) = deps_store else {
-        return index_zip(path, kind, stats);
+        return index_zip(path, kind, stats, options);
     };
 
     let jar_sha256 = match nova_deps_cache::sha256_hex(path) {
@@ -1185,11 +1418,16 @@ fn index_zip_with_deps_cache(
         Err(_) => {
             // If hashing fails for any reason, fall back to parsing without
             // caching (hashing reads the same underlying file).
-            return index_zip(path, kind, stats);
+            return index_zip(path, kind, stats, options);
         }
     };
 
-    match store.try_load(&jar_sha256) {
+    let jar_cache_key = match options.target_release {
+        Some(r) => format!("{jar_sha256}-r{r}"),
+        None => jar_sha256.clone(),
+    };
+
+    match store.try_load(&jar_cache_key) {
         Ok(Some(bundle)) => {
             record_deps_cache_hit(stats);
             return Ok(bundle
@@ -1202,9 +1440,9 @@ fn index_zip_with_deps_cache(
         Err(_) => {}
     }
 
-    let stubs = index_zip(path, kind, stats)?;
+    let stubs = index_zip(path, kind, stats, options)?;
 
-    let bundle = bundle_from_classpath_stubs(jar_sha256, &stubs);
+    let bundle = bundle_from_classpath_stubs(jar_cache_key, &stubs);
     // Best-effort cache write; indexing should still succeed if persistence fails.
     let _ = store.store(&bundle);
 
@@ -1215,6 +1453,7 @@ fn index_zip(
     path: &Path,
     kind: ZipKind,
     stats: Option<&IndexingStats>,
+    options: IndexOptions,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -1262,6 +1501,7 @@ fn index_zip(
             // This avoids accidentally overriding base classes when Nova doesn't
             // know the target JDK for the project.
             let mut best: HashMap<String, (u32, ClasspathClassStub)> = HashMap::new();
+            let target_release = options.target_release.map(|r| r as u32);
 
             for i in 0..archive.len() {
                 let mut file = archive.by_index(i)?;
@@ -1306,19 +1546,41 @@ fn index_zip(
                 let key = stub.binary_name.clone();
                 let version = mr_version.unwrap_or(0);
 
-                match best.get(&key) {
-                    None => {
-                        best.insert(key, (version, stub));
+                if let Some(target) = target_release {
+                    if version > target {
+                        // For release-aware indexing we ignore MR variants that are newer than the
+                        // target release. This also means classes that exist only in MR entries and
+                        // have no applicable version are omitted from the index.
+                        continue;
                     }
-                    Some((existing_version, _)) => {
-                        if *existing_version == 0 {
-                            // Base entry already exists; keep it.
-                            continue;
-                        }
 
-                        if version == 0 || version > *existing_version {
-                            // Prefer base over any MR entry, otherwise pick the highest MR version.
+                    match best.get(&key) {
+                        None => {
                             best.insert(key, (version, stub));
+                        }
+                        Some((existing_version, _)) => {
+                            if version > *existing_version {
+                                best.insert(key, (version, stub));
+                            }
+                        }
+                    }
+                } else {
+                    // Legacy conservative behavior: base wins; MR is only used when the base is
+                    // missing, preferring the highest MR version present.
+                    match best.get(&key) {
+                        None => {
+                            best.insert(key, (version, stub));
+                        }
+                        Some((existing_version, _)) => {
+                            if *existing_version == 0 {
+                                // Base entry already exists; keep it.
+                                continue;
+                            }
+
+                            if version == 0 || version > *existing_version {
+                                // Prefer base over any MR entry, otherwise pick the highest MR version.
+                                best.insert(key, (version, stub));
+                            }
                         }
                     }
                 }
@@ -1345,6 +1607,53 @@ fn jar_is_multi_release<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> boo
     }
 
     manifest_is_multi_release(&manifest)
+}
+
+fn dir_is_multi_release(dir: &Path) -> bool {
+    let manifest_path = dir.join("META-INF/MANIFEST.MF");
+    let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    manifest_is_multi_release(&manifest)
+}
+
+/// Determines the multi-release version for a `.class` file in an exploded (directory) entry.
+///
+/// Returns:
+/// - `Some(None)` for a base entry
+/// - `Some(Some(v))` for a multi-release entry under `META-INF/versions/<v>/...`
+/// - `None` when the file should be ignored (e.g. `META-INF/**` noise)
+fn mr_version_from_dir_path(rel: &Path, is_multi_release: bool) -> Option<Option<u32>> {
+    use std::path::Component;
+
+    let mut components = rel.components();
+    let Some(first) = components.next() else {
+        return None;
+    };
+
+    if matches!(first, Component::Normal(name) if name == "META-INF") {
+        if !is_multi_release {
+            return None;
+        }
+
+        let Some(second) = components.next() else {
+            return None;
+        };
+        if !matches!(second, Component::Normal(name) if name == "versions") {
+            return None;
+        }
+
+        let Some(version_component) = components.next() else {
+            return None;
+        };
+        let Component::Normal(version_component) = version_component else {
+            return None;
+        };
+        let version = version_component.to_str()?.parse::<u32>().ok()?;
+        return Some(Some(version));
+    }
+
+    Some(None)
 }
 
 fn manifest_is_multi_release(manifest: &str) -> bool {
@@ -1766,17 +2075,25 @@ mod tests {
         let entry = ClasspathEntry::Jar(test_jar()).normalize().unwrap();
         let fingerprint = entry.fingerprint().unwrap();
 
-        let stubs_first = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
-            index_entry(&entry, None, None)
-        })
+        let stubs_first = persist::load_or_build_entry(
+            tmp.path(),
+            &entry,
+            fingerprint,
+            None,
+            || index_entry(&entry, None, None, IndexOptions::default()),
+        )
         .unwrap();
         assert!(stubs_first
             .iter()
             .any(|s| s.binary_name == "com.example.dep.Foo"));
 
-        let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
-            panic!("expected cache hit, but builder was invoked")
-        })
+        let stubs_cached = persist::load_or_build_entry(
+            tmp.path(),
+            &entry,
+            fingerprint,
+            None,
+            || panic!("expected cache hit, but builder was invoked"),
+        )
         .unwrap();
 
         assert_eq!(stubs_first.len(), stubs_cached.len());
@@ -1792,17 +2109,27 @@ mod tests {
 
         let build_calls = AtomicUsize::new(0);
 
-        let stubs_first = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
-            build_calls.fetch_add(1, Ordering::Relaxed);
-            index_entry(&entry, None, None)
-        })
+        let stubs_first = persist::load_or_build_entry(
+            tmp.path(),
+            &entry,
+            fingerprint,
+            None,
+            || {
+                build_calls.fetch_add(1, Ordering::Relaxed);
+                index_entry(&entry, None, None, IndexOptions::default())
+            },
+        )
         .unwrap();
         assert_eq!(build_calls.load(Ordering::Relaxed), 1);
 
         // Ensure we're actually hitting the persisted cache.
-        let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
-            panic!("expected cache hit, but builder was invoked")
-        })
+        let stubs_cached = persist::load_or_build_entry(
+            tmp.path(),
+            &entry,
+            fingerprint,
+            None,
+            || panic!("expected cache hit, but builder was invoked"),
+        )
         .unwrap();
         assert_eq!(stubs_first.len(), stubs_cached.len());
 
@@ -1817,10 +2144,16 @@ mod tests {
         file.set_len(10).unwrap();
         drop(file);
 
-        let stubs_rebuilt = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
-            build_calls.fetch_add(1, Ordering::Relaxed);
-            index_entry(&entry, None, None)
-        })
+        let stubs_rebuilt = persist::load_or_build_entry(
+            tmp.path(),
+            &entry,
+            fingerprint,
+            None,
+            || {
+                build_calls.fetch_add(1, Ordering::Relaxed);
+                index_entry(&entry, None, None, IndexOptions::default())
+            },
+        )
         .unwrap();
         assert_eq!(build_calls.load(Ordering::Relaxed), 2);
         assert_eq!(stubs_first.len(), stubs_rebuilt.len());

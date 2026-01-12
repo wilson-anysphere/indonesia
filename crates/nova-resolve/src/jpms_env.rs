@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use nova_classpath::ClasspathEntry;
+use nova_classpath::{ClasspathEntry, IndexOptions};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
 
 #[derive(Debug, Clone)]
@@ -142,11 +142,33 @@ pub fn build_jpms_compilation_environment(
     classpath_entries: &[ClasspathEntry],
     cache_dir: Option<&Path>,
 ) -> Result<JpmsCompilationEnvironment> {
-    let env = build_jpms_environment(jdk, workspace, module_path_entries)?;
-    let classpath = nova_classpath::ModuleAwareClasspathIndex::build_mixed(
+    let options = IndexOptions {
+        target_release: jdk.info().api_release,
+    };
+    build_jpms_compilation_environment_with_options(
+        jdk,
+        workspace,
         module_path_entries,
         classpath_entries,
         cache_dir,
+        options,
+    )
+}
+
+pub fn build_jpms_compilation_environment_with_options(
+    jdk: &nova_jdk::JdkIndex,
+    workspace: Option<&nova_project::ProjectConfig>,
+    module_path_entries: &[ClasspathEntry],
+    classpath_entries: &[ClasspathEntry],
+    cache_dir: Option<&Path>,
+    options: IndexOptions,
+) -> Result<JpmsCompilationEnvironment> {
+    let env = build_jpms_environment(jdk, workspace, module_path_entries)?;
+    let classpath = nova_classpath::ModuleAwareClasspathIndex::build_mixed_with_options(
+        module_path_entries,
+        classpath_entries,
+        cache_dir,
+        options,
     )
     .context("failed to index classpath/module-path entries")?;
 
