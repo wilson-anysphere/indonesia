@@ -3032,6 +3032,21 @@ class User {
 }
 
 #[test]
+fn constructor_call_resolves_for_source_type() {
+    let src = r#"
+class C { C(int x) {} }
+class D { void m(){ new C(1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected constructor call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn class_ids_are_stable_across_files_for_jdk_nested_types() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -3098,6 +3113,21 @@ class B {
     assert_eq!(
         entry_a, entry_b,
         "expected stable ClassId for nested type java.util.Map$Entry"
+    );
+}
+
+#[test]
+fn constructor_call_mismatch_reports_diag() {
+    let src = r#"
+class C { C(int x) {} }
+class D { void m(){ new C("x"); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-constructor"),
+        "expected unresolved-constructor diagnostic; got {diags:?}"
     );
 }
 
@@ -3240,4 +3270,23 @@ class C {
             .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
         "expected unresolved-type diagnostic for `var` catch parameter; got {diags:?}"
     );
+}
+
+#[test]
+fn diamond_inference_for_new() {
+    let src = r#"
+import java.util.*;
+class C { void m(){ List<String> xs = new ArrayList<>(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("new ArrayList")
+        .expect("snippet should contain new ArrayList")
+        + "new ".len()
+        + "Array".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<String>");
 }

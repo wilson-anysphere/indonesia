@@ -17,10 +17,10 @@ use nova_syntax::JavaLanguageLevel;
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
-    CallKind, ClassDef, ClassId, ClassKind, ConstValue, Diagnostic, FieldDef, MethodCall,
-    MethodCandidateFailureReason, MethodDef, MethodNotFound, MethodResolution, PrimitiveType,
-    ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore,
-    TypeVarId, TypeWarning, UncheckedReason, WildcardBound,
+    CallKind, ClassDef, ClassId, ClassKind, ConstValue, ConstructorDef, Diagnostic, FieldDef,
+    MethodCall, MethodCandidateFailureReason, MethodDef, MethodNotFound, MethodResolution,
+    PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef, TypeProvider,
+    TypeStore, TypeVarId, TypeWarning, UncheckedReason, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -2187,6 +2187,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         };
 
         let mut fields = Vec::new();
+        let mut constructors = Vec::new();
         let mut methods = Vec::new();
 
         if let Some(members) = members {
@@ -2309,9 +2310,72 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             is_abstract: method.body.is_none(),
                         });
                     }
+                    nova_hir::item_tree::Member::Constructor(cid) => {
+                        let Some(ctor) = tree.constructors.get(&cid.ast_id) else {
+                            continue;
+                        };
+
+                        let scope = scopes
+                            .constructor_scopes
+                            .get(&cid)
+                            .copied()
+                            .unwrap_or(class_scope);
+
+                        // Best-effort: treat class type params as in-scope for constructor
+                        // signatures.
+                        let vars = class_vars.clone();
+
+                        let params = ctor
+                            .params
+                            .iter()
+                            .map(|p| {
+                                preload_type_names(
+                                    self.resolver,
+                                    &scopes.scopes,
+                                    scope,
+                                    loader,
+                                    &p.ty,
+                                );
+                                nova_resolve::type_ref::resolve_type_ref_text(
+                                    self.resolver,
+                                    &scopes.scopes,
+                                    scope,
+                                    &*loader.store,
+                                    &vars,
+                                    &p.ty,
+                                    None,
+                                )
+                                .ty
+                            })
+                            .collect::<Vec<_>>();
+
+                        let used_ellipsis = ctor
+                            .params
+                            .last()
+                            .is_some_and(|p| p.ty.as_str().contains("..."));
+                        let last_is_array =
+                            params.last().is_some_and(|t| matches!(t, Type::Array(_)));
+                        let is_varargs = used_ellipsis && last_is_array;
+
+                        let is_accessible = ctor.modifiers.raw & Modifiers::PRIVATE == 0;
+                        constructors.push(ConstructorDef {
+                            params,
+                            is_varargs,
+                            is_accessible,
+                        });
+                    }
                     _ => {}
                 }
             }
+        }
+
+        // Best-effort: Java default constructor for classes that declare none.
+        if kind == ClassKind::Class && constructors.is_empty() {
+            constructors.push(ConstructorDef {
+                params: Vec::new(),
+                is_varargs: false,
+                is_accessible: true,
+            });
         }
 
         loader.store.define_class(
@@ -2323,7 +2387,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 super_class,
                 interfaces: Vec::new(),
                 fields,
-                constructors: Vec::new(),
+                constructors,
                 methods,
             },
         );
@@ -2570,11 +2634,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ));
                     return;
                 };
-                let expected = (!expected_return.is_errorish()).then_some(expected_return.clone());
-                let expr_ty = self
-                    .infer_expr_with_expected(loader, *expr, expected.as_ref())
-                    .ty;
-                if *expected_return == Type::Void {
+                let expected =
+                    (!expected_return.is_errorish() && expected_return != &Type::Void)
+                        .then_some(expected_return);
+                let expr_ty = self.infer_expr_with_expected(loader, *expr, expected).ty;
+                if expected_return == &Type::Void {
                     self.diagnostics.push(Diagnostic::error(
                         "return-mismatch",
                         "cannot return a value from a `void` method",
@@ -3074,41 +3138,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 class_range,
                 args,
                 range,
-            } => {
-                for arg in args {
-                    let _ = self.infer_expr(loader, *arg);
-                }
-
-                let mut ty = self.resolve_source_type(loader, class.as_str(), Some(*class_range));
-                if is_diamond_type_ref_text(class.as_str()) {
-                    let class_id = match &ty {
-                        Type::Class(nova_types::ClassType { def, args }) if args.is_empty() => {
-                            Some(*def)
-                        }
-                        _ => None,
-                    };
-                    if let Some(class_id) = class_id {
-                        let env_ro: &dyn TypeEnv = &*loader.store;
-                        let inferred = infer_diamond_type_args(env_ro, class_id, expected);
-                        ty = Type::class(class_id, inferred);
-                    }
-                }
-
-                // Best-effort: recover array-ness for `new T[0]` expressions when the lowered type
-                // text only contains the base element type.
-                if !matches!(ty, Type::Array(_)) {
-                    if let Some(dims) = self.new_expr_array_dims(*class_range, *range) {
-                        for _ in 0..dims {
-                            ty = Type::Array(Box::new(ty));
-                        }
-                    }
-                }
-
-                ExprInfo {
-                    ty,
-                    is_type_ref: false,
-                }
-            }
+            } => self.infer_new_expr(
+                loader,
+                expr,
+                class.as_str(),
+                *class_range,
+                *range,
+                args,
+                expected,
+            ),
             HirExpr::Unary {
                 op, expr: operand, ..
             } => {
@@ -3627,6 +3665,118 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
 
         (dims > 0).then_some(dims)
+    }
+
+    fn infer_new_expr(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        expr: HirExprId,
+        class_text: &str,
+        class_range: Span,
+        expr_range: Span,
+        args: &[HirExprId],
+        expected: Option<&Type>,
+    ) -> ExprInfo {
+        let arg_types = args
+            .iter()
+            .map(|arg| self.infer_expr(loader, *arg).ty)
+            .collect::<Vec<_>>();
+
+        let raw_text = class_text.trim();
+        let used_diamond = is_diamond_type_ref_text(raw_text);
+        let resolved_text = if used_diamond {
+            let lt = raw_text.rfind('<').unwrap_or(raw_text.len());
+            raw_text[..lt].trim_end()
+        } else {
+            raw_text
+        };
+
+        // Resolve the class type. When diamond is used we strip the `<>` so the
+        // type-ref parser doesn't emit `invalid-type-ref` (it expects at least one
+        // type argument).
+        let mut class_ty = self.resolve_source_type(loader, resolved_text, Some(class_range));
+
+        // Array creation expressions use the same HIR node as class instantiation.
+        // Best-effort: recover array-ness for `new T[0]` expressions when the lowered type
+        // text only contains the base element type.
+        if matches!(class_ty, Type::Array(_)) {
+            return ExprInfo {
+                ty: class_ty,
+                is_type_ref: false,
+            };
+        }
+        if let Some(dims) = self.new_expr_array_dims(class_range, expr_range) {
+            for _ in 0..dims {
+                class_ty = Type::Array(Box::new(class_ty));
+            }
+            return ExprInfo {
+                ty: class_ty,
+                is_type_ref: false,
+            };
+        }
+
+        // Best-effort: ensure external classes are loaded so constructors are available.
+        self.ensure_type_loaded(loader, &class_ty);
+
+        let class_id = match &class_ty {
+            Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+            Type::Named(name) => loader.ensure_class(name),
+            _ => None,
+        };
+
+        let expected_target = expected.filter(|ty| !ty.is_errorish());
+        if let Some(expected_target) = expected_target {
+            self.ensure_type_loaded(loader, expected_target);
+        }
+
+        // Compute the instantiated type for the `new` expression.
+        let receiver_ty = match (class_id, &class_ty) {
+            (Some(def), _) if used_diamond => {
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let inferred = infer_diamond_type_args(env_ro, def, expected_target);
+                Type::class(def, inferred)
+            }
+            (Some(def), Type::Class(nova_types::ClassType { args, .. })) => {
+                Type::class(def, args.clone())
+            }
+            (Some(def), _) => Type::class(def, vec![]),
+            (None, _) => class_ty.clone(),
+        };
+
+        // Resolve the constructor call and emit diagnostics.
+        if let Some(def) = class_id {
+            let env_ro: &dyn TypeEnv = &*loader.store;
+            let expected_for_call = Some(&receiver_ty);
+            match nova_types::resolve_constructor_call(env_ro, def, &arg_types, expected_for_call) {
+                MethodResolution::Found(method) => {
+                    self.call_resolutions[expr.idx()] = Some(method);
+                }
+                MethodResolution::Ambiguous(amb) => {
+                    self.diagnostics.push(self.ambiguous_constructor_diag(
+                        env_ro,
+                        def,
+                        &amb.candidates,
+                        self.body.exprs[expr].range(),
+                    ));
+                    if let Some(first) = amb.candidates.first() {
+                        self.call_resolutions[expr.idx()] = Some(first.clone());
+                    }
+                }
+                MethodResolution::NotFound(not_found) => {
+                    self.diagnostics.push(self.unresolved_constructor_diag(
+                        env_ro,
+                        def,
+                        &not_found,
+                        self.body.exprs[expr].range(),
+                    ));
+                }
+            }
+        }
+
+        ExprInfo {
+            ty: receiver_ty,
+            is_type_ref: false,
+        }
     }
 
     fn infer_name(
@@ -4554,6 +4704,88 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         Diagnostic::error("unresolved-method", message, Some(span))
     }
 
+    fn unresolved_constructor_diag(
+        &self,
+        env: &dyn TypeEnv,
+        _class: nova_types::ClassId,
+        not_found: &MethodNotFound,
+        span: Span,
+    ) -> Diagnostic {
+        let ctor_name = format_type(env, &not_found.receiver);
+        let args = if not_found.args.is_empty() {
+            "()".to_string()
+        } else {
+            let rendered = not_found
+                .args
+                .iter()
+                .map(|t| format_type(env, t))
+                .collect::<Vec<_>>();
+            format!("({})", rendered.join(", "))
+        };
+
+        let mut message = format!("unresolved constructor `{ctor_name}` with arguments {args}");
+
+        if not_found.candidates.is_empty() {
+            return Diagnostic::error("unresolved-constructor", message, Some(span));
+        }
+
+        message.push_str("\n\ncandidates:");
+        for cand in not_found.candidates.iter().take(5) {
+            message.push_str("\n  - ");
+            message.push_str(&format_constructor_candidate_signature(
+                env,
+                &ctor_name,
+                &cand.candidate,
+            ));
+
+            if let Some(failure) = cand.failures.first() {
+                message.push_str("\n    ");
+                message.push_str(&format_method_candidate_failure_reason(env, &failure.reason));
+            }
+        }
+
+        if not_found.candidates.len() > 5 {
+            message.push_str(&format!(
+                "\n  ... and {} more",
+                not_found.candidates.len().saturating_sub(5)
+            ));
+        }
+
+        Diagnostic::error("unresolved-constructor", message, Some(span))
+    }
+
+    fn ambiguous_constructor_diag(
+        &self,
+        env: &dyn TypeEnv,
+        class: nova_types::ClassId,
+        candidates: &[ResolvedMethod],
+        span: Span,
+    ) -> Diagnostic {
+        let ctor_name = candidates
+            .first()
+            .map(|c| format_type(env, &c.return_type))
+            .unwrap_or_else(|| format_type(env, &Type::class(class, vec![])));
+
+        let mut message = format!("ambiguous constructor call `{ctor_name}`");
+        if candidates.is_empty() {
+            return Diagnostic::error("ambiguous-constructor", message, Some(span));
+        }
+
+        message.push_str("\n\ncandidates:");
+        for cand in candidates.iter().take(8) {
+            message.push_str("\n  - ");
+            message.push_str(&format_resolved_method(env, cand));
+        }
+        if candidates.len() > 8 {
+            message.push_str(&format!(
+                "\n  ... and {} more",
+                candidates.len().saturating_sub(8)
+            ));
+        }
+
+        Diagnostic::error("ambiguous-constructor", message, Some(span))
+    }
+
     fn ambiguous_call_diag(
         &self,
         env: &dyn TypeEnv,
@@ -5363,8 +5595,8 @@ fn define_source_types<'idx>(
             .insert(item, class_type_params.clone());
 
         let mut fields = Vec::new();
-        let mut methods = Vec::new();
         let mut constructors = Vec::new();
+        let mut methods = Vec::new();
         for member in item_members(tree, item) {
             match member {
                 nova_hir::item_tree::Member::Field(fid) => {
@@ -5491,20 +5723,37 @@ fn define_source_types<'idx>(
                                 &*loader.store,
                                 &vars,
                                 &p.ty,
-                                None,
+                                Some(p.ty_range),
                             )
                             .ty
                         })
                         .collect::<Vec<_>>();
 
-                    constructors.push(nova_types::ConstructorDef {
+                    let used_ellipsis = ctor
+                        .params
+                        .last()
+                        .is_some_and(|p| p.ty.as_str().contains("..."));
+                    let last_is_array = params.last().is_some_and(|t| matches!(t, Type::Array(_)));
+                    let is_varargs = used_ellipsis && last_is_array;
+
+                    let is_accessible = ctor.modifiers.raw & Modifiers::PRIVATE == 0;
+                    constructors.push(ConstructorDef {
                         params,
                         is_varargs,
-                        is_accessible: ctor.modifiers.raw & Modifiers::PRIVATE == 0,
+                        is_accessible,
                     });
                 }
                 _ => {}
             }
+        }
+
+        // Best-effort: Java default constructor for classes that declare none.
+        if matches!(item, nova_hir::ids::ItemId::Class(_)) && constructors.is_empty() {
+            constructors.push(ConstructorDef {
+                params: Vec::new(),
+                is_varargs: false,
+                is_accessible: true,
+            });
         }
 
         loader.store.define_class(
@@ -6050,6 +6299,33 @@ fn format_method_candidate_signature(
     out.push_str(&format_type(env, &cand.return_type));
     out.push(' ');
     out.push_str(&cand.name);
+    out.push('(');
+    for (idx, param) in cand.params.iter().enumerate() {
+        if idx != 0 {
+            out.push_str(", ");
+        }
+
+        if cand.is_varargs && idx == cand.params.len().saturating_sub(1) {
+            match param {
+                Type::Array(elem) => out.push_str(&format_type(env, elem)),
+                other => out.push_str(&format_type(env, other)),
+            }
+            out.push_str("...");
+        } else {
+            out.push_str(&format_type(env, param));
+        }
+    }
+    out.push(')');
+    out
+}
+
+fn format_constructor_candidate_signature(
+    env: &dyn TypeEnv,
+    ctor_name: &str,
+    cand: &nova_types::MethodCandidate,
+) -> String {
+    let mut out = String::new();
+    out.push_str(ctor_name);
     out.push('(');
     for (idx, param) in cand.params.iter().enumerate() {
         if idx != 0 {
