@@ -34,13 +34,13 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     let foo_uri = uri_for_path(&foo_path);
     let main_uri = uri_for_path(&main_path);
 
-    let foo_text = concat!("public class Foo {\n", "    public void bar() {}\n", "}\n",);
+    let foo_text = concat!("public class Foo {\n", "    public void foo() {}\n", "}\n",);
 
     let main_text = concat!(
         "public class Main {\n",
         "    public void test() {\n",
         "        Foo foo = new Foo();\n",
-        "        foo.bar();\n",
+        "        foo.foo();\n",
         "    }\n",
         "}\n",
     );
@@ -90,9 +90,9 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
         );
     }
 
-    let foo_def_offset = foo_text.find("class Foo").expect("Foo decl") + "class ".len();
+    let foo_def_offset = foo_text.find("void foo").expect("foo decl") + "void ".len();
     let foo_def_pos = utf16_position(foo_text, foo_def_offset);
-    let foo_usage_offset = main_text.find("Foo foo").expect("Foo usage");
+    let foo_usage_offset = main_text.find(".foo()").expect("foo usage") + ".".len();
     let foo_usage_pos = utf16_position(main_text, foo_usage_offset);
 
     // 1) includeDeclaration: false (should still return cross-file usage).
@@ -138,7 +138,7 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
                     .and_then(|v| v.as_u64())
                     == Some(foo_def_pos.character as u64)
         }),
-        "expected includeDeclaration=false to omit Foo declaration; got {locations:?}"
+        "expected includeDeclaration=false to omit foo declaration; got {locations:?}"
     );
 
     // 2) includeDeclaration: true (should include declaration).
@@ -170,7 +170,7 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
                     .and_then(|v| v.as_u64())
                     == Some(foo_def_pos.character as u64)
         }),
-        "expected includeDeclaration=true to include Foo declaration; got {locations:?}"
+        "expected includeDeclaration=true to include foo declaration; got {locations:?}"
     );
 
     // shutdown + exit

@@ -5556,11 +5556,28 @@ fn handle_references(
         return Ok(serde_json::Value::Null);
     }
 
-    let locations =
-        nova_ide::find_references(&state.analysis, file_id, position, include_declaration);
+    let mut locations = nova_ide::code_intelligence::find_references(
+        &state.analysis,
+        file_id,
+        position,
+        include_declaration,
+    );
     if locations.is_empty() {
         return Ok(serde_json::Value::Null);
     }
+
+    // Ensure deterministic results even when the underlying reference provider doesn't sort
+    // (e.g. framework-specific sources).
+    locations.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+            .then(a.range.end.line.cmp(&b.range.end.line))
+            .then(a.range.end.character.cmp(&b.range.end.character))
+    });
+    locations.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
 
     serde_json::to_value(locations).map_err(|e| (-32603, e.to_string()))
 }
