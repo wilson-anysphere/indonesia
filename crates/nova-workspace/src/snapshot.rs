@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use nova_core::ProjectDatabase;
 use nova_db::{Database, FileId, NovaInputs, SalsaDatabase, Snapshot};
@@ -226,7 +226,6 @@ pub(crate) struct WorkspaceDbView {
     empty_text: Arc<String>,
     file_contents: Mutex<HashMap<FileId, Arc<String>>>,
     file_paths: Mutex<HashMap<FileId, Option<PathBuf>>>,
-    all_file_ids: OnceLock<Vec<FileId>>,
 }
 
 impl WorkspaceDbView {
@@ -239,7 +238,6 @@ impl WorkspaceDbView {
             empty_text: Arc::new(String::new()),
             file_contents: Mutex::new(HashMap::new()),
             file_paths: Mutex::new(HashMap::new()),
-            all_file_ids: OnceLock::new(),
         }
     }
 
@@ -299,9 +297,9 @@ impl Database for WorkspaceDbView {
     }
 
     fn all_file_ids(&self) -> Vec<FileId> {
-        self.all_file_ids
-            .get_or_init(|| self.vfs.all_file_ids())
-            .clone()
+        // Prefer the Salsa-maintained `all_file_ids` list: it's already sorted and only contains
+        // file ids with initialized `file_content` inputs (so `file_content` lookups are panic-free).
+        self.salsa_file_ids.as_ref().clone()
     }
 
     fn file_id(&self, path: &Path) -> Option<FileId> {
