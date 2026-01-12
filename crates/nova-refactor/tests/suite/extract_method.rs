@@ -1809,6 +1809,46 @@ class C {
 }
 
 #[test]
+fn extract_method_infers_var_throw_type() {
+    let fixture = r#"
+class C {
+    void m() {
+        var e = new RuntimeException();
+        /*start*/throw e;/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "boom".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        var e = new RuntimeException();
+        boom(e);
+    }
+
+    private void boom(RuntimeException e) throws RuntimeException {
+        throw e;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_adds_throws_for_resource_var_throw() {
     let fixture = r#"
 class C {

@@ -370,7 +370,9 @@ impl ExtractMethod {
             let declared_types = collect_declared_types(source, &method, &method_body);
             let declared_types_by_name =
                 collect_declared_types_by_name(source, &method, &method_body);
+            let mut typeck: Option<SingleFileTypecheck> = None;
             let thrown_exceptions = collect_thrown_exceptions_in_statements(
+                &mut typeck,
                 source,
                 &selection_info.statements,
                 &declared_types_by_name,
@@ -379,7 +381,6 @@ impl ExtractMethod {
             let flow_params = collect_method_param_spans(&method);
             let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
 
-            let mut typeck: Option<SingleFileTypecheck> = None;
             // Flow IR statement spans include trivia in some cases (notably `if` statements),
             // while user selections are typically trimmed to non-trivia tokens. When analyzing
             // locals/CFG properties, expand the selection to cover the full syntax range of the
@@ -1895,6 +1896,7 @@ fn collect_declared_types_by_name(
 }
 
 fn collect_thrown_exceptions_in_statements(
+    typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     selection_statements: &[ast::Statement],
     declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
@@ -1908,7 +1910,8 @@ fn collect_thrown_exceptions_in_statements(
             .descendants()
             .filter_map(ast::ThrowStatement::cast)
         {
-            let Some(ty) = infer_thrown_exception_type(source, &throw_stmt, declared_types_by_name)
+            let Some(ty) =
+                infer_thrown_exception_type(typeck, source, &throw_stmt, declared_types_by_name)
             else {
                 continue;
             };
@@ -1922,15 +1925,17 @@ fn collect_thrown_exceptions_in_statements(
 }
 
 fn infer_thrown_exception_type(
+    typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     throw_stmt: &ast::ThrowStatement,
     declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
 ) -> Option<String> {
     let expr = throw_stmt.expression()?;
-    infer_thrown_exception_type_from_expr(source, &expr, declared_types_by_name)
+    infer_thrown_exception_type_from_expr(typeck, source, &expr, declared_types_by_name)
 }
 
 fn infer_thrown_exception_type_from_expr(
+    typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     expr: &ast::Expression,
     declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
@@ -1945,7 +1950,7 @@ fn infer_thrown_exception_type_from_expr(
     match expr {
         ast::Expression::ParenthesizedExpression(paren) => {
             let inner = paren.expression()?;
-            infer_thrown_exception_type_from_expr(source, &inner, declared_types_by_name)
+            infer_thrown_exception_type_from_expr(typeck, source, &inner, declared_types_by_name)
         }
         ast::Expression::NewExpression(new_expr) => {
             let ty = new_expr.ty()?;
@@ -2002,14 +2007,23 @@ fn infer_thrown_exception_type_from_expr(
                     break;
                 }
             }
-            best.and_then(|cand| {
-                let ty_text = strip_type_arguments(&cand.ty);
-                if ty_text.is_empty() || ty_text.contains('|') {
+            let best = best?;
+            let ty_text = strip_type_arguments(&best.ty);
+            if ty_text.is_empty() || ty_text.contains('|') {
+                return None;
+            }
+
+            if ty_text == "var" {
+                let inferred = infer_type_at_offsets(typeck, source, [use_offset])?;
+                let inferred = strip_type_arguments(inferred.trim());
+                if inferred.is_empty() || inferred.contains('|') {
                     None
                 } else {
-                    Some(ty_text.to_string())
+                    Some(inferred.to_string())
                 }
-            })
+            } else {
+                Some(ty_text.to_string())
+            }
         }
         _ => None,
     }
