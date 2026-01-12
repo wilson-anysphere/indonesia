@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, State, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
-import { WorkDoneProgress, type TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
+import { ExecuteCommandRequest, WorkDoneProgress, type TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { registerNovaBuildFileWatchers } from './buildFileWatch';
 import { registerNovaBuildIntegration } from './buildIntegration';
@@ -466,6 +466,90 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let serverCommandHandlers: NovaServerCommandHandlers | undefined;
 
+  // VS Code command IDs advertised via `executeCommandProvider.commands` must be registered
+  // exactly once. With multi-root, we run one `LanguageClient` per workspace folder, and
+  // vscode-languageclient's builtin `ExecuteCommandFeature` would otherwise attempt to register
+  // the same command IDs for every client, causing a fatal duplicate-registration error.
+  //
+  // Track the globally-registered command IDs and route invocations to the correct workspace
+  // using `sendNovaRequest`.
+  const registeredExecuteCommandIds = new Set<string>();
+
+  async function handleExecuteCommandFromServer(commandId: string, args: unknown[]): Promise<unknown> {
+    const handled = serverCommandHandlers?.dispatch(commandId, args);
+    if (handled) {
+      await handled;
+      return undefined;
+    }
+
+    const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command: commandId, arguments: args });
+    if (rewrittenAi) {
+      await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
+      return undefined;
+    }
+
+    const result = await sendNovaRequest<unknown>('workspace/executeCommand', { command: commandId, arguments: args });
+    if (commandId === 'nova.safeDelete' && isSafeDeletePreviewPayload(result)) {
+      await vscode.commands.executeCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, result);
+    }
+    return result;
+  }
+
+  function registerExecuteCommandId(commandId: string): void {
+    const trimmed = commandId.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (registeredExecuteCommandIds.has(trimmed)) {
+      return;
+    }
+    registeredExecuteCommandIds.add(trimmed);
+    context.subscriptions.push(
+      vscode.commands.registerCommand(trimmed, async (...args: unknown[]) => {
+        return await handleExecuteCommandFromServer(trimmed, args);
+      }),
+    );
+  }
+
+  function registerExecuteCommandIds(commands: unknown): void {
+    if (!Array.isArray(commands)) {
+      return;
+    }
+    for (const commandId of commands) {
+      if (typeof commandId !== 'string') {
+        continue;
+      }
+      registerExecuteCommandId(commandId);
+    }
+  }
+
+  function patchExecuteCommandFeature(languageClient: LanguageClient): void {
+    // vscode-languageclient auto-registers every server-advertised executeCommandProvider command
+    // ID via `vscode.commands.registerCommand(...)`. In a true multi-root setup, this results in
+    // the second `LanguageClient` crashing with a duplicate command registration error.
+    //
+    // Monkey patch the feature to (a) no-op per-client registrations and (b) instead register each
+    // command ID globally, once, routed through `sendNovaRequest`.
+    const feature = languageClient.getFeature(ExecuteCommandRequest.method) as unknown as
+      | {
+          register?: (data: unknown) => void;
+          unregister?: (id: string) => void;
+          clear?: () => void;
+        }
+      | undefined;
+
+    if (!feature?.register) {
+      return;
+    }
+
+    feature.register = (data: unknown) => {
+      const record = data as { registerOptions?: { commands?: unknown } } | undefined;
+      registerExecuteCommandIds(record?.registerOptions?.commands);
+    };
+    feature.unregister = () => {};
+    feature.clear = () => {};
+  }
+
   const createWorkspaceClientEntry = (
     workspaceFolder: vscode.WorkspaceFolder,
     workspaceKey: WorkspaceKey,
@@ -779,12 +863,15 @@ export async function activate(context: vscode.ExtensionContext) {
       clientOptions,
     );
 
+    patchExecuteCommandFeature(languageClient);
+
     // vscode-languageclient v9+ starts asynchronously.
     startPromise = languageClient.start().then(() => {
       if (clientManager?.get(workspaceKey)?.client !== languageClient) {
         return;
       }
       setNovaExperimentalCapabilities(workspaceKey, languageClient.initializeResult);
+      registerExecuteCommandIds(languageClient.initializeResult?.capabilities?.executeCommandProvider?.commands);
       updateFrameworksMethodSupportContexts();
     });
 
@@ -815,6 +902,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         if (event.newState === State.Running) {
           setNovaExperimentalCapabilities(workspaceKey, languageClient.initializeResult);
+          registerExecuteCommandIds(languageClient.initializeResult?.capabilities?.executeCommandProvider?.commands);
           updateFrameworksMethodSupportContexts();
           frameworksView.refresh();
           projectExplorerView.refresh();
@@ -2881,9 +2969,13 @@ export async function activate(context: vscode.ExtensionContext) {
   // Command palette entries for running/debugging tests and mains.
   //
   // The underlying CodeLens command IDs (`nova.runTest`, `nova.debugTest`, `nova.runMain`,
-  // `nova.debugMain`) are registered automatically by vscode-languageclient from the server's
-  // `executeCommandProvider.commands` list. We keep separate, locally-registered command IDs for
-  // the command palette so they work even before the language client finishes initialization.
+  // `nova.debugMain`) are registered dynamically from the server's
+  // `executeCommandProvider.commands` list. In multi-root mode we patch vscode-languageclient to
+  // ensure these IDs are only registered once (otherwise each LanguageClient would try to
+  // register the same IDs and VS Code would error).
+  //
+  // We keep separate, locally-registered command IDs for the command palette so they work even
+  // before the language client finishes initialization.
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.runTestInteractive', async (...args: unknown[]) => {
       await registeredServerCommands.runTest(...args);

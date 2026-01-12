@@ -54,7 +54,7 @@ describe('command registrations', () => {
     }
   });
 
-  it('does not locally register server-advertised executeCommandProvider command IDs', async () => {
+  it('does not hardcode registrations for server-advertised executeCommandProvider command IDs', async () => {
     const serverCommandIds = ['nova.runTest', 'nova.debugTest', 'nova.runMain', 'nova.debugMain', 'nova.extractMethod'];
 
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -103,10 +103,11 @@ describe('command registrations', () => {
     }
   });
 
-  it('does not manually register server-provided executeCommand IDs', async () => {
+  it('does not hardcode registrations for server-provided executeCommand IDs', async () => {
     // nova-lsp advertises these command IDs via executeCommandProvider.commands.
-    // vscode-languageclient auto-registers them, so we must not also register them
-    // with vscode.commands.registerCommand (would cause a runtime collision).
+    // The extension registers these IDs dynamically based on server capabilities (and patches
+    // vscode-languageclient to avoid multi-root collisions). We shouldn't hardcode string-literal
+    // registrations for them in the source.
     const executeCommandIds = [
       'nova.ai.explainError',
       'nova.ai.generateMethodBody',
