@@ -441,6 +441,26 @@ class A {
 }
 
 #[test]
+fn override_annotation_with_annotation_array_on_abstract_method_is_preserved() {
+    let input = r#"
+abstract class A {
+    @Override
+    @Ann(values = {1, 2})
+    abstract void foo();
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert("A.java".to_string(), input.to_string());
+    let index = Index::new(files);
+
+    let method = index
+        .find_method("A", "foo")
+        .expect("method symbol missing");
+    assert!(method.is_override, "expected method to be marked as override");
+}
+
+#[test]
 fn find_method_returns_none_for_overloaded_methods() {
     let mut files = BTreeMap::new();
     files.insert(
