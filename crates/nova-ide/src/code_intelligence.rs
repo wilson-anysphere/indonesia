@@ -1284,11 +1284,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
-fn salsa_semantic_file_diagnostics(
-    db: &Snapshot,
-    file: FileId,
-    is_java: bool,
-) -> Vec<Diagnostic> {
+fn salsa_semantic_file_diagnostics(db: &Snapshot, file: FileId, is_java: bool) -> Vec<Diagnostic> {
     if !is_java {
         return Vec::new();
     }

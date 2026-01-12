@@ -65,7 +65,8 @@ pub(crate) fn quick_fixes_for_diagnostics(
                 };
                 let line_end = line_end_offset(source, diag_span.end);
 
-                let edit = single_replace_range_edit(uri, source, line_start, line_end, String::new());
+                let edit =
+                    single_replace_range_edit(uri, source, line_start, line_end, String::new());
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                     title: "Remove unused import".to_string(),
                     kind: Some(CodeActionKind::QUICKFIX),

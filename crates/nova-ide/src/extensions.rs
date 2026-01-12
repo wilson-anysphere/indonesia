@@ -1472,7 +1472,10 @@ fn unused_import_quick_fixes_from_context(
         a.start < b.end && b.start < a.end
     }
 
-    fn single_delete_edit(uri: &lsp_types::Uri, range: lsp_types::Range) -> lsp_types::WorkspaceEdit {
+    fn single_delete_edit(
+        uri: &lsp_types::Uri,
+        range: lsp_types::Range,
+    ) -> lsp_types::WorkspaceEdit {
         let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
         changes.insert(
             uri.clone(),
