@@ -23,13 +23,14 @@ impl LombokAnalyzer {
 
     fn class_uses_lombok(class: &ClassData) -> bool {
         // Heuristic: any recognized Lombok annotation.
-        const LOMBOK_ANNOTATIONS: [&str; 13] = [
+        const LOMBOK_ANNOTATIONS: [&str; 17] = [
             "Getter",
             "Setter",
             "Data",
             "Value",
             "Builder",
             "SuperBuilder",
+            "With",
             "NoArgsConstructor",
             "AllArgsConstructor",
             "RequiredArgsConstructor",
@@ -37,6 +38,9 @@ impl LombokAnalyzer {
             "EqualsAndHashCode",
             "Slf4j",
             "Log4j2",
+            "Log",
+            "CommonsLog",
+            "Log4j",
         ];
         LOMBOK_ANNOTATIONS
             .iter()
@@ -67,6 +71,19 @@ impl LombokAnalyzer {
             return_type: Type::Void,
             params: vec![Parameter::new(field.name.clone(), field.ty.clone())],
             is_static: field.is_static,
+            span,
+        })
+    }
+
+    fn generate_wither(class: ClassId, field: &FieldData, span: Option<Span>) -> VirtualMember {
+        // Best-effort Lombok realism: `@With` generates immutable-style "wither" methods.
+        //
+        // Lombok supports finals (common with `@Value`); only static fields are excluded.
+        VirtualMember::Method(VirtualMethod {
+            name: format!("with{}", capitalize(&field.name)),
+            return_type: Type::class(class, vec![]),
+            params: vec![Parameter::new(field.name.clone(), field.ty.clone())],
+            is_static: false,
             span,
         })
     }
@@ -179,13 +196,16 @@ impl LombokAnalyzer {
     }
 
     fn generate_logger(class_data: &ClassData) -> Option<VirtualMember> {
-        let logging_annotation = ["Slf4j", "Log4j2"]
+        let logging_annotation = ["Slf4j", "Log4j2", "Log", "CommonsLog", "Log4j"]
             .into_iter()
             .find(|a| class_data.has_annotation(a))?;
 
         let ty = match logging_annotation {
             "Slf4j" => Type::Named("org.slf4j.Logger".into()),
             "Log4j2" => Type::Named("org.apache.logging.log4j.Logger".into()),
+            "Log" => Type::Named("java.util.logging.Logger".into()),
+            "CommonsLog" => Type::Named("org.apache.commons.logging.Log".into()),
+            "Log4j" => Type::Named("org.apache.log4j.Logger".into()),
             _ => Type::Named("java.lang.Object".into()),
         };
         let span = class_data.annotation_span(logging_annotation);
@@ -242,6 +262,9 @@ impl FrameworkAnalyzer for LombokAnalyzer {
             .annotation_span("Setter")
             .or_else(|| class_data.annotation_span("Data"));
 
+        let class_withers = class_data.has_annotation("With");
+        let class_wither_span = class_data.annotation_span("With");
+
         for field in &class_data.fields {
             let field_getter = field.has_annotation("Getter");
             let want_getter = field_getter || (class_getters && !field.is_static);
@@ -262,6 +285,20 @@ impl FrameworkAnalyzer for LombokAnalyzer {
                     .annotation_span("Setter")
                     .or_else(|| class_setter_span);
                 let member = Self::generate_setter(field, span);
+                if seen.insert(MemberKey::from(&member)) {
+                    members.push(member);
+                }
+            }
+
+            let field_wither = field.has_annotation("With");
+            let want_wither = !field.is_static && (field_wither || class_withers);
+            if want_wither {
+                let span = if field_wither {
+                    field.annotation_span("With")
+                } else {
+                    class_wither_span
+                };
+                let member = Self::generate_wither(class, field, span);
                 if seen.insert(MemberKey::from(&member)) {
                     members.push(member);
                 }
@@ -417,7 +454,7 @@ fn decapitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nova_framework::{AnalyzerRegistry, MemoryDatabase};
+    use nova_framework::{AnalyzerRegistry, MemoryDatabase, VirtualMember};
     use nova_hir::framework::{Annotation, ClassData, FieldData};
     use nova_resolve::{
         complete_member_names, resolve_constructor_call, resolve_method_call, CallKind,
@@ -595,5 +632,175 @@ mod tests {
         .expect("all-args constructor should resolve");
 
         assert_eq!(constructed, foo_ty);
+    }
+
+    #[test]
+    fn resolves_wither_from_class_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("With")],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+
+        let resolved = resolve_method_call(
+            &db,
+            &registry,
+            &foo_ty,
+            CallKind::Instance,
+            "withX",
+            &[Type::int()],
+        )
+        .expect("withX(int) should resolve");
+        assert_eq!(resolved, foo_ty);
+    }
+
+    #[test]
+    fn resolves_wither_from_field_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![Annotation::new("With")],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+    }
+
+    #[test]
+    fn generates_java_util_logging_logger_for_log_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("Log")],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let names = complete_member_names(&db, &registry, &foo_ty);
+        assert!(names.iter().any(|n| n == "log"), "{names:?}");
+
+        let members = registry.virtual_members_for_class(&db, class_id);
+        let logger = members
+            .into_iter()
+            .find_map(|m| match m {
+                VirtualMember::Field(f) if f.name == "log" => Some(f),
+                _ => None,
+            })
+            .expect("expected Lombok logger field");
+
+        assert_eq!(logger.ty, Type::Named("java.util.logging.Logger".into()));
+        assert!(logger.is_static);
+        assert!(logger.is_final);
+    }
+
+    #[test]
+    fn generates_commons_log_for_commons_log_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("CommonsLog")],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let members = registry.virtual_members_for_class(&db, class_id);
+        let logger = members
+            .into_iter()
+            .find_map(|m| match m {
+                VirtualMember::Field(f) if f.name == "log" => Some(f),
+                _ => None,
+            })
+            .expect("expected Lombok logger field");
+
+        assert_eq!(
+            logger.ty,
+            Type::Named("org.apache.commons.logging.Log".into())
+        );
+    }
+
+    #[test]
+    fn generates_log4j_logger_for_log4j_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("Log4j")],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let members = registry.virtual_members_for_class(&db, class_id);
+        let logger = members
+            .into_iter()
+            .find_map(|m| match m {
+                VirtualMember::Field(f) if f.name == "log" => Some(f),
+                _ => None,
+            })
+            .expect("expected Lombok logger field");
+
+        assert_eq!(logger.ty, Type::Named("org.apache.log4j.Logger".into()));
     }
 }
