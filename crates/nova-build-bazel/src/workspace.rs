@@ -1065,7 +1065,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // cache for plain source edits (hot swap calls this frequently) but still invalidate on
         // build definition changes for correctness.
         let mut saw_build_definition_change = changed.iter().any(|path| is_bazel_build_definition_file(path));
-        if !saw_build_definition_change && !self.java_owning_targets_cache.is_empty() {
+        // `.bazelrc` can import arbitrary files; treat changes to those as build-definition changes
+        // too. To keep `invalidate_changed_files` lightweight for frequent source edits, only scan
+        // imports when a changed file *looks* like a bazelrc fragment.
+        if !saw_build_definition_change
+            && !self.java_owning_targets_cache.is_empty()
+            && changed
+                .iter()
+                .any(|p| p.extension().and_then(|e| e.to_str()) == Some("rc"))
+        {
             let imported = bazelrc_imported_files(&self.root);
             if changed.iter().any(|p| imported.iter().any(|i| i == p)) {
                 saw_build_definition_change = true;
