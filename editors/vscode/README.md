@@ -346,13 +346,16 @@ restarting the language server to take full effect.
 
 Nova AI code actions are implemented as LSP `workspace/executeCommand` calls (e.g. `nova.ai.explainError`).
 VS Code does **not** automatically display the returned value from `workspace/executeCommand`, so the
-extension intercepts these AI code actions client-side and surfaces the returned text in an editor:
+extension intercepts these AI code actions client-side and surfaces the result in a user-visible UI:
 
 - **Explain this error** opens a Markdown document (with preview) titled like **“Nova AI: Explain Error”**.
-- **Generate method body with AI** opens an untitled Java document titled like **“Nova AI: Generate Method Body”**.
-- **Generate tests with AI** opens an untitled Java document titled like **“Nova AI: Generate Tests”**.
+- **Generate method body with AI** applies an edit to your workspace (via `workspace/applyEdit`) and shows a confirmation message.
+- **Generate tests with AI** applies an edit to your workspace (via `workspace/applyEdit`) and shows a confirmation message.
 
-Each UI includes a **Copy to Clipboard** action for convenience.
+When the server returns generated text (legacy behavior / older builds), Nova opens it in an untitled Java document titled like:
+**“Nova AI: Generate Method Body”** / **“Nova AI: Generate Tests”**.
+
+Each result UI includes a **Copy to Clipboard** action for convenience.
 Explain Error uses a **read-only virtual document** (so it won’t create an unsaved “Untitled” editor).
 
 These actions are also available as command-palette commands:
