@@ -150,6 +150,82 @@ fn record_compact_constructor_member_accessors() {
 }
 
 #[test]
+fn record_compact_constructor_modifiers_are_accessible() {
+    let src = r#"
+        record Point(int x, int y) {
+          private Point {
+          }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let record: RecordDeclaration = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::RecordDeclaration(record) => Some(record),
+            _ => None,
+        })
+        .unwrap();
+
+    let compact = record
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::CompactConstructorDeclaration(ctor) => Some(ctor),
+            _ => None,
+        })
+        .expect("compact constructor member");
+
+    let modifiers = compact.modifiers().expect("expected modifiers node");
+    assert!(
+        modifiers.keywords().any(|tok| tok.kind() == SyntaxKind::PrivateKw),
+        "expected private modifier keyword"
+    );
+}
+
+#[test]
+fn record_compact_constructor_type_parameters_are_accessible() {
+    let src = r#"
+        record Box(int x) {
+          <T> Box {
+          }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let record: RecordDeclaration = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::RecordDeclaration(record) => Some(record),
+            _ => None,
+        })
+        .unwrap();
+
+    let compact = record
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::CompactConstructorDeclaration(ctor) => Some(ctor),
+            _ => None,
+        })
+        .expect("compact constructor member");
+
+    let tparams = compact
+        .type_parameters()
+        .expect("expected type parameters on compact constructor");
+    let tp = tparams.type_parameters().next().expect("expected a type parameter");
+    assert_eq!(tp.name_token().unwrap().text(), "T");
+}
+
+#[test]
 fn switch_label_iteration() {
     let src = "class Foo { void m(int x) { switch (x) { case 1: break; default: break; case 2 -> { return; } } } }";
     let parse = parse_java(src);
