@@ -2210,6 +2210,40 @@ class C {
 }
 
 #[test]
+fn this_invocation_in_nested_block_is_error() {
+    let src = r#"
+class C {
+    C() {
+        { this(1); }
+    }
+    C(int x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
+        "expected constructor-invocation-not-first diagnostic, got {diags:?}"
+    );
+
+    let bad = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "constructor-invocation-not-first")
+        .expect("expected constructor-invocation-not-first diagnostic");
+    let span = bad
+        .span
+        .expect("constructor-invocation-not-first diagnostic should have a span");
+    let this_kw = src.find("this(1)").expect("snippet should contain this call");
+    assert!(
+        span.start <= this_kw && this_kw < span.end,
+        "expected diagnostic span to cover this invocation, got {span:?}"
+    );
+}
+
+#[test]
 fn explicit_super_invocation_resolves_object_ctor() {
     let src = r#"
 class C {

@@ -3506,21 +3506,90 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             return;
         };
 
-        let HirStmt::Block { statements, .. } = &self.body.stmts[self.body.root] else {
-            return;
+        let allowed = if self.is_explicit_constructor_invocation_stmt(self.body.root) {
+            Some(self.body.root)
+        } else if let HirStmt::Block { statements, .. } = &self.body.stmts[self.body.root] {
+            statements
+                .first()
+                .copied()
+                .filter(|stmt| self.is_explicit_constructor_invocation_stmt(*stmt))
+        } else {
+            None
         };
 
-        for (idx, stmt) in statements.iter().enumerate() {
-            if !self.is_explicit_constructor_invocation_stmt(*stmt) {
+        let mut stack = vec![self.body.root];
+        let mut seen = HashSet::new();
+        let mut steps = 0u32;
+        while let Some(stmt) = stack.pop() {
+            // Avoid panics and infinite loops if the HIR is malformed.
+            steps = steps.wrapping_add(1);
+            if steps > 8192 {
+                break;
+            }
+            if !seen.insert(stmt) {
                 continue;
             }
 
-            if idx > 0 {
+            if self.is_explicit_constructor_invocation_stmt(stmt) && allowed != Some(stmt) {
                 self.diagnostics.push(Diagnostic::error(
                     "constructor-invocation-not-first",
                     "constructor invocation must be the first statement in a constructor",
-                    Some(self.stmt_range(*stmt)),
+                    Some(self.stmt_range(stmt)),
                 ));
+            }
+
+            match &self.body.stmts[stmt] {
+                HirStmt::Block { statements, .. } => {
+                    stack.extend(statements.iter().copied());
+                }
+                HirStmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    stack.push(*then_branch);
+                    if let Some(else_branch) = else_branch {
+                        stack.push(*else_branch);
+                    }
+                }
+                HirStmt::While { body, .. } => {
+                    stack.push(*body);
+                }
+                HirStmt::For { init, body, .. } => {
+                    stack.extend(init.iter().copied());
+                    stack.push(*body);
+                }
+                HirStmt::ForEach { body, .. } => {
+                    stack.push(*body);
+                }
+                HirStmt::Synchronized { body, .. } => {
+                    stack.push(*body);
+                }
+                HirStmt::Switch { body, .. } => {
+                    stack.push(*body);
+                }
+                HirStmt::Try {
+                    body,
+                    catches,
+                    finally,
+                    ..
+                } => {
+                    stack.push(*body);
+                    for catch in catches {
+                        stack.push(catch.body);
+                    }
+                    if let Some(finally) = finally {
+                        stack.push(*finally);
+                    }
+                }
+                HirStmt::Let { .. }
+                | HirStmt::Expr { .. }
+                | HirStmt::Return { .. }
+                | HirStmt::Assert { .. }
+                | HirStmt::Throw { .. }
+                | HirStmt::Break { .. }
+                | HirStmt::Continue { .. }
+                | HirStmt::Empty { .. } => {}
             }
         }
     }
