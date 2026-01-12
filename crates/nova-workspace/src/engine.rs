@@ -1139,12 +1139,22 @@ impl WorkspaceEngine {
                 } else {
                     // Prefer any existing Salsa `file_content` (which should reflect disk state for
                     // non-open files) to avoid redundant disk I/O.
+                    //
+                    // This is best-effort: avoid panicking if the host/database invariants are
+                    // violated and `file_content` hasn't been initialized yet.
                     let existing_content = self.query_db.with_snapshot(|snap| {
                         let has_content = snap
                             .all_file_ids()
                             .iter()
                             .any(|&existing_id| existing_id == file_id);
-                        has_content.then(|| snap.file_content(file_id))
+                        if !has_content {
+                            return None;
+                        }
+
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            snap.file_content(file_id)
+                        }))
+                        .ok()
                     });
 
                     let disk_text = if let Some(existing) = existing_content {
