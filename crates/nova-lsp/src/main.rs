@@ -9295,31 +9295,57 @@ fn run_ai_generate_tests(
     let mut config = CodeGenerationConfig::default();
     let (action_file, insert_range, workspace) = if source_rel_path.starts_with("src/main/java/") {
         if let Some(test_file) = derive_test_file_path(&source_text, &abs_path) {
-            // Preferred: generate/update a test file under src/test/java/.
-            config.safety = nova_ai::PatchSafetyConfig {
-                allowed_path_prefixes: vec![test_file.clone()],
-                allow_new_files: true,
-                ..nova_ai::PatchSafetyConfig::default()
-            };
+            // `derive_test_file_path` returns a workspace-relative path (e.g. `src/test/java/...`).
+            // Enforce `ai.privacy.excluded_paths` on the derived destination to ensure we never
+            // generate/modify tests in excluded directories.
+            //
+            // Match conservatively: treat patterns as matching either paths relative to the
+            // workspace root or absolute paths resolved against the root.
+            let test_file_is_excluded = is_ai_excluded_path(state, Path::new(&test_file))
+                || state.project_root.as_deref().is_some_and(|root_path| {
+                    is_ai_excluded_path(state, &root_path.join(&test_file))
+                });
 
-            // Best-effort: include any existing test file contents in the workspace. If it doesn't
-            // exist, the patch pipeline can create it (allow_new_files=true).
-            let mut workspace =
-                VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
-            if let Some(root_path) = state.project_root.as_deref() {
-                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
-                    workspace.insert(test_file.clone(), existing);
+            if test_file_is_excluded {
+                // Fallback: insert tests into the current file at the selection range.
+                config.safety = nova_ai::PatchSafetyConfig {
+                    allowed_path_prefixes: vec![source_rel_path.clone()],
+                    ..nova_ai::PatchSafetyConfig::default()
+                };
+                let workspace =
+                    VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
+                (
+                    source_rel_path.clone(),
+                    ide_range_to_lsp_types_range(range),
+                    workspace,
+                )
+            } else {
+                // Preferred: generate/update a test file under src/test/java/.
+                config.safety = nova_ai::PatchSafetyConfig {
+                    allowed_path_prefixes: vec![test_file.clone()],
+                    allow_new_files: true,
+                    ..nova_ai::PatchSafetyConfig::default()
+                };
+
+                // Best-effort: include any existing test file contents in the workspace. If it
+                // doesn't exist, the patch pipeline can create it (allow_new_files=true).
+                let mut workspace =
+                    VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
+                if let Some(root_path) = state.project_root.as_deref() {
+                    if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+                        workspace.insert(test_file.clone(), existing);
+                    }
                 }
-            }
 
-            (
-                test_file,
-                lsp_types::Range::new(
-                    lsp_types::Position::new(0, 0),
-                    lsp_types::Position::new(0, 0),
-                ),
-                workspace,
-            )
+                (
+                    test_file,
+                    lsp_types::Range::new(
+                        lsp_types::Position::new(0, 0),
+                        lsp_types::Position::new(0, 0),
+                    ),
+                    workspace,
+                )
+            }
         } else {
             // Fallback: insert tests into the current file at the selection range.
             config.safety = nova_ai::PatchSafetyConfig {

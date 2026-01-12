@@ -406,6 +406,7 @@ local_only = true
     let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
     let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+    let expected_source_uri = file_uri.parse::<Uri>().expect("file uri");
     let uri = Uri::from_str(&uri_for_path(&file_path)).expect("uri");
     let changes = edit.changes.expect("changes map");
     let edits = changes.get(&uri).expect("edits for uri");
@@ -2564,6 +2565,13 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 
+    // Configure AI via `nova.toml` so we can set `ai.privacy.excluded_paths`.
+    //
+    // With `excluded_paths = ["src/test/java/**"]`, `run_ai_generate_tests` must *not* derive a
+    // `src/test/java/...` destination (even though the source file lives under `src/main/java/`).
+    // Instead, it should fall back to inserting tests into the source file.
+    let config_path = root.join("nova.toml");
+
     let src_dir = root.join("src/main/java/com/example");
     std::fs::create_dir_all(&src_dir).expect("create src dir");
     let file_path = src_dir.join("Example.java");
@@ -2588,33 +2596,53 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
-    // The AI test-generation action is allowed to create new files, so use a patch that creates
-    // the conventional Maven/Gradle test file under `src/test/java/...`.
+    // `ai.privacy.excluded_paths` prevents generating tests under `src/test/java`, so this should
+    // fall back to inserting tests into the source file.
     let patch = json!({
       "edits": [
         {
-          "file": "src/test/java/com/example/ExampleTest.java",
-          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
-          "text": "package com.example;\n\npublic class ExampleTest {}\n"
+          "file": "src/main/java/com/example/Example.java",
+          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
+          "text": "    // AI-generated tests would go here\n"
         }
       ]
     })
     .to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
 
+    // Write `nova.toml` with the actual AI server endpoint.
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["src/test/java/**"]
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
-        .env("NOVA_AI_PROVIDER", "http")
-        .env(
-            "NOVA_AI_ENDPOINT",
-            format!("{}/complete", ai_server.base_url()),
-        )
-        .env("NOVA_AI_MODEL", "default")
-        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
-        .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
-        .env("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "1")
+        // Ensure a developer's environment doesn't override `--config`.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2743,28 +2771,33 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("applyEdit params.edit");
     let edit: WorkspaceEdit = serde_json::from_value(edit.clone()).expect("workspace edit");
 
+    let expected_source_uri: Uri = file_uri.parse().expect("file uri");
     let expected_test_uri: Uri = uri_for_path(&test_file_path).parse().expect("test uri");
 
     let mut all_new_texts = Vec::new();
-    let mut saw_create = false;
+    let mut saw_excluded_test_uri = false;
 
     if let Some(changes) = &edit.changes {
-        if let Some(edits) = changes.get(&expected_test_uri) {
+        if let Some(edits) = changes.get(&expected_source_uri) {
             all_new_texts.extend(edits.iter().map(|e| e.new_text.clone()));
+        }
+        if changes.contains_key(&expected_test_uri) {
+            saw_excluded_test_uri = true;
         }
     }
     if let Some(doc_changes) = &edit.document_changes {
         match doc_changes {
             lsp_types::DocumentChanges::Edits(edits) => {
                 for doc_edit in edits {
-                    if doc_edit.text_document.uri != expected_test_uri {
+                    if doc_edit.text_document.uri == expected_test_uri {
+                        saw_excluded_test_uri = true;
+                    }
+                    if doc_edit.text_document.uri != expected_source_uri {
                         continue;
                     }
                     for edit in &doc_edit.edits {
                         match edit {
-                            lsp_types::OneOf::Left(edit) => {
-                                all_new_texts.push(edit.new_text.clone())
-                            }
+                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
                             lsp_types::OneOf::Right(edit) => {
                                 all_new_texts.push(edit.text_edit.new_text.clone())
                             }
@@ -2778,10 +2811,25 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
                         lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(
                             create,
                         )) if create.uri == expected_test_uri => {
-                            saw_create = true;
+                            saw_excluded_test_uri = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Rename(
+                            rename,
+                        )) if rename.old_uri == expected_test_uri
+                            || rename.new_uri == expected_test_uri =>
+                        {
+                            saw_excluded_test_uri = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Delete(
+                            delete,
+                        )) if delete.uri == expected_test_uri => {
+                            saw_excluded_test_uri = true;
                         }
                         lsp_types::DocumentChangeOperation::Edit(doc_edit) => {
-                            if doc_edit.text_document.uri != expected_test_uri {
+                            if doc_edit.text_document.uri == expected_test_uri {
+                                saw_excluded_test_uri = true;
+                            }
+                            if doc_edit.text_document.uri != expected_source_uri {
                                 continue;
                             }
                             for edit in &doc_edit.edits {
@@ -2802,21 +2850,15 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         }
     }
 
-    if matches!(
-        &edit.document_changes,
-        Some(lsp_types::DocumentChanges::Operations(_))
-    ) {
-        assert!(
-            saw_create,
-            "expected CreateFile for test file, got: {edit:#?}"
-        );
-    }
-
+    assert!(
+        !saw_excluded_test_uri,
+        "expected no edits for excluded test uri, got: {edit:#?}"
+    );
     assert!(
         all_new_texts
             .iter()
-            .any(|text| text.contains("ExampleTest")),
-        "expected edits to contain ExampleTest, got: {edit:#?}"
+            .any(|text| text.contains("AI-generated tests would go here")),
+        "expected inserted comment, got: {edit:#?}"
     );
 
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
