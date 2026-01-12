@@ -29,6 +29,7 @@ test('getNovaWatchedFileGlobPatterns returns the expected default glob list', ()
     '**/.bazelversion',
     '**/MODULE.bazel.lock',
     '**/bazelisk.rc',
+    '**/.bazelignore',
     '**/WORKSPACE',
     '**/WORKSPACE.bazel',
     '**/MODULE.bazel',

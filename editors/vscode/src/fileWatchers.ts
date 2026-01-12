@@ -37,6 +37,7 @@ const WATCHED_FILE_GLOB_PATTERNS = [
   '**/.bazelversion',
   '**/MODULE.bazel.lock',
   '**/bazelisk.rc',
+  '**/.bazelignore',
   '**/WORKSPACE',
   '**/WORKSPACE.bazel',
   '**/MODULE.bazel',
