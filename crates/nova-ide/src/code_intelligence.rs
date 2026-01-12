@@ -6543,6 +6543,7 @@ struct JavaImportContext {
 struct WorkspaceType {
     name: String,
     kind: CompletionItemKind,
+    package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6727,15 +6728,64 @@ fn type_name_completions(
     let mut items = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // 1) Workspace types (best-effort, visibility filtered by imports + same-package).
-    for ty in workspace_types_with_prefix(db, &import_ctx, prefix) {
-        if seen.insert(ty.name.clone()) {
-            items.push(CompletionItem {
-                label: ty.name,
-                kind: Some(ty.kind),
-                ..Default::default()
-            });
+    // 1) Workspace types.
+    //
+    // Prefer types that are already accessible (same-package / already imported). If a type isn't
+    // accessible but is importable, still offer it and attach an import edit.
+    let workspace_types = workspace_types_with_prefix(db, prefix);
+
+    // 1a) Accessible workspace types (no edits).
+    for ty in &workspace_types {
+        let ty_pkg = ty.package.as_deref();
+
+        // Types in the default package cannot be imported into a named package; avoid suggesting
+        // them outside the default package.
+        if ty_pkg.is_none() && import_ctx.package.is_some() {
+            continue;
         }
+        if !workspace_type_accessible(&import_ctx, ty_pkg, &ty.name) {
+            continue;
+        }
+        if !seen.insert(ty.name.clone()) {
+            continue;
+        }
+
+        let fqn = match ty_pkg {
+            Some(pkg) => format!("{pkg}.{}", ty.name),
+            None => ty.name.clone(),
+        };
+        items.push(CompletionItem {
+            label: ty.name.clone(),
+            kind: Some(ty.kind),
+            detail: Some(fqn),
+            ..Default::default()
+        });
+    }
+
+    // 1b) Importable workspace types (auto-import edits).
+    for ty in &workspace_types {
+        if seen.contains(&ty.name) {
+            continue;
+        }
+        let Some(pkg) = ty.package.as_deref() else {
+            continue;
+        };
+        let fqn = format!("{pkg}.{}", ty.name);
+        if !java_type_needs_import(&imports, &fqn) {
+            continue;
+        }
+        if !seen.insert(ty.name.clone()) {
+            continue;
+        }
+
+        let mut item = CompletionItem {
+            label: ty.name.clone(),
+            kind: Some(ty.kind),
+            detail: Some(fqn.clone()),
+            ..Default::default()
+        };
+        item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &fqn)]);
+        items.push(item);
     }
 
     // 2) Explicit imports (can refer to workspace or classpath/JDK types).
@@ -6947,11 +6997,7 @@ fn parse_import_path(tokens: &[Token], start: usize) -> Option<(String, usize, b
     None
 }
 
-fn workspace_types_with_prefix(
-    db: &dyn Database,
-    ctx: &JavaImportContext,
-    prefix: &str,
-) -> Vec<WorkspaceType> {
+fn workspace_types_with_prefix(db: &dyn Database, prefix: &str) -> Vec<WorkspaceType> {
     let mut out = Vec::new();
 
     for file_id in db.all_file_ids() {
@@ -6968,10 +7014,11 @@ fn workspace_types_with_prefix(
             if !name.starts_with(prefix) {
                 continue;
             }
-            if !workspace_type_accessible(ctx, pkg.as_deref(), &name) {
-                continue;
-            }
-            out.push(WorkspaceType { name, kind });
+            out.push(WorkspaceType {
+                name,
+                kind,
+                package: pkg.clone(),
+            });
         }
     }
 
