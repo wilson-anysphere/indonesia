@@ -2831,6 +2831,7 @@ excluded_paths = ["src/test/java/**"]
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
         .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
