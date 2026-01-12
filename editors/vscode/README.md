@@ -14,12 +14,21 @@ If you're offline or want to use a custom build, you can set `nova.server.path` 
 
 Nova also manages the `nova-dap` debug adapter binary. When you start a Nova debug session, the extension will ensure `nova-dap` is available (prompting or auto-downloading based on `nova.download.mode`).
 
+## Multi-root workspaces
+
+Nova supports VS Code multi-root workspaces by running one `nova-lsp` instance per workspace folder.
+
+- Settings that accept paths (like `nova.server.path`, `nova.dap.path`, and `nova.lsp.configPath`) support `~`, `${workspaceFolder}`, and relative paths. `${workspaceFolder}` and relative paths are resolved against the **target workspace folder**.
+- Requests tied to a file (e.g. editor commands) target the workspace folder that contains that file.
+- Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Generate Bug Report**).
+- `untitled:` Java documents don’t belong to any workspace folder; in multi-root workspaces you may be prompted to pick which workspace folder to use.
+
 ## Language server + debug adapter binaries
 
 Nova resolves binaries in the following order:
 
 1. **User setting** (`nova.server.path` / `nova.dap.path`) if set to an absolute path.
-2. **Workspace-local path** if the setting is a relative path (resolved relative to the first workspace folder).
+2. **Workspace-local path** if the setting is a relative path (resolved relative to the target workspace folder).
 3. **`$PATH`** discovery.
 4. **Extension-managed install** in VS Code global storage (`context.globalStorageUri`), with optional download.
 
@@ -77,6 +86,7 @@ npm run compile
 - **Nova: Generate Bug Report** (`nova.bugReport`)
   - Prompts for optional reproduction notes (multi-line) and an optional max number of log lines.
   - Generates a diagnostic bundle via `nova/bugReport`.
+  - In multi-root workspaces, Nova may prompt you to select which workspace folder to target.
   - On success, Nova:
     - reveals the bundle folder in your OS file explorer
     - copies the bundle **archive path** (if available) or folder path to your clipboard
@@ -169,7 +179,7 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 
 ### Server
 
-- `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
+- `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder.
 - `nova.server.args` (string[]): arguments passed to `nova-lsp` (default: `["--stdio"]`).
 
 ### Download
@@ -193,7 +203,7 @@ If you hit GitHub rate limits (or need auth for GitHub Enterprise Server), you c
 - `nova.lsp.configPath` (string | null): path to a Nova TOML config file. The extension passes this to `nova-lsp` via:
   - `--config <path>` (for future compatibility), and
   - `NOVA_CONFIG_PATH=<path>` (works with current `nova-config` behaviour).
-  Relative paths are resolved against the first workspace folder. The extension also expands `~` and `${workspaceFolder}`.
+  The extension expands `~` and `${workspaceFolder}`, and resolves relative paths against the target workspace folder.
 - `nova.lsp.extraArgs` (string[]): additional CLI arguments appended to `nova-lsp`.
 
 Changing these settings requires restarting the language server; the extension prompts you automatically.
@@ -212,7 +222,7 @@ Changing these settings requires restarting the language server; the extension p
 
 ### Debugging
 
-- `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
+- `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
 - `nova.debug.adapterPath` (string | null): deprecated alias for `nova.dap.path`.
 - `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
