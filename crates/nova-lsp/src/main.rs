@@ -6585,6 +6585,104 @@ mod tests {
     use httpmock::prelude::*;
     use tempfile::TempDir;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn load_ai_config_from_env_exposes_privacy_opt_ins() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        let _provider = ScopedEnvVar::set("NOVA_AI_PROVIDER", "http");
+        let _endpoint = ScopedEnvVar::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
+        let _model = ScopedEnvVar::set("NOVA_AI_MODEL", "default");
+
+        // Baseline: no explicit code-edit opt-ins.
+        let _local_only = ScopedEnvVar::remove("NOVA_AI_LOCAL_ONLY");
+        let _allow_cloud_code_edits = ScopedEnvVar::remove("NOVA_AI_ALLOW_CLOUD_CODE_EDITS");
+        let _allow_code_edits_without_anonymization =
+            ScopedEnvVar::remove("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION");
+        let _anonymize = ScopedEnvVar::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
+
+        let _redact_sensitive_strings = ScopedEnvVar::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
+        let _redact_numeric_literals = ScopedEnvVar::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
+        let _strip_or_redact_comments =
+            ScopedEnvVar::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
+
+        let (cfg, _privacy) = load_ai_config_from_env()
+            .expect("load_ai_config_from_env")
+            .expect("config should be present");
+        assert_eq!(cfg.privacy.local_only, false);
+        assert_eq!(cfg.privacy.anonymize_identifiers, Some(true));
+        assert!(!cfg.privacy.allow_cloud_code_edits);
+        assert!(!cfg.privacy.allow_code_edits_without_anonymization);
+        assert_eq!(cfg.privacy.redact_sensitive_strings, None);
+        assert_eq!(cfg.privacy.redact_numeric_literals, None);
+        assert_eq!(cfg.privacy.strip_or_redact_comments, None);
+
+        // Explicit opt-in for patch-based code edits (cloud-mode gating).
+        {
+            let _anonymize = ScopedEnvVar::set("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0");
+            let _allow_cloud_code_edits = ScopedEnvVar::set("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1");
+            let _allow_code_edits_without_anonymization = ScopedEnvVar::set(
+                "NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION",
+                "true",
+            );
+            let _redact_sensitive_strings =
+                ScopedEnvVar::set("NOVA_AI_REDACT_SENSITIVE_STRINGS", "0");
+            let _redact_numeric_literals =
+                ScopedEnvVar::set("NOVA_AI_REDACT_NUMERIC_LITERALS", "false");
+            let _strip_or_redact_comments =
+                ScopedEnvVar::set("NOVA_AI_STRIP_OR_REDACT_COMMENTS", "1");
+
+            let (cfg, _privacy) = load_ai_config_from_env()
+                .expect("load_ai_config_from_env")
+                .expect("config should be present");
+            assert_eq!(cfg.privacy.local_only, false);
+            assert_eq!(cfg.privacy.anonymize_identifiers, Some(false));
+            assert!(cfg.privacy.allow_cloud_code_edits);
+            assert!(cfg.privacy.allow_code_edits_without_anonymization);
+            assert_eq!(cfg.privacy.redact_sensitive_strings, Some(false));
+            assert_eq!(cfg.privacy.redact_numeric_literals, Some(false));
+            assert_eq!(cfg.privacy.strip_or_redact_comments, Some(true));
+        }
+
+        // `NOVA_AI_LOCAL_ONLY` forces local-only mode regardless of provider.
+        {
+            let _force_local_only = ScopedEnvVar::set("NOVA_AI_LOCAL_ONLY", "1");
+            let (cfg, _privacy) = load_ai_config_from_env()
+                .expect("load_ai_config_from_env")
+                .expect("config should be present");
+            assert_eq!(cfg.privacy.local_only, true);
+        }
+    }
+
     #[test]
     fn path_from_uri_decodes_percent_encoding() {
         #[cfg(not(windows))]
@@ -7683,6 +7781,29 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
         .map(Duration::from_secs)
         .unwrap_or(Duration::from_secs(30));
     // Privacy defaults: safer by default (no paths, anonymize identifiers).
+    //
+    // Supported env vars (legacy env-var based AI wiring):
+    // - `NOVA_AI_ANONYMIZE_IDENTIFIERS=0|false|FALSE` disables identifier anonymization
+    //   (default: enabled, even in local-only mode).
+    // - `NOVA_AI_INCLUDE_FILE_PATHS=1|true|TRUE` allows including paths in prompts
+    //   (default: disabled).
+    //
+    // Code-editing (patch/workspace-edit) opt-ins:
+    // - `NOVA_AI_LOCAL_ONLY=1|true|TRUE` forces `ai.privacy.local_only=true` regardless of
+    //   provider kind (default: unset).
+    // - `NOVA_AI_ALLOW_CLOUD_CODE_EDITS=1|true|TRUE` maps to
+    //   `ai.privacy.allow_cloud_code_edits` (default: false).
+    // - `NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION=1|true|TRUE` maps to
+    //   `ai.privacy.allow_code_edits_without_anonymization` (default: false).
+    //
+    // Optional redaction overrides (mirror `ai.privacy.*` config knobs):
+    // - `NOVA_AI_REDACT_SENSITIVE_STRINGS=0|1|false|true|FALSE|TRUE`
+    // - `NOVA_AI_REDACT_NUMERIC_LITERALS=0|1|false|true|FALSE|TRUE`
+    // - `NOVA_AI_STRIP_OR_REDACT_COMMENTS=0|1|false|true|FALSE|TRUE`
+    let force_local_only = matches!(
+        std::env::var("NOVA_AI_LOCAL_ONLY").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
     let anonymize_identifiers = !matches!(
         std::env::var("NOVA_AI_ANONYMIZE_IDENTIFIERS").as_deref(),
         Ok("0") | Ok("false") | Ok("FALSE")
@@ -7691,6 +7812,22 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
         std::env::var("NOVA_AI_INCLUDE_FILE_PATHS").as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE")
     );
+    let allow_cloud_code_edits = matches!(
+        std::env::var("NOVA_AI_ALLOW_CLOUD_CODE_EDITS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let allow_code_edits_without_anonymization = matches!(
+        std::env::var("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let optional_bool = |key: &str| match std::env::var(key).as_deref() {
+        Ok("1") | Ok("true") | Ok("TRUE") => Some(true),
+        Ok("0") | Ok("false") | Ok("FALSE") => Some(false),
+        _ => None,
+    };
+    let redact_sensitive_strings = optional_bool("NOVA_AI_REDACT_SENSITIVE_STRINGS");
+    let redact_numeric_literals = optional_bool("NOVA_AI_REDACT_NUMERIC_LITERALS");
+    let strip_or_redact_comments = optional_bool("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
 
     let mut cfg = nova_config::AiConfig::default();
     cfg.enabled = true;
@@ -7702,6 +7839,11 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
     cfg.provider.model = model;
     cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
     cfg.privacy.anonymize_identifiers = Some(anonymize_identifiers);
+    cfg.privacy.redact_sensitive_strings = redact_sensitive_strings;
+    cfg.privacy.redact_numeric_literals = redact_numeric_literals;
+    cfg.privacy.strip_or_redact_comments = strip_or_redact_comments;
+    cfg.privacy.allow_cloud_code_edits = allow_cloud_code_edits;
+    cfg.privacy.allow_code_edits_without_anonymization = allow_code_edits_without_anonymization;
 
     cfg.provider.kind = match provider.as_str() {
         "ollama" => {
@@ -7734,6 +7876,9 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
         }
         other => return Err(format!("unknown NOVA_AI_PROVIDER: {other}")),
     };
+    if force_local_only {
+        cfg.privacy.local_only = true;
+    }
 
     cfg.provider.url = match provider.as_str() {
         "http" => {
