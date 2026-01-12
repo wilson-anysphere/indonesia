@@ -141,6 +141,7 @@ pub fn reparse_java(
     let new_green = plan.target_node.replace_with(fragment.green);
 
     let mut preserved_errors = shift_preserved_errors(
+        old,
         &old.errors,
         plan.old_range,
         plan.target_node.kind(),
@@ -631,17 +632,109 @@ fn offset_errors(mut errors: Vec<ParseError>, offset: u32) -> Vec<ParseError> {
 }
 
 fn shift_preserved_errors(
+    old: &JavaParseResult,
     errors: &[ParseError],
     reparsed_old_range: TextRange,
     reparsed_kind: SyntaxKind,
     delta: isize,
 ) -> Vec<ParseError> {
-    // Preserve errors that are *entirely* outside the reparsed region. Treat empty ranges at the
-    // boundary as belonging to the reparsed region: many “missing token” diagnostics use an empty
-    // range at the expected token position, which is often exactly `reparsed_old_range.end`.
+    #[derive(Debug, Clone, Copy)]
+    enum BoundaryOwner {
+        Block,
+        ClassBody,
+        EnumBody,
+        ModuleBody,
+        AnnotationArrayInitializer,
+        ArrayInitializer,
+        TemplateExpression,
+    }
+
+    fn boundary_owner_from_message(msg: &str) -> Option<BoundaryOwner> {
+        if msg.starts_with("expected `}` to close block") {
+            Some(BoundaryOwner::Block)
+        } else if msg.starts_with("expected `}` to close class body") {
+            Some(BoundaryOwner::ClassBody)
+        } else if msg.starts_with("expected `}` to close enum body") {
+            Some(BoundaryOwner::EnumBody)
+        } else if msg.starts_with("expected `}` to close module body") {
+            Some(BoundaryOwner::ModuleBody)
+        } else if msg.starts_with("expected `}` to close annotation array initializer") {
+            Some(BoundaryOwner::AnnotationArrayInitializer)
+        } else if msg.starts_with("expected `}` to close array initializer") {
+            Some(BoundaryOwner::ArrayInitializer)
+        } else if msg.starts_with("expected `}` to close template expression") {
+            Some(BoundaryOwner::TemplateExpression)
+        } else {
+            None
+        }
+    }
+
+    fn boundary_owner_matches(owner: BoundaryOwner, kind: SyntaxKind) -> bool {
+        match owner {
+            BoundaryOwner::Block => kind == SyntaxKind::Block,
+            BoundaryOwner::ClassBody => matches!(
+                kind,
+                SyntaxKind::ClassBody
+                    | SyntaxKind::InterfaceBody
+                    | SyntaxKind::EnumBody
+                    | SyntaxKind::RecordBody
+                    | SyntaxKind::AnnotationBody
+            ),
+            BoundaryOwner::EnumBody => kind == SyntaxKind::EnumBody,
+            BoundaryOwner::ModuleBody => kind == SyntaxKind::ModuleBody,
+            BoundaryOwner::AnnotationArrayInitializer => {
+                kind == SyntaxKind::AnnotationElementValueArrayInitializer
+            }
+            BoundaryOwner::ArrayInitializer => kind == SyntaxKind::ArrayInitializer,
+            BoundaryOwner::TemplateExpression => kind == SyntaxKind::StringTemplateExpression,
+        }
+    }
+
+    fn node_start_for_boundary_owner(
+        old: &JavaParseResult,
+        offset: u32,
+        owner: BoundaryOwner,
+    ) -> Option<u32> {
+        // Prefer the token to the *left* of the offset. Boundary errors at the end of a node often
+        // occur at the same byte offset as the file's `Eof` token; using the right token can land
+        // us outside the construct that actually triggered the error.
+        let token = match old.token_at_offset(offset) {
+            TokenAtOffset::None => None,
+            TokenAtOffset::Single(tok) => {
+                if tok.kind() == SyntaxKind::Eof {
+                    tok.prev_token()
+                } else {
+                    Some(tok)
+                }
+            }
+            TokenAtOffset::Between(left, _) => Some(left),
+        };
+
+        let mut node = token
+            .and_then(|tok| tok.parent())
+            .unwrap_or_else(|| old.syntax());
+        loop {
+            if boundary_owner_matches(owner, node.kind()) {
+                return Some(u32::from(node.text_range().start()));
+            }
+            node = node.parent()?;
+        }
+    }
+
+    // Preserve errors that are *entirely* outside the reparsed region. Empty ranges anchored at the
+    // region boundary are tricky: many "missing token" diagnostics use a zero-length range at the
+    // expected token position (often exactly `reparsed_old_range.end`).
     //
-    // Keeping boundary errors would duplicate or stale-shift diagnostics that should be replaced
-    // by the fragment reparse.
+    // Some of these boundary errors belong to the reparsed fragment and should be dropped and
+    // recomputed (to avoid stale/duplicated diagnostics), while others correspond to *outer*
+    // constructs that started before the reparsed region and must be preserved.
+    //
+    // For a handful of common "expected `}` to close ..." diagnostics we approximate ownership by:
+    // - finding the innermost matching node at the boundary offset, and
+    // - preserving the error only when that node starts before `reparsed_old_range.start`.
+    //
+    // If we cannot attribute the error to a known construct, we fall back to preserving
+    // class-body-level boundary diagnostics when we are not reparsing the class body itself.
     let reparsing_class_body = matches!(
         reparsed_kind,
         SyntaxKind::ClassBody
@@ -657,6 +750,7 @@ fn shift_preserved_errors(
             | SyntaxKind::RecordDeclaration
             | SyntaxKind::AnnotationTypeDeclaration
     );
+
     let is_class_body_error = |e: &ParseError| {
         e.message.contains("class body")
             || e.message.contains("interface body")
@@ -665,10 +759,30 @@ fn shift_preserved_errors(
             || e.message.contains("annotation body")
             || e.message.contains("member name")
     };
+
+    let preserve_boundary_error = |e: &ParseError| {
+        // Only relevant for empty errors at the end boundary.
+        if !e.range.is_empty() || e.range.start != reparsed_old_range.end {
+            return true;
+        }
+
+        // Prefer structural ownership (via ancestor kinds) when we can identify the construct.
+        if let Some(owner) = boundary_owner_from_message(&e.message) {
+            if let Some(owner_start) = node_start_for_boundary_owner(old, e.range.start, owner) {
+                return owner_start < reparsed_old_range.start;
+            }
+        }
+
+        // Fall back to preserving class-body-level EOF diagnostics unless we are reparsing the
+        // class body itself.
+        !reparsing_class_body && is_class_body_error(e)
+    };
+
     let is_before_reparse = |e: &ParseError| {
         e.range.end < reparsed_old_range.start
             || (e.range.end == reparsed_old_range.start && e.range.start < reparsed_old_range.start)
     };
+
     let is_after_reparse = |e: &ParseError| {
         if e.range.start > reparsed_old_range.end {
             return true;
@@ -680,9 +794,8 @@ fn shift_preserved_errors(
         if e.range.end > reparsed_old_range.end {
             return true;
         }
-        // Empty range at the end boundary: preserve class-body-level diagnostics unless we are
-        // reparsing the class body itself.
-        e.range.end == reparsed_old_range.end && !reparsing_class_body && is_class_body_error(e)
+        // Empty range at the end boundary.
+        preserve_boundary_error(e)
     };
 
     if delta == 0 {
