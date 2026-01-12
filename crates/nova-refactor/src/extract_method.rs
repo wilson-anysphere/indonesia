@@ -65,6 +65,7 @@ pub enum ControlFlowHazard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractMethodIssue {
     InvalidSelection,
+    InvalidMethodName { name: String },
     NameCollision { name: String },
     MultipleReturnValues { names: Vec<String> },
     IllegalControlFlow { hazard: ControlFlowHazard },
@@ -141,8 +142,13 @@ impl ExtractMethod {
             .find_map(ast::ClassDeclaration::cast);
 
         let mut issues = Vec::new();
+        if !is_valid_java_identifier(&self.name) {
+            issues.push(ExtractMethodIssue::InvalidMethodName {
+                name: self.name.clone(),
+            });
+        }
         if let Some(class_decl) = class_decl.as_ref() {
-            if class_has_method_named(class_decl, &self.name) {
+            if issues.is_empty() && class_has_method_named(class_decl, &self.name) {
                 issues.push(ExtractMethodIssue::NameCollision {
                     name: self.name.clone(),
                 });
@@ -816,4 +822,17 @@ fn reindent(block: &str, old_indent: &str, new_indent: &str) -> String {
         out.pop();
     }
     out
+}
+
+fn is_valid_java_identifier(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let tokens = nova_syntax::lex(name);
+    match tokens.as_slice() {
+        [tok, eof] => {
+            eof.kind == SyntaxKind::Eof && tok.kind.is_identifier_like() && !tok.kind.is_keyword()
+        }
+        _ => false,
+    }
 }

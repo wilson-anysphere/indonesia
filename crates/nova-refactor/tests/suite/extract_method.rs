@@ -318,3 +318,99 @@ class C {
     assert_no_overlaps(&edit);
     let _ = apply_single_file("Main.java", &source, &edit);
 }
+
+#[test]
+fn extract_method_rejects_keyword_method_name() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "class".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject invalid method name");
+    assert!(err.contains("InvalidMethodName"));
+}
+
+#[test]
+fn extract_method_rejects_non_identifier_method_name() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "1foo".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject invalid method name");
+    assert!(err.contains("InvalidMethodName"));
+}
+
+#[test]
+fn extract_method_allows_underscore_in_method_name() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "foo_bar".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        foo_bar(a, b);
+        System.out.println("done");
+    }
+
+    private void foo_bar(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
