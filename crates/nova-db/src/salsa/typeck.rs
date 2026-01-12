@@ -4147,11 +4147,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 } => {
                     stack.push(*block);
                 }
-                HirExpr::Switch { body, .. } => {
-                    // Switch expressions are lowered with a block body stored in `body.stmts`, but
-                    // like lambda blocks they are not reachable from the root statement tree.
-                    // Explicit ctor invocations nested inside them are still invalid.
-                    stack.push(*body);
+                HirExpr::Switch { arms, .. } => {
+                    // Switch expressions can contain statement bodies (rules with block/statement
+                    // bodies). Those statement IDs live in `body.stmts`, but are not reachable from
+                    // the root statement tree (they are referenced from an expression).
+                    //
+                    // Explicit ctor invocations nested inside them are still invalid, so include
+                    // them in the traversal.
+                    for arm in arms {
+                        match &arm.body {
+                            SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                                stack.push(*stmt);
+                            }
+                            SwitchArmBody::Expr(_) => {}
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -11468,7 +11478,6 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Expr { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
-        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
