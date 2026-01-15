@@ -1,6 +1,7 @@
 use crate::rpc_out::RpcOut;
+use crate::stdio_extensions_db::SingleFileDb;
 use crate::stdio_text::offset_to_position_utf16;
-use crate::{ServerState, SingleFileDb};
+use crate::ServerState;
 
 use nova_ext::ProjectId;
 use nova_ide::extensions::IdeExtensions;

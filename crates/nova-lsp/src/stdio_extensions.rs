@@ -1,6 +1,7 @@
 use crate::stdio_paths::path_from_uri;
+use crate::stdio_extensions_db::SingleFileDb;
 use crate::stdio_text::offset_to_position_utf16;
-use crate::{ServerState, SingleFileDb};
+use crate::ServerState;
 
 use nova_db::Database;
 use nova_ext::{ExtensionManager, ExtensionRegistry};

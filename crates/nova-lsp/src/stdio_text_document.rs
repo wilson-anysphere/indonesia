@@ -1,7 +1,8 @@
 use crate::stdio_paths::path_from_uri;
 use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
 use crate::stdio_diagnostics;
-use crate::{ServerState, SingleFileDb};
+use crate::stdio_extensions_db::SingleFileDb;
+use crate::ServerState;
 
 use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,

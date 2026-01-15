@@ -1,6 +1,7 @@
 use crate::stdio_paths::{load_document_text, path_from_uri};
 use crate::stdio_text::position_to_offset_utf16;
-use crate::{ServerState, SingleFileDb};
+use crate::stdio_extensions_db::SingleFileDb;
+use crate::ServerState;
 
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
