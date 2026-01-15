@@ -8,7 +8,7 @@
 
 use crate::aquery::JavaCompileInfo;
 use anyhow::{anyhow, Context, Result};
-use nova_core::{file_uri_to_path, AbsPathBuf, Diagnostic as NovaDiagnostic};
+use nova_core::{file_uri_to_path, AbsPathBuf, BuildDiagnostic as NovaDiagnostic};
 use nova_process::CancellationToken;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -428,17 +428,17 @@ fn bsp_compile_raw_with_cancellation(
 /// Convert BSP published diagnostics into Nova diagnostics.
 ///
 /// This flattens multiple `build/publishDiagnostics` notifications into a single list of
-/// `nova_core::Diagnostic` values.
+/// `nova_core::BuildDiagnostic` values.
 pub fn bsp_publish_diagnostics_to_nova_diagnostics(
     notifications: &[PublishDiagnosticsParams],
-) -> Vec<nova_core::Diagnostic> {
-    let mut by_file = BTreeMap::<PathBuf, Vec<nova_core::Diagnostic>>::new();
+) -> Vec<nova_core::BuildDiagnostic> {
+    let mut by_file = BTreeMap::<PathBuf, Vec<nova_core::BuildDiagnostic>>::new();
     for publish in notifications {
         let file = normalize_bsp_uri_to_path(&publish.text_document.uri);
 
         let mut converted = Vec::with_capacity(publish.diagnostics.len());
         for diag in &publish.diagnostics {
-            converted.push(nova_core::Diagnostic::new(
+            converted.push(nova_core::BuildDiagnostic::new(
                 file.clone(),
                 bsp_range_to_nova_range(&diag.range),
                 bsp_severity_to_nova(diag.severity),
@@ -1379,13 +1379,13 @@ fn bsp_position_to_nova_position(pos: &Position) -> nova_core::Position {
     nova_core::Position { line, character }
 }
 
-fn bsp_severity_to_nova(severity: Option<i32>) -> nova_core::DiagnosticSeverity {
+fn bsp_severity_to_nova(severity: Option<i32>) -> nova_core::BuildDiagnosticSeverity {
     match severity.unwrap_or(1) {
-        1 => nova_core::DiagnosticSeverity::Error,
-        2 => nova_core::DiagnosticSeverity::Warning,
-        3 => nova_core::DiagnosticSeverity::Information,
-        4 => nova_core::DiagnosticSeverity::Hint,
-        _ => nova_core::DiagnosticSeverity::Error,
+        1 => nova_core::BuildDiagnosticSeverity::Error,
+        2 => nova_core::BuildDiagnosticSeverity::Warning,
+        3 => nova_core::BuildDiagnosticSeverity::Information,
+        4 => nova_core::BuildDiagnosticSeverity::Hint,
+        _ => nova_core::BuildDiagnosticSeverity::Error,
     }
 }
 
@@ -1462,29 +1462,29 @@ mod tests {
     fn severity_mapping_matches_lsp_conventions() {
         assert_eq!(
             bsp_severity_to_nova(Some(1)),
-            nova_core::DiagnosticSeverity::Error
+            nova_core::BuildDiagnosticSeverity::Error
         );
         assert_eq!(
             bsp_severity_to_nova(Some(2)),
-            nova_core::DiagnosticSeverity::Warning
+            nova_core::BuildDiagnosticSeverity::Warning
         );
         assert_eq!(
             bsp_severity_to_nova(Some(3)),
-            nova_core::DiagnosticSeverity::Information
+            nova_core::BuildDiagnosticSeverity::Information
         );
         assert_eq!(
             bsp_severity_to_nova(Some(4)),
-            nova_core::DiagnosticSeverity::Hint
+            nova_core::BuildDiagnosticSeverity::Hint
         );
 
         // Missing/unknown values default to Error.
         assert_eq!(
             bsp_severity_to_nova(None),
-            nova_core::DiagnosticSeverity::Error
+            nova_core::BuildDiagnosticSeverity::Error
         );
         assert_eq!(
             bsp_severity_to_nova(Some(99)),
-            nova_core::DiagnosticSeverity::Error
+            nova_core::BuildDiagnosticSeverity::Error
         );
     }
 
@@ -1535,7 +1535,7 @@ mod tests {
 
         assert_eq!(diag.range.start.line, 0);
         assert_eq!(diag.range.start.character, 1);
-        assert_eq!(diag.severity, nova_core::DiagnosticSeverity::Warning);
+        assert_eq!(diag.severity, nova_core::BuildDiagnosticSeverity::Warning);
         assert_eq!(diag.message, "warning!");
         assert_eq!(diag.source.as_deref(), Some("bsp"));
     }

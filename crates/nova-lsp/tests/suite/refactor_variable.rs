@@ -155,7 +155,7 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 2, "got: {actions:?}");
     assert!(actions.iter().any(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action) => action.title == "Extract variable…",
         _ => false,

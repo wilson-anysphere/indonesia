@@ -74,10 +74,12 @@ impl WatchRootManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn watched_roots(&self) -> &HashMap<PathBuf, WatchMode> {
         &self.watched_roots
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_roots(&self) -> &HashMap<PathBuf, PendingRoot> {
         &self.pending_roots
     }

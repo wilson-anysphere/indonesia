@@ -80,6 +80,7 @@ impl std::error::Error for AbsPathError {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PathToUriError {
     NonUtf8Path,
+    InvalidUri,
     UnsupportedWindowsPath,
 }
 
@@ -87,6 +88,7 @@ impl std::fmt::Display for PathToUriError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PathToUriError::NonUtf8Path => f.write_str("path is not valid UTF-8"),
+            PathToUriError::InvalidUri => f.write_str("path could not be converted into a valid URI"),
             PathToUriError::UnsupportedWindowsPath => f.write_str("unsupported Windows path"),
         }
     }
@@ -107,8 +109,8 @@ pub enum UriToPathError {
 impl std::fmt::Display for UriToPathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UriToPathError::NotAFileUri => f.write_str("URI is not a file: URI"),
-            UriToPathError::InvalidUri => f.write_str("invalid file: URI"),
+            UriToPathError::NotAFileUri => f.write_str("URI is not a file URI"),
+            UriToPathError::InvalidUri => f.write_str("invalid file URI"),
             UriToPathError::InvalidPercentEncoding => {
                 f.write_str("invalid percent-encoding in URI")
             }
@@ -145,7 +147,7 @@ pub fn file_uri_to_path(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
     #[cfg(not(windows))]
     {
         let (authority, path) = split_file_uri(uri)?;
-        if !authority.is_empty() && authority != "localhost" {
+        if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
             return Err(UriToPathError::InvalidUri);
         }
 
@@ -203,8 +205,7 @@ fn normalize_logical_path(path: &Path) -> PathBuf {
 #[cfg(feature = "lsp")]
 pub fn path_to_lsp_uri(path: &AbsPathBuf) -> Result<lsp_types::Uri, PathToUriError> {
     let uri = path_to_file_uri(path)?;
-    uri.parse()
-        .map_err(|_| PathToUriError::UnsupportedWindowsPath)
+    uri.parse().map_err(|_| PathToUriError::InvalidUri)
 }
 
 #[cfg(feature = "lsp")]
@@ -213,6 +214,10 @@ pub fn lsp_uri_to_path(uri: &lsp_types::Uri) -> Result<AbsPathBuf, UriToPathErro
 }
 
 fn split_file_uri(uri: &str) -> Result<(&str, &str), UriToPathError> {
+    if uri.contains(['#', '?']) {
+        return Err(UriToPathError::InvalidUri);
+    }
+
     let rest = uri
         .strip_prefix("file:")
         .ok_or(UriToPathError::NotAFileUri)?;
@@ -405,6 +410,33 @@ mod tests {
 
         let back = file_uri_to_path(&uri).unwrap();
         assert_eq!(back, path);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_accepts_localhost_case_insensitive() {
+        let path = file_uri_to_path("file://LOCALHOST/tmp/a.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/tmp/a.java")).unwrap());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_rejects_query_and_fragment() {
+        assert!(matches!(
+            file_uri_to_path("file:///tmp/a.java?query"),
+            Err(UriToPathError::InvalidUri)
+        ));
+        assert!(matches!(
+            file_uri_to_path("file:///tmp/a.java#frag"),
+            Err(UriToPathError::InvalidUri)
+        ));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_allows_percent_encoded_reserved_chars() {
+        let path = file_uri_to_path("file:///tmp/a%3Fb.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/tmp/a?b.java")).unwrap());
     }
 
     #[test]

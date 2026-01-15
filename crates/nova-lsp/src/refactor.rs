@@ -204,6 +204,15 @@ fn conflicts_resolvable_by_renaming(conflicts: &[Conflict], name: &str) -> bool 
     })
 }
 
+fn is_ascii_java_identifier(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+}
+
 /// Build `Extract variable…` code actions for a selection in a single document.
 ///
 /// The returned action is unresolved (it only carries `data`). Clients can
@@ -234,6 +243,7 @@ pub fn extract_variable_code_actions(
     if selected.is_empty() {
         return Vec::new();
     }
+    let allow_object_explicit = is_ascii_java_identifier(selected);
 
     // Probe the refactoring with a placeholder name to avoid offering actions when they can't be
     // applied.
@@ -246,6 +256,7 @@ pub fn extract_variable_code_actions(
         file: &FileId,
         expr_range: WorkspaceTextRange,
         use_var: bool,
+        allow_object_explicit: bool,
     ) -> Option<String> {
         // Treat name conflicts as a recoverable probe failure by trying another placeholder name.
         //
@@ -275,7 +286,7 @@ pub fn extract_variable_code_actions(
                     // type-checking information available. When parser-only type inference falls
                     // back to `Object`, the explicit-type variant isn't meaningful (it would just
                     // emit `Object extracted = <expr>;`), so suppress it.
-                    if !use_var {
+                    if !use_var && !allow_object_explicit {
                         let needle = format!("Object {name} =");
                         if edit
                             .text_edits
@@ -310,7 +321,7 @@ pub fn extract_variable_code_actions(
 
     // Offer the original `var` extraction variant when applicable.
     if let Some(placeholder_name) =
-        probe_extract_variable_placeholder_name(&db, &file, expr_range, true)
+        probe_extract_variable_placeholder_name(&db, &file, expr_range, true, allow_object_explicit)
     {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable…".to_string(),
@@ -332,7 +343,7 @@ pub fn extract_variable_code_actions(
     // concrete type for the extracted expression (and/or otherwise accepts the selection even when
     // the `var` variant does not).
     if let Some(placeholder_name) =
-        probe_extract_variable_placeholder_name(&db, &file, expr_range, false)
+        probe_extract_variable_placeholder_name(&db, &file, expr_range, false, allow_object_explicit)
     {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable… (explicit type)".to_string(),

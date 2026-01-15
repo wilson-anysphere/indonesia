@@ -69,7 +69,7 @@ pub struct BuildStatusSnapshot {
 pub struct BuildDiagnosticsSnapshot {
     pub build_id: Option<BuildTaskId>,
     pub state: BuildTaskState,
-    pub diagnostics: Vec<nova_core::Diagnostic>,
+    pub diagnostics: Vec<nova_core::BuildDiagnostic>,
     pub error: Option<String>,
 }
 

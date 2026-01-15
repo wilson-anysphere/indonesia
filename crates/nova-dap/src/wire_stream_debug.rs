@@ -18,18 +18,22 @@
 
 use std::{
     future::Future,
-    path::Path,
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::path::Path;
+
 use nova_jdwp::wire::{
-    inspect, JdwpClient, JdwpError, JdwpValue, MethodId, ObjectId, ReferenceTypeId, ThreadId,
+    inspect, JdwpClient, JdwpError, JdwpValue, ObjectId, ThreadId,
 };
+#[cfg(test)]
+use nova_jdwp::wire::{MethodId, ReferenceTypeId};
 use nova_jdwp::wire::types::{FrameId, Location};
 use nova_scheduler::CancellationToken;
 use nova_stream_debug::{
-    analyze_stream_expression, StreamAnalysisError, StreamChain, StreamDebugConfig, StreamDebugResult,
-    StreamOperation, StreamSample, StreamStepResult, StreamTerminalResult,
+    StreamAnalysisError, StreamChain, StreamDebugConfig, StreamDebugResult, StreamOperation,
+    StreamSample, StreamStepResult, StreamTerminalResult,
 };
 use thiserror::Error;
 use crate::javac::{resolve_hot_swap_javac_config, HotSwapJavacConfig};
@@ -107,6 +111,7 @@ impl Drop for TemporaryObjectPin {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn inspect_object_children_temporarily_pinned(
     jdwp: &JdwpClient,
     object_id: ObjectId,
@@ -120,6 +125,7 @@ pub(crate) async fn inspect_object_children_temporarily_pinned(
     res
 }
 
+#[cfg(test)]
 pub(crate) async fn inspect_object_preview_temporarily_pinned(
     jdwp: &JdwpClient,
     object_id: ObjectId,
@@ -142,6 +148,7 @@ pub(crate) async fn inspect_object_preview_temporarily_pinned(
 ///
 /// This mirrors the stream-debug sampling pattern of producing a fresh
 /// `List` (e.g. from `stream.collect(toList())`) and immediately inspecting it.
+#[cfg(test)]
 pub async fn sample_object_children_via_invoke_method(
     jdwp: &JdwpClient,
     class_id: ReferenceTypeId,
@@ -189,16 +196,11 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
     Timeout,
     #[error(transparent)]
     Jdwp(#[from] JdwpError),
-    #[error("no threads available in target VM")]
-    NoThreads,
-    #[error("no classes available in target VM")]
-    NoClasses,
-    #[error("helper class did not expose required method `{0}`")]
-    MissingHelperMethod(&'static str),
     #[error("failed to compile helper class: {0}")]
     Compile(String),
 }
 
+#[cfg(test)]
 async fn cancellable_jdwp<T>(
     cancel: &CancellationToken,
     fut: impl Future<Output = Result<T, JdwpError>>,
@@ -248,9 +250,11 @@ fn is_mock_thread(thread: ThreadId) -> bool {
     thread == nova_jdwp::wire::mock::THREAD_ID || thread == nova_jdwp::wire::mock::WORKER_THREAD_ID
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 struct DummyStreamEvalCompiler;
 
+#[cfg(test)]
 impl StreamEvalCompiler for DummyStreamEvalCompiler {
     fn compile<'a>(
         &'a self,
@@ -333,6 +337,7 @@ async fn budgeted_eval<T>(
     }
 }
 
+#[cfg(test)]
 async fn resolve_first_frame(
     jdwp: &JdwpClient,
     cancel: &CancellationToken,
@@ -341,7 +346,7 @@ async fn resolve_first_frame(
         .await?
         .into_iter()
         .next()
-        .ok_or(WireStreamDebugError::NoThreads)?;
+        .ok_or_else(|| WireStreamDebugError::Jdwp(JdwpError::Protocol("no threads available".to_string())))?;
     let frame = cancellable_jdwp(cancel, jdwp.frames(thread, 0, 1))
         .await?
         .into_iter()
@@ -436,22 +441,6 @@ async fn format_terminal_value(
     .await
 }
 
-/// Evaluate a stream pipeline with wire-level JDWP.
-///
-/// This is a convenience wrapper that evaluates the stream against the first available thread and
-/// top-most stack frame. The wire DAP server uses [`debug_stream_wire_in_frame`] so it can bind
-/// evaluation to a specific `frameId`.
-pub async fn debug_stream_wire(
-    jdwp: &JdwpClient,
-    expression: &str,
-    config: &StreamDebugConfig,
-    cancel: &CancellationToken,
-) -> Result<StreamDebugResult, WireStreamDebugError> {
-    let chain = analyze_stream_expression(expression)?;
-    let (thread, frame_id, location) = resolve_first_frame(jdwp, cancel).await?;
-    debug_stream_wire_in_frame(jdwp, thread, frame_id, location, &chain, config, cancel).await
-}
-
 pub(crate) async fn debug_stream_wire_in_frame(
     jdwp: &JdwpClient,
     thread: ThreadId,
@@ -492,6 +481,7 @@ pub(crate) async fn debug_stream_wire_in_frame(
 // Test-facing helper that auto-selects the first thread/frame in the VM. This keeps the unit tests
 // in this module lightweight; the wire DAP server always calls `debug_stream_wire_in_frame` with a
 // specific `frameId`.
+#[cfg(test)]
 async fn debug_stream_wire_with_compiler(
     jdwp: &JdwpClient,
     chain: &StreamChain,
@@ -832,6 +822,7 @@ where
     Ok((value, start.elapsed().as_millis()))
 }
 
+#[cfg(test)]
 fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &str) -> String {
     let mut out = String::new();
     out.push_str("stream debug helper compilation failed\n");
@@ -864,6 +855,7 @@ fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &
     out
 }
 
+#[cfg(test)]
 fn stream_debug_compile_hints(javac_output: &str) -> Vec<String> {
     let lower = javac_output.to_lowercase();
     let mut hints = Vec::new();
@@ -922,6 +914,7 @@ so unqualified method calls from your source file may need to be qualified. Try 
     hints
 }
 
+#[cfg(test)]
 fn extract_missing_method_name(line: &str) -> Option<String> {
     // `javac` continuation line:
     // `symbol:   method helper(int)`
@@ -947,10 +940,12 @@ fn extract_missing_method_name(line: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn is_ident_start(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_alphabetic()
 }
 
+#[cfg(test)]
 fn is_ident_part(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }
@@ -963,6 +958,7 @@ mod tests {
     use std::{io::Write, path::PathBuf};
 
     use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
+    use nova_stream_debug::analyze_stream_expression;
 
     #[test]
     fn stream_debug_compile_failure_formats_javac_diagnostics_with_context_and_hints() {

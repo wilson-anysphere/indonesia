@@ -103,14 +103,14 @@ impl BuildSystem for ProjectHotSwapBuild {
                 let has_errors = result
                     .diagnostics
                     .iter()
-                    .any(|diag| diag.severity == nova_core::DiagnosticSeverity::Error);
+                    .any(|diag| diag.severity == nova_core::BuildDiagnosticSeverity::Error);
                 let exit_code = result.exit_code.unwrap_or(0);
                 let failed = exit_code != 0 || has_errors;
                 if failed {
                     let first_error = result
                         .diagnostics
                         .iter()
-                        .find(|diag| diag.severity == nova_core::DiagnosticSeverity::Error)
+                        .find(|diag| diag.severity == nova_core::BuildDiagnosticSeverity::Error)
                         .map(|diag| diag.message.clone());
                     let message = first_error.or_else(|| {
                         if exit_code != 0 {
@@ -285,7 +285,7 @@ impl ProjectHotSwapBuild {
     ) -> Vec<CompileOutput> {
         let mut error_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for diag in build.diagnostics {
-            if diag.severity == nova_core::DiagnosticSeverity::Error {
+            if diag.severity == nova_core::BuildDiagnosticSeverity::Error {
                 let key = canonicalize_fallback(&diag.file);
                 error_map.entry(key).or_default().push(diag.message);
             }

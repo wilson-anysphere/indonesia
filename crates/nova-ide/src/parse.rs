@@ -17,6 +17,7 @@ pub struct TypeModifiers {
 #[derive(Clone, Debug)]
 pub struct FieldDef {
     pub ty: String,
+    #[allow(dead_code)]
     pub ty_span: Span,
     pub name: String,
     pub name_span: Span,
@@ -25,6 +26,7 @@ pub struct FieldDef {
 #[derive(Clone, Debug)]
 pub struct VarDef {
     pub ty: String,
+    #[allow(dead_code)]
     pub ty_span: Span,
     pub name: String,
     pub name_span: Span,
@@ -59,6 +61,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug)]
 pub struct CallSite {
     pub receiver: String,
+    #[allow(dead_code)]
     pub receiver_span: Span,
     pub method: String,
     pub method_span: Span,

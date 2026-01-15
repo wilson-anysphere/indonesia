@@ -245,10 +245,6 @@ impl WorkspaceHierarchyIndex {
         self.types.get(name)
     }
 
-    pub(crate) fn inheritance(&self) -> &InheritanceIndex {
-        &self.inheritance
-    }
-
     #[allow(dead_code)]
     pub(crate) fn method_info(&self, type_name: &str, method_name: &str) -> Option<&MethodInfo> {
         self.methods

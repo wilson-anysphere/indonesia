@@ -11,7 +11,6 @@ pub mod server;
 
 /// Nova-specific "debugger excellence" extensions.
 pub mod hot_swap;
-pub(crate) mod java_type;
 /// Re-exports of the JDWP client facade consumed by debugger-adjacent integrations (e.g. LSP).
 pub mod jdwp;
 pub mod smart_step_into;

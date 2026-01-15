@@ -84,10 +84,10 @@ pub(crate) fn diagnostics_for_file_with_cancel<DB: ?Sized + Database>(
         .filter(|d| d.file == file_path)
         .map(|d| Diagnostic {
             severity: match d.severity {
-                nova_core::DiagnosticSeverity::Error => Severity::Error,
-                nova_core::DiagnosticSeverity::Warning => Severity::Warning,
-                nova_core::DiagnosticSeverity::Information
-                | nova_core::DiagnosticSeverity::Hint => Severity::Info,
+                nova_core::BuildDiagnosticSeverity::Error => Severity::Error,
+                nova_core::BuildDiagnosticSeverity::Warning => Severity::Warning,
+                nova_core::BuildDiagnosticSeverity::Information
+                | nova_core::BuildDiagnosticSeverity::Hint => Severity::Info,
             },
             code: dagger_code(d.source.as_deref()).into(),
             message: d.message.clone(),

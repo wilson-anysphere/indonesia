@@ -361,55 +361,6 @@ where
     }
 }
 
-fn remaining_budget(
-    token: &CancellationToken,
-    started: Instant,
-    budget: Duration,
-) -> Result<Duration> {
-    if token.is_cancelled() {
-        return Err(JdwpError::Cancelled.into());
-    }
-
-    let elapsed = started.elapsed();
-    let remaining = budget.checked_sub(elapsed).unwrap_or(Duration::ZERO);
-    if remaining.is_zero() {
-        return Err(DebuggerError::Timeout);
-    }
-    Ok(remaining)
-}
-
-fn enforce_budget(token: &CancellationToken, started: Instant, budget: Duration) -> Result<()> {
-    remaining_budget(token, started, budget).map(|_| ())
-}
-
-async fn budgeted_jdwp<T, F>(
-    token: &CancellationToken,
-    started: Instant,
-    budget: Duration,
-    fut: F,
-) -> Result<T>
-where
-    F: Future<Output = std::result::Result<T, JdwpError>>,
-{
-    let remaining = remaining_budget(token, started, budget)?;
-
-    tokio::select! {
-        biased;
-        _ = token.cancelled() => Err(JdwpError::Cancelled.into()),
-        res = tokio::time::timeout(remaining, fut) => match res {
-            Ok(res) => Ok(res?),
-            Err(_elapsed) => {
-                // Cancellation should win over timeouts if both fire at roughly the same time.
-                if token.is_cancelled() {
-                    Err(JdwpError::Cancelled.into())
-                } else {
-                    Err(DebuggerError::Timeout)
-                }
-            }
-        }
-    }
-}
-
 impl Debugger {
     pub async fn attach(args: AttachArgs) -> Result<Self> {
         let AttachArgs {

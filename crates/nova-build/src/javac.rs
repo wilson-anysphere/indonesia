@@ -1,4 +1,4 @@
-use nova_core::{Diagnostic, DiagnosticSeverity, Position, Range};
+use nova_core::{BuildDiagnostic, BuildDiagnosticSeverity, Position, Range};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,9 +17,9 @@ fn make_range(line_1_based: u32, col_1_based: u32) -> Range {
 ///
 /// The parser is intentionally tolerant; build tools frequently interleave
 /// additional logging around compiler messages.
-pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<Diagnostic> {
-    let mut diags: Vec<Diagnostic> = Vec::new();
-    let mut current: Option<Diagnostic> = None;
+pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<BuildDiagnostic> {
+    let mut diags: Vec<BuildDiagnostic> = Vec::new();
+    let mut current: Option<BuildDiagnostic> = None;
 
     let mut lines = output.lines().peekable();
     while let Some(line) = lines.next() {
@@ -27,7 +27,7 @@ pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<Diagnostic> {
             if let Some(prev) = current.take() {
                 diags.push(prev);
             }
-            current = Some(Diagnostic::new(
+            current = Some(BuildDiagnostic::new(
                 file,
                 make_range(line_no, col_no),
                 sev,
@@ -45,7 +45,7 @@ pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<Diagnostic> {
             }
 
             let range = make_range(line_no, consumed.col_1_based.unwrap_or(1));
-            current = Some(Diagnostic::new(
+            current = Some(BuildDiagnostic::new(
                 file,
                 range,
                 sev,
@@ -76,13 +76,15 @@ pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<Diagnostic> {
     diags
 }
 
-fn parse_maven_diag_header(line: &str) -> Option<(DiagnosticSeverity, PathBuf, u32, u32, String)> {
+fn parse_maven_diag_header(
+    line: &str,
+) -> Option<(BuildDiagnosticSeverity, PathBuf, u32, u32, String)> {
     // Example:
     // [ERROR] /path/Foo.java:[10,5] cannot find symbol
     let level = line.strip_prefix('[')?.split_once(']')?.0;
     let severity = match level {
-        "ERROR" => DiagnosticSeverity::Error,
-        "WARNING" => DiagnosticSeverity::Warning,
+        "ERROR" => BuildDiagnosticSeverity::Error,
+        "WARNING" => BuildDiagnosticSeverity::Warning,
         _ => return None,
     };
 
@@ -122,7 +124,7 @@ fn parse_standard_javac_header<'a>(
     line: &str,
     lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
 ) -> Option<(
-    DiagnosticSeverity,
+    BuildDiagnosticSeverity,
     PathBuf,
     u32,
     String,
@@ -134,9 +136,9 @@ fn parse_standard_javac_header<'a>(
     //         ^
 
     let (sev, sev_marker) = if let Some(pos) = line.rfind(": error:") {
-        (DiagnosticSeverity::Error, (pos, ": error:".len()))
+        (BuildDiagnosticSeverity::Error, (pos, ": error:".len()))
     } else if let Some(pos) = line.rfind(": warning:") {
-        (DiagnosticSeverity::Warning, (pos, ": warning:".len()))
+        (BuildDiagnosticSeverity::Warning, (pos, ": warning:".len()))
     } else {
         return None;
     };

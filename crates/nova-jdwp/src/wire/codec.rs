@@ -96,6 +96,7 @@ impl JdwpWriter {
         self.write_id(id, sizes.object_id);
     }
 
+    #[allow(dead_code)]
     pub fn write_tagged_object_id(&mut self, tag: u8, id: ObjectId, sizes: &JdwpIdSizes) {
         self.write_u8(tag);
         self.write_object_id(id, sizes);

@@ -7,8 +7,6 @@ use nova_stream_debug::{
 };
 use serde::{Deserialize, Serialize};
 
-pub mod evaluator;
-
 pub const STREAM_DEBUG_COMMAND: &str = "nova/streamDebug";
 
 /// Hard cap on `StreamDebugConfig::max_sample_size` exposed via the DAP

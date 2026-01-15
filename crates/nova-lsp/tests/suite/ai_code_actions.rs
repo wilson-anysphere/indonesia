@@ -406,8 +406,7 @@ local_only = true
     let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
     let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
-    let expected_source_uri = file_uri.parse::<Uri>().expect("file uri");
-    let uri = Uri::from_str(&uri_for_path(&file_path)).expect("uri");
+    let uri: Uri = file_uri.parse().expect("file uri");
     let changes = edit.changes.expect("changes map");
     let edits = changes.get(&uri).expect("edits for uri");
     let updated = apply_lsp_edits(source, edits);
@@ -4647,22 +4646,6 @@ fn stdio_server_rejects_cloud_ai_code_edits_when_anonymization_is_enabled() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
     let root_uri = uri_for_path(root);
-
-    let src_dir = root.join("src");
-    std::fs::create_dir_all(&src_dir).expect("create src dir");
-    let file_path = src_dir.join("Main.java");
-    let text = "class Main { void run() { } }\n";
-    std::fs::write(&file_path, text).expect("write Main.java");
-    let file_uri = uri_for_path(&file_path);
-
-    let method_start = text.find("void run").expect("method start");
-    let close = text[method_start..].find('}').expect("method close") + method_start;
-    let selection_start = TextPos::new(text)
-        .lsp_position(method_start)
-        .expect("selection start");
-    let selection_end = TextPos::new(text)
-        .lsp_position(close + 1)
-        .expect("selection end");
 
     let config_path = root.join("nova.toml");
     std::fs::write(

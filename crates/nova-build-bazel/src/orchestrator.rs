@@ -49,7 +49,7 @@ pub struct BazelBuildDiagnosticsSnapshot {
     pub build_id: Option<BazelBuildTaskId>,
     pub state: BazelBuildTaskState,
     pub targets: Vec<String>,
-    pub diagnostics: Vec<nova_core::Diagnostic>,
+    pub diagnostics: Vec<nova_core::BuildDiagnostic>,
     pub error: Option<String>,
 }
 

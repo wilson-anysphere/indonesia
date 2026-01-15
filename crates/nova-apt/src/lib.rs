@@ -240,7 +240,7 @@ pub enum AptRunStatus {
 pub struct AptRunResult {
     pub status: AptRunStatus,
     /// Diagnostics emitted by the build tool (javac output parsing).
-    pub diagnostics: Vec<nova_core::Diagnostic>,
+    pub diagnostics: Vec<nova_core::BuildDiagnostic>,
     /// Freshness status + generated roots after the run.
     pub generated_sources: GeneratedSourcesStatus,
     /// Whether the result was served from Nova's APT run cache.
@@ -452,24 +452,24 @@ enum CachedDiagnosticSeverity {
     Hint,
 }
 
-impl From<nova_core::DiagnosticSeverity> for CachedDiagnosticSeverity {
-    fn from(value: nova_core::DiagnosticSeverity) -> Self {
+impl From<nova_core::BuildDiagnosticSeverity> for CachedDiagnosticSeverity {
+    fn from(value: nova_core::BuildDiagnosticSeverity) -> Self {
         match value {
-            nova_core::DiagnosticSeverity::Error => Self::Error,
-            nova_core::DiagnosticSeverity::Warning => Self::Warning,
-            nova_core::DiagnosticSeverity::Information => Self::Information,
-            nova_core::DiagnosticSeverity::Hint => Self::Hint,
+            nova_core::BuildDiagnosticSeverity::Error => Self::Error,
+            nova_core::BuildDiagnosticSeverity::Warning => Self::Warning,
+            nova_core::BuildDiagnosticSeverity::Information => Self::Information,
+            nova_core::BuildDiagnosticSeverity::Hint => Self::Hint,
         }
     }
 }
 
-impl From<CachedDiagnosticSeverity> for nova_core::DiagnosticSeverity {
+impl From<CachedDiagnosticSeverity> for nova_core::BuildDiagnosticSeverity {
     fn from(value: CachedDiagnosticSeverity) -> Self {
         match value {
-            CachedDiagnosticSeverity::Error => nova_core::DiagnosticSeverity::Error,
-            CachedDiagnosticSeverity::Warning => nova_core::DiagnosticSeverity::Warning,
-            CachedDiagnosticSeverity::Information => nova_core::DiagnosticSeverity::Information,
-            CachedDiagnosticSeverity::Hint => nova_core::DiagnosticSeverity::Hint,
+            CachedDiagnosticSeverity::Error => nova_core::BuildDiagnosticSeverity::Error,
+            CachedDiagnosticSeverity::Warning => nova_core::BuildDiagnosticSeverity::Warning,
+            CachedDiagnosticSeverity::Information => nova_core::BuildDiagnosticSeverity::Information,
+            CachedDiagnosticSeverity::Hint => nova_core::BuildDiagnosticSeverity::Hint,
         }
     }
 }
@@ -525,8 +525,8 @@ struct CachedDiagnostic {
     source: Option<String>,
 }
 
-impl From<nova_core::Diagnostic> for CachedDiagnostic {
-    fn from(value: nova_core::Diagnostic) -> Self {
+impl From<nova_core::BuildDiagnostic> for CachedDiagnostic {
+    fn from(value: nova_core::BuildDiagnostic) -> Self {
         Self {
             file: value.file,
             range: value.range.into(),
@@ -537,9 +537,9 @@ impl From<nova_core::Diagnostic> for CachedDiagnostic {
     }
 }
 
-impl From<CachedDiagnostic> for nova_core::Diagnostic {
+impl From<CachedDiagnostic> for nova_core::BuildDiagnostic {
     fn from(value: CachedDiagnostic) -> Self {
-        nova_core::Diagnostic {
+        nova_core::BuildDiagnostic {
             file: value.file,
             range: value.range.into(),
             severity: value.severity.into(),
@@ -705,7 +705,7 @@ impl From<CachedAptRunResult> for AptRunResult {
             diagnostics: value
                 .diagnostics
                 .into_iter()
-                .map(nova_core::Diagnostic::from)
+                .map(nova_core::BuildDiagnostic::from)
                 .collect(),
             generated_sources: value.generated_sources.into(),
             cache_hit: true,

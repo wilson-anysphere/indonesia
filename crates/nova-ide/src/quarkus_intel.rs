@@ -67,7 +67,6 @@ where
 
 #[derive(Debug)]
 pub(crate) struct CachedQuarkusProject {
-    pub(crate) root: PathBuf,
     /// Java sources included in the analysis, sorted by path (stable).
     pub(crate) java_sources: Vec<PathBuf>,
     file_to_source: HashMap<PathBuf, usize>,
@@ -176,7 +175,6 @@ fn project_for_file(db: &dyn Database, file: FileId) -> Option<Arc<CachedQuarkus
         .collect();
 
     let entry = Arc::new(CachedQuarkusProject {
-        root: root_key.clone(),
         java_sources,
         file_to_source,
         file_ids,

@@ -96,36 +96,6 @@ impl<V> Default for SpringWorkspaceCache<V> {
 }
 
 impl<V> SpringWorkspaceCache<V> {
-    pub(crate) fn get_or_update_with<F>(&self, root: PathBuf, fingerprint: u64, build: F) -> Arc<V>
-    where
-        F: FnOnce() -> V,
-    {
-        {
-            let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
-            if let Some(entry) = entries.get_cloned(&root) {
-                if entry.fingerprint == fingerprint {
-                    return entry.value;
-                }
-            }
-        }
-
-        let value = Arc::new(build());
-        let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
-        match entries.get_cloned(&root) {
-            Some(entry) if entry.fingerprint == fingerprint => entry.value,
-            _ => {
-                entries.insert(
-                    root,
-                    CacheEntry {
-                        fingerprint,
-                        value: Arc::clone(&value),
-                    },
-                );
-                value
-            }
-        }
-    }
-
     fn get_entry(&self, root: &PathBuf) -> Option<CacheEntry<V>> {
         let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
         entries.get_cloned(root)

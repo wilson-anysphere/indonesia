@@ -334,8 +334,8 @@ pub struct NovaDiagnostic {
     pub source: Option<String>,
 }
 
-impl From<nova_core::Diagnostic> for NovaDiagnostic {
-    fn from(value: nova_core::Diagnostic) -> Self {
+impl From<nova_core::BuildDiagnostic> for NovaDiagnostic {
+    fn from(value: nova_core::BuildDiagnostic) -> Self {
         Self {
             file: value.file.to_string_lossy().to_string(),
             range: NovaRange {
@@ -349,10 +349,10 @@ impl From<nova_core::Diagnostic> for NovaDiagnostic {
                 },
             },
             severity: match value.severity {
-                nova_core::DiagnosticSeverity::Error => NovaDiagnosticSeverity::Error,
-                nova_core::DiagnosticSeverity::Warning => NovaDiagnosticSeverity::Warning,
-                nova_core::DiagnosticSeverity::Information => NovaDiagnosticSeverity::Information,
-                nova_core::DiagnosticSeverity::Hint => NovaDiagnosticSeverity::Hint,
+                nova_core::BuildDiagnosticSeverity::Error => NovaDiagnosticSeverity::Error,
+                nova_core::BuildDiagnosticSeverity::Warning => NovaDiagnosticSeverity::Warning,
+                nova_core::BuildDiagnosticSeverity::Information => NovaDiagnosticSeverity::Information,
+                nova_core::BuildDiagnosticSeverity::Hint => NovaDiagnosticSeverity::Hint,
             },
             message: value.message,
             source: value.source,

@@ -135,37 +135,6 @@ impl StreamEvalCompiler for JavacStreamEvalCompiler {
     }
 }
 
-/// Compile, inject, and resolve method IDs for a stream-eval helper class.
-///
-/// This is the full compile+inject pipeline used by the wire-level stream debugger.
-pub(crate) async fn compile_and_inject_helper(
-    cancel: &CancellationToken,
-    jdwp: &JdwpClient,
-    javac: &HotSwapJavacConfig,
-    thread: ThreadId,
-    frame_id: FrameId,
-    location: Location,
-    imports: &[String],
-    stages: &[String],
-    terminal: Option<&str>,
-    max_sample_size: usize,
-) -> Result<StreamEvalHelper, StreamEvalError> {
-    compile_and_inject_helper_with_compiler(
-        cancel,
-        jdwp,
-        javac,
-        thread,
-        frame_id,
-        location,
-        imports,
-        stages,
-        terminal,
-        max_sample_size,
-        &JavacStreamEvalCompiler,
-    )
-    .await
-}
-
 /// Compile, inject, and resolve method IDs for a stream-eval helper class using a custom compiler.
 pub(crate) async fn compile_and_inject_helper_with_compiler(
     cancel: &CancellationToken,

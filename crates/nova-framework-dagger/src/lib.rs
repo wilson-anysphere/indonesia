@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_core::{
-    Diagnostic as CoreDiagnostic, DiagnosticSeverity, FileId, LineIndex, Position, ProjectId, Range,
+    BuildDiagnostic as CoreDiagnostic, BuildDiagnosticSeverity as DiagnosticSeverity, FileId,
+    LineIndex, Position, ProjectId, Range,
 };
 use nova_framework::{Database, FrameworkAnalyzer, NavigationTarget, Symbol, VirtualMember};
 use nova_types::{ClassId, Diagnostic, Severity, Span};

@@ -96,7 +96,6 @@ static FILE_NAVIGATION_INDEX_CACHE: Lazy<Mutex<LruCache<PathBuf, CachedIndex>>> 
 
 #[derive(Clone, Debug)]
 struct TypeInfo {
-    file_id: FileId,
     uri: Uri,
     def: TypeDef,
 }
@@ -131,9 +130,7 @@ thread_local! {
     static FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL: Cell<usize> = Cell::new(0);
 }
 
-#[cfg(any(test, debug_assertions))]
-static FILE_NAVIGATION_INDEX_BUILD_COUNTS_BY_ROOT: Lazy<Mutex<HashMap<PathBuf, usize>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+
 impl FileNavigationIndex {
     #[allow(dead_code)]
     fn new(db: &dyn Database) -> Self {
@@ -167,7 +164,6 @@ impl FileNavigationIndex {
             };
             for ty in &parsed_file.types {
                 types.entry(ty.name.clone()).or_insert_with(|| TypeInfo {
-                    file_id: *file_id,
                     uri: parsed_file.uri.clone(),
                     def: ty.clone(),
                 });
@@ -226,23 +222,6 @@ pub fn file_navigation_index_build_count_for_tests() -> usize {
     FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL.with(|count| count.get())
 }
 
-#[cfg(any(test, debug_assertions))]
-pub fn file_navigation_index_build_count_for_file_for_tests(
-    db: &dyn Database,
-    file: FileId,
-) -> usize {
-    let (raw_root, mut root_key) = file_navigation_roots(db, file);
-    let workspace_files = workspace_java_files(db, &raw_root, &root_key);
-    if root_key.as_path() == Path::new(IN_MEMORY_ROOT) {
-        root_key = in_memory_workspace_key(&workspace_files);
-    }
-
-    let counts = FILE_NAVIGATION_INDEX_BUILD_COUNTS_BY_ROOT
-        .lock()
-        .expect("file navigation build-count lock poisoned");
-    counts.get(&root_key).copied().unwrap_or_default()
-}
-
 #[derive(Debug, Clone)]
 struct WorkspaceJavaFile {
     path: Option<PathBuf>,
@@ -275,14 +254,6 @@ fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavi
     }
 
     let built = Arc::new(FileNavigationIndex::new_for_file_ids(db, file_ids));
-
-    #[cfg(any(test, debug_assertions))]
-    {
-        let mut counts = FILE_NAVIGATION_INDEX_BUILD_COUNTS_BY_ROOT
-            .lock()
-            .expect("file navigation build-count lock poisoned");
-        *counts.entry(root_key.clone()).or_default() += 1;
-    }
 
     let mut cache = FILE_NAVIGATION_INDEX_CACHE
         .lock()

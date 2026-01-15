@@ -73,8 +73,8 @@ pub struct CachedDiagnostic {
     pub source: Option<String>,
 }
 
-impl From<&nova_core::Diagnostic> for CachedDiagnostic {
-    fn from(value: &nova_core::Diagnostic) -> Self {
+impl From<&nova_core::BuildDiagnostic> for CachedDiagnostic {
+    fn from(value: &nova_core::BuildDiagnostic) -> Self {
         Self {
             file: value.file.clone(),
             range: CachedRange {
@@ -88,10 +88,10 @@ impl From<&nova_core::Diagnostic> for CachedDiagnostic {
                 },
             },
             severity: match value.severity {
-                nova_core::DiagnosticSeverity::Error => CachedDiagnosticSeverity::Error,
-                nova_core::DiagnosticSeverity::Warning => CachedDiagnosticSeverity::Warning,
-                nova_core::DiagnosticSeverity::Information => CachedDiagnosticSeverity::Information,
-                nova_core::DiagnosticSeverity::Hint => CachedDiagnosticSeverity::Hint,
+                nova_core::BuildDiagnosticSeverity::Error => CachedDiagnosticSeverity::Error,
+                nova_core::BuildDiagnosticSeverity::Warning => CachedDiagnosticSeverity::Warning,
+                nova_core::BuildDiagnosticSeverity::Information => CachedDiagnosticSeverity::Information,
+                nova_core::BuildDiagnosticSeverity::Hint => CachedDiagnosticSeverity::Hint,
             },
             message: value.message.clone(),
             source: value.source.clone(),

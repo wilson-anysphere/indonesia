@@ -9322,13 +9322,6 @@ impl CompletionResolveCtx {
         Type::Named(fallback)
     }
 
-    fn resolve_type_name(&self, raw: &str) -> String {
-        self.type_name_candidates(raw)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| raw.trim().to_string())
-    }
-
     fn type_name_candidates(&self, raw: &str) -> Vec<String> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -13856,54 +13849,6 @@ fn parse_source_type_for_expected(
     } else {
         parsed
     }
-}
-
-fn infer_receiver_for_expected(
-    types: &mut TypeStore,
-    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
-    analysis: &Analysis,
-    receiver: &str,
-) -> (Type, CallKind) {
-    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
-    if receiver.starts_with('"') {
-        return (
-            types
-                .class_id("java.lang.String")
-                .map(|id| Type::class(id, vec![]))
-                .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
-            CallKind::Instance,
-        );
-    }
-
-    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
-        return (
-            parse_source_type_for_expected(types, &file_ctx, workspace_index, &var.ty),
-            CallKind::Instance,
-        );
-    }
-    if let Some(param) = analysis
-        .methods
-        .iter()
-        .flat_map(|m| m.params.iter())
-        .find(|p| p.name == receiver)
-    {
-        return (
-            parse_source_type_for_expected(types, &file_ctx, workspace_index, &param.ty),
-            CallKind::Instance,
-        );
-    }
-    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
-        return (
-            parse_source_type_for_expected(types, &file_ctx, workspace_index, &field.ty),
-            CallKind::Instance,
-        );
-    }
-
-    // Allow `Foo.bar()` to treat `Foo` as a type reference.
-    (
-        parse_source_type_for_expected(types, &file_ctx, workspace_index, receiver),
-        CallKind::Static,
-    )
 }
 
 fn sam_param_count(types: &mut TypeStore, ty: &Type) -> Option<usize> {

@@ -366,11 +366,11 @@ pub(crate) async fn compile_java_to_dir(
         CompileError::new(format!("failed to spawn {}: {err}", javac.javac.as_str()))
     })?;
 
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| CompileError::new("javac stdout unavailable"))?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .ok_or_else(|| CompileError::new("javac stderr unavailable"))?;
@@ -605,6 +605,7 @@ pub(crate) fn format_javac_failure(stdout: &[u8], stderr: &[u8]) -> String {
     truncate_message(message, 8 * 1024)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> {
     // `format_javac_failure` emits one diagnostic per line in the form:
     // `<file>:<line>:<col>: <message>`

@@ -588,11 +588,6 @@ impl InProcessRouter {
         token
     }
 
-    async fn index_workspace(&self) -> Result<()> {
-        self.index_workspace_cancelable(CancellationToken::new())
-            .await
-    }
-
     async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
         if cancel.is_cancelled() {
             return Err(rpc_cancelled_error());
@@ -728,11 +723,6 @@ impl InProcessRouter {
 
         write_global_symbols(&self.global_symbols, symbols, revision).await;
         Ok(())
-    }
-
-    async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
-        self.update_file_cancelable(CancellationToken::new(), path, text)
-            .await
     }
 
     async fn update_file_cancelable(
@@ -971,11 +961,6 @@ impl DistributedRouter {
         }
     }
 
-    async fn index_workspace(&self) -> Result<()> {
-        self.index_workspace_cancelable(CancellationToken::new())
-            .await
-    }
-
     async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
         if cancel.is_cancelled() {
             return Err(rpc_cancelled_error());
@@ -1211,11 +1196,6 @@ impl DistributedRouter {
         Ok(())
     }
 
-    async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
-        self.update_file_cancelable(CancellationToken::new(), path, text)
-            .await
-    }
-
     async fn update_file_cancelable(
         &self,
         cancel: CancellationToken,
@@ -1288,11 +1268,6 @@ impl DistributedRouter {
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
         let guard = self.state.global_symbols.read().await;
         guard.search(query, WORKSPACE_SYMBOL_LIMIT)
-    }
-
-    async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
-        self.diagnostics_cancelable(CancellationToken::new(), path)
-            .await
     }
 
     async fn diagnostics_cancelable(

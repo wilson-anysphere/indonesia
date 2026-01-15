@@ -418,16 +418,24 @@ async fn handle_request(
                 // panicking task, so it won't see `std::thread::panicking()`).
                 nova_metrics::MetricsRegistry::global().record_panic(&command_for_metrics);
 
-                let mut message = "internal error (panic)".to_string();
-                // In release builds, try to capture a bug report bundle to aid debugging.
-                #[cfg(all(not(test), not(debug_assertions)))]
-                {
-                    if let Ok(Some(path)) =
-                        std::panic::catch_unwind(|| build_panic_bug_report_bundle())
+                let message = {
+                    #[cfg(all(not(test), not(debug_assertions)))]
                     {
-                        message.push_str(&format!(" bug report: {path}"));
+                        let mut message = "internal error (panic)".to_string();
+                        // In release builds, try to capture a bug report bundle to aid debugging.
+                        if let Ok(Some(path)) =
+                            std::panic::catch_unwind(|| build_panic_bug_report_bundle())
+                        {
+                            message.push_str(&format!(" bug report: {path}"));
+                        }
+                        message
                     }
-                }
+
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        "internal error (panic)".to_string()
+                    }
+                };
 
                 send_response(&out_tx, &seq, &request, false, None, Some(message)).await;
             } else {

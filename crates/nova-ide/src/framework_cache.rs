@@ -516,7 +516,6 @@ struct CachedSpringWorkspace {
 #[derive(Clone, Debug)]
 struct CachedQuarkusWorkspace {
     fingerprint: u64,
-    file_ids: Vec<FileId>,
     file_id_to_source: HashMap<FileId, usize>,
     analysis: Option<Arc<nova_framework_quarkus::AnalysisResultWithSpans>>,
 }
@@ -929,16 +928,14 @@ impl FrameworkWorkspaceCache {
             ))
         });
 
-        let file_ids: Vec<FileId> = files.iter().map(|(_, id)| *id).collect();
-        let file_id_to_source: HashMap<FileId, usize> = file_ids
+        let file_id_to_source: HashMap<FileId, usize> = files
             .iter()
             .enumerate()
-            .map(|(idx, id)| (*id, idx))
+            .map(|(idx, (_, id))| (*id, idx))
             .collect();
 
         let entry = CachedQuarkusWorkspace {
             fingerprint,
-            file_ids,
             file_id_to_source,
             analysis,
         };

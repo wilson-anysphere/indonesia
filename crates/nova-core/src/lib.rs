@@ -1,7 +1,6 @@
 //! Shared, dependency-minimized core types used across Nova.
 
 pub mod debug_config;
-pub mod diagnostic;
 pub mod edit;
 pub mod id;
 pub mod name;
@@ -52,7 +51,6 @@ pub const fn target_pointer_width() -> u8 {
 }
 
 pub use debug_config::{AttachConfig, LaunchConfig};
-pub use diagnostic::{Location, RelatedDiagnostic, Severity};
 pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, WorkspaceEdit};
 pub use id::*;
 pub use name::{InternedName, Name, NameInterner, SymbolName};
@@ -377,29 +375,29 @@ mod jdk_config_tests {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DiagnosticSeverity {
+pub enum BuildDiagnosticSeverity {
     Error,
     Warning,
     Information,
     Hint,
 }
 
-/// A diagnostic produced by parsing/analysis/build tooling.
+/// A diagnostic produced by external tools (build systems, BSP servers, etc).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
+pub struct BuildDiagnostic {
     /// File the diagnostic applies to.
     pub file: PathBuf,
     pub range: Range,
-    pub severity: DiagnosticSeverity,
+    pub severity: BuildDiagnosticSeverity,
     pub message: String,
     pub source: Option<String>,
 }
 
-impl Diagnostic {
+impl BuildDiagnostic {
     pub fn new(
         file: PathBuf,
         range: Range,
-        severity: DiagnosticSeverity,
+        severity: BuildDiagnosticSeverity,
         message: impl Into<String>,
         source: impl Into<Option<String>>,
     ) -> Self {

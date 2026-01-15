@@ -142,7 +142,7 @@ fn bsp_compile_collects_diagnostics_on_non_zero_status() {
     let diag = &outcome.diagnostics[0];
     assert_eq!(diag.file, file_path);
     assert_eq!(diag.message, "boom");
-    assert_eq!(diag.severity, nova_core::DiagnosticSeverity::Error);
+    assert_eq!(diag.severity, nova_core::BuildDiagnosticSeverity::Error);
     assert_eq!(diag.source.as_deref(), Some("fake-bsp"));
     assert_eq!(diag.range.start.line, 2);
     assert_eq!(diag.range.start.character, 1);

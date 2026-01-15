@@ -37,7 +37,7 @@ pub use orchestrator::{
 pub use nova_build_model::BuildSystemBackend as BuildSystem;
 
 use nova_build_model::AnnotationProcessing;
-use nova_core::Diagnostic;
+use nova_core::BuildDiagnostic;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -217,7 +217,7 @@ impl JavaCompileConfig {
 /// Summary of a build invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BuildResult {
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<BuildDiagnostic>,
     /// Best-effort build tool identifier (e.g. `maven`, `gradle`).
     pub tool: Option<String>,
     /// Best-effort rendered command line for the build invocation.

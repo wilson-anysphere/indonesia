@@ -1,6 +1,6 @@
 use nova_build::{BuildCache, CommandOutput, CommandRunner, GradleBuild, GradleConfig};
 use nova_build_model::GRADLE_SNAPSHOT_REL_PATH;
-use nova_core::DiagnosticSeverity;
+use nova_core::BuildDiagnosticSeverity;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
@@ -197,7 +197,7 @@ Execution failed for task ':app:compileJava'.
         diag.file,
         PathBuf::from("/workspace/app/src/main/java/com/example/Foo.java")
     );
-    assert_eq!(diag.severity, DiagnosticSeverity::Error);
+    assert_eq!(diag.severity, BuildDiagnosticSeverity::Error);
     assert!(diag.message.contains("cannot find symbol"));
 }
 

@@ -5,7 +5,7 @@ use nova_build::{
     parse_maven_effective_pom_annotation_processing_with_repo, parse_maven_evaluate_scalar_output,
     BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
 };
-use nova_core::{DiagnosticSeverity, Position, Range};
+use nova_core::{BuildDiagnosticSeverity, Position, Range};
 use std::path::{Path, PathBuf};
 
 #[test]
@@ -1032,7 +1032,7 @@ fn parses_maven_javac_diagnostics_with_continuation_lines() {
         d.file,
         PathBuf::from("/workspace/src/main/java/com/example/Foo.java")
     );
-    assert_eq!(d.severity, DiagnosticSeverity::Error);
+    assert_eq!(d.severity, BuildDiagnosticSeverity::Error);
     assert_eq!(d.range, Range::point(Position::new(9, 4)));
     assert!(d.message.contains("cannot find symbol"));
     assert!(d.message.contains("symbol:"));
@@ -1055,7 +1055,7 @@ fn parses_standard_javac_diagnostics_with_caret_column() {
         d.file,
         PathBuf::from("/workspace/src/main/java/com/example/Foo.java")
     );
-    assert_eq!(d.severity, DiagnosticSeverity::Error);
+    assert_eq!(d.severity, BuildDiagnosticSeverity::Error);
     // caret in the sample line points at the 13th character (1-based).
     assert_eq!(d.range, Range::point(Position::new(9, 12)));
     assert!(d.message.contains("cannot find symbol"));

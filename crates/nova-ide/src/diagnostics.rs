@@ -1,6 +1,6 @@
 use nova_core::{TextRange, TextSize};
 
-pub use nova_core::DiagnosticSeverity;
+pub use nova_core::BuildDiagnosticSeverity;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum DiagnosticKind {
@@ -11,7 +11,7 @@ pub enum DiagnosticKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     pub kind: DiagnosticKind,
-    pub severity: DiagnosticSeverity,
+    pub severity: BuildDiagnosticSeverity,
     pub message: String,
     pub range: TextRange,
 }
@@ -38,7 +38,7 @@ impl DiagnosticsEngine {
         for err in parsed.errors {
             diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Syntax,
-                severity: DiagnosticSeverity::Error,
+                severity: BuildDiagnosticSeverity::Error,
                 message: err.message,
                 range: TextRange::new(
                     TextSize::from(err.range.start),
@@ -63,7 +63,7 @@ impl DiagnosticsEngine {
                         Some((open, _)) if open == expected_open => {}
                         Some((open, _)) => diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::Syntax,
-                            severity: DiagnosticSeverity::Error,
+                            severity: BuildDiagnosticSeverity::Error,
                             message: format!(
                                 "Mismatched closing '{}', expected match for '{}'",
                                 ch, open
@@ -72,7 +72,7 @@ impl DiagnosticsEngine {
                         }),
                         None => diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::Syntax,
-                            severity: DiagnosticSeverity::Error,
+                            severity: BuildDiagnosticSeverity::Error,
                             message: format!("Unmatched closing '{}'", ch),
                             range: text_range_at(offset, 1),
                         }),
@@ -85,7 +85,7 @@ impl DiagnosticsEngine {
         for (open, offset) in stack {
             diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Syntax,
-                severity: DiagnosticSeverity::Error,
+                severity: BuildDiagnosticSeverity::Error,
                 message: format!("Unmatched opening '{}'", open),
                 range: text_range_at(offset, 1),
             });
@@ -105,7 +105,7 @@ impl DiagnosticsEngine {
                 let absolute = offset + (line.len() - trimmed.len() + pos);
                 diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::Type,
-                    severity: DiagnosticSeverity::Error,
+                    severity: BuildDiagnosticSeverity::Error,
                     message: "Encountered TYPE_ERROR marker".to_string(),
                     range: text_range_at(absolute, "TYPE_ERROR".len()),
                 });
@@ -118,7 +118,7 @@ impl DiagnosticsEngine {
                         if let Some(quote_pos) = line.find('"') {
                             diagnostics.push(Diagnostic {
                                 kind: DiagnosticKind::Type,
-                                severity: DiagnosticSeverity::Error,
+                                severity: BuildDiagnosticSeverity::Error,
                                 message: "Cannot assign string literal to int".to_string(),
                                 range: text_range_at(offset + quote_pos, 1),
                             });

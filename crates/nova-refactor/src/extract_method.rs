@@ -382,14 +382,6 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
-        HirStmt::Assert {
-            condition, message, ..
-        } => {
-            find_best_expr_in_expr(body, *condition, offset, owner, best);
-            if let Some(expr) = message {
-                find_best_expr_in_expr(body, *expr, offset, owner, best);
-            }
-        }
         HirStmt::Return { expr, .. } => {
             if let Some(expr) = expr {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);

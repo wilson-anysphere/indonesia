@@ -208,6 +208,14 @@ impl WorkspaceProjectIndexesEvictor {
             tracker.set_bytes(0);
         }
     }
+
+    #[cfg(test)]
+    fn snapshot_indexes_for_tests(&self) -> ProjectIndexes {
+        self.indexes
+            .lock()
+            .expect("workspace indexes lock poisoned")
+            .clone()
+    }
 }
 
 impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
@@ -695,7 +703,6 @@ pub(crate) struct WorkspaceEngine {
     pub(crate) query_db: salsa::Database,
     closed_file_texts: Arc<ClosedFileTextStore>,
     workspace_loader: Arc<Mutex<salsa::WorkspaceLoader>>,
-    indexes: Arc<Mutex<ProjectIndexes>>,
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
     build_runner: Arc<dyn CommandRunner>,
     build_runner_is_default: bool,
@@ -1003,7 +1010,6 @@ impl WorkspaceEngine {
             query_db,
             closed_file_texts,
             workspace_loader: Arc::new(Mutex::new(salsa::WorkspaceLoader::new())),
-            indexes,
             indexes_evictor,
             build_runner,
             build_runner_is_default,
@@ -5234,11 +5240,7 @@ mode = "off"
             "expected warm-start to reuse persisted shards for unchanged files; stats={stats:?}"
         );
 
-        let indexes = engine2
-            .indexes
-            .lock()
-            .expect("workspace indexes lock poisoned")
-            .clone();
+        let indexes = engine2.indexes_evictor.snapshot_indexes_for_tests();
         assert!(
             indexes.symbols.symbols.contains_key("Dirty"),
             "expected symbol `Dirty` to be present in indexes; symbols={:?}",
@@ -5792,7 +5794,7 @@ mode = "off"
 
         memory.enforce();
 
-        let cleared = engine.indexes.lock().unwrap();
+        let cleared = engine.indexes_evictor.snapshot_indexes_for_tests();
         assert!(cleared.symbols.symbols.is_empty());
         assert!(cleared.references.references.is_empty());
         assert!(cleared.annotations.annotations.is_empty());
@@ -5883,7 +5885,7 @@ mode = "off"
 
         memory.enforce();
 
-        let kept = engine.indexes.lock().unwrap();
+        let kept = engine.indexes_evictor.snapshot_indexes_for_tests();
         assert!(
             !kept.symbols.symbols.is_empty(),
             "expected symbol index to be preserved"
@@ -5892,7 +5894,6 @@ mode = "off"
         assert!(kept.annotations.annotations.is_empty());
         assert!(kept.inheritance.subtypes.is_empty());
         assert!(kept.inheritance.supertypes.is_empty());
-        drop(kept);
 
         let (_report, components) = memory.report_detailed();
         let component = components

@@ -70,7 +70,6 @@ struct CachedFrameworkDb {
 
 struct FrameworkDbShared {
     host_db: Arc<dyn HostDatabase + Send + Sync>,
-    root: PathBuf,
     project: ProjectId,
 
     all_files: Vec<FileId>,
@@ -412,7 +411,6 @@ fn shared_db_for_file(
 
     let shared = Arc::new(FrameworkDbShared {
         host_db: Arc::clone(&db),
-        root: root_key,
         project,
         all_files: all_file_ids,
         classes,

@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use lsp_types::Uri;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
-use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
 use once_cell::sync::Lazy;
 
@@ -210,9 +209,7 @@ struct TypeInfo {
 #[derive(Debug, Default)]
 struct WorkspaceIndex {
     files: HashMap<FileId, ParsedFile>,
-    uri_to_file_id: HashMap<String, FileId>,
     types: HashMap<String, TypeInfo>,
-    inheritance: InheritanceIndex,
 }
 
 impl WorkspaceIndex {
@@ -227,7 +224,6 @@ impl WorkspaceIndex {
         let mut file_ids = db.all_file_ids();
         file_ids.sort_by_key(|id| id.to_raw());
 
-        let mut uri_to_file_id = HashMap::new();
         for file_id in &file_ids {
             let is_java = db
                 .file_path(*file_id)
@@ -239,7 +235,6 @@ impl WorkspaceIndex {
             let uri = uri_for_file(db, *file_id);
             let text = db.file_content(*file_id).to_string();
             let parsed = parse_file(uri, text);
-            uri_to_file_id.insert(parsed.uri.to_string(), *file_id);
             files.insert(*file_id, parsed);
         }
 
@@ -257,33 +252,9 @@ impl WorkspaceIndex {
             }
         }
 
-        let mut inheritance = InheritanceIndex::default();
-        let mut edges: Vec<InheritanceEdge> = Vec::new();
-        for parsed_file in files.values() {
-            for ty in &parsed_file.types {
-                if let Some(super_class) = &ty.super_class {
-                    edges.push(InheritanceEdge {
-                        file: parsed_file.uri.to_string(),
-                        subtype: ty.name.clone(),
-                        supertype: super_class.clone(),
-                    });
-                }
-                for iface in &ty.interfaces {
-                    edges.push(InheritanceEdge {
-                        file: parsed_file.uri.to_string(),
-                        subtype: ty.name.clone(),
-                        supertype: iface.clone(),
-                    });
-                }
-            }
-        }
-        inheritance.extend(edges);
-
         Self {
             files,
-            uri_to_file_id,
             types,
-            inheritance,
         }
     }
 

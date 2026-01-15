@@ -185,12 +185,12 @@ pub fn handle_run_annotation_processing(
                 let has_errors = result
                     .diagnostics
                     .iter()
-                    .any(|diag| matches!(diag.severity, nova_core::DiagnosticSeverity::Error));
+                    .any(|diag| matches!(diag.severity, nova_core::BuildDiagnosticSeverity::Error));
                 if matches!(result.status, AptRunStatus::Failed) || has_errors {
                     let first_error = result
                         .diagnostics
                         .iter()
-                        .find(|diag| matches!(diag.severity, nova_core::DiagnosticSeverity::Error))
+                        .find(|diag| matches!(diag.severity, nova_core::BuildDiagnosticSeverity::Error))
                         .map(|diag| diag.message.clone());
                     status_guard.mark_failure(
                         first_error
@@ -367,7 +367,7 @@ fn selected_module_root(
 }
 
 fn group_diagnostics_by_module(
-    diagnostics: &[nova_core::Diagnostic],
+    diagnostics: &[nova_core::BuildDiagnostic],
     project: &nova_project::ProjectConfig,
 ) -> Vec<ModuleBuildDiagnostics> {
     use std::collections::BTreeMap;

@@ -72,29 +72,18 @@ where
 #[derive(Debug)]
 pub(crate) struct CachedJpaProject {
     pub(crate) files: Vec<PathBuf>,
-    file_to_source: HashMap<PathBuf, usize>,
-    file_ids: Vec<FileId>,
     file_id_to_source: HashMap<FileId, usize>,
     pub(crate) analysis: Option<Arc<AnalysisResult>>,
     fingerprint: u64,
 }
 
 impl CachedJpaProject {
-    pub(crate) fn source_index(&self, path: &Path) -> Option<usize> {
-        self.file_to_source.get(path).copied()
-    }
-
     pub(crate) fn source_index_for_file(&self, file: FileId) -> Option<usize> {
         self.file_id_to_source.get(&file).copied()
     }
 
     pub(crate) fn path_for_source(&self, source: usize) -> Option<&Path> {
         self.files.get(source).map(|p| p.as_path())
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn file_id_for_source(&self, source: usize) -> Option<FileId> {
-        self.file_ids.get(source).copied()
     }
 }
 
@@ -203,11 +192,6 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
     };
 
     let (files, file_ids): (Vec<PathBuf>, Vec<FileId>) = java_files.into_iter().unzip();
-    let file_to_source = files
-        .iter()
-        .enumerate()
-        .map(|(idx, path)| (path.clone(), idx))
-        .collect();
     let file_id_to_source = file_ids
         .iter()
         .enumerate()
@@ -216,8 +200,6 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
 
     let entry = Arc::new(CachedJpaProject {
         files,
-        file_to_source,
-        file_ids,
         file_id_to_source,
         analysis,
         fingerprint,

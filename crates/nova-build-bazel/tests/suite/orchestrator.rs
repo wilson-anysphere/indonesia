@@ -153,10 +153,10 @@ fn compile_status_code_2_maps_to_failure_and_preserves_diagnostics() {
         delay: Duration::from_millis(5),
         result: ScriptResult::Ok(BspCompileOutcome {
             status_code: 2,
-            diagnostics: vec![nova_core::Diagnostic::new(
+            diagnostics: vec![nova_core::BuildDiagnostic::new(
                 tmp.path().join("Foo.java"),
                 nova_core::Range::point(nova_core::Position::new(0, 0)),
-                nova_core::DiagnosticSeverity::Error,
+                nova_core::BuildDiagnosticSeverity::Error,
                 "boom".to_string(),
                 Some("bsp".to_string()),
             )],
