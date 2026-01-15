@@ -59,7 +59,7 @@ pub(super) fn flush_publish_diagnostics(
                 let cancel = CancellationToken::new();
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let file_id = state.analysis.ensure_loaded(&uri);
-                    publish_diagnostics_for_file(state, file_id, cancel)
+                    diagnostics_for_file(state, file_id, cancel)
                 })) {
                     Ok(value) => value,
                     Err(_) => {
@@ -86,7 +86,16 @@ pub(super) fn flush_publish_diagnostics(
     Ok(())
 }
 
-fn publish_diagnostics_for_file(
+pub(super) fn diagnostics_for_uri(
+    state: &mut ServerState,
+    uri: &lsp_types::Uri,
+    cancel: CancellationToken,
+) -> Vec<lsp_types::Diagnostic> {
+    let file_id = state.analysis.ensure_loaded(uri);
+    diagnostics_for_file(state, file_id, cancel)
+}
+
+fn diagnostics_for_file(
     state: &mut ServerState,
     file_id: DbFileId,
     cancel: CancellationToken,

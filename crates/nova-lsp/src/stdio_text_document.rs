@@ -1,12 +1,13 @@
 use crate::stdio_paths::path_from_uri;
 use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
+use crate::stdio_diagnostics;
 use crate::{ServerState, SingleFileDb};
 
 use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
     FoldingRange, FoldingRangeKind, FoldingRangeParams, HoverParams, InlayHintParams,
     Position as LspPosition, Range as LspRange, ReferenceParams, SelectionRange,
-    SelectionRangeParams, SignatureHelpParams, Uri as LspUri,
+    SelectionRangeParams, SignatureHelpParams,
 };
 use nova_db::Database;
 use nova_ide::extensions::IdeExtensions;
@@ -127,62 +128,13 @@ pub(super) fn handle_document_diagnostic(
     let params: DocumentDiagnosticParams =
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
-    let diagnostics = document_diagnostics(state, &uri, cancel);
+    let diagnostics = stdio_diagnostics::diagnostics_for_uri(state, &uri, cancel);
 
     Ok(json!({
         "kind": "full",
         "resultId": serde_json::Value::Null,
         "items": diagnostics,
     }))
-}
-
-fn document_diagnostics(
-    state: &mut ServerState,
-    uri: &LspUri,
-    cancel: CancellationToken,
-) -> Vec<lsp_types::Diagnostic> {
-    let file_id = state.analysis.ensure_loaded(uri);
-    if !state.analysis.exists(file_id) {
-        return Vec::new();
-    }
-
-    let mut diagnostics = nova_lsp::diagnostics(&state.analysis, file_id);
-
-    let text = state.analysis.file_content(file_id).to_string();
-    let path = state.analysis.file_path(file_id).map(|p| p.to_path_buf());
-    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
-    let ide_extensions = IdeExtensions::with_registry(
-        ext_db,
-        Arc::clone(&state.config),
-        nova_ext::ProjectId::new(0),
-        state.extensions_registry.clone(),
-    );
-    let ext_diags = ide_extensions.diagnostics(cancel, file_id);
-    diagnostics.extend(ext_diags.into_iter().map(|d| lsp_types::Diagnostic {
-        range: d
-            .span
-            .map(|span| lsp_types::Range {
-                start: offset_to_position_utf16(&text, span.start),
-                end: offset_to_position_utf16(&text, span.end),
-            })
-            .unwrap_or_else(|| {
-                lsp_types::Range::new(
-                    lsp_types::Position::new(0, 0),
-                    lsp_types::Position::new(0, 0),
-                )
-            }),
-        severity: Some(match d.severity {
-            nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-            nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-            nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
-        }),
-        code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-        source: Some("nova".into()),
-        message: d.message,
-        ..lsp_types::Diagnostic::default()
-    }));
-
-    diagnostics
 }
 
 pub(super) fn handle_inlay_hints(
