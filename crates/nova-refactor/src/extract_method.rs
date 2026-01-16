@@ -119,11 +119,10 @@ fn infer_type_at_offsets(
     typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     offsets: impl IntoIterator<Item = usize>,
-    ) -> Option<String> {
+) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) =
-            type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
+        let Some(ty) = type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
@@ -294,9 +293,7 @@ fn binary_name_to_source_qualified(binary_name: &str, elide_java_lang: bool) -> 
 }
 
 fn strip_java_lang_qualifiers(ty: &str) -> String {
-    ty.strip_prefix("java.lang.")
-        .unwrap_or(ty)
-        .to_string()
+    ty.strip_prefix("java.lang.").unwrap_or(ty).to_string()
 }
 
 fn item_members<'a>(

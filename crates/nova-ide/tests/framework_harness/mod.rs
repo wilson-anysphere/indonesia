@@ -11,7 +11,6 @@ pub const CARET: &str = crate::text_fixture::CARET;
 pub use crate::text_fixture::{offset_to_position, position_to_offset};
 
 pub struct Fixture {
-    pub db: Arc<InMemoryFileStore>,
     pub ide: IdeExtensions<InMemoryFileStore>,
     pub file: nova_db::FileId,
     pub position: lsp_types::Position,
@@ -55,7 +54,6 @@ pub fn fixture_multi(
     let ide = ide_with_default_registry(Arc::clone(&db));
 
     Fixture {
-        db,
         ide,
         file: primary_file,
         position,

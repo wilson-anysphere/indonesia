@@ -7070,9 +7070,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     );
                     if !items.is_empty() {
                         let replace_start =
-                            nova_framework_spring::completion_span_for_value_placeholder(text, offset)
-                                .map(|span| span.start)
-                                .unwrap_or(prefix_start);
+                            nova_framework_spring::completion_span_for_value_placeholder(
+                                text, offset,
+                            )
+                            .map(|span| span.start)
+                            .unwrap_or(prefix_start);
                         return decorate_completions(
                             &text_index,
                             replace_start,
@@ -7122,11 +7124,16 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             }
 
             // JPQL completions inside JPA `@Query(...)` / `@NamedQuery(query=...)` strings.
-            if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
+            if let Some((query, query_cursor)) =
+                crate::jpa_intel::jpql_query_at_cursor(text, offset)
+            {
                 if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
                     if let Some(analysis) = project.analysis.as_ref() {
-                        let items =
-                            nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
+                        let items = nova_framework_jpa::jpql_completions(
+                            &query,
+                            query_cursor,
+                            &analysis.model,
+                        );
                         if !items.is_empty() {
                             return decorate_completions(
                                 &text_index,
@@ -7355,8 +7362,15 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
             if type_position_kind.is_none() {
                 if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
-                    let items =
-                        type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+                    let items = type_position_completions(
+                        db,
+                        file,
+                        text,
+                        prefix_start,
+                        offset,
+                        &prefix,
+                        ctx,
+                    );
                     return decorate_completions(&text_index, prefix_start, offset, items);
                 }
             }
@@ -7369,7 +7383,9 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             )
         }
         CompletionContext::Expression => {
-            if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
+            if let Some(double_colon_offset) =
+                method_reference_double_colon_offset(text, prefix_start)
+            {
                 return decorate_completions(
                     &text_index,
                     prefix_start,
@@ -12335,15 +12351,7 @@ fn expression_type_name_completions(
         } else {
             format!("{}.{}", imports.current_package, name)
         };
-        push_type(
-            name,
-            kind,
-            fqn,
-            true,
-            &mut items,
-            &mut seen,
-            &mut added,
-        );
+        push_type(name, kind, fqn, true, &mut items, &mut seen, &mut added);
     }
 
     // 2) Explicit imports.
@@ -19999,7 +20007,8 @@ mod tests {
         let text = "import com.\nclass Test {}".to_string();
         db.set_file_text(test_file, text.clone());
         let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
-        let items = import_path_completions(&db, test_file, &text, offset, "").expect("completions");
+        let items =
+            import_path_completions(&db, test_file, &text, offset, "").expect("completions");
 
         let foo = items
             .iter()

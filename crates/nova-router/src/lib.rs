@@ -2758,9 +2758,9 @@ fn index_for_files(
                         );
                     }
                     nova_hir::item_tree::Member::Initializer(_) => {}
-                    nova_hir::item_tree::Member::Type(item) => collect_item_symbols(
-                        tree, *item, line_index, text, path, out,
-                    ),
+                    nova_hir::item_tree::Member::Type(item) => {
+                        collect_item_symbols(tree, *item, line_index, text, path, out)
+                    }
                 }
             }
         }
@@ -2784,14 +2784,7 @@ fn index_for_files(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Interface(id) => {
                     let data = tree.interface(id);
@@ -2803,14 +2796,7 @@ fn index_for_files(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Enum(id) => {
                     let data = tree.enum_(id);
@@ -2822,14 +2808,7 @@ fn index_for_files(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Record(id) => {
                     let data = tree.record(id);
@@ -2841,14 +2820,7 @@ fn index_for_files(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Annotation(id) => {
                     let data = tree.annotation(id);
@@ -2860,20 +2832,20 @@ fn index_for_files(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
             }
         }
 
         for item in tree.items.iter() {
-            collect_item_symbols(tree.as_ref(), *item, &line_index, &text, &file, &mut symbols);
+            collect_item_symbols(
+                tree.as_ref(),
+                *item,
+                &line_index,
+                &text,
+                &file,
+                &mut symbols,
+            );
         }
     }
 

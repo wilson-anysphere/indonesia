@@ -7,10 +7,7 @@ use nova_types::{Diagnostic as NovaDiagnostic, Span};
 fn second_import_offset(source: &str) -> usize {
     let mut matches = source.match_indices("import a.Foo;");
     matches.next().expect("expected first import");
-    matches
-        .next()
-        .expect("expected second import in fixture")
-        .0
+    matches.next().expect("expected second import in fixture").0
 }
 
 #[test]
@@ -20,7 +17,10 @@ fn diagnostic_quick_fixes_includes_remove_duplicate_import() {
 
     let start = second_import_offset(source);
     let end = start + "import a.Foo;".len();
-    let range = Range::new(offset_to_position(source, start), offset_to_position(source, end));
+    let range = Range::new(
+        offset_to_position(source, start),
+        offset_to_position(source, end),
+    );
     let diag = lsp_types::Diagnostic {
         range: range.clone(),
         severity: Some(DiagnosticSeverity::WARNING),

@@ -133,10 +133,7 @@ class Use {
     let outer_after = updated.get(&outer_file).expect("updated Outer.java");
     let use_after = updated.get(&use_file).expect("updated Use.java");
 
-    assert!(
-        outer_after.contains("class RenamedInner"),
-        "{outer_after}"
-    );
+    assert!(outer_after.contains("class RenamedInner"), "{outer_after}");
     assert!(
         use_after.contains("import static p.Outer.RenamedInner;"),
         "{use_after}"
@@ -196,5 +193,8 @@ class Use {
         use_after.contains("import static p.NewOuter.*;"),
         "{use_after}"
     );
-    assert!(!use_after.contains("import static p.Outer.*;"), "{use_after}");
+    assert!(
+        !use_after.contains("import static p.Outer.*;"),
+        "{use_after}"
+    );
 }

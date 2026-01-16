@@ -130,13 +130,7 @@ thread_local! {
     static FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL: Cell<usize> = Cell::new(0);
 }
 
-
 impl FileNavigationIndex {
-    #[allow(dead_code)]
-    fn new(db: &dyn Database) -> Self {
-        Self::new_for_file_ids(db, db.all_file_ids())
-    }
-
     fn new_for_file_ids(db: &dyn Database, mut file_ids: Vec<FileId>) -> Self {
         #[cfg(any(test, debug_assertions))]
         {

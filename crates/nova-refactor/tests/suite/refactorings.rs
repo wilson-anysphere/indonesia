@@ -1106,7 +1106,8 @@ fn extract_variable_allows_name_that_matches_outer_field_when_access_is_outer_th
 }
 
 #[test]
-fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses() {
+fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses(
+) {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int value = 0;
@@ -5939,7 +5940,10 @@ fn rename_anonymous_class_constructor_parameter_updates_body_references() {
         after.contains("println(bar);"),
         "parameter usage should be renamed: {after}"
     );
-    assert!(!after.contains("foo"), "expected foo to be fully renamed: {after}");
+    assert!(
+        !after.contains("foo"),
+        "expected foo to be fully renamed: {after}"
+    );
 }
 
 #[test]
@@ -6519,7 +6523,10 @@ fn rename_field_to_method_name_in_same_class_is_allowed() {
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
-    assert!(after.contains("int bar = 0;"), "field should be renamed: {after}");
+    assert!(
+        after.contains("int bar = 0;"),
+        "field should be renamed: {after}"
+    );
     assert!(
         after.contains("void bar()"),
         "method name should remain unchanged: {after}"
@@ -6573,7 +6580,10 @@ fn rename_method_to_field_name_in_same_class_is_allowed() {
         after.contains("println(foo);"),
         "field reference should remain (methods are separate namespace): {after}"
     );
-    assert!(after.contains("foo();"), "call site should be renamed: {after}");
+    assert!(
+        after.contains("foo();"),
+        "call site should be renamed: {after}"
+    );
 }
 
 #[test]

@@ -872,7 +872,11 @@ fn ambiguous_import_quick_fixes(
         .and_then(|range| source_range_text(source, &range))
         .is_some_and(|line| line.trim_start().starts_with("import static "));
 
-    let import_prefix = if is_static { "import static " } else { "import " };
+    let import_prefix = if is_static {
+        "import static "
+    } else {
+        "import "
+    };
 
     let mut expected_lines: HashMap<String, String> = HashMap::new();
     for cand in &candidates {
@@ -919,9 +923,8 @@ fn ambiguous_import_quick_fixes(
 
         // Deterministic + robust ordering: reverse-sorted, so sequential application won't shift
         // earlier offsets even if a client applies edits in-order.
-        ranges_to_delete.sort_by_key(|(start, end)| {
-            (std::cmp::Reverse(*start), std::cmp::Reverse(*end))
-        });
+        ranges_to_delete
+            .sort_by_key(|(start, end)| (std::cmp::Reverse(*start), std::cmp::Reverse(*end)));
         ranges_to_delete.dedup();
 
         let edits: Vec<TextEdit> = ranges_to_delete

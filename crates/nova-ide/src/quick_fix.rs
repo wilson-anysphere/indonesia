@@ -189,7 +189,9 @@ pub fn quick_fixes_for_diagnostics(
 
                     // Deterministic ordering: reverse-sorted so sequential application won't shift
                     // earlier offsets even if a client applies edits in-order.
-                    delete_spans.sort_by_key(|span| (std::cmp::Reverse(span.start), std::cmp::Reverse(span.end)));
+                    delete_spans.sort_by_key(|span| {
+                        (std::cmp::Reverse(span.start), std::cmp::Reverse(span.end))
+                    });
                     delete_spans.dedup_by_key(|span| (span.start, span.end));
 
                     let mut edits = Vec::new();
@@ -601,7 +603,11 @@ fn collect_import_line_spans(
     candidates: &[String],
     is_static: bool,
 ) -> HashMap<String, Vec<Span>> {
-    let import_prefix = if is_static { "import static " } else { "import " };
+    let import_prefix = if is_static {
+        "import static "
+    } else {
+        "import "
+    };
 
     let mut expected_lines: HashMap<String, String> = HashMap::new();
     for cand in candidates {

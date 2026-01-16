@@ -2282,7 +2282,7 @@ class A {
         use nova_db::InMemoryFileStore;
 
         struct CountingProvider {
-            calls: Arc<AtomicUsize>,
+            calls: AtomicUsize,
         }
 
         impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for CountingProvider {
@@ -2317,11 +2317,14 @@ class A {
         let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
         let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let provider_for_registry: Arc<
+            dyn DiagnosticProvider<dyn nova_db::Database + Send + Sync>,
+        > = provider.clone();
         ide.registry_mut()
-            .register_diagnostic_provider(Arc::new(CountingProvider {
-                calls: Arc::clone(&calls),
-            }))
+            .register_diagnostic_provider(provider_for_registry)
             .unwrap();
 
         let cancel = CancellationToken::new();
@@ -2333,7 +2336,7 @@ class A {
             "expected diagnostics to be empty after cancellation; got {diags:?}"
         );
         assert_eq!(
-            calls.load(Ordering::SeqCst),
+            provider.calls.load(Ordering::SeqCst),
             0,
             "expected cancelled all_diagnostics request to skip extension diagnostics"
         );

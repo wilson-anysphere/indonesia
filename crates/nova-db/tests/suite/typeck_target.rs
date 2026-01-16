@@ -82,7 +82,11 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     (db, file)
 }
 
-fn setup_db_with_java(text: &str, source: JavaVersion, enable_preview: bool) -> (SalsaRootDatabase, FileId) {
+fn setup_db_with_java(
+    text: &str,
+    source: JavaVersion,
+    enable_preview: bool,
+) -> (SalsaRootDatabase, FileId) {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
     let tmp = TempDir::new().unwrap();
@@ -598,7 +602,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-throws-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-throws-type"),
         "expected invalid-throws-type diagnostic; got {diags:?}"
     );
 }
@@ -838,7 +844,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "non-reference-monitor"),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "non-reference-monitor"),
         "did not expect non-reference-monitor diagnostic, got {diags:?}"
     );
 }
@@ -1772,7 +1780,9 @@ class C { Class<int[]> m(){ return int[].class; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1794,7 +1804,9 @@ class C { Class<?> m(){ return void.class; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1820,7 +1832,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1870,15 +1884,21 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-mismatch"),
         "did not expect method-ref-mismatch diagnostic; got {diags:?}"
     );
 
-    let offset = src.find("::").expect("snippet should contain method reference");
+    let offset = src
+        .find("::")
+        .expect("snippet should contain method reference");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -1901,15 +1921,21 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-mismatch"),
         "did not expect method-ref-mismatch diagnostic; got {diags:?}"
     );
 
-    let offset = src.find("::").expect("snippet should contain method reference");
+    let offset = src
+        .find("::")
+        .expect("snippet should contain method reference");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -1933,15 +1959,21 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-mismatch"),
         "did not expect method-ref-mismatch diagnostic; got {diags:?}"
     );
 
-    let offset = src.find("::").expect("snippet should contain method reference");
+    let offset = src
+        .find("::")
+        .expect("snippet should contain method reference");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -1964,11 +1996,15 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-mismatch"),
         "did not expect method-ref-mismatch diagnostic; got {diags:?}"
     );
 
@@ -1990,7 +2026,9 @@ class C { C m(){ return this; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -2011,7 +2049,9 @@ class B extends A { int m(){ return super.f(); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -2031,7 +2071,9 @@ class C { void m(){ int[] a = {1}; int x = a[true]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-array-index"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-index"),
         "expected invalid-array-index diagnostic; got {diags:?}"
     );
 }
@@ -2045,7 +2087,9 @@ class C { void m(){ int x = 0; int y = x[0]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-array-access"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-access"),
         "expected invalid-array-access diagnostic; got {diags:?}"
     );
 }
@@ -2059,7 +2103,9 @@ class C { void m(){ int[] a = new int[true]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "array-dimension-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "array-dimension-type"),
         "expected array-dimension-type diagnostic; got {diags:?}"
     );
 }
@@ -2073,7 +2119,9 @@ class C { int m(byte b){ return ~b; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -2093,7 +2141,9 @@ class C { void m(){ byte b = 0; byte c = ++b; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -2113,11 +2163,15 @@ class C { void m(){ boolean b = "x" instanceof int; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "instanceof-invalid-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "instanceof-invalid-type"),
         "expected instanceof-invalid-type diagnostic; got {diags:?}"
     );
 
-    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let offset = src
+        .find("instanceof")
+        .expect("snippet should contain instanceof");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -2133,11 +2187,15 @@ class C { void m(){ boolean b = "x" instanceof Integer; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-instanceof"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-instanceof"),
         "expected invalid-instanceof diagnostic; got {diags:?}"
     );
 
-    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let offset = src
+        .find("instanceof")
+        .expect("snippet should contain instanceof");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -2153,7 +2211,9 @@ class C { int m(){ int[] a = {1,2}; return a.length; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 

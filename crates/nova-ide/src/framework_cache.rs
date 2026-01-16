@@ -25,12 +25,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nova_classpath::IndexOptions;
 use nova_config_metadata::MetadataIndex;
 use nova_db::{Database, FileId};
 use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem, Diagnostic};
 use once_cell::sync::Lazy;
-use nova_classpath::IndexOptions;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
@@ -586,7 +586,9 @@ impl FrameworkWorkspaceCache {
                 .chain(config.module_path.iter())
                 .filter(|entry| match entry.kind {
                     nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
-                    nova_project::ClasspathEntryKind::Jar => entry.path.is_file() || entry.path.is_dir(),
+                    nova_project::ClasspathEntryKind::Jar => {
+                        entry.path.is_file() || entry.path.is_dir()
+                    }
                     #[allow(unreachable_patterns)]
                     _ => false,
                 })

@@ -108,7 +108,6 @@ pub(crate) struct WorkspaceHierarchyIndex {
     files: HashMap<FileId, ParsedFile>,
     types: HashMap<String, TypeInfo>,
     inheritance: InheritanceIndex,
-    methods: HashMap<(String, String), MethodInfo>,
 }
 
 impl WorkspaceHierarchyIndex {
@@ -132,7 +131,6 @@ impl WorkspaceHierarchyIndex {
         }
 
         let mut types: HashMap<String, TypeInfo> = HashMap::new();
-        let mut methods: HashMap<(String, String), MethodInfo> = HashMap::new();
 
         for file_id in &file_ids {
             let Some(parsed) = files.get(file_id) else {
@@ -145,14 +143,6 @@ impl WorkspaceHierarchyIndex {
                     uri: parsed.uri.clone(),
                     def: ty.clone(),
                 });
-
-                for m in &ty.methods {
-                    methods
-                        .entry((ty.name.clone(), m.name.clone()))
-                        .or_insert_with(|| {
-                            method_info_from_def(*file_id, &parsed.uri, &ty.name, m)
-                        });
-                }
             }
         }
 
@@ -186,7 +176,6 @@ impl WorkspaceHierarchyIndex {
             files,
             types,
             inheritance,
-            methods,
         }
     }
 
@@ -243,12 +232,6 @@ impl WorkspaceHierarchyIndex {
 
     pub(crate) fn type_info(&self, name: &str) -> Option<&TypeInfo> {
         self.types.get(name)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn method_info(&self, type_name: &str, method_name: &str) -> Option<&MethodInfo> {
-        self.methods
-            .get(&(type_name.to_string(), method_name.to_string()))
     }
 
     pub(crate) fn resolve_method_definition(

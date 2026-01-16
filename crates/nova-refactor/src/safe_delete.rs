@@ -1028,7 +1028,8 @@ fn collect_effective_overload_candidates_by_arity(
     method_name: &str,
     arity: usize,
 ) -> Vec<IndexSymbolId> {
-    let mut seen_param_types: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+    let mut seen_param_types: std::collections::HashSet<Vec<String>> =
+        std::collections::HashSet::new();
     let mut out = Vec::new();
 
     // Interface receiver: method lookup walks the interface `extends` chain.

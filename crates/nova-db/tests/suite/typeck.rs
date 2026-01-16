@@ -783,7 +783,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "non-reference-monitor"),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "non-reference-monitor"),
         "did not expect non-reference-monitor diagnostic; got {diags:?}"
     );
 }

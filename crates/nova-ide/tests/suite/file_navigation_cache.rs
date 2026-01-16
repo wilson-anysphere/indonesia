@@ -47,4 +47,3 @@ class C {
         "expected second request to reuse cached FileNavigationIndex"
     );
 }
-

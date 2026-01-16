@@ -616,14 +616,14 @@ fn check_rename_conflicts(
             //   class C { int foo; void m() { int bar; foo; } }
             // Renaming `foo -> bar` would cause the (renamed) `bar` reference to resolve to the
             // local `bar`, changing semantics.
-             for usage in &refs {
-                 let Some(usage_scope) = usage.scope else {
-                     continue;
-                 };
-                 if usage.kind != ReferenceKind::Name {
-                     // Qualified references like `this.foo` are not affected by local name capture.
-                     continue;
-                 }
+            for usage in &refs {
+                let Some(usage_scope) = usage.scope else {
+                    continue;
+                };
+                if usage.kind != ReferenceKind::Name {
+                    // Qualified references like `this.foo` are not affected by local name capture.
+                    continue;
+                }
 
                 // A renamed field can become *captured* by an existing local/parameter binding at a
                 // particular usage site, changing the meaning of an unqualified `NameExpression`.
@@ -732,8 +732,7 @@ fn check_rename_conflicts(
                                 return Some(record_decl.syntax().clone());
                             }
                         }
-                        if let Some(annot_decl) =
-                            ast::AnnotationTypeDeclaration::cast(node.clone())
+                        if let Some(annot_decl) = ast::AnnotationTypeDeclaration::cast(node.clone())
                         {
                             if annot_decl
                                 .name_token()
@@ -1083,22 +1082,22 @@ fn rename_field_with_accessors(
                         .filter_map(|p| p.ty())
                         .map(|ty| {
                             let r = syntax_range(ty.syntax());
-                            text.get(r.start..r.end).unwrap_or_default().trim().to_string()
+                            text.get(r.start..r.end)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string()
                         })
                         .collect()
                 })
                 .unwrap_or_default();
-            method_decls.insert(
-                range,
-                MethodDeclInfo {
-                    name,
-                    param_types,
-                },
-            );
+            method_decls.insert(range, MethodDeclInfo { name, param_types });
         }
 
         let mut method_calls: HashMap<TextRange, usize> = HashMap::new();
-        for call in root.descendants().filter_map(ast::MethodCallExpression::cast) {
+        for call in root
+            .descendants()
+            .filter_map(ast::MethodCallExpression::cast)
+        {
             let arg_count = call
                 .arguments()
                 .map(|args| args.arguments().count())
@@ -2125,9 +2124,8 @@ pub fn inline_variable(
     let mut init_replacement = parenthesize_initializer(init_text, &init_expr);
     let init_ty_for_cast = init_ty_text.as_deref().or(init_ty_syntax.as_deref());
     if declared_ty_text != "var"
-        && !init_ty_for_cast.is_some_and(|init_ty| {
-            inline_variable_types_match(&declared_ty_text, init_ty)
-        })
+        && !init_ty_for_cast
+            .is_some_and(|init_ty| inline_variable_types_match(&declared_ty_text, init_ty))
     {
         init_replacement = force_expression_to_declared_type(
             &decl.ty,
@@ -2804,15 +2802,11 @@ fn boxed_primitive_info(ty: &str) -> Option<BoxedPrimitiveInfo> {
             primitive: "boolean",
         }),
         "Byte" => Some(BoxedPrimitiveInfo { primitive: "byte" }),
-        "Short" => Some(BoxedPrimitiveInfo {
-            primitive: "short",
-        }),
+        "Short" => Some(BoxedPrimitiveInfo { primitive: "short" }),
         "Integer" => Some(BoxedPrimitiveInfo { primitive: "int" }),
         "Long" => Some(BoxedPrimitiveInfo { primitive: "long" }),
         "Character" => Some(BoxedPrimitiveInfo { primitive: "char" }),
-        "Float" => Some(BoxedPrimitiveInfo {
-            primitive: "float",
-        }),
+        "Float" => Some(BoxedPrimitiveInfo { primitive: "float" }),
         "Double" => Some(BoxedPrimitiveInfo {
             primitive: "double",
         }),
@@ -2868,13 +2862,14 @@ fn infer_expr_type_no_fallback(expr: &ast::Expression) -> Option<String> {
             let else_ty = infer_expr_type_no_fallback(&else_branch)?;
             (then_ty == else_ty).then_some(then_ty)
         }
-        ast::Expression::ParenthesizedExpression(par) => {
-            par.expression()
-                .and_then(|inner| infer_expr_type_no_fallback(&inner))
-        }
+        ast::Expression::ParenthesizedExpression(par) => par
+            .expression()
+            .and_then(|inner| infer_expr_type_no_fallback(&inner)),
         ast::Expression::InstanceofExpression(_) => Some("boolean".to_string()),
         ast::Expression::UnaryExpression(unary) => infer_type_from_unary_expr_no_fallback(unary),
-        ast::Expression::BinaryExpression(binary) => infer_type_from_binary_expr_no_fallback(binary),
+        ast::Expression::BinaryExpression(binary) => {
+            infer_type_from_binary_expr_no_fallback(binary)
+        }
         ast::Expression::MethodCallExpression(call) => infer_type_from_method_call(call),
         // Without type-checker info these are hard to infer reliably.
         ast::Expression::ThisExpression(_)
@@ -2944,8 +2939,12 @@ fn infer_type_from_binary_expr_no_fallback(binary: &ast::BinaryExpression) -> Op
         _ => {}
     }
 
-    let lhs_ty = binary.lhs().and_then(|lhs| infer_expr_type_no_fallback(&lhs));
-    let rhs_ty = binary.rhs().and_then(|rhs| infer_expr_type_no_fallback(&rhs));
+    let lhs_ty = binary
+        .lhs()
+        .and_then(|lhs| infer_expr_type_no_fallback(&lhs));
+    let rhs_ty = binary
+        .rhs()
+        .and_then(|rhs| infer_expr_type_no_fallback(&rhs));
 
     match op {
         SyntaxKind::Plus => {
@@ -3242,7 +3241,14 @@ fn ensure_inline_variable_value_stable(
             };
 
             for (sym, _) in &deps {
-                if has_write_to_symbol_between(db, parsed, file, *sym, loop_range.start, loop_range.end)? {
+                if has_write_to_symbol_between(
+                    db,
+                    parsed,
+                    file,
+                    *sym,
+                    loop_range.start,
+                    loop_range.end,
+                )? {
                     return Err(RefactorError::InlineNotSupported);
                 }
             }

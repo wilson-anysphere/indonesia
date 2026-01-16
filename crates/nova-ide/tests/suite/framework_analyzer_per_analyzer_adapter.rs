@@ -376,15 +376,14 @@ fn per_analyzer_providers_isolate_timeouts_and_panics() {
     );
 
     // Trigger enough timeouts to open the circuit breaker for the slow analyzer.
-    let mut last_diags = Vec::new();
     for _ in 0..4 {
-        last_diags = ide.diagnostics(CancellationToken::new(), file);
+        let diags = ide.diagnostics(CancellationToken::new(), file);
         assert_eq!(
-            last_diags.len(),
+            diags.len(),
             1,
-            "expected only the fast analyzer diagnostic to surface; got {last_diags:#?}"
+            "expected only the fast analyzer diagnostic to surface; got {diags:#?}"
         );
-        assert_eq!(last_diags[0].code.as_ref(), "FAST");
+        assert_eq!(diags[0].code.as_ref(), "FAST");
     }
 
     let completions = ide.completions(CancellationToken::new(), file, 0);

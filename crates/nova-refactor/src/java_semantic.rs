@@ -12,13 +12,13 @@ use nova_hir::item_tree::{FieldKind, Item, Member};
 use nova_hir::queries::HirDatabase;
 use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
+    expr_scopes::{ExprScopes, ResolvedValue},
+    ids::{DefWithBodyId, ParamId},
+};
+use nova_resolve::{
     BodyOwner, DefMap, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
     ScopeBuildResult, ScopeId, ScopeKind, StaticMemberResolution, TypeKind, TypeResolution,
     WorkspaceDefMap,
-};
-use nova_resolve::{
-    expr_scopes::{ExprScopes, ResolvedValue},
-    ids::{DefWithBodyId, ParamId},
 };
 use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -6273,11 +6273,11 @@ fn collect_switch_contexts(
                     walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
                 }
             }
-             hir::Expr::ArrayInitializer { items, .. } => {
-                 for item in items {
-                     walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                 }
-             }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Expr::Switch {
                 selector,
                 arms,
@@ -6742,8 +6742,8 @@ fn record_syntax_only_references(
             // type and value namespaces (a single import can legally introduce both, but rename
             // would need to split the import to update only one side).
             let owner_def = workspace.type_def(owner);
-            let nested = owner_def
-                .and_then(|def| def.nested_types.get(&Name::from(member_name)).copied());
+            let nested =
+                owner_def.and_then(|def| def.nested_types.get(&Name::from(member_name)).copied());
             if let Some(nested) = nested {
                 record_reference(
                     file,

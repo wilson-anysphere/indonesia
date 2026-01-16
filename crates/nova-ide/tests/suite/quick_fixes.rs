@@ -802,11 +802,15 @@ fn diagnostic_quick_fixes_offer_keep_import_actions_for_ambiguous_import() {
     let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
 
     assert!(
-        actions.iter().any(|action| action.title == "Keep import a.Foo"),
+        actions
+            .iter()
+            .any(|action| action.title == "Keep import a.Foo"),
         "expected Keep import a.Foo; got actions {actions:#?}"
     );
     assert!(
-        actions.iter().any(|action| action.title == "Keep import b.Foo"),
+        actions
+            .iter()
+            .any(|action| action.title == "Keep import b.Foo"),
         "expected Keep import b.Foo; got actions {actions:#?}"
     );
 

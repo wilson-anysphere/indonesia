@@ -47,7 +47,9 @@ pub use completion::filter_and_rank_completions;
 pub use decompile::{
     canonical_decompiled_definition_location, decompiled_definition_location, DefinitionLocation,
 };
-pub use diagnostics::{BuildDiagnosticSeverity as DiagnosticSeverity, Diagnostic, DiagnosticKind, DiagnosticsEngine};
+pub use diagnostics::{
+    BuildDiagnosticSeverity as DiagnosticSeverity, Diagnostic, DiagnosticKind, DiagnosticsEngine,
+};
 pub use format::Formatter;
 pub use nova_core::CompletionItem;
 pub use project::{

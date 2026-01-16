@@ -3284,7 +3284,11 @@ fn collect_class_supertypes(
             .iter()
             .map(|iface| {
                 let next = substitute(iface, &subst);
-                if raw { erasure(env, &next) } else { next }
+                if raw {
+                    erasure(env, &next)
+                } else {
+                    next
+                }
             })
             .collect();
         ifaces.sort_by_cached_key(|ty| type_sort_key(env, ty));
@@ -4114,7 +4118,9 @@ fn collect_method_candidates(
                         uniq.push(t);
                     }
                 }
-                uniq.sort_by_cached_key(|ty| (intersection_component_rank(env, ty), type_sort_key(env, ty)));
+                uniq.sort_by_cached_key(|ty| {
+                    (intersection_component_rank(env, ty), type_sort_key(env, ty))
+                });
 
                 for t in uniq {
                     push_receiver_for_lookup(env, queue, &t);

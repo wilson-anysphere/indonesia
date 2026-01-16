@@ -78,10 +78,6 @@ static WORKSPACE_INDEX_CACHE: Lazy<Mutex<LruCache<u64, CachedWorkspaceIndex>>> =
 // fresh resolver on each request; we want to assert that repeated navigation
 // requests reuse the cached index.
 #[cfg(any(test, debug_assertions))]
-static WORKSPACE_INDEX_BUILDS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(any(test, debug_assertions))]
 static WORKSPACE_INDEX_BUILDS_BY_WORKSPACE: Lazy<Mutex<HashMap<u64, usize>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -104,9 +100,6 @@ pub(crate) fn workspace_index_build_count(db: &dyn Database) -> usize {
 
 #[cfg(any(test, debug_assertions))]
 pub(crate) fn reset_workspace_index_build_counts() {
-    use std::sync::atomic::Ordering;
-    WORKSPACE_INDEX_BUILDS.store(0, Ordering::Relaxed);
-
     {
         let mut counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
             .lock()
@@ -214,12 +207,6 @@ struct WorkspaceIndex {
 
 impl WorkspaceIndex {
     fn new(db: &dyn Database) -> Self {
-        #[cfg(any(test, debug_assertions))]
-        {
-            use std::sync::atomic::Ordering;
-            WORKSPACE_INDEX_BUILDS.fetch_add(1, Ordering::Relaxed);
-        }
-
         let mut files = HashMap::new();
         let mut file_ids = db.all_file_ids();
         file_ids.sort_by_key(|id| id.to_raw());
@@ -252,10 +239,7 @@ impl WorkspaceIndex {
             }
         }
 
-        Self {
-            files,
-            types,
-        }
+        Self { files, types }
     }
 
     fn file(&self, file: FileId) -> Option<&ParsedFile> {

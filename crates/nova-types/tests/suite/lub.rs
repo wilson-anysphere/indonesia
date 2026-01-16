@@ -82,10 +82,13 @@ fn lub_is_order_independent_for_intersection_with_conflicting_generic_instances(
 
     let list_integer = Type::class(list, vec![Type::class(env.well_known().integer, vec![])]);
     let list_string = Type::class(list, vec![Type::class(env.well_known().string, vec![])]);
-    let list_double = Type::class(list, vec![Type::class(
-        env.class_id("java.lang.Double").unwrap(),
-        vec![],
-    )]);
+    let list_double = Type::class(
+        list,
+        vec![Type::class(
+            env.class_id("java.lang.Double").unwrap(),
+            vec![],
+        )],
+    );
 
     // Two instantiations of the same generic type are not directly compatible; when they appear in
     // an intersection (usually during recovery), LUB should stay stable regardless of component
@@ -103,10 +106,9 @@ fn lub_is_order_independent_for_intersection_with_conflicting_generic_instances(
     // Sanity: ensure we aren't producing the narrower (and order-dependent) result.
     let not_expected = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            number,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(number, vec![]),
+        )))],
     );
     assert_ne!(expected, not_expected);
 }
