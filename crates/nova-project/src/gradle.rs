@@ -2753,10 +2753,6 @@ fn parse_gradle_local_classpath_entries_from_text(
 
     let stripped = strip_gradle_comments(contents);
     let candidates = extract_named_brace_blocks_from_stripped(&stripped, "dependencies");
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-
     let mut out = Vec::new();
 
     fn maybe_add_path(out: &mut Vec<ClasspathEntry>, module_root: &Path, raw: &str) {
@@ -2829,6 +2825,132 @@ fn parse_gradle_local_classpath_entries_from_text(
             }
         }
     }
+
+    let scan_add_calls = |contents: &str,
+                          allow_unqualified_add: bool,
+                          out: &mut Vec<ClasspathEntry>| {
+            let string_ranges = gradle_string_literal_ranges(contents);
+            let bytes = contents.as_bytes();
+
+            let is_dependency_add_call = |start: usize| -> bool {
+                let mut i = start;
+                while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                    i -= 1;
+                }
+                if i == 0 || bytes[i - 1] != b'.' {
+                    return allow_unqualified_add;
+                }
+
+                i -= 1;
+                while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                    i -= 1;
+                }
+
+                let mut begin = i;
+                while begin > 0 {
+                    let b = bytes[begin - 1];
+                    if b.is_ascii_alphanumeric() || b == b'_' {
+                        begin -= 1;
+                        continue;
+                    }
+                    break;
+                }
+                let Some(ident) = contents.get(begin..i) else {
+                    return false;
+                };
+
+                ident.eq_ignore_ascii_case("dependencies")
+            };
+
+            for start in find_keyword_outside_strings(contents, "add") {
+                if is_index_inside_string_ranges(start, &string_ranges) {
+                    continue;
+                }
+                if !is_dependency_add_call(start) {
+                    continue;
+                }
+
+                let mut idx = start + "add".len();
+                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if bytes.get(idx) != Some(&b'(') {
+                    continue;
+                }
+                let Some((args_expr, _end)) = extract_balanced_parens(contents, idx) else {
+                    continue;
+                };
+
+                let Some(config) = extract_quoted_strings(&args_expr).into_iter().next() else {
+                    continue;
+                };
+                if !config_name_re.is_match(config.trim()) {
+                    continue;
+                }
+
+                for start in find_keyword_outside_strings(&args_expr, "files") {
+                    let mut j = start + "files".len();
+                    let arg_bytes = args_expr.as_bytes();
+                    while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j >= arg_bytes.len() {
+                        continue;
+                    }
+
+                    let args = if arg_bytes[j] == b'(' {
+                        extract_balanced_parens(&args_expr, j)
+                            .map(|(args, _end)| args)
+                            .unwrap_or_default()
+                    } else {
+                        extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
+                    };
+
+                    for raw in extract_quoted_strings(&args) {
+                        maybe_add_path(out, module_root, &raw);
+                    }
+                }
+
+                for start in find_keyword_outside_strings(&args_expr, "fileTree") {
+                    let mut j = start + "fileTree".len();
+                    let arg_bytes = args_expr.as_bytes();
+                    while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j >= arg_bytes.len() {
+                        continue;
+                    }
+
+                    let args = if arg_bytes[j] == b'(' {
+                        extract_balanced_parens(&args_expr, j)
+                            .map(|(args, _end)| args)
+                            .unwrap_or_default()
+                    } else {
+                        extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
+                    };
+
+                    if let Some(dir) = file_tree_map_dir_arg_re
+                        .captures(&args)
+                        .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+                    {
+                        add_file_tree_dir(out, module_root, dir);
+                        continue;
+                    }
+
+                    if let Some(dir) = file_tree_dir_arg_re
+                        .captures(&args)
+                        .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+                    {
+                        add_file_tree_dir(out, module_root, dir);
+                        continue;
+                    }
+
+                    if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
+                        add_file_tree_dir(out, module_root, &dir);
+                    }
+                }
+            }
+        };
 
     // `files(...)` and no-parens `files "..."` style calls.
     //
@@ -2926,126 +3048,11 @@ fn parse_gradle_local_classpath_entries_from_text(
                 }
             }
         }
-
-        let is_dependency_add_call = |start: usize| -> bool {
-            let mut i = start;
-            while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-                i -= 1;
-            }
-            if i == 0 || bytes[i - 1] != b'.' {
-                return true;
-            }
-
-            i -= 1;
-            while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-                i -= 1;
-            }
-
-            let mut begin = i;
-            while begin > 0 {
-                let b = bytes[begin - 1];
-                if b.is_ascii_alphanumeric() || b == b'_' {
-                    begin -= 1;
-                    continue;
-                }
-                break;
-            }
-            let Some(ident) = contents.get(begin..i) else {
-                return false;
-            };
-
-            ident.eq_ignore_ascii_case("dependencies")
-        };
-
-        for start in find_keyword_outside_strings(contents, "add") {
-            if is_index_inside_string_ranges(start, &string_ranges) {
-                continue;
-            }
-            if !is_dependency_add_call(start) {
-                continue;
-            }
-
-            let mut idx = start + "add".len();
-            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                idx += 1;
-            }
-            if bytes.get(idx) != Some(&b'(') {
-                continue;
-            }
-            let Some((args_expr, _end)) = extract_balanced_parens(contents, idx) else {
-                continue;
-            };
-
-            let Some(config) = extract_quoted_strings(&args_expr).into_iter().next() else {
-                continue;
-            };
-            if !config_name_re.is_match(config.trim()) {
-                continue;
-            }
-
-            for start in find_keyword_outside_strings(&args_expr, "files") {
-                let mut j = start + "files".len();
-                let arg_bytes = args_expr.as_bytes();
-                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= arg_bytes.len() {
-                    continue;
-                }
-
-                let args = if arg_bytes[j] == b'(' {
-                    extract_balanced_parens(&args_expr, j)
-                        .map(|(args, _end)| args)
-                        .unwrap_or_default()
-                } else {
-                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
-                };
-
-                for raw in extract_quoted_strings(&args) {
-                    maybe_add_path(&mut out, module_root, &raw);
-                }
-            }
-
-            for start in find_keyword_outside_strings(&args_expr, "fileTree") {
-                let mut j = start + "fileTree".len();
-                let arg_bytes = args_expr.as_bytes();
-                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= arg_bytes.len() {
-                    continue;
-                }
-
-                let args = if arg_bytes[j] == b'(' {
-                    extract_balanced_parens(&args_expr, j)
-                        .map(|(args, _end)| args)
-                        .unwrap_or_default()
-                } else {
-                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
-                };
-
-                if let Some(dir) = file_tree_map_dir_arg_re
-                    .captures(&args)
-                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
-                {
-                    add_file_tree_dir(&mut out, module_root, dir);
-                    continue;
-                }
-
-                if let Some(dir) = file_tree_dir_arg_re
-                    .captures(&args)
-                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
-                {
-                    add_file_tree_dir(&mut out, module_root, dir);
-                    continue;
-                }
-
-                if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
-                    add_file_tree_dir(&mut out, module_root, &dir);
-                }
-            }
-        }
+        scan_add_calls(contents, true, &mut out);
     }
+
+    let scrubbed = scrub_gradle_dependency_constraint_blocks(&stripped);
+    scan_add_calls(&scrubbed, false, &mut out);
 
     out
 }
@@ -5646,6 +5653,27 @@ dependencies {
 dependencies {
   dependencies.add("implementation", project.fileTree(dir: "libs", include: ["*.jar"]))
 }
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_dependencies_add_outside_dependencies_block() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies.add("implementation", files("libs/a.jar"))
 "#;
 
         let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
