@@ -2437,6 +2437,7 @@ fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
 fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     static RE_PARENS: OnceLock<Regex> = OnceLock::new();
     static RE_NO_PARENS: OnceLock<Regex> = OnceLock::new();
+    static RE_ADD: OnceLock<Regex> = OnceLock::new();
 
     let re_parens = RE_PARENS.get_or_init(|| {
         // Keep this list conservative: only configurations that are commonly used for
@@ -2458,6 +2459,15 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
         .expect("valid regex")
     });
 
+    let re_add = RE_ADD.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}project\s*\(\s*(?:path\s*[:=]\s*)?['"]([^'"]+)['"][^)]*\)\s*\)"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
+        ))
+        .expect("valid regex")
+    });
+
     let mut deps = Vec::new();
     let mut candidates = extract_named_brace_blocks_from_stripped(contents, "dependencies");
     if candidates.is_empty() {
@@ -2467,7 +2477,7 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     for candidate in candidates {
         let candidate = scrub_gradle_dependency_constraint_blocks(&candidate);
         let string_ranges = gradle_string_literal_ranges(&candidate);
-        for re in [re_parens, re_no_parens] {
+        for re in [re_parens, re_no_parens, re_add] {
             for caps in re.captures_iter(&candidate) {
                 let Some(m0) = caps.get(0) else {
                     continue;
@@ -2475,7 +2485,8 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
                 if is_index_inside_string_ranges(m0.start(), &string_ranges) {
                     continue;
                 }
-                let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
+                let Some(project_path) = caps.get(2).or_else(|| caps.get(1)).map(|m| m.as_str())
+                else {
                     continue;
                 };
                 let project_path = project_path.trim();
@@ -4689,6 +4700,8 @@ dependencies {
     implementation project(':lib')
     implementation(project(":lib2"))
     implementation(platform(project(":libWrapped")))
+    add("implementation", project(":libAdd"))
+    dependencies.add("testImplementation", platform(project(":libAddWrapped")))
 
     // Groovy map notation.
     implementation project(path: ':lib3')
@@ -4715,6 +4728,8 @@ dependencies {
             ":lib",
             ":lib2",
             ":libWrapped",
+            ":libAdd",
+            ":libAddWrapped",
             ":lib3",
             ":lib4",
             ":lib5",
