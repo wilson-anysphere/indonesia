@@ -107,17 +107,31 @@ pub fn read_json_message(reader: &mut impl BufRead) -> io::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::io::Cursor;
 
     #[test]
     fn roundtrips_json_message_with_correct_content_length() {
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"capabilities": {}}
-        });
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "capabilities".to_string(),
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+
+        let mut msg = serde_json::Map::new();
+        msg.insert(
+            "jsonrpc".to_string(),
+            serde_json::Value::String("2.0".to_string()),
+        );
+        msg.insert(
+            "id".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(1)),
+        );
+        msg.insert(
+            "method".to_string(),
+            serde_json::Value::String("initialize".to_string()),
+        );
+        msg.insert("params".to_string(), serde_json::Value::Object(params));
+        let msg = serde_json::Value::Object(msg);
 
         let mut buf = Vec::new();
         write_json_message(&mut buf, &msg).unwrap();

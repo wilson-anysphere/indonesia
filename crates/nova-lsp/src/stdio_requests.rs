@@ -1,21 +1,55 @@
 use crate::stdio_paths::open_document_files;
 use crate::stdio_text_document;
 use crate::stdio_transport::LspClient;
+use crate::ServerState;
 use crate::{
     rpc_out::RpcOut, stdio_ai, stdio_code_action, stdio_code_lens, stdio_completion,
     stdio_execute_command, stdio_extensions, stdio_goto, stdio_hierarchy, stdio_init,
     stdio_jsonrpc, stdio_memory, stdio_organize_imports, stdio_rename, stdio_semantic_tokens,
     stdio_workspace_symbol,
 };
-use crate::ServerState;
 
-use lsp_server::{Request, Response};
+use lsp_server::{Request, RequestId, Response, ResponseError};
 use nova_index::Index;
-use serde::Deserialize;
-use serde_json::json;
+use nova_vfs::VfsPath;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use nova_vfs::VfsPath;
+
+fn response_error(code: i32, message: impl Into<String>) -> ResponseError {
+    ResponseError {
+        code,
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn invalid_params_err(message: String) -> ResponseError {
+    response_error(-32602, message)
+}
+
+fn internal_err(message: String) -> ResponseError {
+    response_error(-32603, message)
+}
+
+fn response_error_from_code(err: (i32, String)) -> ResponseError {
+    let (code, message) = err;
+    response_error(code, message)
+}
+
+fn to_value(value: impl serde::Serialize) -> Result<serde_json::Value, ResponseError> {
+    serde_json::to_value(value).map_err(|err| response_error(-32603, err.to_string()))
+}
+
+fn map_nova_lsp_error(err: nova_lsp::NovaLspError) -> ResponseError {
+    let (code, message) = stdio_jsonrpc::nova_lsp_error_code_message(err);
+    response_error(code, message)
+}
+
+fn parse_params<T: DeserializeOwned>(params: serde_json::Value) -> Result<T, ResponseError> {
+    stdio_jsonrpc::decode_params(params).map_err(invalid_params_err)
+}
 
 pub(super) fn handle_request(
     request: Request,
@@ -24,511 +58,257 @@ pub(super) fn handle_request(
     client: &LspClient,
 ) -> std::io::Result<Response> {
     let Request { id, method, params } = request;
-    let id_json = serde_json::to_value(&id).unwrap_or(serde_json::Value::Null);
-    let response_json = handle_request_json(&method, id_json, params, &cancel, state, client)?;
+    let result = handle_request_value(&method, &id, params, &cancel, state, client);
 
     if cancel.is_cancelled() {
-        return Ok(stdio_jsonrpc::response_error(id, -32800, "Request cancelled"));
+        return Ok(stdio_jsonrpc::response_error(
+            id,
+            -32800,
+            "Request cancelled",
+        ));
     }
 
-    Ok(stdio_jsonrpc::jsonrpc_response_to_response(id, response_json))
+    Ok(match result {
+        Ok(value) => stdio_jsonrpc::response_ok(id, value),
+        Err(err) => Response {
+            id,
+            result: None,
+            error: Some(err),
+        },
+    })
 }
 
-fn handle_request_json(
+fn hardening_guard_or_error(method: &str) -> Option<ResponseError> {
+    nova_lsp::hardening::record_request();
+    match nova_lsp::hardening::guard_method(method) {
+        Ok(()) => None,
+        Err(err) => Some(map_nova_lsp_error(err)),
+    }
+}
+
+fn handle_request_value(
     method: &str,
-    id: serde_json::Value,
+    id: &RequestId,
     params: serde_json::Value,
     cancel: &CancellationToken,
     state: &mut ServerState,
     client: &LspClient,
-) -> std::io::Result<serde_json::Value> {
+) -> Result<serde_json::Value, ResponseError> {
     if cancel.is_cancelled() {
-        return Ok(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": -32800, "message": "Request cancelled" }
-        }));
+        return Err(response_error(-32800, "Request cancelled"));
     }
 
     // LSP lifecycle: after a successful `shutdown` request, the server must not accept
     // any further requests (other than repeated `shutdown`) and should wait for `exit`.
     if state.shutdown_requested && method != "shutdown" {
-        return Ok(stdio_jsonrpc::server_shutting_down_error(id));
+        return Err(response_error(-32600, "Server is shutting down"));
     }
 
     match method {
         "initialize" => {
             // Capture workspace root to power CodeLens execute commands.
             stdio_init::apply_initialize_params(params, state);
-            Ok(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": stdio_init::initialize_result_json(),
-            }))
+            Ok(stdio_init::initialize_result_json())
         }
         "shutdown" => {
             state.shutdown_requested = true;
             state.cancel_semantic_search_workspace_indexing();
             state.shutdown_distributed_router(Duration::from_secs(2));
-            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
+            Ok(serde_json::Value::Null)
         }
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) =
-                nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD)
+            if let Some(err) =
+                hardening_guard_or_error(nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD)
             {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+                return Err(err);
             }
 
-            Ok(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": state.semantic_search_workspace_index_status_json(),
-            }))
+            Ok(state.semantic_search_workspace_index_status_json())
         }
         nova_lsp::MEMORY_STATUS_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MEMORY_STATUS_METHOD) {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::MEMORY_STATUS_METHOD) {
+                return Err(err);
             }
 
-            Ok(match stdio_memory::memory_status_payload(state) {
-                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
-            })
+            stdio_memory::memory_status_payload(state).map_err(internal_err)
         }
         #[cfg(debug_assertions)]
         nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_METHOD => {
-            #[derive(Debug, Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct InterruptibleWorkParams {
-                steps: u32,
-            }
-
-            let params: InterruptibleWorkParams = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
+            let params: Map<String, Value> = parse_params(params)?;
+            let steps = params
+                .get("steps")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| response_error(-32602, "missing or invalid `steps`"))?;
 
             // NOTE: This request is intentionally only available in debug builds. It is used by
             // integration tests to validate that `$/cancelRequest` triggers Salsa cancellation and
             // that `ra_salsa::Cancelled` is treated as a normal LSP request cancellation.
             use nova_db::NovaIde as _;
+            let id_json = to_value(id)?;
+            let mut started_params = serde_json::Map::new();
+            started_params.insert("id".to_string(), id_json);
+            let started_params = serde_json::Value::Object(started_params);
             let _ = client.send_notification(
                 nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
-                json!({ "id": id.clone() }),
+                started_params,
             );
-            let value = state.analysis.salsa.with_snapshot(|snap| {
-                snap.interruptible_work(nova_db::FileId::from_raw(0), params.steps)
-            });
+            let value = state
+                .analysis
+                .salsa
+                .with_snapshot(|snap| snap.interruptible_work(nova_db::FileId::from_raw(0), steps));
 
-            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": { "value": value } }))
+            let value = to_value(value)?;
+            let mut result = serde_json::Map::new();
+            result.insert("value".to_string(), value);
+            Ok(serde_json::Value::Object(result))
         }
         nova_lsp::EXTENSIONS_STATUS_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::EXTENSIONS_STATUS_METHOD)
-            {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
-            }
-
-            #[derive(Debug, Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct ExtensionsStatusParams {
-                #[serde(default)]
-                schema_version: Option<u32>,
+            if let Some(err) = hardening_guard_or_error(nova_lsp::EXTENSIONS_STATUS_METHOD) {
+                return Err(err);
             }
 
             // Allow `params` to be `null` or omitted.
-            let params: Option<ExtensionsStatusParams> = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
-            if let Some(version) = params.and_then(|p| p.schema_version) {
+            let params: Option<Map<String, Value>> = parse_params(params)?;
+            let schema_version = params
+                .as_ref()
+                .and_then(|p| p.get("schemaVersion"))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok());
+            if let Some(version) = schema_version {
                 if version != nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": {
-                            "code": -32602,
-                            "message": format!(
-                                "unsupported schemaVersion {version} (expected {})",
-                                nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION
-                            )
-                        }
-                    }));
+                    return Err(response_error(
+                        -32602,
+                        format!(
+                            "unsupported schemaVersion {version} (expected {})",
+                            nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION
+                        ),
+                    ));
                 }
             }
 
-            Ok(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": stdio_extensions::extensions_status_json(state),
-            }))
+            Ok(stdio_extensions::extensions_status_json(state))
         }
         nova_lsp::EXTENSIONS_NAVIGATION_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) =
-                nova_lsp::hardening::guard_method(nova_lsp::EXTENSIONS_NAVIGATION_METHOD)
-            {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::EXTENSIONS_NAVIGATION_METHOD) {
+                return Err(err);
             }
 
-            let result =
-                stdio_extensions::handle_extensions_navigation(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_extensions::handle_extensions_navigation(params, state, cancel.clone())
+                .map_err(internal_err)
         }
         "textDocument/completion" => {
-            let result = stdio_completion::handle_completion(params, state, cancel.clone());
-            Ok(match result {
-                Ok(list) => json!({ "jsonrpc": "2.0", "id": id, "result": list }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_completion::handle_completion(params, state, cancel.clone()).map_err(internal_err)
         }
         "textDocument/codeAction" => {
-            let result = stdio_code_action::handle_code_action(params, state, cancel.clone());
-            Ok(match result {
-                Ok(actions) => json!({ "jsonrpc": "2.0", "id": id, "result": actions }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_code_action::handle_code_action(params, state, cancel.clone())
+                .map_err(internal_err)
         }
         "codeAction/resolve" => {
-            let result = stdio_code_action::handle_code_action_resolve(params, state);
-            Ok(match result {
-                Ok(action) => json!({ "jsonrpc": "2.0", "id": id, "result": action }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_code_action::handle_code_action_resolve(params, state).map_err(internal_err)
         }
         "textDocument/codeLens" => {
-            let result = stdio_code_lens::handle_code_lens(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_code_lens::handle_code_lens(params, state).map_err(internal_err)
         }
         "codeLens/resolve" => {
-            let result = stdio_code_lens::handle_code_lens_resolve(params);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_code_lens::handle_code_lens_resolve(params).map_err(internal_err)
         }
         "textDocument/prepareRename" => {
-            let result = stdio_rename::handle_prepare_rename(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_rename::handle_prepare_rename(params, state).map_err(internal_err)
         }
         "textDocument/rename" => {
             let result = stdio_rename::handle_rename(params, state);
-            Ok(match result {
-                Ok(edit) => json!({ "jsonrpc": "2.0", "id": id, "result": edit }),
-                Err((code, message)) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }),
-            })
+            match result {
+                Ok(value) => to_value(value),
+                Err((code, message)) => Err(response_error(code, message)),
+            }
         }
-        "textDocument/hover" => {
-            let result = stdio_text_document::handle_hover(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
-        }
+        "textDocument/hover" => stdio_text_document::handle_hover(params, state, cancel.clone())
+            .map_err(response_error_from_code),
         "textDocument/signatureHelp" => {
-            let result = stdio_text_document::handle_signature_help(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            stdio_text_document::handle_signature_help(params, state, cancel.clone())
+                .map_err(response_error_from_code)
         }
         "textDocument/references" => {
-            let result = stdio_text_document::handle_references(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            stdio_text_document::handle_references(params, state, cancel.clone())
+                .map_err(response_error_from_code)
         }
         "textDocument/definition" => {
-            let result = stdio_goto::handle_definition(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_goto::handle_definition(params, state).map_err(internal_err)
         }
         "textDocument/implementation" => {
-            let result = stdio_goto::handle_implementation(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_goto::handle_implementation(params, state).map_err(internal_err)
         }
         "textDocument/declaration" => {
-            let result = stdio_goto::handle_declaration(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_goto::handle_declaration(params, state).map_err(internal_err)
         }
         "textDocument/typeDefinition" => {
-            let result = stdio_goto::handle_type_definition(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_goto::handle_type_definition(params, state).map_err(internal_err)
         }
         "textDocument/documentHighlight" => {
-            let result = stdio_text_document::handle_document_highlight(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_document_highlight(params, state).map_err(internal_err)
         }
         "textDocument/foldingRange" => {
-            let result = stdio_text_document::handle_folding_range(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_folding_range(params, state).map_err(internal_err)
         }
         "textDocument/selectionRange" => {
-            let result = stdio_text_document::handle_selection_range(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_selection_range(params, state).map_err(internal_err)
         }
         "textDocument/prepareCallHierarchy" => {
-            let result = stdio_hierarchy::handle_prepare_call_hierarchy(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_prepare_call_hierarchy(params, state).map_err(internal_err)
         }
         "callHierarchy/incomingCalls" => {
-            let result = stdio_hierarchy::handle_call_hierarchy_incoming_calls(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_call_hierarchy_incoming_calls(params, state)
+                .map_err(internal_err)
         }
         "callHierarchy/outgoingCalls" => {
-            let result = stdio_hierarchy::handle_call_hierarchy_outgoing_calls(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_call_hierarchy_outgoing_calls(params, state)
+                .map_err(internal_err)
         }
         "textDocument/prepareTypeHierarchy" => {
-            let result = stdio_hierarchy::handle_prepare_type_hierarchy(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_prepare_type_hierarchy(params, state).map_err(internal_err)
         }
         "typeHierarchy/supertypes" => {
-            let result = stdio_hierarchy::handle_type_hierarchy_supertypes(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_type_hierarchy_supertypes(params, state).map_err(internal_err)
         }
         "typeHierarchy/subtypes" => {
-            let result = stdio_hierarchy::handle_type_hierarchy_subtypes(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_hierarchy::handle_type_hierarchy_subtypes(params, state).map_err(internal_err)
         }
         "textDocument/diagnostic" => {
-            let result = stdio_text_document::handle_document_diagnostic(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_document_diagnostic(params, state, cancel.clone())
+                .map_err(internal_err)
         }
         "textDocument/inlayHint" => {
-            let result = stdio_text_document::handle_inlay_hints(params, state, cancel.clone());
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_inlay_hints(params, state, cancel.clone())
+                .map_err(internal_err)
         }
         "textDocument/semanticTokens/full" => {
-            let result = stdio_semantic_tokens::handle_semantic_tokens_full(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_semantic_tokens::handle_semantic_tokens_full(params, state).map_err(internal_err)
         }
         "textDocument/semanticTokens/full/delta" => {
-            let result = stdio_semantic_tokens::handle_semantic_tokens_full_delta(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_semantic_tokens::handle_semantic_tokens_full_delta(params, state)
+                .map_err(internal_err)
         }
         "textDocument/documentSymbol" => {
-            let result = stdio_text_document::handle_document_symbol(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_text_document::handle_document_symbol(params, state).map_err(internal_err)
         }
         "completionItem/resolve" => {
-            let result = stdio_completion::handle_completion_item_resolve(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_completion::handle_completion_item_resolve(params, state).map_err(internal_err)
         }
         "workspace/symbol" => {
-            let result = stdio_workspace_symbol::handle_workspace_symbol(params, state, cancel);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            stdio_workspace_symbol::handle_workspace_symbol(params, state, cancel)
+                .map_err(response_error_from_code)
         }
         "workspace/executeCommand" => {
-            let result = stdio_execute_command::handle_execute_command(params, state, client, cancel);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            stdio_execute_command::handle_execute_command(params, state, client, cancel)
+                .map_err(response_error_from_code)
         }
         #[cfg(feature = "ai")]
         nova_lsp::NOVA_COMPLETION_MORE_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::NOVA_COMPLETION_MORE_METHOD)
-            {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::NOVA_COMPLETION_MORE_METHOD) {
+                return Err(err);
             }
-            let result = stdio_completion::handle_completion_more(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
+            stdio_completion::handle_completion_more(params, state).map_err(internal_err)
         }
         nova_lsp::DOCUMENT_FORMATTING_METHOD
         | nova_lsp::DOCUMENT_RANGE_FORMATTING_METHOD
@@ -538,274 +318,137 @@ fn handle_request_json(
                 .and_then(|doc| doc.get("uri"))
                 .and_then(|uri| uri.as_str());
             let Some(uri) = uri else {
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32602, "message": "missing textDocument.uri" }
-                }));
+                return Err(response_error(-32602, "missing textDocument.uri"));
             };
             let path = VfsPath::uri(uri.to_string());
             let Some(text) = state.analysis.vfs.overlay().document_text(&path) else {
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32602, "message": format!("unknown document: {uri}") }
-                }));
+                return Err(response_error(-32602, format!("unknown document: {uri}")));
             };
 
-            Ok(
-                match nova_lsp::handle_formatting_request(method, params, &text) {
-                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                    Err(err) => {
-                        let (code, message) = match err {
-                            nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                            nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                        };
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                    }
-                },
-            )
+            match nova_lsp::handle_formatting_request(method, params, &text) {
+                Ok(value) => Ok(value),
+                Err(err) => Err(map_nova_lsp_error(err)),
+            }
         }
         nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD)
-            {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD) {
+                return Err(err);
             }
-            let result = stdio_organize_imports::handle_java_organize_imports(params, state, client);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+
+            stdio_organize_imports::handle_java_organize_imports(params, state, client)
+                .map_err(response_error_from_code)
         }
         nova_lsp::SAFE_DELETE_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::SAFE_DELETE_METHOD) {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::SAFE_DELETE_METHOD) {
+                return Err(err);
             }
 
-            let params: nova_lsp::SafeDeleteParams = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
+            let (target, mode) =
+                nova_lsp::decode_safe_delete_params(params).map_err(map_nova_lsp_error)?;
 
             // Best-effort: build an in-memory index from open documents.
             let files = open_document_files(state);
             let index = Index::new(files);
 
-            Ok(match nova_lsp::handle_safe_delete(&index, params) {
-                Ok(result) => match serde_json::to_value(result) {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
-                    }
-                },
-                Err(err) => {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            match nova_lsp::handle_safe_delete(&index, target, mode) {
+                Ok(value) => Ok(value),
+                Err(err) => Err(map_nova_lsp_error(err)),
+            }
         }
         nova_lsp::CHANGE_SIGNATURE_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::CHANGE_SIGNATURE_METHOD) {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::CHANGE_SIGNATURE_METHOD) {
+                return Err(err);
             }
 
-            let change: nova_refactor::ChangeSignature = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
+            let change: nova_refactor::ChangeSignature = parse_params(params)?;
 
             // Best-effort: build an in-memory index from open documents.
             let files = open_document_files(state);
             let index = Index::new(files);
 
-            Ok(match nova_lsp::change_signature_workspace_edit(&index, &change) {
-                Ok(edit) => match serde_json::to_value(edit) {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
-                    }
-                },
-                Err(err) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32603, "message": err }
-                }),
-            })
+            match nova_lsp::change_signature_workspace_edit(&index, &change) {
+                Ok(value) => to_value(value),
+                Err(err) => Err(response_error(-32603, err)),
+            }
         }
         nova_lsp::MOVE_METHOD_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_METHOD_METHOD) {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::MOVE_METHOD_METHOD) {
+                return Err(err);
             }
 
-            let params: nova_lsp::MoveMethodParams = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
+            let obj = params
+                .as_object()
+                .ok_or_else(|| response_error(-32602, "params must be an object"))?;
+            let from_class = obj
+                .get("fromClass")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `fromClass`"))?
+                .to_string();
+            let method_name = obj
+                .get("methodName")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `methodName`"))?
+                .to_string();
+            let to_class = obj
+                .get("toClass")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `toClass`"))?
+                .to_string();
 
             let files = open_document_files(state);
-            Ok(match nova_lsp::handle_move_method(&files, params) {
-                Ok(edit) => match serde_json::to_value(edit) {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
-                    }
-                },
-                Err(err) => {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            match nova_lsp::handle_move_method(&files, from_class, method_name, to_class) {
+                Ok(value) => to_value(value),
+                Err(err) => Err(map_nova_lsp_error(err)),
+            }
         }
         nova_lsp::MOVE_STATIC_MEMBER_METHOD => {
-            nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_STATIC_MEMBER_METHOD)
-            {
-                let (code, message) = match err {
-                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                };
-                return Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": code, "message": message }
-                }));
+            if let Some(err) = hardening_guard_or_error(nova_lsp::MOVE_STATIC_MEMBER_METHOD) {
+                return Err(err);
             }
 
-            let params: nova_lsp::MoveStaticMemberParams = match serde_json::from_value(params) {
-                Ok(params) => params,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
-                    }));
-                }
-            };
+            let obj = params
+                .as_object()
+                .ok_or_else(|| response_error(-32602, "params must be an object"))?;
+            let from_class = obj
+                .get("fromClass")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `fromClass`"))?
+                .to_string();
+            let member_name = obj
+                .get("memberName")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `memberName`"))?
+                .to_string();
+            let to_class = obj
+                .get("toClass")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| response_error(-32602, "missing required `toClass`"))?
+                .to_string();
 
             let files = open_document_files(state);
-            Ok(match nova_lsp::handle_move_static_member(&files, params) {
-                Ok(edit) => match serde_json::to_value(edit) {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
-                    }
-                },
-                Err(err) => {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            match nova_lsp::handle_move_static_member(&files, from_class, member_name, to_class) {
+                Ok(value) => to_value(value),
+                Err(err) => Err(map_nova_lsp_error(err)),
+            }
         }
         _ => {
             if method.starts_with("nova/ai/") {
-                nova_lsp::hardening::record_request();
-                if let Err(err) = nova_lsp::hardening::guard_method(method) {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": code, "message": message }
-                    }));
+                if let Some(err) = hardening_guard_or_error(method) {
+                    return Err(err);
                 }
-                let result =
-                    stdio_ai::handle_ai_custom_request(method, params, state, client, cancel);
-                Ok(match result {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err((code, message)) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                    }
-                })
+                stdio_ai::handle_ai_custom_request(method, params, state, client, cancel)
+                    .map_err(response_error_from_code)
             } else if method.starts_with("nova/") {
-                Ok(match nova_lsp::handle_custom_request_cancelable(method, params, cancel.clone())
-                {
-                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                    Err(err) => {
-                        let (code, message) = match err {
-                            nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                            nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                        };
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                    }
-                })
+                match nova_lsp::handle_custom_request_cancelable(method, params, cancel.clone()) {
+                    Ok(value) => Ok(value),
+                    Err(err) => Err(map_nova_lsp_error(err)),
+                }
             } else {
-                Ok(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {
-                        "code": -32601,
-                        "message": format!("Method not found: {method}")
-                    }
-                }))
+                Err(response_error(
+                    -32601,
+                    format!("Method not found: {method}"),
+                ))
             }
         }
     }
 }
-

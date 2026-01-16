@@ -2,7 +2,7 @@ use crate::CompletionContextId;
 use lsp_types::{CompletionItem, InsertTextFormat};
 use nova_ai::{AdditionalEdit, MultiTokenInsertTextFormat};
 use nova_ide::{CompletionSource, NovaCompletionItem};
-use serde_json::json;
+use serde_json::Value;
 
 pub fn to_lsp_completion_item(
     item: NovaCompletionItem,
@@ -16,19 +16,42 @@ pub fn to_lsp_completion_item(
         }
     }
 
-    let mut data = json!({
-        "nova": {
-            "completion_context_id": context_id.to_string(),
-            "source": match item.source {
-                CompletionSource::Standard => "standard",
-                CompletionSource::Ai => "ai",
-            },
-            "confidence": item.confidence,
+    let confidence = item
+        .confidence
+        .map(|value| value as f64)
+        .filter(|value| value.is_finite());
+
+    let data = Value::Object({
+        let mut nova = serde_json::Map::new();
+        nova.insert(
+            "completion_context_id".to_string(),
+            Value::String(context_id.to_string()),
+        );
+        nova.insert(
+            "source".to_string(),
+            Value::String(
+                match item.source {
+                    CompletionSource::Standard => "standard",
+                    CompletionSource::Ai => "ai",
+                }
+                .to_string(),
+            ),
+        );
+        nova.insert(
+            "confidence".to_string(),
+            confidence.map(Value::from).unwrap_or(Value::Null),
+        );
+        if !imports.is_empty() {
+            nova.insert(
+                "imports".to_string(),
+                Value::Array(imports.into_iter().map(Value::String).collect()),
+            );
         }
+
+        let mut data = serde_json::Map::new();
+        data.insert("nova".to_string(), Value::Object(nova));
+        data
     });
-    if !imports.is_empty() {
-        data["nova"]["imports"] = json!(imports);
-    }
 
     CompletionItem {
         label: item.label,

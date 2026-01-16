@@ -1,30 +1,62 @@
+use crate::stdio_extensions_db::SingleFileDb;
 use crate::stdio_paths::{load_document_text, path_from_uri};
 use crate::stdio_text::position_to_offset_utf16;
-use crate::stdio_extensions_db::SingleFileDb;
 use crate::ServerState;
 
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
     Range as LspTypesRange, TextEdit,
 };
-#[cfg(feature = "ai")]
-use nova_ide::multi_token_completion_context;
 use nova_db::FileId as DbFileId;
 use nova_db::InMemoryFileStore;
 use nova_ide::extensions::IdeExtensions;
-use serde_json::json;
+#[cfg(feature = "ai")]
+use nova_ide::multi_token_completion_context;
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+fn value_object_mut(value: &mut Value) -> &mut Map<String, Value> {
+    if !matches!(value, Value::Object(_)) {
+        *value = Value::Object(Map::new());
+    }
+    match value {
+        Value::Object(map) => map,
+        _ => unreachable!("value was just replaced with an object"),
+    }
+}
+
+fn ensure_object_field<'a>(
+    obj: &'a mut Map<String, Value>,
+    key: &str,
+) -> &'a mut Map<String, Value> {
+    let entry = obj
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    value_object_mut(entry)
+}
 
 #[cfg(feature = "ai")]
 pub(super) fn handle_completion_more(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: nova_lsp::MoreCompletionsParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
-    serde_json::to_value(state.completion_service.completion_more(params)).map_err(|e| e.to_string())
+    let params: Map<String, Value> = crate::stdio_jsonrpc::decode_params(params)?;
+    let context_id = params
+        .get("context_id")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("contextId").and_then(Value::as_str))
+        .ok_or_else(|| "missing required `context_id`".to_string())?;
+
+    let (items, is_incomplete) = state.completion_service.completion_more(context_id);
+    let mut response = Map::new();
+    response.insert(
+        "items".to_string(),
+        serde_json::to_value(items).map_err(|e| e.to_string())?,
+    );
+    response.insert("is_incomplete".to_string(), Value::Bool(is_incomplete));
+    Ok(Value::Object(response))
 }
 
 pub(super) fn handle_completion(
@@ -32,7 +64,7 @@ pub(super) fn handle_completion(
     state: &ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: CompletionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: CompletionParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
 
@@ -52,7 +84,7 @@ pub(super) fn handle_completion(
     let (completion_context_id, has_more) = {
         let ai_excluded = doc_path
             .as_deref()
-            .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
+            .is_some_and(|path| crate::stdio_ai_privacy::is_ai_excluded_path(state, path));
         let has_more = state.completion_service.completion_engine().supports_ai() && !ai_excluded;
         let completion_context_id = if has_more {
             let document_uri = Some(uri.as_str().to_string());
@@ -133,19 +165,16 @@ pub(super) fn handle_completion(
         });
     }
     for item in &mut items {
-        if item.data.is_none() {
-            item.data = Some(json!({}));
-        }
-        let Some(data) = item.data.as_mut().filter(|data| data.is_object()) else {
-            item.data = Some(json!({}));
-            continue;
-        };
-        if !data.get("nova").is_some_and(|nova| nova.is_object()) {
-            data["nova"] = json!({});
-        }
-        data["nova"]["uri"] = json!(uri.as_str());
+        let data = item.data.get_or_insert_with(|| Value::Object(Map::new()));
+        let data = value_object_mut(data);
+        let nova = ensure_object_field(data, "nova");
+
+        nova.insert("uri".to_string(), Value::String(uri.as_str().to_string()));
         if let Some(id) = completion_context_id.as_deref() {
-            data["nova"]["completion_context_id"] = json!(id);
+            nova.insert(
+                "completion_context_id".to_string(),
+                Value::String(id.to_string()),
+            );
         }
     }
     let list = CompletionList {
@@ -161,7 +190,7 @@ pub(super) fn handle_completion_item_resolve(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let item: CompletionItem = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let item: CompletionItem = crate::stdio_jsonrpc::decode_params(params)?;
     let resolved = resolve_completion_item_with_state(item, state);
     serde_json::to_value(resolved).map_err(|e| e.to_string())
 }
@@ -200,4 +229,3 @@ fn completion_item_uri(item: &CompletionItem) -> Option<&str> {
         })
         .and_then(|uri| uri.as_str())
 }
-

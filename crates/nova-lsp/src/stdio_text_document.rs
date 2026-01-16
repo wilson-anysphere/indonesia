@@ -1,19 +1,18 @@
-use crate::stdio_paths::path_from_uri;
-use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
 use crate::stdio_diagnostics;
 use crate::stdio_extensions_db::SingleFileDb;
+use crate::stdio_paths::path_from_uri;
+use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
 use crate::ServerState;
 
 use lsp_types::{
-    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
-    FoldingRange, FoldingRangeKind, FoldingRangeParams, HoverParams, InlayHintParams,
-    Position as LspPosition, Range as LspRange, ReferenceParams, SelectionRange,
-    SelectionRangeParams, SignatureHelpParams,
+    DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentHighlight, DocumentHighlightKind,
+    DocumentHighlightParams, DocumentSymbolParams, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, FullDocumentDiagnosticReport, HoverParams, InlayHintParams,
+    Position as LspPosition, Range as LspRange, ReferenceParams,
+    RelatedFullDocumentDiagnosticReport, SelectionRange, SelectionRangeParams, SignatureHelpParams,
 };
 use nova_db::Database;
 use nova_ide::extensions::IdeExtensions;
-use serde::Deserialize;
-use serde_json::json;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -26,8 +25,7 @@ pub(super) fn handle_hover(
         return Err((-32800, "Request cancelled".to_string()));
     }
 
-    let params: HoverParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+    let params: HoverParams = crate::stdio_jsonrpc::decode_params_with_code(params)?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -52,8 +50,7 @@ pub(super) fn handle_signature_help(
         return Err((-32800, "Request cancelled".to_string()));
     }
 
-    let params: SignatureHelpParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+    let params: SignatureHelpParams = crate::stdio_jsonrpc::decode_params_with_code(params)?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -78,8 +75,7 @@ pub(super) fn handle_references(
         return Err((-32800, "Request cancelled".to_string()));
     }
 
-    let params: ReferenceParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+    let params: ReferenceParams = crate::stdio_jsonrpc::decode_params_with_code(params)?;
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let include_declaration = params.context.include_declaration;
@@ -120,22 +116,18 @@ pub(super) fn handle_document_diagnostic(
     state: &mut ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct DocumentDiagnosticParams {
-        text_document: lsp_types::TextDocumentIdentifier,
-    }
-
-    let params: DocumentDiagnosticParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: DocumentDiagnosticParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
     let diagnostics = stdio_diagnostics::diagnostics_for_uri(state, &uri, cancel);
-
-    Ok(json!({
-        "kind": "full",
-        "resultId": serde_json::Value::Null,
-        "items": diagnostics,
-    }))
+    let report = DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+        related_documents: None,
+        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+            result_id: None,
+            items: diagnostics,
+        },
+    });
+    serde_json::to_value::<lsp_types::DocumentDiagnosticReportResult>(report.into())
+        .map_err(|e| e.to_string())
 }
 
 pub(super) fn handle_inlay_hints(
@@ -143,7 +135,7 @@ pub(super) fn handle_inlay_hints(
     state: &mut ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: InlayHintParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: InlayHintParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -173,7 +165,7 @@ pub(super) fn handle_document_symbol(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: DocumentSymbolParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: DocumentSymbolParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -193,8 +185,7 @@ pub(super) fn handle_document_highlight(
         (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
     }
 
-    let params: DocumentHighlightParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: DocumentHighlightParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -239,7 +230,7 @@ pub(super) fn handle_folding_range(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: FoldingRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: FoldingRangeParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -332,7 +323,7 @@ pub(super) fn handle_selection_range(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: SelectionRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: SelectionRangeParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -384,4 +375,3 @@ pub(super) fn handle_selection_range(
 
     serde_json::to_value(out).map_err(|e| e.to_string())
 }
-

@@ -13,7 +13,7 @@ use nova_bugreport::{
 };
 use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
 use nova_scheduler::{CancellationToken, Watchdog, WatchdogError};
-use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -351,16 +351,6 @@ fn timeout_enters_safe_mode(method: &str) -> bool {
     )
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct BugReportParams {
-    #[serde(default)]
-    max_log_lines: Option<usize>,
-
-    #[serde(default)]
-    reproduction: Option<String>,
-}
-
 pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value> {
     // Best-effort: if the embedding application didn't call `init`, still set up
     // logging/panic recording so the bundle contains something useful.
@@ -371,16 +361,29 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
         }),
     );
 
-    let params: BugReportParams = if params.is_null() {
-        BugReportParams::default()
-    } else {
-        serde_json::from_value(params)
-            .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?
+    let (max_log_lines, reproduction) = match params {
+        Value::Null => (None, None),
+        Value::Object(obj) => {
+            let max_log_lines = obj
+                .get("maxLogLines")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| usize::try_from(n).ok());
+            let reproduction = obj
+                .get("reproduction")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (max_log_lines, reproduction)
+        }
+        _ => {
+            return Err(NovaLspError::InvalidParams(
+                "bug report params must be an object".to_string(),
+            ))
+        }
     };
 
     let options = BugReportOptions {
-        max_log_lines: params.max_log_lines.unwrap_or(500),
-        reproduction: params.reproduction,
+        max_log_lines: max_log_lines.unwrap_or(500),
+        reproduction,
     };
 
     let config = config_snapshot();
@@ -403,10 +406,18 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
             .build()
             .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-    Ok(serde_json::json!({
-        "path": bundle.path(),
-        "archivePath": bundle.archive_path(),
-    }))
+    let mut response = Map::new();
+    response.insert(
+        "path".to_string(),
+        Value::String(bundle.path().to_string_lossy().to_string()),
+    );
+    if let Some(path) = bundle.archive_path() {
+        response.insert(
+            "archivePath".to_string(),
+            Value::String(path.to_string_lossy().to_string()),
+        );
+    }
+    Ok(Value::Object(response))
 }
 
 #[cfg(test)]

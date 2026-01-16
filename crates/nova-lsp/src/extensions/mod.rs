@@ -9,15 +9,36 @@ pub mod project;
 pub mod test;
 pub mod web;
 
+use crate::{NovaLspError, Result};
 use nova_build::{BuildManager, CommandRunner, DefaultCommandRunner};
 use nova_cache::{CacheConfig, CacheDir};
 use nova_scheduler::CancellationToken;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 use std::{
     io,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+fn decode_params<T: DeserializeOwned>(params: serde_json::Value) -> Result<T> {
+    serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
+}
+
+fn get_str<'a>(obj: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_str))
+}
+
+fn decode_project_root(params: serde_json::Value) -> Result<String> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let root = get_str(obj, &["projectRoot", "project_root", "root"])
+        .ok_or_else(|| NovaLspError::InvalidParams("missing required `projectRoot`".to_string()))?;
+    Ok(root.to_string())
+}
 
 #[derive(Debug)]
 struct DeadlineCommandRunner {

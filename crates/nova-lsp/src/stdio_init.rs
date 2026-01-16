@@ -1,13 +1,27 @@
-use crate::ServerState;
 use crate::stdio_paths::path_from_uri;
+use crate::ServerState;
 
 use lsp_server::Connection;
+use lsp_types::{
+    CallHierarchyServerCapability, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
+    CodeLensOptions, CompletionOptions, DeclarationCapability, DiagnosticOptions,
+    DiagnosticServerCapabilities, DocumentOnTypeFormattingOptions, ExecuteCommandOptions,
+    FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions,
+    FoldingRangeClientCapabilities, FoldingRangeProviderCapability, HoverProviderCapability,
+    ImplementationProviderCapability, InitializeParams, InitializeResult, OneOf, RenameOptions,
+    SaveOptions, SelectionRangeProviderCapability, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TypeDefinitionProviderCapability,
+    TypeHierarchyServerCapability, WorkDoneProgressOptions,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities,
+};
 use nova_ide::{
     CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
     COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde_json::Value;
 use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -37,17 +51,35 @@ pub(super) fn perform_initialize_handshake(
 
 pub(super) fn apply_initialize_params(params: serde_json::Value, state: &mut ServerState) {
     let init_params: InitializeParams = serde_json::from_value(params).unwrap_or_default();
-    state.project_root = init_params
-        .project_root_uri()
+
+    fn root_uri(init: &InitializeParams) -> Option<&str> {
+        #[allow(deprecated)]
+        let root_uri = init.root_uri.as_ref().map(|uri| uri.as_str());
+        root_uri.or_else(|| {
+            init.workspace_folders
+                .as_ref()?
+                .first()
+                .map(|folder| folder.uri.as_str())
+        })
+    }
+
+    fn root_path(init: &InitializeParams) -> Option<PathBuf> {
+        #[allow(deprecated)]
+        {
+            init.root_path.as_ref().map(PathBuf::from)
+        }
+    }
+
+    state.project_root = root_uri(&init_params)
         .and_then(path_from_uri)
-        .or_else(|| init_params.root_path.map(PathBuf::from));
+        .or_else(|| root_path(&init_params));
     state.workspace = None;
     state.load_extensions();
     state.start_semantic_search_workspace_indexing();
 }
 
 pub(super) fn initialize_result_json() -> serde_json::Value {
-    let mut nova_requests = vec![
+    let nova_requests = vec![
         // Testing
         nova_lsp::TEST_DISCOVER_METHOD,
         nova_lsp::TEST_RUN_METHOD,
@@ -98,171 +130,185 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
     ];
 
     #[cfg(feature = "ai")]
-    {
+    let nova_requests = {
+        let mut nova_requests = nova_requests;
         nova_requests.push(nova_lsp::NOVA_COMPLETION_MORE_METHOD);
-    }
+        nova_requests
+    };
 
-    let experimental = json!({
-        "nova": {
-            "requests": nova_requests,
-            "notifications": [
-                nova_lsp::MEMORY_STATUS_NOTIFICATION,
-                nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION,
-                nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION,
-            ]
-        }
+    let nova_requests: Vec<String> = nova_requests.into_iter().map(|m| m.to_string()).collect();
+
+    let experimental = Value::Object({
+        let mut nova = serde_json::Map::new();
+        nova.insert(
+            "requests".to_string(),
+            Value::Array(nova_requests.into_iter().map(Value::String).collect()),
+        );
+        nova.insert(
+            "notifications".to_string(),
+            Value::Array(
+                vec![
+                    nova_lsp::MEMORY_STATUS_NOTIFICATION.to_string(),
+                    nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION.to_string(),
+                    nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION.to_string(),
+                ]
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+            ),
+        );
+        let mut exp = serde_json::Map::new();
+        exp.insert("nova".to_string(), Value::Object(nova));
+        exp
     });
+
+    let file_operations_filters = vec![FileOperationFilter {
+        scheme: Some("file".to_string()),
+        pattern: FileOperationPattern {
+            glob: "**/*.java".to_string(),
+            matches: None,
+            options: None,
+        },
+    }];
+    let file_operations = FileOperationRegistrationOptions {
+        filters: file_operations_filters,
+    };
 
     let semantic_tokens_legend = nova_ide::semantic_tokens_legend();
 
-    json!({
-        "capabilities": {
-            "textDocumentSync": {
-                "openClose": true,
-                "change": 2,
-                "willSave": true,
-                "save": { "includeText": false }
+    let capabilities = ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                will_save: Some(true),
+                save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                    include_text: Some(false),
+                })),
+                ..Default::default()
             },
-            "workspace": {
-                // Advertise workspace folder support so editors can send
-                // `workspace/didChangeWorkspaceFolders` when the user switches projects.
-                "workspaceFolders": {
-                    "supported": true,
-                    "changeNotifications": true
-                },
-                // Request file-operation notifications so the stdio server can keep its
-                // on-disk cache in sync when editors perform create/delete/rename actions.
-                //
-                // Filter to Java source files: today the stdio server only refreshes
-                // cached analysis state for URIs that are later consumed by Java-centric
-                // requests (diagnostics, navigation, etc). Using `**/*.java` avoids
-                // unnecessary churn for unrelated files.
-                "fileOperations": {
-                    "didCreate": {
-                        "filters": [{
-                            "scheme": "file",
-                            "pattern": { "glob": "**/*.java" }
-                        }]
-                    },
-                    "didDelete": {
-                        "filters": [{
-                            "scheme": "file",
-                            "pattern": { "glob": "**/*.java" }
-                        }]
-                    },
-                    "didRename": {
-                        "filters": [{
-                            "scheme": "file",
-                            "pattern": { "glob": "**/*.java" }
-                        }]
-                    }
-                }
+        )),
+        workspace: Some(WorkspaceServerCapabilities {
+            workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                supported: Some(true),
+                change_notifications: Some(OneOf::Left(true)),
+            }),
+            file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                did_create: Some(file_operations.clone()),
+                did_delete: Some(file_operations.clone()),
+                did_rename: Some(file_operations),
+                ..Default::default()
+            }),
+        }),
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(true),
+            trigger_characters: Some(vec![".".to_string()]),
+            ..Default::default()
+        }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+            retrigger_characters: Some(vec![",".to_string(), ")".to_string()]),
+            ..Default::default()
+        }),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: semantic_tokens_legend,
+                range: Some(false),
+                full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                ..Default::default()
             },
-            "completionProvider": {
-                "resolveProvider": true,
-                "triggerCharacters": ["."]
-            },
-            "hoverProvider": true,
-            "signatureHelpProvider": {
-                "triggerCharacters": ["(", ","],
-                "retriggerCharacters": [",", ")"]
-            },
-            "semanticTokensProvider": {
-                "legend": semantic_tokens_legend,
-                "range": false,
-                "full": { "delta": true }
-            },
-            "documentFormattingProvider": true,
-            "documentRangeFormattingProvider": true,
-            "documentOnTypeFormattingProvider": {
-                "firstTriggerCharacter": "}",
-                "moreTriggerCharacter": [";"]
-            },
-            "definitionProvider": true,
-            "implementationProvider": true,
-            "declarationProvider": true,
-            "typeDefinitionProvider": true,
-            "referencesProvider": true,
-            "documentHighlightProvider": true,
-            "foldingRangeProvider": { "lineFoldingOnly": true },
-            "selectionRangeProvider": true,
-            "callHierarchyProvider": true,
-            "typeHierarchyProvider": true,
-            "diagnosticProvider": {
-                "identifier": "nova",
-                "interFileDependencies": false,
-                "workspaceDiagnostics": false
-            },
-            "inlayHintProvider": true,
-            "renameProvider": { "prepareProvider": true },
-            "workspaceSymbolProvider": true,
-            "documentSymbolProvider": true,
-            "codeActionProvider": {
-                "resolveProvider": true,
-                "codeActionKinds": [
-                    CODE_ACTION_KIND_EXPLAIN,
-                    CODE_ACTION_KIND_AI_GENERATE,
-                    CODE_ACTION_KIND_AI_TESTS,
-                    "source.organizeImports",
-                    "refactor",
-                    "refactor.extract",
-                    "refactor.inline",
-                    "refactor.rewrite"
-                ]
-            },
-            "codeLensProvider": {
-                "resolveProvider": true
-            },
-            "executeCommandProvider": {
-                "commands": [
-                    COMMAND_EXPLAIN_ERROR,
-                    COMMAND_GENERATE_METHOD_BODY,
-                    COMMAND_GENERATE_TESTS,
-                    "nova.runTest",
-                    "nova.debugTest",
-                    "nova.runMain",
-                    "nova.debugMain",
-                    "nova.extractMethod",
-                    "nova.safeDelete"
-                ]
-            },
-            "experimental": experimental,
-        },
-        "serverInfo": {
-            "name": "nova-lsp",
-            "version": env!("CARGO_PKG_VERSION"),
-        }
-    })
-}
+        )),
+        document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
+        document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+            first_trigger_character: "}".to_string(),
+            more_trigger_character: Some(vec![";".to_string()]),
+        }),
+        definition_provider: Some(OneOf::Left(true)),
+        implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
+        declaration_provider: Some(DeclarationCapability::Simple(true)),
+        type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+        references_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+        type_hierarchy_provider: Some(TypeHierarchyServerCapability::Simple(true)),
+        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+            identifier: Some("nova".to_string()),
+            inter_file_dependencies: false,
+            workspace_diagnostics: false,
+            ..Default::default()
+        })),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            resolve_provider: Some(true),
+            code_action_kinds: Some(vec![
+                CodeActionKind::from(CODE_ACTION_KIND_EXPLAIN),
+                CodeActionKind::from(CODE_ACTION_KIND_AI_GENERATE),
+                CodeActionKind::from(CODE_ACTION_KIND_AI_TESTS),
+                CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                CodeActionKind::REFACTOR,
+                CodeActionKind::REFACTOR_EXTRACT,
+                CodeActionKind::REFACTOR_INLINE,
+                CodeActionKind::REFACTOR_REWRITE,
+            ]),
+            ..Default::default()
+        })),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(true),
+        }),
+        execute_command_provider: Some(ExecuteCommandOptions {
+            commands: vec![
+                COMMAND_EXPLAIN_ERROR.to_string(),
+                COMMAND_GENERATE_METHOD_BODY.to_string(),
+                COMMAND_GENERATE_TESTS.to_string(),
+                "nova.runTest".to_string(),
+                "nova.debugTest".to_string(),
+                "nova.runMain".to_string(),
+                "nova.debugMain".to_string(),
+                "nova.extractMethod".to_string(),
+                "nova.safeDelete".to_string(),
+            ],
+            ..Default::default()
+        }),
+        experimental: Some(experimental),
+        ..Default::default()
+    };
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct InitializeParams {
-    #[serde(default)]
-    root_uri: Option<String>,
-    /// Legacy initialize param (path, not URI).
-    #[serde(default)]
-    root_path: Option<String>,
-    #[serde(default)]
-    workspace_folders: Option<Vec<InitializeWorkspaceFolder>>,
-}
+    let init = InitializeResult {
+        capabilities,
+        server_info: Some(ServerInfo {
+            name: "nova-lsp".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
+        ..Default::default()
+    };
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InitializeWorkspaceFolder {
-    uri: String,
-    #[allow(dead_code)]
-    name: Option<String>,
-}
+    let mut value = serde_json::to_value(init).unwrap_or(Value::Null);
 
-impl InitializeParams {
-    fn project_root_uri(&self) -> Option<&str> {
-        self.root_uri.as_deref().or_else(|| {
-            self.workspace_folders
-                .as_ref()?
-                .first()
-                .map(|f| f.uri.as_str())
-        })
+    // Preserve the historical capability shape: some clients/tests accept either `true` or an
+    // object, but we keep the more specific object form for stability.
+    if let Some(capabilities) = value
+        .get_mut("capabilities")
+        .and_then(|v| v.as_object_mut())
+    {
+        capabilities.insert(
+            "foldingRangeProvider".to_string(),
+            serde_json::to_value(FoldingRangeClientCapabilities {
+                line_folding_only: Some(true),
+                ..Default::default()
+            })
+            .unwrap_or(Value::Null),
+        );
     }
-}
 
+    value
+}

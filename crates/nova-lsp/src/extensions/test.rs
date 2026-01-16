@@ -4,15 +4,13 @@ use nova_testing::schema::{TestDebugRequest, TestDiscoverRequest, TestRunRequest
 use super::build::BuildStatusGuard;
 
 pub fn handle_discover(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: TestDiscoverRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req: TestDiscoverRequest = super::decode_params(params)?;
     let resp = nova_testing::discover_tests(&req).map_err(map_testing_error)?;
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
 pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: TestRunRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req: TestRunRequest = super::decode_params(params)?;
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
             "`projectRoot` must not be empty".to_string(),
@@ -36,8 +34,7 @@ pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
 }
 
 pub fn handle_debug_configuration(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: TestDebugRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req: TestDebugRequest = super::decode_params(params)?;
     let resp =
         nova_testing::debug::debug_configuration_for_request(&req).map_err(map_testing_error)?;
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
@@ -106,11 +103,12 @@ exit 1
 
         let root_for_thread = root.clone();
         let handle = std::thread::spawn(move || {
-            handle_run(serde_json::json!({
-                "projectRoot": root_for_thread.to_string_lossy(),
-                "buildTool": "maven",
-                "tests": ["com.example.CalculatorTest#adds"],
-            }))
+            let req = TestRunRequest {
+                project_root: root_for_thread.to_string_lossy().to_string(),
+                build_tool: nova_testing::schema::BuildTool::Maven,
+                tests: vec!["com.example.CalculatorTest#adds".to_string()],
+            };
+            handle_run(serde_json::to_value(req).unwrap())
         });
 
         let started_path = root.join(".nova_test_started");
@@ -122,10 +120,15 @@ exit 1
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let status = super::super::build::handle_build_status(serde_json::json!({
-            "projectRoot": root.to_string_lossy(),
-        }))
-        .unwrap();
+        let status_params = serde_json::Value::Object({
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(root.to_string_lossy().to_string()),
+            );
+            params
+        });
+        let status = super::super::build::handle_build_status(status_params).unwrap();
         assert_eq!(
             status.get("status").and_then(|v| v.as_str()),
             Some("building"),
@@ -140,10 +143,15 @@ exit 1
             "expected test run to report failure: {run_result:?}"
         );
 
-        let status = super::super::build::handle_build_status(serde_json::json!({
-            "projectRoot": root.to_string_lossy(),
-        }))
-        .unwrap();
+        let status_params = serde_json::Value::Object({
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(root.to_string_lossy().to_string()),
+            );
+            params
+        });
+        let status = super::super::build::handle_build_status(status_params).unwrap();
         assert_eq!(
             status.get("status").and_then(|v| v.as_str()),
             Some("failed"),

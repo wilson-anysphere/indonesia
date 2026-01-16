@@ -119,8 +119,7 @@ pub(super) fn handle_workspace_symbol(
     state: &mut ServerState,
     cancel: &CancellationToken,
 ) -> Result<JsonValue, (i32, String)> {
-    let params: WorkspaceSymbolParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+    let params: WorkspaceSymbolParams = crate::stdio_jsonrpc::decode_params_with_code(params)?;
 
     let query = params.query.trim();
 
@@ -173,8 +172,7 @@ pub(super) fn handle_workspace_symbol(
             if !path.is_absolute() {
                 path = dist.workspace_root.join(path);
             }
-            let abs =
-                nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
+            let abs = nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
             let uri = nova_core::path_to_file_uri(&abs)
                 .map_err(|e| (-32603, e.to_string()))?
                 .parse::<LspUri>()
@@ -224,7 +222,8 @@ pub(super) fn handle_workspace_symbol(
 
     let mut out = Vec::new();
     for symbol in symbols {
-        let value = serde_json::to_value(&symbol).map_err(|e| (-32603, format!("symbol json: {e}")))?;
+        let value =
+            serde_json::to_value(&symbol).map_err(|e| (-32603, format!("symbol json: {e}")))?;
         let Some((file, line, column)) = json_location(&value) else {
             continue;
         };
@@ -233,14 +232,16 @@ pub(super) fn handle_workspace_symbol(
             path = workspace.root().join(path);
         }
 
-        let abs =
-            nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
+        let abs = nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
         let uri = nova_core::path_to_file_uri(&abs)
             .map_err(|e| (-32603, e.to_string()))?
             .parse::<LspUri>()
             .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
 
-        let position = LspTypesPosition { line, character: column };
+        let position = LspTypesPosition {
+            line,
+            character: column,
+        };
         let location = LspLocation {
             uri,
             range: LspTypesRange::new(position, position),
@@ -248,8 +249,8 @@ pub(super) fn handle_workspace_symbol(
 
         let kind = kind_to_lsp(value.get("kind"));
 
-        let container_name =
-            json_opt_string(&value, &["container_name", "containerName"]).or_else(|| Some(file.clone()));
+        let container_name = json_opt_string(&value, &["container_name", "containerName"])
+            .or_else(|| Some(file.clone()));
 
         out.push(SymbolInformation {
             name: symbol.name.clone(),
@@ -264,4 +265,3 @@ pub(super) fn handle_workspace_symbol(
 
     serde_json::to_value(out).map_err(|e| (-32603, e.to_string()))
 }
-

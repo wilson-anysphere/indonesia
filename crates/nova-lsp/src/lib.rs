@@ -57,6 +57,7 @@ mod cancellation;
 mod completion_more;
 mod diagnostics;
 mod distributed;
+mod project_root;
 #[cfg(test)]
 mod rename_lsp;
 #[cfg(feature = "ai")]
@@ -78,21 +79,21 @@ pub use distributed::NovaLspFrontend;
 pub use ide_state::{DynDb, NovaLspIdeState};
 pub use refactor::{
     change_signature_schema, change_signature_workspace_edit, convert_to_record_code_action,
-    extract_member_code_actions, extract_variable_code_actions, handle_move_method,
-    handle_move_static_member, handle_safe_delete, inline_method_code_actions,
+    decode_safe_delete_params, extract_member_code_actions, extract_variable_code_actions,
+    handle_move_method, handle_move_static_member, handle_safe_delete, inline_method_code_actions,
     inline_variable_code_actions, resolve_extract_member_code_action,
-    resolve_extract_variable_code_action, safe_delete_code_action, MoveMethodParams,
-    MoveStaticMemberParams, RefactorResponse, SafeDeleteParams, SafeDeleteResult,
-    SafeDeleteTargetParam, CHANGE_SIGNATURE_METHOD, MOVE_METHOD_METHOD, MOVE_STATIC_MEMBER_METHOD,
-    SAFE_DELETE_COMMAND, SAFE_DELETE_METHOD,
+    resolve_extract_variable_code_action, safe_delete_code_action, CHANGE_SIGNATURE_METHOD,
+    MOVE_METHOD_METHOD, MOVE_STATIC_MEMBER_METHOD, SAFE_DELETE_COMMAND, SAFE_DELETE_METHOD,
 };
 #[cfg(feature = "ai")]
-pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};
-pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
+pub use requests::NOVA_COMPLETION_MORE_METHOD;
+pub use server::{HotSwapService, NovaLspServer};
 pub use workspace_edit::{
     client_supports_file_operations, workspace_edit_from_refactor,
     workspace_edit_from_refactor_workspace_edit,
 };
+
+pub(crate) use project_root::looks_like_project_root;
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use nova_scheduler::CancellationToken;
@@ -164,24 +165,40 @@ pub const INTERNAL_INTERRUPTIBLE_WORK_METHOD: &str = "nova/internal/interruptibl
 pub const INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION: &str =
     "nova/internal/interruptibleWorkStarted";
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MemoryStatusResponse {
-    pub report: nova_memory::MemoryReport,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub top_components: Vec<nova_memory::ComponentUsage>,
-}
-
 pub const SAFE_MODE_STATUS_SCHEMA_VERSION: u32 = 1;
 pub const EXTENSIONS_STATUS_SCHEMA_VERSION: u32 = 1;
 pub const EXTENSIONS_NAVIGATION_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SafeModeStatusResponse {
-    pub schema_version: u32,
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+pub fn memory_status_response_value(
+    report: nova_memory::MemoryReport,
+    top_components: Vec<nova_memory::ComponentUsage>,
+) -> Result<serde_json::Value> {
+    let mut resp = serde_json::Map::new();
+    resp.insert(
+        "report".to_string(),
+        serde_json::to_value(report).map_err(|err| NovaLspError::Internal(err.to_string()))?,
+    );
+    if !top_components.is_empty() {
+        resp.insert(
+            "top_components".to_string(),
+            serde_json::to_value(top_components)
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?,
+        );
+    }
+    Ok(serde_json::Value::Object(resp))
+}
+
+pub fn safe_mode_status_response_value(enabled: bool, reason: Option<String>) -> serde_json::Value {
+    let mut resp = serde_json::Map::new();
+    resp.insert(
+        "schemaVersion".to_string(),
+        serde_json::Value::Number(SAFE_MODE_STATUS_SCHEMA_VERSION.into()),
+    );
+    resp.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+    if let Some(reason) = reason {
+        resp.insert("reason".to_string(), serde_json::Value::String(reason));
+    }
+    serde_json::Value::Object(resp)
 }
 
 pub const DOCUMENT_FORMATTING_METHOD: &str = "textDocument/formatting";
@@ -221,18 +238,18 @@ fn handle_custom_request_inner_cancelable(
         BUG_REPORT_METHOD => hardening::handle_bug_report(params),
         SAFE_MODE_STATUS_METHOD => {
             let (enabled, reason) = hardening::safe_mode_snapshot();
-            serde_json::to_value(SafeModeStatusResponse {
-                schema_version: SAFE_MODE_STATUS_SCHEMA_VERSION,
+            Ok(safe_mode_status_response_value(
                 enabled,
-                reason: reason.map(ToString::to_string),
-            })
-            .map_err(|err| NovaLspError::Internal(err.to_string()))
+                reason.map(ToString::to_string),
+            ))
         }
         METRICS_METHOD => serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         RESET_METRICS_METHOD => {
             nova_metrics::MetricsRegistry::global().reset();
-            Ok(serde_json::json!({ "ok": true }))
+            let mut resp = serde_json::Map::new();
+            resp.insert("ok".to_string(), serde_json::Value::Bool(true));
+            Ok(serde_json::Value::Object(resp))
         }
         TEST_DISCOVER_METHOD => hardening::run_with_watchdog_cancelable(
             method,
@@ -403,12 +420,25 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
         DEBUG_CONFIGURATIONS_METHOD => serde_json::to_value(server.debug_configurations())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         DEBUG_HOT_SWAP_METHOD => {
-            let params: HotSwapParams = serde_json::from_value(params)
-                .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+            let params = params
+                .as_object()
+                .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".into()))?;
+            let changed_files = params
+                .get("changedFiles")
+                .or_else(|| params.get("changed_files"))
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    NovaLspError::InvalidParams("missing required `changedFiles`".into())
+                })?;
+            let changed_files: Vec<PathBuf> = changed_files
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(PathBuf::from)
+                .collect();
             let hot_swap = hot_swap.ok_or_else(|| {
                 NovaLspError::InvalidParams("hot-swap service is not available".into())
             })?;
-            serde_json::to_value(server.hot_swap(hot_swap, params))
+            serde_json::to_value(server.hot_swap(hot_swap, &changed_files))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))
         }
         _ => handle_custom_request_inner_cancelable(method, params, CancellationToken::new()),
@@ -706,83 +736,4 @@ fn find_project_root(path: &Path) -> PathBuf {
     };
 
     nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
-}
-
-fn looks_like_project_root(root: &Path) -> bool {
-    if !root.is_dir() {
-        return false;
-    }
-
-    // `nova_project::workspace_root` can fall back to very large directories (including filesystem
-    // roots) for ad-hoc URIs. `RefactorWorkspaceSnapshot` uses this heuristic to decide whether it
-    // is safe to recursively scan the filesystem. Returning `false` falls back to single-file
-    // refactoring behavior (focus file + overlays), which is preferable to accidentally scanning
-    // something like `/` or a user's home directory.
-    const MARKERS: &[&str] = &[
-        // VCS
-        ".git",
-        ".hg",
-        ".svn",
-        // Maven / Gradle
-        "pom.xml",
-        "mvnw",
-        "mvnw.cmd",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        // Simple projects use `src/` as their only marker. Include it so multi-file refactors
-        // still work for ad-hoc folders without a build tool.
-        "src",
-        "gradlew",
-        "gradlew.bat",
-        // Bazel
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-        "MODULE.bazel",
-        // Nova workspace config
-        ".nova",
-    ];
-
-    if MARKERS.iter().any(|marker| root.join(marker).exists())
-        // Some users open ad-hoc folders without build files, but still with a conventional Java
-        // source layout. Allow those roots to be treated as safe for scanning without accepting a
-        // broad `src/` marker that may match too many non-project directories.
-        || root.join("src").join("main").join("java").is_dir()
-        || root.join("src").join("test").join("java").is_dir()
-    {
-        return true;
-    }
-
-    let src = root.join("src");
-    if !src.is_dir() {
-        return false;
-    }
-
-    // "Simple" projects: accept a `src/` tree that actually contains Java source files
-    // near the top-level. Cap the walk to keep this check cheap even for large trees.
-    let mut inspected = 0usize;
-    for entry in walkdir::WalkDir::new(&src).max_depth(4) {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        inspected += 1;
-        if inspected > 2_000 {
-            break;
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if entry
-            .path()
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
-        {
-            return true;
-        }
-    }
-
-    false
 }

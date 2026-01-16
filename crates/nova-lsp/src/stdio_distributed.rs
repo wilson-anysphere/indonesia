@@ -112,28 +112,29 @@ impl ServerState {
             return;
         };
 
-        let (workspace_root, source_roots) =
-            match nova_project::load_project_with_workspace_config(&project_root) {
-                Ok(cfg) => {
-                    let roots = cfg
-                        .source_roots
-                        .into_iter()
-                        .map(|r| r.path)
-                        .collect::<Vec<_>>();
-                    (cfg.workspace_root, roots)
-                }
-                Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
-                    (project_root.clone(), vec![project_root.clone()])
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        target = "nova.lsp",
-                        error = ?err,
-                        "failed to load project configuration for distributed mode; falling back to indexing workspace root"
-                    );
-                    (project_root.clone(), vec![project_root.clone()])
-                }
-            };
+        let (workspace_root, source_roots) = match nova_project::load_project_with_workspace_config(
+            &project_root,
+        ) {
+            Ok(cfg) => {
+                let roots = cfg
+                    .source_roots
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect::<Vec<_>>();
+                (cfg.workspace_root, roots)
+            }
+            Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
+                (project_root.clone(), vec![project_root.clone()])
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to load project configuration for distributed mode; falling back to indexing workspace root"
+                );
+                (project_root.clone(), vec![project_root.clone()])
+            }
+        };
 
         let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
         let source_roots = source_roots
@@ -244,7 +245,8 @@ impl ServerState {
         };
 
         let index_frontend = Arc::clone(&frontend);
-        let initial_index = Some(runtime.spawn(async move { index_frontend.index_workspace().await }));
+        let initial_index =
+            Some(runtime.spawn(async move { index_frontend.index_workspace().await }));
 
         self.distributed = Some(DistributedServerState {
             workspace_root,
@@ -287,4 +289,3 @@ impl ServerState {
         drop(dist);
     }
 }
-

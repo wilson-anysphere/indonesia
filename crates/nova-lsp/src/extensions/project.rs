@@ -1,246 +1,232 @@
 use crate::{NovaLspError, Result};
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectConfigurationParams {
-    /// Workspace root on disk.
-    ///
-    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted as an
-    /// alias for parity with other Nova extension endpoints.
-    #[serde(alias = "root")]
-    pub project_root: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildSystemKind {
-    Maven,
-    Gradle,
-    Bazel,
-    Simple,
-}
-
-impl From<nova_project::BuildSystem> for BuildSystemKind {
-    fn from(value: nova_project::BuildSystem) -> Self {
-        match value {
-            nova_project::BuildSystem::Maven => Self::Maven,
-            nova_project::BuildSystem::Gradle => Self::Gradle,
-            nova_project::BuildSystem::Bazel => Self::Bazel,
-            nova_project::BuildSystem::Simple => Self::Simple,
-        }
+fn build_system_string(kind: nova_project::BuildSystem) -> &'static str {
+    match kind {
+        nova_project::BuildSystem::Maven => "maven",
+        nova_project::BuildSystem::Gradle => "gradle",
+        nova_project::BuildSystem::Bazel => "bazel",
+        nova_project::BuildSystem::Simple => "simple",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceRootKind {
-    Main,
-    Test,
-}
-
-impl From<nova_project::SourceRootKind> for SourceRootKind {
-    fn from(value: nova_project::SourceRootKind) -> Self {
-        match value {
-            nova_project::SourceRootKind::Main => Self::Main,
-            nova_project::SourceRootKind::Test => Self::Test,
-        }
+pub(crate) fn source_root_kind_string(kind: nova_project::SourceRootKind) -> &'static str {
+    match kind {
+        nova_project::SourceRootKind::Main => "main",
+        nova_project::SourceRootKind::Test => "test",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceRootOrigin {
-    Source,
-    Generated,
-}
-
-impl From<nova_project::SourceRootOrigin> for SourceRootOrigin {
-    fn from(value: nova_project::SourceRootOrigin) -> Self {
-        match value {
-            nova_project::SourceRootOrigin::Source => Self::Source,
-            nova_project::SourceRootOrigin::Generated => Self::Generated,
-        }
+pub(crate) fn source_root_origin_string(origin: nova_project::SourceRootOrigin) -> &'static str {
+    match origin {
+        nova_project::SourceRootOrigin::Source => "source",
+        nova_project::SourceRootOrigin::Generated => "generated",
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceRootEntry {
-    pub kind: SourceRootKind,
-    pub origin: SourceRootOrigin,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ClasspathEntryKind {
-    Directory,
-    Jar,
-}
-
-impl From<nova_project::ClasspathEntryKind> for ClasspathEntryKind {
-    fn from(value: nova_project::ClasspathEntryKind) -> Self {
-        match value {
-            nova_project::ClasspathEntryKind::Directory => Self::Directory,
-            nova_project::ClasspathEntryKind::Jar => Self::Jar,
-        }
+fn classpath_entry_kind_string(kind: nova_project::ClasspathEntryKind) -> &'static str {
+    match kind {
+        nova_project::ClasspathEntryKind::Directory => "directory",
+        nova_project::ClasspathEntryKind::Jar => "jar",
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClasspathEntry {
-    pub kind: ClasspathEntryKind,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputDirKind {
-    Main,
-    Test,
-}
-
-impl From<nova_project::OutputDirKind> for OutputDirKind {
-    fn from(value: nova_project::OutputDirKind) -> Self {
-        match value {
-            nova_project::OutputDirKind::Main => Self::Main,
-            nova_project::OutputDirKind::Test => Self::Test,
-        }
+fn output_dir_kind_string(kind: nova_project::OutputDirKind) -> &'static str {
+    match kind {
+        nova_project::OutputDirKind::Main => "main",
+        nova_project::OutputDirKind::Test => "test",
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputDirEntry {
-    pub kind: OutputDirKind,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModuleEntry {
-    pub name: String,
-    pub root: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JavaConfigEntry {
-    pub source: u16,
-    pub target: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DependencyEntry {
-    pub group_id: String,
-    pub artifact_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub classifier: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "type")]
-    pub type_: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectConfigurationResponse {
-    pub schema_version: u32,
-    pub workspace_root: String,
-    pub build_system: BuildSystemKind,
-    pub java: JavaConfigEntry,
-    pub modules: Vec<ModuleEntry>,
-    pub source_roots: Vec<SourceRootEntry>,
-    pub classpath: Vec<ClasspathEntry>,
-    pub module_path: Vec<ClasspathEntry>,
-    pub output_dirs: Vec<OutputDirEntry>,
-    pub dependencies: Vec<DependencyEntry>,
 }
 
 pub fn handle_project_configuration(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: ProjectConfigurationParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
-
-    if params.project_root.trim().is_empty() {
+    let project_root = super::decode_project_root(params)?;
+    if project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
             "`projectRoot` must not be empty".to_string(),
         ));
     }
 
-    let root = PathBuf::from(&params.project_root);
+    let root = PathBuf::from(&project_root);
     let config = nova_project::load_project(&root)
         .map_err(|err| NovaLspError::Internal(format!("failed to load project: {err}")))?;
 
-    let resp = ProjectConfigurationResponse {
-        schema_version: SCHEMA_VERSION,
-        workspace_root: config.workspace_root.to_string_lossy().to_string(),
-        build_system: config.build_system.into(),
-        java: JavaConfigEntry {
-            source: config.java.source.0,
-            target: config.java.target.0,
-        },
-        modules: config
-            .modules
-            .into_iter()
-            .map(|m| ModuleEntry {
-                name: m.name,
-                root: m.root.to_string_lossy().to_string(),
-            })
-            .collect(),
-        source_roots: config
-            .source_roots
-            .into_iter()
-            .map(|root| SourceRootEntry {
-                kind: root.kind.into(),
-                origin: root.origin.into(),
-                path: root.path.to_string_lossy().to_string(),
-            })
-            .collect(),
-        classpath: config
-            .classpath
-            .into_iter()
-            .map(|entry| ClasspathEntry {
-                kind: entry.kind.into(),
-                path: entry.path.to_string_lossy().to_string(),
-            })
-            .collect(),
-        module_path: config
-            .module_path
-            .into_iter()
-            .map(|entry| ClasspathEntry {
-                kind: entry.kind.into(),
-                path: entry.path.to_string_lossy().to_string(),
-            })
-            .collect(),
-        output_dirs: config
-            .output_dirs
-            .into_iter()
-            .map(|dir| OutputDirEntry {
-                kind: dir.kind.into(),
-                path: dir.path.to_string_lossy().to_string(),
-            })
-            .collect(),
-        dependencies: config
-            .dependencies
-            .into_iter()
-            .map(|dep| DependencyEntry {
-                group_id: dep.group_id,
-                artifact_id: dep.artifact_id,
-                version: dep.version,
-                scope: dep.scope,
-                classifier: dep.classifier,
-                type_: dep.type_,
-            })
-            .collect(),
-    };
-
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(SCHEMA_VERSION)),
+        );
+        resp.insert(
+            "workspaceRoot".to_string(),
+            Value::String(config.workspace_root.to_string_lossy().to_string()),
+        );
+        resp.insert(
+            "buildSystem".to_string(),
+            Value::String(build_system_string(config.build_system).to_string()),
+        );
+        resp.insert(
+            "java".to_string(),
+            Value::Object({
+                let mut java = serde_json::Map::new();
+                java.insert(
+                    "source".to_string(),
+                    Value::from(config.java.source.0 as u64),
+                );
+                java.insert(
+                    "target".to_string(),
+                    Value::from(config.java.target.0 as u64),
+                );
+                java
+            }),
+        );
+        resp.insert(
+            "modules".to_string(),
+            Value::Array(
+                config
+                    .modules
+                    .into_iter()
+                    .map(|m| {
+                        Value::Object({
+                            let mut module = serde_json::Map::new();
+                            module.insert("name".to_string(), Value::String(m.name));
+                            module.insert(
+                                "root".to_string(),
+                                Value::String(m.root.to_string_lossy().to_string()),
+                            );
+                            module
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "sourceRoots".to_string(),
+            Value::Array(
+                config
+                    .source_roots
+                    .into_iter()
+                    .map(|root| {
+                        Value::Object({
+                            let mut entry = serde_json::Map::new();
+                            entry.insert(
+                                "kind".to_string(),
+                                Value::String(source_root_kind_string(root.kind).to_string()),
+                            );
+                            entry.insert(
+                                "origin".to_string(),
+                                Value::String(source_root_origin_string(root.origin).to_string()),
+                            );
+                            entry.insert(
+                                "path".to_string(),
+                                Value::String(root.path.to_string_lossy().to_string()),
+                            );
+                            entry
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "classpath".to_string(),
+            Value::Array(
+                config
+                    .classpath
+                    .into_iter()
+                    .map(|entry| {
+                        Value::Object({
+                            let mut value = serde_json::Map::new();
+                            value.insert(
+                                "kind".to_string(),
+                                Value::String(classpath_entry_kind_string(entry.kind).to_string()),
+                            );
+                            value.insert(
+                                "path".to_string(),
+                                Value::String(entry.path.to_string_lossy().to_string()),
+                            );
+                            value
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "modulePath".to_string(),
+            Value::Array(
+                config
+                    .module_path
+                    .into_iter()
+                    .map(|entry| {
+                        Value::Object({
+                            let mut value = serde_json::Map::new();
+                            value.insert(
+                                "kind".to_string(),
+                                Value::String(classpath_entry_kind_string(entry.kind).to_string()),
+                            );
+                            value.insert(
+                                "path".to_string(),
+                                Value::String(entry.path.to_string_lossy().to_string()),
+                            );
+                            value
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "outputDirs".to_string(),
+            Value::Array(
+                config
+                    .output_dirs
+                    .into_iter()
+                    .map(|dir| {
+                        Value::Object({
+                            let mut value = serde_json::Map::new();
+                            value.insert(
+                                "kind".to_string(),
+                                Value::String(output_dir_kind_string(dir.kind).to_string()),
+                            );
+                            value.insert(
+                                "path".to_string(),
+                                Value::String(dir.path.to_string_lossy().to_string()),
+                            );
+                            value
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "dependencies".to_string(),
+            Value::Array(
+                config
+                    .dependencies
+                    .into_iter()
+                    .map(|dep| {
+                        Value::Object({
+                            let mut value = serde_json::Map::new();
+                            value.insert("groupId".to_string(), Value::String(dep.group_id));
+                            value.insert("artifactId".to_string(), Value::String(dep.artifact_id));
+                            if let Some(version) = dep.version {
+                                value.insert("version".to_string(), Value::String(version));
+                            }
+                            if let Some(scope) = dep.scope {
+                                value.insert("scope".to_string(), Value::String(scope));
+                            }
+                            if let Some(classifier) = dep.classifier {
+                                value.insert("classifier".to_string(), Value::String(classifier));
+                            }
+                            if let Some(type_) = dep.type_ {
+                                value.insert("type".to_string(), Value::String(type_));
+                            }
+                            value
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        resp
+    }))
 }

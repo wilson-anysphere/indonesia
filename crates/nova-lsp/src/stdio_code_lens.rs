@@ -3,13 +3,13 @@ use crate::stdio_text::offset_to_position_utf16;
 use crate::ServerState;
 
 use lsp_types::{CodeLens as LspCodeLens, Command as LspCommand, Range as LspTypesRange};
-use serde_json::json;
+use serde_json::Value;
 
 pub(super) fn handle_code_lens(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: lsp_types::CodeLensParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: lsp_types::CodeLensParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
     let Some(source) = load_document_text(state, uri.as_str()) else {
         return Ok(serde_json::Value::Array(Vec::new()));
@@ -19,10 +19,12 @@ pub(super) fn handle_code_lens(
     serde_json::to_value(lenses).map_err(|e| e.to_string())
 }
 
-pub(super) fn handle_code_lens_resolve(params: serde_json::Value) -> Result<serde_json::Value, String> {
+pub(super) fn handle_code_lens_resolve(
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     // We eagerly resolve CodeLens commands in `textDocument/codeLens`, but some clients still call
     // `codeLens/resolve` unconditionally. Echo the lens back to avoid "method not found".
-    let lens: LspCodeLens = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let lens: LspCodeLens = crate::stdio_jsonrpc::decode_params(params)?;
     serde_json::to_value(lens).map_err(|e| e.to_string())
 }
 
@@ -54,7 +56,8 @@ fn code_lenses_for_java(text: &str) -> Vec<LspCodeLens> {
         if looks_like_test_annotation_line(line) {
             // Handle inline `@Test void foo() {}` declarations.
             if let Some((method_name, local_offset)) = extract_method_name(line) {
-                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset) {
+                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset)
+                {
                     let method_id = format!("{}#{method_name}", class.id);
                     test_classes.insert(class.id.clone());
                     push_test_lenses(&mut lenses, text, line_offset + local_offset, method_id);
@@ -72,7 +75,8 @@ fn code_lenses_for_java(text: &str) -> Vec<LspCodeLens> {
             {
                 // Another annotation or comment between `@Test` and the method declaration.
             } else if let Some((method_name, local_offset)) = extract_method_name(line) {
-                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset) {
+                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset)
+                {
                     let method_id = format!("{}#{method_name}", class.id);
                     test_classes.insert(class.id.clone());
                     push_test_lenses(&mut lenses, text, line_offset + local_offset, method_id);
@@ -114,7 +118,11 @@ fn push_test_lenses(lenses: &mut Vec<LspCodeLens>, text: &str, offset: usize, te
         offset_to_position_utf16(text, offset),
         offset_to_position_utf16(text, offset),
     );
-    let run_args = json!({ "testId": test_id });
+    let run_args = Value::Object({
+        let mut args = serde_json::Map::new();
+        args.insert("testId".to_string(), Value::String(test_id));
+        args
+    });
     lenses.push(LspCodeLens {
         range,
         command: Some(LspCommand {
@@ -140,7 +148,11 @@ fn push_main_lenses(lenses: &mut Vec<LspCodeLens>, text: &str, offset: usize, ma
         offset_to_position_utf16(text, offset),
         offset_to_position_utf16(text, offset),
     );
-    let args = json!({ "mainClass": main_class });
+    let args = Value::Object({
+        let mut v = serde_json::Map::new();
+        v.insert("mainClass".to_string(), Value::String(main_class));
+        v
+    });
     lenses.push(LspCodeLens {
         range,
         command: Some(LspCommand {
@@ -341,4 +353,3 @@ fn find_main_method_name_offset(line: &str) -> Option<usize> {
 
     None
 }
-

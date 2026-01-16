@@ -1,17 +1,43 @@
 use crate::rpc_out::RpcOut;
-use crate::ServerState;
 use crate::stdio_paths::path_from_uri;
+use crate::ServerState;
 
 use lsp_types::{
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
-    FileChangeType as LspFileChangeType,
-    Uri as LspUri,
+    FileChangeType as LspFileChangeType, Uri as LspUri,
 };
 use nova_vfs::{ChangeEvent, VfsPath};
-use serde::Deserialize;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+fn decode_did_open(params: serde_json::Value) -> Option<(LspUri, String, i32)> {
+    if let Ok(params) =
+        serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(params.clone())
+    {
+        return Some((
+            params.text_document.uri,
+            params.text_document.text,
+            params.text_document.version,
+        ));
+    }
+
+    let text_document = params.get("textDocument")?;
+    let uri: LspUri = text_document.get("uri")?.as_str()?.parse().ok()?;
+    let text = text_document.get("text")?.as_str()?.to_string();
+    let version = text_document
+        .get("version")
+        .and_then(|v| v.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+        .unwrap_or(0);
+    Some((uri, text, version))
+}
+
+fn decode_workspace_rename_path(params: serde_json::Value) -> Option<(LspUri, LspUri)> {
+    let from: LspUri = params.get("from")?.as_str()?.parse().ok()?;
+    let to: LspUri = params.get("to")?.as_str()?.parse().ok()?;
+    Some((from, to))
+}
 
 pub(super) fn handle_notification(
     method: &str,
@@ -32,28 +58,10 @@ pub(super) fn handle_notification(
             // Some of Nova's integration tests (and older clients) omit the required
             // `languageId` / `version` fields in `didOpen`. Be lenient and apply
             // reasonable defaults so the server remains usable.
-            #[derive(Debug, Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct DidOpenTextDocumentParams {
-                text_document: DidOpenTextDocumentItem,
-            }
-
-            #[derive(Debug, Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct DidOpenTextDocumentItem {
-                uri: LspUri,
-                text: String,
-                #[serde(default)]
-                version: Option<i32>,
-            }
-
-            let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(params) else {
+            let Some((uri, text, version)) = decode_did_open(params) else {
                 return Ok(());
             };
-            let uri = params.text_document.uri;
             let uri_string = uri.to_string();
-            let version = params.text_document.version.unwrap_or(0);
-            let text = params.text_document.text;
             if let (Some(dist), Some(path)) =
                 (state.distributed.as_ref(), path_from_uri(uri.as_str()))
             {
@@ -246,7 +254,9 @@ pub(super) fn handle_notification(
                     let is_standard_config_name = local_path
                         .as_ref()
                         .and_then(|path| path.file_name().and_then(|name| name.to_str()))
-                        .is_some_and(|name| matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml"));
+                        .is_some_and(|name| {
+                            matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml")
+                        });
 
                     let is_legacy_config_path = local_path
                         .as_ref()
@@ -339,15 +349,35 @@ pub(super) fn handle_notification(
             }
 
             if config_changed {
-                match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
+                match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref())
+                {
                     Ok(config) => {
-                        state.config = Arc::new(config);
+                        let mut config = config;
+                        let ai_env = match crate::stdio_ai_env::load_ai_config_from_env() {
+                            Ok(value) => value,
+                            Err(err) => {
+                                tracing::warn!(
+                                    target = "nova.lsp",
+                                    "failed to reload AI env config: {err}"
+                                );
+                                None
+                            }
+                        };
+                        let privacy_override =
+                            crate::stdio_state::ServerState::apply_ai_overrides_from_env(
+                                &mut config,
+                                ai_env.as_ref(),
+                            );
+                        state.replace_config(config, privacy_override);
                         // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                         // the registry in sync when users edit `nova.toml`.
                         state.load_extensions();
                         // JDK resolution reads `nova_config` (e.g. `[jdk].home`). Clear the cached
                         // index so changes take effect without requiring a restart.
                         state.jdk_index = None;
+                        // Refresh semantic-search workspace indexing so privacy/config changes
+                        // (excluded paths, provider toggles, etc) take effect without restart.
+                        state.start_semantic_search_workspace_indexing();
                     }
                     Err(err) => {
                         tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");
@@ -375,6 +405,7 @@ pub(super) fn handle_notification(
                 state.project_root = Some(root);
                 state.workspace = None;
                 state.load_extensions();
+                state.start_semantic_search_workspace_indexing();
             } else if let Some(current_root) = state.project_root.clone() {
                 // Best-effort: if the current root was removed and there are no added folders,
                 // clear it so subsequent requests fail with a clear "missing project root" error
@@ -389,6 +420,7 @@ pub(super) fn handle_notification(
                     state.project_root = None;
                     state.workspace = None;
                     state.load_extensions();
+                    state.cancel_semantic_search_workspace_indexing();
                 }
             }
         }
@@ -401,11 +433,28 @@ pub(super) fn handle_notification(
 
             match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                 Ok(config) => {
-                    state.config = Arc::new(config);
+                    let mut config = config;
+                    let ai_env = match crate::stdio_ai_env::load_ai_config_from_env() {
+                        Ok(value) => value,
+                        Err(err) => {
+                            tracing::warn!(
+                                target = "nova.lsp",
+                                "failed to reload AI env config: {err}"
+                            );
+                            None
+                        }
+                    };
+                    let privacy_override =
+                        crate::stdio_state::ServerState::apply_ai_overrides_from_env(
+                            &mut config,
+                            ai_env.as_ref(),
+                        );
+                    state.replace_config(config, privacy_override);
                     // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                     // the registry in sync when users toggle settings.
                     state.load_extensions();
                     state.jdk_index = None;
+                    state.start_semantic_search_workspace_indexing();
                 }
                 Err(err) => {
                     tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");
@@ -453,7 +502,10 @@ pub(super) fn handle_notification(
             };
 
             for file in params.files {
-                let (Ok(old_uri), Ok(new_uri)) = (file.old_uri.parse::<LspUri>(), file.new_uri.parse::<LspUri>()) else {
+                let (Ok(old_uri), Ok(new_uri)) = (
+                    file.old_uri.parse::<LspUri>(),
+                    file.new_uri.parse::<LspUri>(),
+                ) else {
                     continue;
                 };
                 state.semantic_search_remove_uri(&old_uri);
@@ -471,25 +523,18 @@ pub(super) fn handle_notification(
             }
         }
         nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION => {
-            #[derive(Debug, Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct RenamePathParams {
-                from: LspUri,
-                to: LspUri,
-            }
-
-            let Ok(params) = serde_json::from_value::<RenamePathParams>(params) else {
+            let Some((from, to)) = decode_workspace_rename_path(params) else {
                 return Ok(());
             };
 
             // If the source buffer is open, treat the rename as a pure path move; the in-memory
             // overlay remains the source of truth.
-            state.semantic_search_remove_uri(&params.from);
-            state.semantic_search_mark_uri_closed(&params.from);
-            let file_id = state.analysis.rename_uri(&params.from, &params.to);
-            let to_path = VfsPath::from(&params.to);
+            state.semantic_search_remove_uri(&from);
+            state.semantic_search_mark_uri_closed(&from);
+            let file_id = state.analysis.rename_uri(&from, &to);
+            let to_path = VfsPath::from(&to);
             if !state.analysis.vfs.overlay().is_open(&to_path) {
-                state.analysis.refresh_from_disk(&params.to);
+                state.analysis.refresh_from_disk(&to);
                 state.semantic_search_sync_file_id(file_id);
             } else {
                 state.semantic_search_mark_file_open(file_id);
@@ -500,4 +545,3 @@ pub(super) fn handle_notification(
     }
     Ok(())
 }
-

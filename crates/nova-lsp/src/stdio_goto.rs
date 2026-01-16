@@ -11,7 +11,7 @@ pub(super) fn handle_definition(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -32,7 +32,7 @@ pub(super) fn handle_implementation(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -53,7 +53,7 @@ pub(super) fn handle_declaration(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -73,7 +73,7 @@ pub(super) fn handle_type_definition(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -557,6 +557,66 @@ fn goto_definition_jdk(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test_support::{EnvVarGuard, ENV_LOCK};
+    use lsp_types::TextDocumentPositionParams;
+    use nova_memory::MemoryBudgetOverrides;
+    use nova_vfs::{FileSystem as _, VfsPath};
+    use tempfile::TempDir;
+
+    #[test]
+    fn go_to_definition_into_jdk_returns_canonical_virtual_uri_and_is_readable() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        // Point JDK discovery at the tiny fake JDK shipped in this repository.
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
+        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk_root);
+
+        let cache_dir = TempDir::new().expect("cache dir");
+        let _cache_dir = EnvVarGuard::set("NOVA_CACHE_DIR", cache_dir.path());
+
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let text = "class Main { void m() { String s = \"\"; } }".to_string();
+        state.analysis.open_document(uri.clone(), text.clone(), 1);
+
+        let offset = text.find("String").expect("String token exists");
+        let position = nova_lsp::text_pos::lsp_position(&text, offset).expect("position");
+        let params = TextDocumentPositionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            position,
+        };
+        let value = serde_json::to_value(params).unwrap();
+        let resp = handle_definition(value, &mut state).unwrap();
+        let loc: lsp_types::Location = serde_json::from_value(resp).unwrap();
+
+        assert!(loc.uri.as_str().starts_with("nova:///decompiled/"));
+        let vfs_path = VfsPath::from(&loc.uri);
+        assert_eq!(vfs_path.to_uri().unwrap(), loc.uri.to_string());
+
+        let loaded = state
+            .analysis
+            .vfs
+            .read_to_string(&vfs_path)
+            .expect("read virtual document");
+        assert!(
+            loaded.contains("class String"),
+            "unexpected decompiled text: {loaded}"
+        );
+    }
+}
+
 fn type_definition_jdk(
     state: &mut ServerState,
     file: nova_db::FileId,
@@ -914,4 +974,3 @@ fn type_definition_jdk(
         ),
     })
 }
-

@@ -6,121 +6,163 @@ use nova_apt::{
 use nova_config::NovaConfig;
 use nova_project::{load_project_with_options, BuildSystem, LoadOptions, SourceRootKind};
 use nova_scheduler::CancellationToken;
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::build::{BuildStatusGuard, NovaDiagnostic};
+use super::build::{build_diagnostic_value, BuildStatusGuard};
 use super::config::load_workspace_config_with_path;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaGeneratedSourcesParams {
-    /// Workspace root on disk.
-    ///
-    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted for
-    /// backwards compatibility with early experiments.
-    #[serde(alias = "root")]
-    pub project_root: String,
-
-    /// For Maven projects, a path relative to `projectRoot` identifying the module.
-    #[serde(default)]
-    pub module: Option<String>,
-    /// For Gradle projects, a Gradle project path (e.g. `:app`).
-    #[serde(default, alias = "project_path")]
-    pub project_path: Option<String>,
-    /// For Bazel projects, a Bazel target label (e.g. `//app:lib`).
-    #[serde(default)]
-    pub target: Option<String>,
+#[derive(Debug, Clone)]
+struct AptParams {
+    project_root: String,
+    module: Option<String>,
+    project_path: Option<String>,
+    target: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaRunAnnotationProcessingParams {
-    /// Workspace root on disk.
-    #[serde(alias = "root")]
-    pub project_root: String,
-
-    /// For Maven projects, a path relative to `projectRoot` identifying the module.
-    #[serde(default)]
-    pub module: Option<String>,
-
-    /// For Gradle projects, a Gradle project path (e.g. `:app`).
-    #[serde(default, alias = "project_path")]
-    pub project_path: Option<String>,
-
-    /// For Bazel projects, a target label (e.g. `//foo:bar`).
-    #[serde(default)]
-    pub target: Option<String>,
+fn string_array_value(values: Vec<String>) -> Value {
+    Value::Array(values.into_iter().map(Value::String).collect())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeneratedSourceRootInfo {
-    pub kind: String,
-    pub path: String,
-    pub freshness: String,
+fn opt_string_value(value: Option<String>) -> Value {
+    match value {
+        Some(value) => Value::String(value),
+        None => Value::Null,
+    }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModuleGeneratedSourcesInfo {
-    pub module_name: String,
-    pub module_root: String,
-    pub roots: Vec<GeneratedSourceRootInfo>,
+fn generated_sources_status_value(status: nova_apt::GeneratedSourcesStatus) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("enabled".to_string(), Value::Bool(status.enabled));
+        value.insert(
+            "modules".to_string(),
+            Value::Array(
+                status
+                    .modules
+                    .into_iter()
+                    .map(|module| {
+                        Value::Object({
+                            let mut module_value = serde_json::Map::new();
+                            module_value.insert(
+                                "moduleName".to_string(),
+                                Value::String(module.module_name),
+                            );
+                            module_value.insert(
+                                "moduleRoot".to_string(),
+                                Value::String(module.module_root.to_string_lossy().to_string()),
+                            );
+                            module_value.insert(
+                                "roots".to_string(),
+                                Value::Array(
+                                    module
+                                        .roots
+                                        .into_iter()
+                                        .map(|root| {
+                                            Value::Object({
+                                                let mut root_value = serde_json::Map::new();
+                                                root_value.insert(
+                                                    "kind".to_string(),
+                                                    Value::String(kind_string(root.root.kind)),
+                                                );
+                                                root_value.insert(
+                                                    "path".to_string(),
+                                                    Value::String(
+                                                        root.root
+                                                            .path
+                                                            .to_string_lossy()
+                                                            .to_string(),
+                                                    ),
+                                                );
+                                                root_value.insert(
+                                                    "freshness".to_string(),
+                                                    Value::String(freshness_string(root.freshness)),
+                                                );
+                                                root_value
+                                            })
+                                        })
+                                        .collect(),
+                                ),
+                            );
+                            module_value
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        value
+    })
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeneratedSourcesResponse {
-    pub enabled: bool,
-    pub modules: Vec<ModuleGeneratedSourcesInfo>,
+fn progress_event_kind_string(kind: nova_apt::AptProgressEventKind) -> &'static str {
+    match kind {
+        nova_apt::AptProgressEventKind::Begin => "begin",
+        nova_apt::AptProgressEventKind::Report => "report",
+        nova_apt::AptProgressEventKind::End => "end",
+    }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunAnnotationProcessingResponse {
-    pub progress: Vec<String>,
-    #[serde(default)]
-    pub progress_events: Vec<ProgressEvent>,
-    pub diagnostics: Vec<NovaDiagnostic>,
-    #[serde(default)]
-    pub module_diagnostics: Vec<ModuleBuildDiagnostics>,
-    pub generated_sources: GeneratedSourcesResponse,
-    pub status: String,
-    #[serde(default)]
-    pub cache_hit: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+fn progress_event_value(event: AptProgressEvent) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "kind".to_string(),
+            Value::String(progress_event_kind_string(event.kind).to_string()),
+        );
+        value.insert("message".to_string(), Value::String(event.message));
+        if let Some(module_name) = event.module_name {
+            value.insert("moduleName".to_string(), Value::String(module_name));
+        }
+        if let Some(module_root) = event.module_root {
+            value.insert(
+                "moduleRoot".to_string(),
+                Value::String(module_root.to_string_lossy().to_string()),
+            );
+        }
+        if let Some(source_kind) = event.source_kind {
+            value.insert(
+                "sourceKind".to_string(),
+                Value::String(kind_string(source_kind)),
+            );
+        }
+        value
+    })
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProgressEvent {
-    pub kind: ProgressEventKind,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module_root: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<String>,
-}
+fn module_build_diagnostics_value(
+    project: &nova_project::ProjectConfig,
+    diagnostics: &[nova_core::BuildDiagnostic],
+) -> Vec<Value> {
+    use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgressEventKind {
-    Begin,
-    Report,
-    End,
-}
+    let mut by_module: BTreeMap<usize, Vec<Value>> = BTreeMap::new();
+    for diag in diagnostics {
+        let Some(module_idx) = module_index_for_file(&diag.file, &project.modules) else {
+            continue;
+        };
+        by_module
+            .entry(module_idx)
+            .or_default()
+            .push(build_diagnostic_value(diag.clone()));
+    }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModuleBuildDiagnostics {
-    pub module_name: String,
-    pub module_root: String,
-    pub diagnostics: Vec<NovaDiagnostic>,
+    by_module
+        .into_iter()
+        .map(|(idx, diags)| {
+            let module = &project.modules[idx];
+            Value::Object({
+                let mut value = serde_json::Map::new();
+                value.insert("moduleName".to_string(), Value::String(module.name.clone()));
+                value.insert(
+                    "moduleRoot".to_string(),
+                    Value::String(module.root.to_string_lossy().to_string()),
+                );
+                value.insert("diagnostics".to_string(), Value::Array(diags));
+                value
+            })
+        })
+        .collect()
 }
 
 pub fn handle_generated_sources(
@@ -154,16 +196,14 @@ pub fn handle_generated_sources(
             .retain(|module| module.module_root == module_root);
     }
 
-    let resp = convert_status(status);
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(generated_sources_status_value(status))
 }
 
 pub fn handle_run_annotation_processing(
     params: serde_json::Value,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value> {
-    let params: NovaRunAnnotationProcessingParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let params = parse_params(params)?;
     let root = PathBuf::from(&params.project_root);
 
     let build = super::build_manager_for_root_with_cancel(
@@ -190,7 +230,9 @@ pub fn handle_run_annotation_processing(
                     let first_error = result
                         .diagnostics
                         .iter()
-                        .find(|diag| matches!(diag.severity, nova_core::BuildDiagnosticSeverity::Error))
+                        .find(|diag| {
+                            matches!(diag.severity, nova_core::BuildDiagnosticSeverity::Error)
+                        })
                         .map(|diag| diag.message.clone());
                     status_guard.mark_failure(
                         first_error
@@ -208,29 +250,58 @@ pub fn handle_run_annotation_processing(
         run_result.map_err(map_io_error)?
     };
 
-    let module_diagnostics = group_diagnostics_by_module(&run_result.diagnostics, apt.project());
+    let module_diagnostics = module_build_diagnostics_value(apt.project(), &run_result.diagnostics);
 
-    let resp = RunAnnotationProcessingResponse {
-        progress: reporter.events,
-        progress_events: reporter.structured_events,
-        diagnostics: run_result
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(NovaDiagnostic::from)
-            .collect(),
-        module_diagnostics,
-        generated_sources: convert_status(run_result.generated_sources),
-        status: status_string(run_result.status),
-        cache_hit: run_result.cache_hit,
-        error: run_result.error,
-    };
-
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("progress".to_string(), string_array_value(reporter.events));
+        resp.insert(
+            "progressEvents".to_string(),
+            Value::Array(reporter.structured_events),
+        );
+        resp.insert(
+            "diagnostics".to_string(),
+            Value::Array(
+                run_result
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(build_diagnostic_value)
+                    .collect(),
+            ),
+        );
+        resp.insert(
+            "moduleDiagnostics".to_string(),
+            Value::Array(module_diagnostics),
+        );
+        resp.insert(
+            "generatedSources".to_string(),
+            generated_sources_status_value(run_result.generated_sources),
+        );
+        resp.insert(
+            "status".to_string(),
+            Value::String(status_string(run_result.status)),
+        );
+        resp.insert("cacheHit".to_string(), Value::Bool(run_result.cache_hit));
+        resp.insert("error".to_string(), opt_string_value(run_result.error));
+        resp
+    }))
 }
 
-fn parse_params(value: serde_json::Value) -> Result<NovaGeneratedSourcesParams> {
-    serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
+fn parse_params(value: serde_json::Value) -> Result<AptParams> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let project_root = super::decode_project_root(Value::Object(obj.clone()))?;
+    let module = super::get_str(obj, &["module"]).map(|s| s.to_string());
+    let project_path = super::get_str(obj, &["projectPath", "project_path"]).map(|s| s.to_string());
+    let target = super::get_str(obj, &["target"]).map(|s| s.to_string());
+    Ok(AptParams {
+        project_root,
+        module,
+        project_path,
+        target,
+    })
 }
 
 fn load_project_with_workspace_config(
@@ -246,10 +317,7 @@ fn load_project_with_workspace_config(
     Ok((project, config))
 }
 
-fn resolve_target(
-    apt: &AptManager,
-    params: &NovaRunAnnotationProcessingParams,
-) -> Result<AptRunTarget> {
+fn resolve_target(apt: &AptManager, params: &AptParams) -> Result<AptRunTarget> {
     let build_system = apt.project().build_system;
     let target = match build_system {
         BuildSystem::Maven => params
@@ -287,29 +355,6 @@ fn resolve_target(
     Ok(target)
 }
 
-fn convert_status(status: nova_apt::GeneratedSourcesStatus) -> GeneratedSourcesResponse {
-    GeneratedSourcesResponse {
-        enabled: status.enabled,
-        modules: status
-            .modules
-            .into_iter()
-            .map(|module| ModuleGeneratedSourcesInfo {
-                module_name: module.module_name,
-                module_root: module.module_root.to_string_lossy().to_string(),
-                roots: module
-                    .roots
-                    .into_iter()
-                    .map(|root| GeneratedSourceRootInfo {
-                        kind: kind_string(root.root.kind),
-                        path: root.root.path.to_string_lossy().to_string(),
-                        freshness: freshness_string(root.freshness),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
-}
-
 fn kind_string(kind: SourceRootKind) -> String {
     match kind {
         SourceRootKind::Main => "main".to_string(),
@@ -340,7 +385,7 @@ fn map_io_error(err: std::io::Error) -> NovaLspError {
 
 fn selected_module_root(
     project: &nova_project::ProjectConfig,
-    params: &NovaGeneratedSourcesParams,
+    params: &AptParams,
 ) -> Option<PathBuf> {
     match project.build_system {
         nova_project::BuildSystem::Maven => {
@@ -366,37 +411,6 @@ fn selected_module_root(
     }
 }
 
-fn group_diagnostics_by_module(
-    diagnostics: &[nova_core::BuildDiagnostic],
-    project: &nova_project::ProjectConfig,
-) -> Vec<ModuleBuildDiagnostics> {
-    use std::collections::BTreeMap;
-
-    let mut by_module: BTreeMap<usize, Vec<NovaDiagnostic>> = BTreeMap::new();
-
-    for diag in diagnostics {
-        let Some(module_idx) = module_index_for_file(&diag.file, &project.modules) else {
-            continue;
-        };
-        by_module
-            .entry(module_idx)
-            .or_default()
-            .push(NovaDiagnostic::from(diag.clone()));
-    }
-
-    by_module
-        .into_iter()
-        .map(|(idx, diags)| {
-            let module = &project.modules[idx];
-            ModuleBuildDiagnostics {
-                module_name: module.name.clone(),
-                module_root: module.root.to_string_lossy().to_string(),
-                diagnostics: diags,
-            }
-        })
-        .collect()
-}
-
 fn module_index_for_file(file: &Path, modules: &[nova_project::Module]) -> Option<usize> {
     modules
         .iter()
@@ -406,32 +420,16 @@ fn module_index_for_file(file: &Path, modules: &[nova_project::Module]) -> Optio
         .map(|(idx, _)| idx)
 }
 
-impl From<AptProgressEvent> for ProgressEvent {
-    fn from(event: AptProgressEvent) -> Self {
-        Self {
-            kind: match event.kind {
-                nova_apt::AptProgressEventKind::Begin => ProgressEventKind::Begin,
-                nova_apt::AptProgressEventKind::Report => ProgressEventKind::Report,
-                nova_apt::AptProgressEventKind::End => ProgressEventKind::End,
-            },
-            message: event.message,
-            module_name: event.module_name,
-            module_root: event.module_root.map(|p| p.to_string_lossy().to_string()),
-            source_kind: event.source_kind.map(kind_string),
-        }
-    }
-}
-
 #[derive(Default)]
 struct VecProgress {
     events: Vec<String>,
-    structured_events: Vec<ProgressEvent>,
+    structured_events: Vec<Value>,
 }
 
 impl ProgressReporter for VecProgress {
     fn event(&mut self, event: AptProgressEvent) {
         self.events.push(event.message.clone());
-        self.structured_events.push(event.into());
+        self.structured_events.push(progress_event_value(event));
     }
 }
 
@@ -441,8 +439,13 @@ mod tests {
 
     #[test]
     fn params_accepts_project_root_aliases() {
-        let params: NovaGeneratedSourcesParams = serde_json::from_value(serde_json::json!({
-            "root": "/tmp/project",
+        let params = parse_params(serde_json::Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "root".to_string(),
+                serde_json::Value::String("/tmp/project".to_string()),
+            );
+            obj
         }))
         .unwrap();
 
@@ -454,21 +457,32 @@ mod tests {
 
     #[test]
     fn run_annotation_processing_response_includes_new_fields() {
-        let resp = RunAnnotationProcessingResponse {
-            progress: vec!["Running annotation processing".to_string()],
-            progress_events: Vec::new(),
-            diagnostics: Vec::new(),
-            module_diagnostics: Vec::new(),
-            generated_sources: GeneratedSourcesResponse {
-                enabled: true,
-                modules: Vec::new(),
-            },
-            status: "up_to_date".to_string(),
-            cache_hit: false,
-            error: None,
-        };
-
-        let value = serde_json::to_value(resp).unwrap();
+        let value = Value::Object({
+            let mut resp = serde_json::Map::new();
+            resp.insert(
+                "progress".to_string(),
+                string_array_value(vec!["Running annotation processing".to_string()]),
+            );
+            resp.insert("progressEvents".to_string(), Value::Array(Vec::new()));
+            resp.insert("diagnostics".to_string(), Value::Array(Vec::new()));
+            resp.insert("moduleDiagnostics".to_string(), Value::Array(Vec::new()));
+            resp.insert(
+                "generatedSources".to_string(),
+                Value::Object({
+                    let mut generated_sources = serde_json::Map::new();
+                    generated_sources.insert("enabled".to_string(), Value::Bool(true));
+                    generated_sources.insert("modules".to_string(), Value::Array(Vec::new()));
+                    generated_sources
+                }),
+            );
+            resp.insert(
+                "status".to_string(),
+                Value::String("up_to_date".to_string()),
+            );
+            resp.insert("cacheHit".to_string(), Value::Bool(false));
+            resp.insert("error".to_string(), Value::Null);
+            resp
+        });
         assert!(value.get("progress").is_some());
         assert!(value.get("progressEvents").is_some());
         assert!(value.get("moduleDiagnostics").is_some());
@@ -491,7 +505,7 @@ mod tests {
             workspace_model: None,
         };
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: "/workspace".into(),
             module: Some(".".into()),
             project_path: None,
@@ -499,7 +513,7 @@ mod tests {
         };
         assert_eq!(selected_module_root(&project, &params), None);
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: "/workspace".into(),
             module: Some("module-a".into()),
             project_path: None,
@@ -524,7 +538,7 @@ mod tests {
 
         let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":".into()),
@@ -532,7 +546,7 @@ mod tests {
         };
         assert_eq!(selected_module_root(&project, &params), None);
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":app".into()),
@@ -543,7 +557,7 @@ mod tests {
             Some(dir.path().join("app").canonicalize().unwrap())
         );
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":lib:core".into()),
@@ -567,7 +581,7 @@ mod tests {
 
         let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":app".into()),
@@ -599,7 +613,7 @@ mod tests {
 
         let (project, _config) = load_project_with_workspace_config(&workspace_root).unwrap();
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: workspace_root.to_string_lossy().to_string(),
             module: None,
             project_path: Some(":app".into()),
@@ -624,7 +638,7 @@ mod tests {
 
         let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
 
-        let params = NovaGeneratedSourcesParams {
+        let params = AptParams {
             project_root: dir.path().to_string_lossy().to_string(),
             // Legacy clients may send `module` instead of `projectPath` for Gradle.
             module: Some(":app".into()),
@@ -661,7 +675,7 @@ mod tests {
         };
 
         let apt = AptManager::new(project, NovaConfig::default());
-        let params = NovaRunAnnotationProcessingParams {
+        let params = AptParams {
             project_root: "/workspace".into(),
             module: Some(".".into()),
             project_path: None,
@@ -692,7 +706,7 @@ mod tests {
         };
 
         let apt = AptManager::new(project, NovaConfig::default());
-        let params = NovaRunAnnotationProcessingParams {
+        let params = AptParams {
             project_root: "/workspace".into(),
             module: None,
             project_path: Some(":".into()),

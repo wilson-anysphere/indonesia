@@ -1,66 +1,22 @@
+use crate::stdio_extensions_db::SingleFileDb;
 use crate::stdio_paths::{load_document_text, path_from_uri};
 use crate::stdio_text::position_to_offset_utf16;
-use crate::stdio_extensions_db::SingleFileDb;
 use crate::ServerState;
 
-use lsp_types::{CodeAction, CodeActionKind, Position as LspTypesPosition, Range as LspTypesRange, Uri as LspUri};
+use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionParams, Command, Position, Range, Uri as LspUri,
+};
 use nova_ide::extensions::IdeExtensions;
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction,
 };
 use nova_index::{Index, SymbolKind};
-use nova_refactor::{
-    SafeDeleteTarget,
-};
-use serde::Deserialize;
-use serde_json::json;
+use nova_refactor::SafeDeleteTarget;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodeActionParams {
-    text_document: TextDocumentIdentifier,
-    range: Range,
-    context: CodeActionContext,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TextDocumentIdentifier {
-    uri: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodeActionContext {
-    diagnostics: Vec<Diagnostic>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Diagnostic {
-    range: Range,
-    #[serde(default)]
-    code: Option<lsp_types::NumberOrString>,
-    message: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Range {
-    start: Position,
-    end: Position,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Position {
-    line: u32,
-    character: u32,
-}
 
 fn to_ide_range(range: &Range) -> nova_ide::LspRange {
     nova_ide::LspRange {
@@ -75,35 +31,23 @@ fn to_ide_range(range: &Range) -> nova_ide::LspRange {
     }
 }
 
-fn to_lsp_types_range(range: &Range) -> LspTypesRange {
-    LspTypesRange {
-        start: LspTypesPosition {
-            line: range.start.line,
-            character: range.start.character,
-        },
-        end: LspTypesPosition {
-            line: range.end.line,
-            character: range.end.character,
-        },
-    }
-}
-
 pub(super) fn handle_code_action(
     params: serde_json::Value,
     state: &mut ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let doc_path = path_from_uri(&params.text_document.uri);
-    let text = load_document_text(state, &params.text_document.uri);
+    let params: CodeActionParams = crate::stdio_jsonrpc::decode_params(params)?;
+    let doc_path = path_from_uri(params.text_document.uri.as_str());
+    let text = load_document_text(state, params.text_document.uri.as_str());
     let text = text.as_deref();
 
     let mut actions = Vec::new();
 
     // Non-AI refactor action(s).
     if let Some(text) = text {
-        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
-            let range = to_lsp_types_range(&params.range);
+        let uri = params.text_document.uri.clone();
+        let range = params.range.clone();
+        {
             if let Some(action) =
                 nova_ide::code_action::extract_method_code_action(text, uri.clone(), range.clone())
             {
@@ -112,10 +56,7 @@ pub(super) fn handle_code_action(
 
             let is_cursor = params.range.start.line == params.range.end.line
                 && params.range.start.character == params.range.end.character;
-            let cursor = LspTypesPosition {
-                line: params.range.start.line,
-                character: params.range.start.character,
-            };
+            let cursor = params.range.start;
             if is_cursor {
                 for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
                     actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
@@ -174,18 +115,28 @@ pub(super) fn handle_code_action(
                                     if let lsp_types::CodeActionOrCommand::CodeAction(code_action) =
                                         &mut action
                                     {
-                                        if code_action.edit.is_none() && code_action.command.is_none()
+                                        if code_action.edit.is_none()
+                                            && code_action.command.is_none()
                                         {
+                                            let mut safe_delete_args = serde_json::Map::new();
+                                            safe_delete_args.insert(
+                                                "target".to_string(),
+                                                serde_json::to_value(target)
+                                                    .map_err(|e| e.to_string())?,
+                                            );
+                                            safe_delete_args.insert(
+                                                "mode".to_string(),
+                                                serde_json::to_value(
+                                                    nova_refactor::SafeDeleteMode::Safe,
+                                                )
+                                                .map_err(|e| e.to_string())?,
+                                            );
                                             code_action.command = Some(lsp_types::Command {
                                                 title: code_action.title.clone(),
                                                 command: nova_lsp::SAFE_DELETE_COMMAND.to_string(),
-                                                arguments: Some(vec![serde_json::to_value(
-                                                    nova_lsp::SafeDeleteParams {
-                                                        target: nova_lsp::SafeDeleteTargetParam::SymbolId(target),
-                                                        mode: nova_refactor::SafeDeleteMode::Safe,
-                                                    },
-                                                )
-                                                .map_err(|e| e.to_string())?]),
+                                                arguments: Some(vec![serde_json::Value::Object(
+                                                    safe_delete_args,
+                                                )]),
                                             });
                                         }
                                     }
@@ -237,7 +188,8 @@ pub(super) fn handle_code_action(
     }
 
     if let Some(text) = text {
-        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+        let uri = params.text_document.uri.clone();
+        {
             if let Some(action) =
                 crate::stdio_organize_imports::organize_imports_code_action(state, &uri, text)
             {
@@ -248,19 +200,10 @@ pub(super) fn handle_code_action(
 
     // Diagnostic-driven quick fixes.
     if let Some(text) = text {
-        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
-            let range = to_lsp_types_range(&params.range);
-            let lsp_diags: Vec<lsp_types::Diagnostic> = params
-                .context
-                .diagnostics
-                .iter()
-                .map(|diag| lsp_types::Diagnostic {
-                    range: to_lsp_types_range(&diag.range),
-                    code: diag.code.clone(),
-                    message: diag.message.clone(),
-                    ..lsp_types::Diagnostic::default()
-                })
-                .collect();
+        let uri = params.text_document.uri.clone();
+        {
+            let range = params.range.clone();
+            let lsp_diags = params.context.diagnostics.clone();
             for action in nova_ide::code_action::diagnostic_quick_fixes(
                 text,
                 Some(uri.clone()),
@@ -282,7 +225,7 @@ pub(super) fn handle_code_action(
     let ai_enabled = state.ai.is_some();
     let ai_excluded = doc_path
         .as_deref()
-        .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
+        .is_some_and(|path| crate::stdio_ai_privacy::is_ai_excluded_path(state, path));
 
     if ai_enabled {
         let allow_code_edit_actions =
@@ -293,15 +236,12 @@ pub(super) fn handle_code_action(
         // This action is read-only, so we continue to offer it even when the document matches
         // `ai.privacy.excluded_paths`. When excluded, strip any file-backed context (code snippet).
         if let Some(diagnostic) = params.context.diagnostics.first() {
-            let uri = Some(params.text_document.uri.clone());
+            let uri = Some(params.text_document.uri.to_string());
             let range = Some(to_ide_range(&diagnostic.range));
             let code = if ai_excluded {
                 None
             } else {
-                text.map(|t| {
-                    let range = to_lsp_types_range(&diagnostic.range);
-                    crate::stdio_ai::extract_snippet(t, &range, 2)
-                })
+                text.map(|t| crate::stdio_ai_snippets::extract_snippet(t, &diagnostic.range, 2))
             };
             let action = explain_error_action(ExplainErrorArgs {
                 diagnostic_message: diagnostic.message.clone(),
@@ -316,15 +256,23 @@ pub(super) fn handle_code_action(
         // and (b) the file path is not excluded via `ai.privacy.excluded_paths`.
         if allow_code_edit_actions && !ai_excluded {
             if let Some(text) = text {
-                let selection_range = to_lsp_types_range(&params.range);
-                if let Some(selected) = crate::stdio_ai::extract_range_text(text, &selection_range) {
+                let selection_range = params.range.clone();
+                if let Some(selected) =
+                    crate::stdio_ai_snippets::extract_range_text(text, &selection_range)
+                {
                     // Generate method body (empty method selection).
-                    if let Some(signature) = crate::stdio_ai::detect_empty_method_signature(&selected) {
-                        let context = Some(crate::stdio_ai::extract_snippet(text, &selection_range, 8));
+                    if let Some(signature) =
+                        crate::stdio_ai_snippets::detect_empty_method_signature(&selected)
+                    {
+                        let context = Some(crate::stdio_ai_snippets::extract_snippet(
+                            text,
+                            &selection_range,
+                            8,
+                        ));
                         let action = generate_method_body_action(GenerateMethodBodyArgs {
                             method_signature: signature,
                             context,
-                            uri: Some(params.text_document.uri.clone()),
+                            uri: Some(params.text_document.uri.to_string()),
                             range: Some(to_ide_range(&params.range)),
                         });
                         actions.push(code_action_to_lsp(action));
@@ -338,11 +286,15 @@ pub(super) fn handle_code_action(
                             .unwrap_or(selected.trim())
                             .trim()
                             .to_string();
-                        let context = Some(crate::stdio_ai::extract_snippet(text, &selection_range, 8));
+                        let context = Some(crate::stdio_ai_snippets::extract_snippet(
+                            text,
+                            &selection_range,
+                            8,
+                        ));
                         let action = generate_tests_action(GenerateTestsArgs {
                             target,
                             context,
-                            uri: Some(params.text_document.uri.clone()),
+                            uri: Some(params.text_document.uri.to_string()),
                             range: Some(to_ide_range(&params.range)),
                         });
                         actions.push(code_action_to_lsp(action));
@@ -354,13 +306,13 @@ pub(super) fn handle_code_action(
 
     // WASM extension code actions.
     if let Some(text) = text {
-        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+        let uri = params.text_document.uri.clone();
+        {
             let file_id = state.analysis.ensure_loaded(&uri);
             if state.analysis.exists(file_id) {
                 let start_pos =
-                    LspTypesPosition::new(params.range.start.line, params.range.start.character);
-                let end_pos =
-                    LspTypesPosition::new(params.range.end.line, params.range.end.character);
+                    Position::new(params.range.start.line, params.range.start.character);
+                let end_pos = Position::new(params.range.end.line, params.range.end.character);
                 let start = position_to_offset_utf16(text, start_pos).unwrap_or(0);
                 let end = position_to_offset_utf16(text, end_pos).unwrap_or(start);
                 let span = Some(nova_ext::Span::new(start.min(end), start.max(end)));
@@ -394,7 +346,7 @@ pub(super) fn handle_code_action_resolve(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let mut action: CodeAction = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let mut action: CodeAction = crate::stdio_jsonrpc::decode_params(params)?;
     let Some(data) = action.data.clone() else {
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
@@ -446,14 +398,19 @@ pub(super) fn handle_code_action_resolve(
 }
 
 fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
-    json!({
-        "title": action.title,
-        "kind": action.kind,
-        "command": {
-            "title": action.title,
-            "command": action.command.name,
-            "arguments": action.command.arguments,
-        }
+    let action = CodeAction {
+        title: action.title.clone(),
+        kind: Some(CodeActionKind::from(action.kind.to_string())),
+        command: Some(Command {
+            title: action.title,
+            command: action.command.name,
+            arguments: Some(action.command.arguments),
+        }),
+        ..CodeAction::default()
+    };
+
+    serde_json::to_value(action).unwrap_or_else(|err| {
+        tracing::error!(target = "nova.lsp", error = %err, "failed to serialize code action");
+        Value::Null
     })
 }
-

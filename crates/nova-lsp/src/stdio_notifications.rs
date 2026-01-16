@@ -17,11 +17,8 @@ pub(super) fn flush_memory_status_notifications(
 
     let mut top_components = state.memory.report_detailed().1;
     top_components.truncate(10);
-    let params = serde_json::to_value(nova_lsp::MemoryStatusResponse {
-        report: last.report,
-        top_components,
-    })
-    .unwrap_or(serde_json::Value::Null);
+    let params = nova_lsp::memory_status_response_value(last.report, top_components)
+        .unwrap_or(serde_json::Value::Null);
     out.send_notification(nova_lsp::MEMORY_STATUS_NOTIFICATION, params)?;
     Ok(())
 }
@@ -42,13 +39,8 @@ pub(super) fn flush_safe_mode_notifications(
     state.last_safe_mode_enabled = enabled;
     state.last_safe_mode_reason = reason;
 
-    let params = serde_json::to_value(nova_lsp::SafeModeStatusResponse {
-        schema_version: nova_lsp::SAFE_MODE_STATUS_SCHEMA_VERSION,
-        enabled,
-        reason: reason.map(ToString::to_string),
-    })
-    .unwrap_or(serde_json::Value::Null);
+    let params =
+        nova_lsp::safe_mode_status_response_value(enabled, reason.map(ToString::to_string));
     out.send_notification(nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION, params)?;
     Ok(())
 }
-

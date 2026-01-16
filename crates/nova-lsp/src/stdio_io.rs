@@ -1,14 +1,4 @@
-use crate::ServerState;
-
 use std::time::Duration;
-
-impl ServerState {
-    pub(super) fn next_outgoing_id(&mut self) -> String {
-        let id = self.next_outgoing_request_id;
-        self.next_outgoing_request_id = self.next_outgoing_request_id.saturating_add(1);
-        format!("nova:{id}")
-    }
-}
 
 pub(super) fn join_io_threads_with_timeout(io_threads: lsp_server::IoThreads, timeout: Duration) {
     use std::sync::mpsc;
@@ -30,4 +20,3 @@ pub(super) fn join_io_threads_with_timeout(io_threads: lsp_server::IoThreads, ti
         }
     }
 }
-

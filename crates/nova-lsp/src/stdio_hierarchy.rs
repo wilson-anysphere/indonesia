@@ -1,18 +1,18 @@
 use crate::ServerState;
 
-use serde_json::json;
+use serde_json::Value;
 
 pub(super) fn handle_prepare_call_hierarchy(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::CallHierarchyPrepareParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.text_document_position_params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let items = nova_ide::code_intelligence::prepare_call_hierarchy(
@@ -29,11 +29,11 @@ pub(super) fn handle_call_hierarchy_incoming_calls(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::CallHierarchyIncomingCallsParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.item.uri;
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let calls = nova_ide::code_intelligence::call_hierarchy_incoming_calls_for_item(
@@ -49,11 +49,11 @@ pub(super) fn handle_call_hierarchy_outgoing_calls(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::CallHierarchyOutgoingCallsParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.item.uri;
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let calls = nova_ide::code_intelligence::call_hierarchy_outgoing_calls_for_item(
@@ -69,12 +69,12 @@ pub(super) fn handle_prepare_type_hierarchy(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TypeHierarchyPrepareParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.text_document_position_params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let items = nova_ide::code_intelligence::prepare_type_hierarchy(
@@ -91,11 +91,11 @@ pub(super) fn handle_type_hierarchy_supertypes(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TypeHierarchySupertypesParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.item.uri;
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let items = nova_ide::code_intelligence::type_hierarchy_supertypes(
@@ -111,11 +111,11 @@ pub(super) fn handle_type_hierarchy_subtypes(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TypeHierarchySubtypesParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        crate::stdio_jsonrpc::decode_params(params)?;
     let uri = &params.item.uri;
     let file_id = state.analysis.ensure_loaded(uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!([]));
+        return Ok(Value::Array(Vec::new()));
     }
 
     let items = nova_ide::code_intelligence::type_hierarchy_subtypes(
@@ -125,4 +125,3 @@ pub(super) fn handle_type_hierarchy_subtypes(
     );
     serde_json::to_value(items).map_err(|e| e.to_string())
 }
-

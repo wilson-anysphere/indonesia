@@ -151,4 +151,3 @@ fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
     }
     None
 }
-

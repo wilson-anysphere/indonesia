@@ -2,7 +2,7 @@ use crate::ServerState;
 
 use lsp_types::Uri as LspUri;
 use nova_db::FileId as DbFileId;
-use serde_json::json;
+use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -48,7 +48,7 @@ impl ServerState {
         // Keep semantic search consistent with LLM privacy filtering. In particular, this ensures
         // that any file excluded from AI prompts is also excluded from the semantic-search index
         // (which is later used to construct AI context).
-        crate::stdio_ai::is_ai_excluded_path(self, path)
+        crate::stdio_ai_privacy::is_ai_excluded_path(self, path)
     }
 
     pub(super) fn semantic_search_should_index_path(&self, path: &Path) -> bool {
@@ -170,13 +170,17 @@ impl ServerState {
         let (current, completed, files, bytes) =
             self.semantic_search_workspace_index_status.snapshot();
         let done = current != 0 && current == completed;
-        json!({
-            "currentRunId": current,
-            "completedRunId": completed,
-            "done": done,
-            "indexedFiles": files,
-            "indexedBytes": bytes,
-        })
+
+        let mut obj = serde_json::Map::new();
+        obj.insert("currentRunId".to_string(), Value::Number(current.into()));
+        obj.insert(
+            "completedRunId".to_string(),
+            Value::Number(completed.into()),
+        );
+        obj.insert("done".to_string(), Value::Bool(done));
+        obj.insert("indexedFiles".to_string(), Value::Number(files.into()));
+        obj.insert("indexedBytes".to_string(), Value::Number(bytes.into()));
+        Value::Object(obj)
     }
 
     pub(super) fn start_semantic_search_workspace_indexing(&mut self) {
@@ -300,12 +304,8 @@ impl ServerState {
                 }
 
                 // Respect privacy exclusions.
-                let is_excluded = match excluded_matcher.as_ref() {
-                    Ok(matcher) => matcher.is_match(&path),
-                    // Fail-closed: invalid privacy config means we should not index anything.
-                    Err(_) => true,
-                };
-                if is_excluded {
+                if crate::stdio_ai_privacy::is_excluded_by_matcher(excluded_matcher.as_ref(), &path)
+                {
                     continue;
                 }
 
@@ -376,4 +376,3 @@ impl ServerState {
         });
     }
 }
-

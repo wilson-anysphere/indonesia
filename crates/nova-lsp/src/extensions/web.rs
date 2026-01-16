@@ -1,51 +1,44 @@
 use std::path::Path;
 
 use crate::{NovaLspError, Result};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebEndpointsRequest {
-    pub project_root: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebEndpoint {
-    pub path: String,
-    pub methods: Vec<String>,
-    pub file: Option<String>,
-    /// 1-based line number.
-    pub line: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebEndpointsResponse {
-    pub endpoints: Vec<WebEndpoint>,
-}
+use serde_json::{Map, Value};
 
 pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: WebEndpointsRequest = serde_json::from_value(params)
+    let project_root = super::decode_project_root(params)?;
+    if project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let endpoints = nova_framework_web::extract_http_endpoints_in_dir(Path::new(&project_root))
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
-    let endpoints = nova_framework_web::extract_http_endpoints_in_dir(Path::new(&req.project_root))
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
-
-    let resp = WebEndpointsResponse {
-        endpoints: endpoints
+    let endpoints = Value::Array(
+        endpoints
             .into_iter()
-            .map(|ep| WebEndpoint {
-                path: ep.path,
-                methods: ep.methods,
-                file: ep
-                    .handler
-                    .file
-                    .and_then(|p| p.to_str().map(|s| s.to_string())),
-                line: ep.handler.line,
+            .map(|ep| {
+                let mut obj = Map::new();
+                obj.insert("path".to_string(), Value::String(ep.path));
+                obj.insert(
+                    "methods".to_string(),
+                    Value::Array(ep.methods.into_iter().map(Value::String).collect()),
+                );
+                obj.insert(
+                    "file".to_string(),
+                    ep.handler
+                        .file
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                );
+                obj.insert("line".to_string(), Value::from(ep.handler.line));
+                Value::Object(obj)
             })
             .collect(),
-    };
+    );
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    let mut resp = Map::new();
+    resp.insert("endpoints".to_string(), endpoints);
+    Ok(Value::Object(resp))
 }

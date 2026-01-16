@@ -4,14 +4,6 @@ use anyhow::Result;
 use nova_dap::hot_swap::{BuildSystem, HotSwapEngine, HotSwapResult, JdwpRedefiner};
 use nova_ide::DebugConfiguration;
 use nova_workspace::Workspace;
-use serde::{Deserialize, Serialize};
-
-/// LSP method params for `nova/debug/hotSwap`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HotSwapParams {
-    pub changed_files: Vec<PathBuf>,
-}
 
 #[derive(Debug)]
 pub struct NovaLspServer {
@@ -36,9 +28,9 @@ impl NovaLspServer {
     pub fn hot_swap<B: BuildSystem, J: JdwpRedefiner>(
         &self,
         service: &mut HotSwapService<B, J>,
-        params: HotSwapParams,
+        changed_files: &[PathBuf],
     ) -> HotSwapResult {
-        service.engine.hot_swap(&params.changed_files)
+        service.engine.hot_swap(changed_files)
     }
 }
 
@@ -209,12 +201,7 @@ mod tests {
         let jdwp = MockJdwp::default();
         let mut service = HotSwapService::new(build, jdwp);
 
-        let result = server.hot_swap(
-            &mut service,
-            HotSwapParams {
-                changed_files: vec![file.clone()],
-            },
-        );
+        let result = server.hot_swap(&mut service, &[file.clone()]);
 
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].file, file);

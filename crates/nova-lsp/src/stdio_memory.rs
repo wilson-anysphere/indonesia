@@ -6,11 +6,7 @@ pub(super) fn memory_status_payload(state: &mut ServerState) -> Result<serde_jso
     let report = state.memory.enforce();
     let mut top_components = state.memory.report_detailed().1;
     top_components.truncate(10);
-    serde_json::to_value(nova_lsp::MemoryStatusResponse {
-        report,
-        top_components,
-    })
-    .map_err(|err| err.to_string())
+    nova_lsp::memory_status_response_value(report, top_components).map_err(|err| err.to_string())
 }
 
 impl ServerState {
@@ -20,4 +16,3 @@ impl ServerState {
         self.memory.enforce();
     }
 }
-

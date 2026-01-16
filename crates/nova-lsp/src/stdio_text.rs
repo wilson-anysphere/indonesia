@@ -32,6 +32,9 @@ pub(super) fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)
         end += 1;
     }
 
-    if start == end { None } else { Some((start, end)) }
+    if start == end {
+        None
+    } else {
+        Some((start, end))
+    }
 }
-

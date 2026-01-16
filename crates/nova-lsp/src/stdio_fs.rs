@@ -66,8 +66,8 @@ pub(super) fn decompiled_store_from_env_best_effort() -> Arc<DecompiledDocumentS
         Err(err) => {
             // Best-effort fallback: if we can't resolve the normal cache directory
             // (e.g. missing HOME in a sandbox), fall back to a per-process temp dir.
-            let fallback_root = std::env::temp_dir()
-                .join(format!("nova-decompiled-docs-{}", std::process::id()));
+            let fallback_root =
+                std::env::temp_dir().join(format!("nova-decompiled-docs-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&fallback_root);
             tracing::warn!(
                 target = "nova.lsp",
@@ -149,4 +149,3 @@ impl FileSystem for LspFs {
         self.base.read_dir(path)
     }
 }
-

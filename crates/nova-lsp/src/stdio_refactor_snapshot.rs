@@ -72,4 +72,3 @@ impl ServerState {
         Ok(snapshot)
     }
 }
-

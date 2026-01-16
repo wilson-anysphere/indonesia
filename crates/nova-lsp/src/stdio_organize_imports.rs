@@ -1,15 +1,13 @@
-use crate::rpc_out::RpcOut;
+use crate::stdio_apply_edit::send_workspace_apply_edit;
 use crate::stdio_paths::load_document_text;
 use crate::ServerState;
 
-use lsp_server::RequestId;
 use lsp_types::{CodeAction, CodeActionKind, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit};
 use nova_refactor::{
     code_action_for_edit, organize_imports, workspace_edit_to_lsp, FileId as RefactorFileId,
     OrganizeImportsParams,
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Map, Value};
 
 pub(super) fn organize_imports_workspace_edit(
     state: &mut ServerState,
@@ -47,28 +45,17 @@ pub(super) fn organize_imports_code_action(
     ))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JavaOrganizeImportsRequestParams {
-    uri: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct JavaOrganizeImportsResponse {
-    applied: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    edit: Option<LspWorkspaceEdit>,
-}
-
 pub(super) fn handle_java_organize_imports(
     params: serde_json::Value,
     state: &mut ServerState,
     client: &crate::stdio_transport::LspClient,
 ) -> Result<serde_json::Value, (i32, String)> {
-    let params: JavaOrganizeImportsRequestParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-    let uri_string = params.uri;
+    let params: Map<String, Value> = crate::stdio_jsonrpc::decode_params_with_code(params)?;
+    let uri_string = params
+        .get("uri")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (-32602, "missing required `uri`".to_string()))?
+        .to_string();
     let uri = uri_string
         .parse::<LspUri>()
         .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
@@ -80,30 +67,18 @@ pub(super) fn handle_java_organize_imports(
     };
 
     let Some(edit) = organize_imports_workspace_edit(state, &uri, &source) else {
-        return serde_json::to_value(JavaOrganizeImportsResponse {
-            applied: false,
-            edit: None,
-        })
-        .map_err(|e| (-32603, e.to_string()));
+        let mut response = Map::new();
+        response.insert("applied".to_string(), Value::Bool(false));
+        return Ok(Value::Object(response));
     };
 
-    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-        .map_err(|e| (-32603, e.to_string()))?;
-    client
-        .send_request(
-            id,
-            "workspace/applyEdit",
-            json!({
-                "label": "Organize imports",
-                "edit": edit.clone(),
-            }),
-        )
-        .map_err(|e| (-32603, e.to_string()))?;
+    send_workspace_apply_edit(state, client, "Organize imports", &edit)?;
 
-    serde_json::to_value(JavaOrganizeImportsResponse {
-        applied: true,
-        edit: Some(edit),
-    })
-    .map_err(|e| (-32603, e.to_string()))
+    let mut response = Map::new();
+    response.insert("applied".to_string(), Value::Bool(true));
+    response.insert(
+        "edit".to_string(),
+        serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))?,
+    );
+    Ok(Value::Object(response))
 }
-

@@ -3,138 +3,119 @@ use std::path::{Path, PathBuf};
 
 use crate::{NovaLspError, Result};
 use nova_framework_micronaut::{analyze_sources_with_config, ConfigFile, JavaSource};
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautRequest {
-    pub project_root: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpanDto {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl From<nova_framework_micronaut::Span> for SpanDto {
-    fn from(span: nova_framework_micronaut::Span) -> Self {
-        Self {
-            start: span.start,
-            end: span.end,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautEndpointItem {
-    pub method: String,
-    pub path: String,
-    pub handler: MicronautHandlerLocation,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautHandlerLocation {
-    pub file: String,
-    pub span: SpanDto,
-    pub class_name: String,
-    pub method_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautEndpointsResponse {
-    pub schema_version: u32,
-    pub endpoints: Vec<MicronautEndpointItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautBeanItem {
-    pub id: String,
-    pub name: String,
-    pub ty: String,
-    pub kind: String,
-    pub qualifiers: Vec<String>,
-    pub file: String,
-    pub span: SpanDto,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MicronautBeansResponse {
-    pub schema_version: u32,
-    pub beans: Vec<MicronautBeanItem>,
+fn span_value(span: nova_framework_micronaut::Span) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("start".to_string(), Value::from(span.start as u64));
+        value.insert("end".to_string(), Value::from(span.end as u64));
+        value
+    })
 }
 
 pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: MicronautRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
-    let root = PathBuf::from(&req.project_root);
+    let project_root = super::decode_project_root(params)?;
+    if project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+    let root = PathBuf::from(&project_root);
 
     let analysis = analyze_root(&root)?;
     let endpoints = analysis
         .endpoints
         .into_iter()
-        .map(|e| MicronautEndpointItem {
-            method: e.method,
-            path: e.path,
-            handler: MicronautHandlerLocation {
-                file: e.handler.file,
-                span: e.handler.span.into(),
-                class_name: e.handler.class_name,
-                method_name: e.handler.method_name,
-            },
+        .map(|e| {
+            Value::Object({
+                let mut endpoint = serde_json::Map::new();
+                endpoint.insert("method".to_string(), Value::String(e.method));
+                endpoint.insert("path".to_string(), Value::String(e.path));
+                endpoint.insert(
+                    "handler".to_string(),
+                    Value::Object({
+                        let mut handler = serde_json::Map::new();
+                        handler.insert("file".to_string(), Value::String(e.handler.file));
+                        handler.insert("span".to_string(), span_value(e.handler.span));
+                        handler
+                            .insert("className".to_string(), Value::String(e.handler.class_name));
+                        handler.insert(
+                            "methodName".to_string(),
+                            Value::String(e.handler.method_name),
+                        );
+                        handler
+                    }),
+                );
+                endpoint
+            })
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    let resp = MicronautEndpointsResponse {
-        schema_version: SCHEMA_VERSION,
-        endpoints,
-    };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(SCHEMA_VERSION)),
+        );
+        resp.insert("endpoints".to_string(), Value::Array(endpoints));
+        resp
+    }))
 }
 
 pub fn handle_beans(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: MicronautRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
-    let root = PathBuf::from(&req.project_root);
+    let project_root = super::decode_project_root(params)?;
+    if project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+    let root = PathBuf::from(&project_root);
 
     let analysis = analyze_root(&root)?;
     let beans = analysis
         .beans
         .into_iter()
-        .map(|b| MicronautBeanItem {
-            id: b.id,
-            name: b.name,
-            ty: b.ty,
-            kind: match b.kind {
-                nova_framework_micronaut::BeanKind::Class => "class".into(),
-                nova_framework_micronaut::BeanKind::FactoryMethod => "factoryMethod".into(),
-            },
-            qualifiers: b
+        .map(|b| {
+            let kind = match b.kind {
+                nova_framework_micronaut::BeanKind::Class => "class",
+                nova_framework_micronaut::BeanKind::FactoryMethod => "factoryMethod",
+            };
+            let qualifiers = b
                 .qualifiers
                 .into_iter()
                 .map(|q| match q {
                     nova_framework_micronaut::Qualifier::Named(name) => format!("Named({name})"),
                     nova_framework_micronaut::Qualifier::Annotation(name) => name,
                 })
-                .collect(),
-            file: b.file,
-            span: b.span.into(),
-        })
-        .collect();
+                .map(Value::String)
+                .collect::<Vec<_>>();
 
-    let resp = MicronautBeansResponse {
-        schema_version: SCHEMA_VERSION,
-        beans,
-    };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+            Value::Object({
+                let mut bean = serde_json::Map::new();
+                bean.insert("id".to_string(), Value::String(b.id));
+                bean.insert("name".to_string(), Value::String(b.name));
+                bean.insert("ty".to_string(), Value::String(b.ty));
+                bean.insert("kind".to_string(), Value::String(kind.to_string()));
+                bean.insert("qualifiers".to_string(), Value::Array(qualifiers));
+                bean.insert("file".to_string(), Value::String(b.file));
+                bean.insert("span".to_string(), span_value(b.span));
+                bean
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(SCHEMA_VERSION)),
+        );
+        resp.insert("beans".to_string(), Value::Array(beans));
+        resp
+    }))
 }
 
 fn analyze_root(root: &Path) -> Result<nova_framework_micronaut::AnalysisResult> {

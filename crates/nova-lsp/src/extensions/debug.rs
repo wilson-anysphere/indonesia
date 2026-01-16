@@ -3,7 +3,7 @@ use nova_build::BuildManager;
 use nova_dap::hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine};
 use nova_dap::jdwp::{JdwpClient, TcpJdwpClient};
 use nova_ide::Project;
-use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -11,48 +11,54 @@ use std::time::Duration;
 
 use super::build::BuildStatusGuard;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DebugConfigurationsParams {
-    /// Workspace root on disk.
-    ///
-    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted as an
-    /// alias for consistency with other Nova extension endpoints.
-    #[serde(alias = "root")]
-    pub project_root: String,
-}
-
 pub fn handle_debug_configurations(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: DebugConfigurationsParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let project_root = super::decode_project_root(params)?;
+    if project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
 
-    let project = Project::load_from_dir(Path::new(&params.project_root))
+    let project = Project::load_from_dir(Path::new(&project_root))
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
     let configs = project.discover_debug_configurations();
     serde_json::to_value(configs).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HotSwapRequestParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
-    pub changed_files: Vec<String>,
-    #[serde(default)]
-    pub host: Option<String>,
-    pub port: u16,
-}
-
 pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: HotSwapRequestParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let obj = params
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let project_root = super::decode_project_root(Value::Object(obj.clone()))?;
+    if project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
 
-    let project_root = PathBuf::from(&params.project_root);
+    let port = obj
+        .get("port")
+        .and_then(Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok())
+        .ok_or_else(|| NovaLspError::InvalidParams("missing required `port`".to_string()))?;
+    let host = obj.get("host").and_then(Value::as_str);
+    let changed_files_raw = obj
+        .get("changedFiles")
+        .or_else(|| obj.get("changed_files"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            NovaLspError::InvalidParams("missing required `changedFiles`".to_string())
+        })?;
+
+    let project_root = PathBuf::from(&project_root);
     let project = nova_project::load_project_with_workspace_config(&project_root)
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-    let mut changed_files = Vec::new();
-    for file in params.changed_files {
+    let mut changed_files: Vec<PathBuf> = Vec::new();
+    for file in changed_files_raw {
+        let file = file.as_str().ok_or_else(|| {
+            NovaLspError::InvalidParams("`changedFiles` must be an array of strings".to_string())
+        })?;
         let path = PathBuf::from(file);
         changed_files.push(if path.is_absolute() {
             path
@@ -69,8 +75,8 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
     };
 
     let mut jdwp = TcpJdwpClient::new();
-    let host = params.host.as_deref().unwrap_or("127.0.0.1");
-    jdwp.connect(host, params.port)
+    let host = host.unwrap_or("127.0.0.1");
+    jdwp.connect(host, port)
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
     let mut engine = HotSwapEngine::new(build, jdwp);
@@ -245,10 +251,15 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("expected build tool invocation to start");
 
-        let status = super::super::build::handle_build_status(serde_json::json!({
-            "projectRoot": root.to_string_lossy(),
-        }))
-        .unwrap();
+        let params = serde_json::Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(root.to_string_lossy().to_string()),
+            );
+            obj
+        });
+        let status = super::super::build::handle_build_status(params).unwrap();
         assert_eq!(
             status.get("status").and_then(|v| v.as_str()),
             Some("building")
@@ -258,10 +269,15 @@ mod tests {
         let _ = release_tx.send(());
         handle.join().unwrap();
 
-        let status = super::super::build::handle_build_status(serde_json::json!({
-            "projectRoot": root.to_string_lossy(),
-        }))
-        .unwrap();
+        let params = serde_json::Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(root.to_string_lossy().to_string()),
+            );
+            obj
+        });
+        let status = super::super::build::handle_build_status(params).unwrap();
         assert_eq!(
             status.get("status").and_then(|v| v.as_str()),
             Some("failed")

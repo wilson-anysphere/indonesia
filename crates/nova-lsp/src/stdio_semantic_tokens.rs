@@ -13,8 +13,7 @@ pub(super) fn handle_semantic_tokens_full(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: lsp_types::SemanticTokensParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: lsp_types::SemanticTokensParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -34,8 +33,7 @@ pub(super) fn handle_semantic_tokens_full_delta(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: lsp_types::SemanticTokensDeltaParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: lsp_types::SemanticTokensDeltaParams = crate::stdio_jsonrpc::decode_params(params)?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -50,4 +48,3 @@ pub(super) fn handle_semantic_tokens_full_delta(
     };
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
-

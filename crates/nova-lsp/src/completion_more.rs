@@ -7,11 +7,11 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use lsp_types::CompletionList;
+use serde_json::{Map, Value};
 use tokio::sync::{oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::to_lsp::to_lsp_completion_item;
-use crate::{MoreCompletionsParams, MoreCompletionsResult};
 use nova_ai::MultiTokenCompletionContext;
 use nova_ide::CompletionEngine;
 
@@ -269,14 +269,11 @@ impl NovaCompletionService {
     }
 
     /// Handle `nova/completion/more`.
-    pub fn completion_more(&self, params: MoreCompletionsParams) -> MoreCompletionsResult {
-        let context_id: CompletionContextId = match params.context_id.parse() {
+    pub fn completion_more(&self, context_id: &str) -> (Vec<lsp_types::CompletionItem>, bool) {
+        let context_id: CompletionContextId = match context_id.parse() {
             Ok(id) => id,
             Err(_) => {
-                return MoreCompletionsResult {
-                    items: Vec::new(),
-                    is_incomplete: false,
-                };
+                return (Vec::new(), false);
             }
         };
 
@@ -285,10 +282,7 @@ impl NovaCompletionService {
         let session = match sessions.get_mut(&context_id) {
             Some(session) => session,
             None => {
-                return MoreCompletionsResult {
-                    items: Vec::new(),
-                    is_incomplete: false,
-                }
+                return (Vec::new(), false);
             }
         };
 
@@ -303,23 +297,14 @@ impl NovaCompletionService {
                     if let Some(uri) = document_uri.as_deref() {
                         inject_uri_into_completion_items(&mut items, uri);
                     }
-                    MoreCompletionsResult {
-                        items,
-                        is_incomplete: false,
-                    }
+                    (items, false)
                 }
-                Err(oneshot::error::TryRecvError::Empty) => MoreCompletionsResult {
-                    items: Vec::new(),
-                    is_incomplete: true,
-                },
+                Err(oneshot::error::TryRecvError::Empty) => (Vec::new(), true),
                 Err(oneshot::error::TryRecvError::Closed) => {
                     if let Some(session) = sessions.remove(&context_id) {
                         session.cancel();
                     }
-                    MoreCompletionsResult {
-                        items: Vec::new(),
-                        is_incomplete: false,
-                    }
+                    (Vec::new(), false)
                 }
             },
         }
@@ -340,12 +325,22 @@ impl NovaCompletionService {
 
 fn inject_uri_into_completion_items(items: &mut [lsp_types::CompletionItem], uri: &str) {
     for item in items {
-        let Some(data) = item.data.as_mut().filter(|data| data.is_object()) else {
+        let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) else {
             continue;
         };
-        if !data.get("nova").is_some_and(|nova| nova.is_object()) {
-            data["nova"] = serde_json::json!({});
-        }
-        data["nova"]["uri"] = serde_json::json!(uri);
+
+        let nova = match data.get_mut("nova") {
+            Some(value) if value.is_object() => value,
+            _ => {
+                data.insert("nova".to_string(), Value::Object(Map::new()));
+                data.get_mut("nova")
+                    .expect("nova key should exist after insert")
+            }
+        };
+
+        let nova = nova
+            .as_object_mut()
+            .expect("nova value should be an object");
+        nova.insert("uri".to_string(), Value::String(uri.to_string()));
     }
 }

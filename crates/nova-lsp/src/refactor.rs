@@ -33,61 +33,6 @@ pub const SAFE_DELETE_METHOD: &str = "nova/refactor/safeDelete";
 /// request methods.
 pub const SAFE_DELETE_COMMAND: &str = "nova.safeDelete";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MoveMethodParams {
-    pub from_class: String,
-    pub method_name: String,
-    pub to_class: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MoveStaticMemberParams {
-    pub from_class: String,
-    pub member_name: String,
-    pub to_class: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SafeDeleteParams {
-    pub target: SafeDeleteTargetParam,
-    pub mode: SafeDeleteMode,
-}
-
-/// Safe delete target passed over the wire.
-///
-/// Clients may pass either:
-/// - a raw `SymbolId` (serialized as a JSON number), or
-/// - a fully-tagged [`SafeDeleteTarget`] (for forward compatibility).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SafeDeleteTargetParam {
-    SymbolId(SymbolId),
-    Target(SafeDeleteTarget),
-}
-
-impl SafeDeleteTargetParam {
-    fn into_target(self) -> SafeDeleteTarget {
-        match self {
-            SafeDeleteTargetParam::SymbolId(id) => SafeDeleteTarget::Symbol(id),
-            SafeDeleteTargetParam::Target(target) => target,
-        }
-    }
-}
-
-/// Result payload for `nova/refactor/safeDelete`.
-///
-/// - In `safe` mode, the server returns a preview payload when usages exist.
-/// - Otherwise, the server returns a standard LSP `WorkspaceEdit`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SafeDeleteResult {
-    Preview(RefactorResponse),
-    WorkspaceEdit(WorkspaceEdit),
-}
-
 pub fn change_signature_schema() -> RootSchema {
     schema_for!(nova_refactor::ChangeSignature)
 }
@@ -105,14 +50,20 @@ pub fn change_signature_workspace_edit(
     workspace_edit_to_lsp(index, &edit).map_err(|err| err.to_string())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum RefactorResponse {
-    /// Custom extension used by clients to show a preview and request confirmation.
-    #[serde(rename = "nova/refactor/preview")]
-    Preview {
-        report: nova_refactor::SafeDeleteReport,
-    },
+fn safe_delete_preview_value(
+    report: nova_refactor::SafeDeleteReport,
+) -> crate::Result<serde_json::Value> {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String("nova/refactor/preview".to_string()),
+    );
+    obj.insert(
+        "report".to_string(),
+        serde_json::to_value(report)
+            .map_err(|err| crate::NovaLspError::Internal(err.to_string()))?,
+    );
+    Ok(serde_json::Value::Object(obj))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,20 +105,25 @@ pub fn safe_delete_code_action(
             ..CodeAction::default()
         })),
         SafeDeleteOutcome::Preview { report } => {
+            let safe_delete_args = {
+                let mut obj = serde_json::Map::new();
+                obj.insert("target".to_string(), serde_json::to_value(target_id).ok()?);
+                obj.insert(
+                    "mode".to_string(),
+                    serde_json::to_value(SafeDeleteMode::Safe).ok()?,
+                );
+                serde_json::Value::Object(obj)
+            };
             let command = lsp_types::Command {
                 title: format!("{title_base}…"),
                 command: SAFE_DELETE_COMMAND.to_string(),
-                arguments: Some(vec![serde_json::to_value(SafeDeleteParams {
-                    target: SafeDeleteTargetParam::SymbolId(target_id),
-                    mode: SafeDeleteMode::Safe,
-                })
-                .ok()?]),
+                arguments: Some(vec![safe_delete_args]),
             };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("{title_base}…"),
                 kind: Some(CodeActionKind::REFACTOR),
                 // Attach a command so the code action is actionable even without `codeAction/resolve`.
-                data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
+                data: Some(safe_delete_preview_value(report).ok()?),
                 command: Some(command),
                 ..CodeAction::default()
             }))
@@ -342,9 +298,13 @@ pub fn extract_variable_code_actions(
     // Offer the explicit-type extraction variant when the semantic refactor engine can infer a
     // concrete type for the extracted expression (and/or otherwise accepts the selection even when
     // the `var` variant does not).
-    if let Some(placeholder_name) =
-        probe_extract_variable_placeholder_name(&db, &file, expr_range, false, allow_object_explicit)
-    {
+    if let Some(placeholder_name) = probe_extract_variable_placeholder_name(
+        &db,
+        &file,
+        expr_range,
+        false,
+        allow_object_explicit,
+    ) {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable… (explicit type)".to_string(),
             kind: Some(CodeActionKind::REFACTOR_EXTRACT),
@@ -611,15 +571,17 @@ fn move_refactor_workspace(
 
 pub fn handle_move_method(
     open_files: &BTreeMap<String, String>,
-    params: MoveMethodParams,
+    from_class: String,
+    method_name: String,
+    to_class: String,
 ) -> crate::Result<WorkspaceEdit> {
     let (files, db, uri_by_id) = move_refactor_workspace(open_files);
     let edit = refactor_move_method(
         &files,
         RefactorMoveMethodParams {
-            from_class: params.from_class,
-            method_name: params.method_name,
-            to_class: params.to_class,
+            from_class,
+            method_name,
+            to_class,
         },
     )
     .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
@@ -635,15 +597,17 @@ pub fn handle_move_method(
 
 pub fn handle_move_static_member(
     open_files: &BTreeMap<String, String>,
-    params: MoveStaticMemberParams,
+    from_class: String,
+    member_name: String,
+    to_class: String,
 ) -> crate::Result<WorkspaceEdit> {
     let (files, db, uri_by_id) = move_refactor_workspace(open_files);
     let edit = refactor_move_static_member(
         &files,
         RefactorMoveStaticMemberParams {
-            from_class: params.from_class,
-            member_name: params.member_name,
-            to_class: params.to_class,
+            from_class,
+            member_name,
+            to_class,
         },
     )
     .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
@@ -657,23 +621,48 @@ pub fn handle_move_static_member(
     .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
 }
 
+pub fn decode_safe_delete_params(
+    params: serde_json::Value,
+) -> crate::Result<(SafeDeleteTarget, SafeDeleteMode)> {
+    let obj = params.as_object().ok_or_else(|| {
+        crate::NovaLspError::InvalidParams("params must be an object".to_string())
+    })?;
+
+    let target_value = obj.get("target").ok_or_else(|| {
+        crate::NovaLspError::InvalidParams("missing required `target`".to_string())
+    })?;
+    let target = if target_value.is_number() {
+        let id: SymbolId = serde_json::from_value(target_value.clone())
+            .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+        SafeDeleteTarget::Symbol(id)
+    } else {
+        serde_json::from_value(target_value.clone())
+            .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?
+    };
+
+    let mode_value = obj
+        .get("mode")
+        .ok_or_else(|| crate::NovaLspError::InvalidParams("missing required `mode`".to_string()))?;
+    let mode: SafeDeleteMode = serde_json::from_value(mode_value.clone())
+        .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+
+    Ok((target, mode))
+}
+
 pub fn handle_safe_delete(
     index: &Index,
-    params: SafeDeleteParams,
-) -> crate::Result<SafeDeleteResult> {
-    let outcome = safe_delete(index, params.target.into_target(), params.mode)
+    target: SafeDeleteTarget,
+    mode: SafeDeleteMode,
+) -> crate::Result<serde_json::Value> {
+    let outcome = safe_delete(index, target, mode)
         .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
 
     match outcome {
-        SafeDeleteOutcome::Preview { report } => {
-            Ok(SafeDeleteResult::Preview(RefactorResponse::Preview {
-                report,
-            }))
-        }
+        SafeDeleteOutcome::Preview { report } => safe_delete_preview_value(report),
         SafeDeleteOutcome::Applied { edit } => {
             let edit = workspace_edit_to_lsp(index, &edit)
                 .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
-            Ok(SafeDeleteResult::WorkspaceEdit(edit))
+            serde_json::to_value(edit).map_err(|err| crate::NovaLspError::Internal(err.to_string()))
         }
     }
 }
@@ -750,7 +739,7 @@ public final class Point {
 
     #[test]
     fn safe_delete_request_returns_preview_then_workspace_edit() {
-        let mut files = std::collections::BTreeMap::new();
+        let mut files = BTreeMap::new();
         let uri: Uri = "file:///A.java".parse().unwrap();
         let source = r#"
 class A {
@@ -769,30 +758,30 @@ class A {
 
         let preview = handle_safe_delete(
             &index,
-            SafeDeleteParams {
-                target: SafeDeleteTargetParam::SymbolId(target),
-                mode: SafeDeleteMode::Safe,
-            },
+            SafeDeleteTarget::Symbol(target),
+            SafeDeleteMode::Safe,
         )
         .expect("safe delete preview");
-        let report = match preview {
-            SafeDeleteResult::Preview(RefactorResponse::Preview { report }) => report,
-            other => panic!("expected preview result, got {other:?}"),
-        };
+        assert_eq!(
+            preview.get("type").and_then(|v| v.as_str()),
+            Some("nova/refactor/preview")
+        );
+        let report: nova_refactor::SafeDeleteReport = serde_json::from_value(
+            preview
+                .get("report")
+                .cloned()
+                .expect("safe delete preview should include `report`"),
+        )
+        .expect("decode safe delete report");
         assert_eq!(report.usages.len(), 1);
 
         let applied = handle_safe_delete(
             &index,
-            SafeDeleteParams {
-                target: SafeDeleteTargetParam::SymbolId(target),
-                mode: SafeDeleteMode::DeleteAnyway,
-            },
+            SafeDeleteTarget::Symbol(target),
+            SafeDeleteMode::DeleteAnyway,
         )
         .expect("safe delete apply");
-        let edit = match applied {
-            SafeDeleteResult::WorkspaceEdit(edit) => edit,
-            other => panic!("expected workspace edit result, got {other:?}"),
-        };
+        let edit: WorkspaceEdit = serde_json::from_value(applied).expect("decode workspace edit");
 
         let Some(changes) = edit.changes else {
             panic!("expected changes map");
@@ -827,7 +816,7 @@ class A {
 
     #[test]
     fn safe_delete_request_applies_workspace_edit_when_unused() {
-        let mut files = std::collections::BTreeMap::new();
+        let mut files = BTreeMap::new();
         let uri: Uri = "file:///A.java".parse().unwrap();
         let source = r#"
 class A {
@@ -844,16 +833,11 @@ class A {
 
         let result = handle_safe_delete(
             &index,
-            SafeDeleteParams {
-                target: SafeDeleteTargetParam::Target(SafeDeleteTarget::Symbol(target)),
-                mode: SafeDeleteMode::Safe,
-            },
+            SafeDeleteTarget::Symbol(target),
+            SafeDeleteMode::Safe,
         )
         .expect("safe delete apply");
-        let edit = match result {
-            SafeDeleteResult::WorkspaceEdit(edit) => edit,
-            other => panic!("expected workspace edit result, got {other:?}"),
-        };
+        let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
 
         let Some(changes) = edit.changes else {
             panic!("expected changes map");
@@ -938,31 +922,31 @@ class B {
 
         let preview = handle_safe_delete(
             &index,
-            SafeDeleteParams {
-                target: SafeDeleteTargetParam::SymbolId(target),
-                mode: SafeDeleteMode::Safe,
-            },
+            SafeDeleteTarget::Symbol(target),
+            SafeDeleteMode::Safe,
         )
         .expect("safe delete preview");
-        let report = match preview {
-            SafeDeleteResult::Preview(RefactorResponse::Preview { report }) => report,
-            other => panic!("expected preview result, got {other:?}"),
-        };
+        assert_eq!(
+            preview.get("type").and_then(|v| v.as_str()),
+            Some("nova/refactor/preview")
+        );
+        let report: nova_refactor::SafeDeleteReport = serde_json::from_value(
+            preview
+                .get("report")
+                .cloned()
+                .expect("safe delete preview should include `report`"),
+        )
+        .expect("decode safe delete report");
         assert_eq!(report.usages.len(), 1);
         assert_eq!(report.usages[0].file, uri_b.to_string());
 
         let applied = handle_safe_delete(
             &index,
-            SafeDeleteParams {
-                target: SafeDeleteTargetParam::SymbolId(target),
-                mode: SafeDeleteMode::DeleteAnyway,
-            },
+            SafeDeleteTarget::Symbol(target),
+            SafeDeleteMode::DeleteAnyway,
         )
         .expect("safe delete apply");
-        let edit = match applied {
-            SafeDeleteResult::WorkspaceEdit(edit) => edit,
-            other => panic!("expected workspace edit result, got {other:?}"),
-        };
+        let edit: WorkspaceEdit = serde_json::from_value(applied).expect("decode workspace edit");
 
         let changes = edit.changes.expect("workspace edit changes present");
         let updated_a = apply_lsp_edits(source_a, changes.get(&uri_a).expect("edits for A"));
@@ -1061,15 +1045,8 @@ class B {
             .map(|(uri, text)| (uri.to_string(), text.clone()))
             .collect();
 
-        let edit = handle_move_static_member(
-            &open_files,
-            MoveStaticMemberParams {
-                from_class: "A".into(),
-                member_name: "add".into(),
-                to_class: "B".into(),
-            },
-        )
-        .expect("move static member workspace edit");
+        let edit = handle_move_static_member(&open_files, "A".into(), "add".into(), "B".into())
+            .expect("move static member workspace edit");
 
         let updated = apply_workspace_edit(&files, &edit);
         assert_eq!(updated.get(&uri_a).map(String::as_str), Some(after_a));
@@ -1104,15 +1081,8 @@ class B {
             .map(|(uri, text)| (uri.to_string(), text.clone()))
             .collect();
 
-        let edit = handle_move_method(
-            &open_files,
-            MoveMethodParams {
-                from_class: "A".into(),
-                method_name: "compute".into(),
-                to_class: "B".into(),
-            },
-        )
-        .expect("move method workspace edit");
+        let edit = handle_move_method(&open_files, "A".into(), "compute".into(), "B".into())
+            .expect("move method workspace edit");
 
         let updated = apply_workspace_edit(&files, &edit);
         assert_eq!(updated.get(&uri_a).map(String::as_str), Some(after_a));

@@ -138,4 +138,3 @@ fn cancel_id_from_request_id(id: &RequestId) -> lsp_types::NumberOrString {
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_else(|| lsp_types::NumberOrString::String("<invalid-request-id>".to_string()))
 }
-

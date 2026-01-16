@@ -57,4 +57,3 @@ impl WasmHostDb for SingleFileDb {
         Database::file_path(self, file)
     }
 }
-

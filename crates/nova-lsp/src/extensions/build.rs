@@ -10,7 +10,8 @@ use nova_build_bazel::{
 };
 use nova_cache::{CacheConfig, CacheDir};
 use nova_project::{load_project_with_options, load_workspace_model_with_options, LoadOptions};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::Value;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -208,36 +209,13 @@ fn reset_bazel_build_orchestrator(workspace_root: &Path) {
     }
 }
 
-/// Parameters accepted by Nova's build-related extension requests.
-///
-/// This is intentionally loose; clients can omit `buildTool` to rely on
-/// auto-detection.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaProjectParams {
-    /// Workspace root on disk.
-    ///
-    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted for
-    /// backwards compatibility with early experiments.
-    #[serde(alias = "root")]
-    pub project_root: String,
-
-    /// Explicit build tool selection.
-    ///
-    /// Clients should prefer `buildTool`. `kind` is accepted as an alias.
-    #[serde(default, alias = "kind")]
-    pub build_tool: Option<BuildTool>,
-
-    /// For Maven projects, a path relative to `projectRoot` identifying the module.
-    #[serde(default)]
-    pub module: Option<String>,
-    /// For Gradle projects, a Gradle project path (e.g. `:app`).
-    #[serde(default, alias = "project_path")]
-    pub project_path: Option<String>,
-
-    /// For Bazel workspaces, the target (Bazel label) to build.
-    #[serde(default)]
-    pub target: Option<String>,
+#[derive(Debug, Clone)]
+struct ProjectParams {
+    project_root: String,
+    build_tool: Option<BuildTool>,
+    module: Option<String>,
+    project_path: Option<String>,
+    target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -248,25 +226,9 @@ pub enum BuildTool {
     Gradle,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaClasspathResponse {
-    pub classpath: Vec<String>,
-    #[serde(default)]
-    pub module_path: Vec<String>,
-    #[serde(default)]
-    pub source_roots: Vec<String>,
-    #[serde(default)]
-    pub generated_source_roots: Vec<String>,
-    pub language_level: LanguageLevel,
-    pub output_dirs: OutputDirs,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LanguageLevel {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LanguageLevel {
     pub major: u16,
-    #[serde(default)]
     pub preview: bool,
 }
 
@@ -280,84 +242,145 @@ impl Default for LanguageLevel {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputDirs {
-    #[serde(default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct OutputDirs {
     pub main: Vec<String>,
-    #[serde(default)]
     pub test: Vec<String>,
 }
 
 pub const BUILD_PROJECT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaBuildProjectResponse {
-    pub schema_version: u32,
-    pub build_id: u64,
-    pub status: BuildTaskState,
-    #[serde(default)]
-    pub diagnostics: Vec<NovaDiagnostic>,
+fn string_array_value(values: Vec<String>) -> Value {
+    Value::Array(values.into_iter().map(Value::String).collect())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaPosition {
-    pub line: u32,
-    pub character: u32,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaRange {
-    pub start: NovaPosition,
-    pub end: NovaPosition,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum NovaDiagnosticSeverity {
-    Error,
-    Warning,
-    Information,
-    Hint,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovaDiagnostic {
-    pub file: String,
-    pub range: NovaRange,
-    pub severity: NovaDiagnosticSeverity,
-    pub message: String,
-    pub source: Option<String>,
-}
-
-impl From<nova_core::BuildDiagnostic> for NovaDiagnostic {
-    fn from(value: nova_core::BuildDiagnostic) -> Self {
-        Self {
-            file: value.file.to_string_lossy().to_string(),
-            range: NovaRange {
-                start: NovaPosition {
-                    line: value.range.start.line,
-                    character: value.range.start.character,
-                },
-                end: NovaPosition {
-                    line: value.range.end.line,
-                    character: value.range.end.character,
-                },
-            },
-            severity: match value.severity {
-                nova_core::BuildDiagnosticSeverity::Error => NovaDiagnosticSeverity::Error,
-                nova_core::BuildDiagnosticSeverity::Warning => NovaDiagnosticSeverity::Warning,
-                nova_core::BuildDiagnosticSeverity::Information => NovaDiagnosticSeverity::Information,
-                nova_core::BuildDiagnosticSeverity::Hint => NovaDiagnosticSeverity::Hint,
-            },
-            message: value.message,
-            source: value.source,
-        }
+fn opt_string_value(value: Option<String>) -> Value {
+    match value {
+        Some(value) => Value::String(value),
+        None => Value::Null,
     }
+}
+
+fn opt_u64_value(value: Option<u64>) -> Value {
+    match value {
+        Some(value) => Value::from(value),
+        None => Value::Null,
+    }
+}
+
+fn build_task_state_string(state: BuildTaskState) -> &'static str {
+    match state {
+        BuildTaskState::Idle => "idle",
+        BuildTaskState::Queued => "queued",
+        BuildTaskState::Running => "running",
+        BuildTaskState::Success => "success",
+        BuildTaskState::Failure => "failure",
+        BuildTaskState::Cancelled => "cancelled",
+    }
+}
+
+fn build_diagnostic_severity_string(severity: nova_core::BuildDiagnosticSeverity) -> &'static str {
+    match severity {
+        nova_core::BuildDiagnosticSeverity::Error => "error",
+        nova_core::BuildDiagnosticSeverity::Warning => "warning",
+        nova_core::BuildDiagnosticSeverity::Information => "information",
+        nova_core::BuildDiagnosticSeverity::Hint => "hint",
+    }
+}
+
+pub(crate) fn build_diagnostic_value(value: nova_core::BuildDiagnostic) -> Value {
+    Value::Object({
+        let mut diag = serde_json::Map::new();
+        diag.insert(
+            "file".to_string(),
+            Value::String(value.file.to_string_lossy().to_string()),
+        );
+        diag.insert(
+            "range".to_string(),
+            Value::Object({
+                let mut range = serde_json::Map::new();
+                range.insert(
+                    "start".to_string(),
+                    Value::Object({
+                        let mut start = serde_json::Map::new();
+                        start.insert("line".to_string(), Value::from(value.range.start.line));
+                        start.insert(
+                            "character".to_string(),
+                            Value::from(value.range.start.character),
+                        );
+                        start
+                    }),
+                );
+                range.insert(
+                    "end".to_string(),
+                    Value::Object({
+                        let mut end = serde_json::Map::new();
+                        end.insert("line".to_string(), Value::from(value.range.end.line));
+                        end.insert(
+                            "character".to_string(),
+                            Value::from(value.range.end.character),
+                        );
+                        end
+                    }),
+                );
+                range
+            }),
+        );
+        diag.insert(
+            "severity".to_string(),
+            Value::String(build_diagnostic_severity_string(value.severity).to_string()),
+        );
+        diag.insert("message".to_string(), Value::String(value.message));
+        diag.insert("source".to_string(), opt_string_value(value.source));
+        diag
+    })
+}
+
+fn language_level_value(level: LanguageLevel) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("major".to_string(), Value::from(level.major as u64));
+        value.insert("preview".to_string(), Value::Bool(level.preview));
+        value
+    })
+}
+
+fn output_dirs_value(dirs: OutputDirs) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("main".to_string(), string_array_value(dirs.main));
+        value.insert("test".to_string(), string_array_value(dirs.test));
+        value
+    })
+}
+
+fn build_project_response_value(
+    build_id: u64,
+    status: BuildTaskState,
+    diagnostics: Vec<nova_core::BuildDiagnostic>,
+) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(BUILD_PROJECT_SCHEMA_VERSION)),
+        );
+        value.insert("buildId".to_string(), Value::from(build_id));
+        value.insert(
+            "status".to_string(),
+            Value::String(build_task_state_string(status).to_string()),
+        );
+        value.insert(
+            "diagnostics".to_string(),
+            Value::Array(
+                diagnostics
+                    .into_iter()
+                    .map(build_diagnostic_value)
+                    .collect(),
+            ),
+        );
+        value
+    })
 }
 
 pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -395,19 +418,13 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
         });
 
         let status = orchestrator.status();
-        let diagnostics = orchestrator.diagnostics();
+        let diagnostics = orchestrator.diagnostics().diagnostics;
 
-        let resp = NovaBuildProjectResponse {
-            schema_version: BUILD_PROJECT_SCHEMA_VERSION,
+        return Ok(build_project_response_value(
             build_id,
-            status: status.state,
-            diagnostics: diagnostics
-                .diagnostics
-                .into_iter()
-                .map(NovaDiagnostic::from)
-                .collect(),
-        };
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+            status.state,
+            diagnostics,
+        ));
     }
 
     let kind = match detect_kind(&project_root, params.build_tool) {
@@ -439,18 +456,12 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
     let orchestrator = build_orchestrator_for_root(&project_root);
     let build_id = orchestrator.enqueue(request);
     let status = orchestrator.status();
-    let diagnostics = orchestrator.diagnostics();
-    let resp = NovaBuildProjectResponse {
-        schema_version: BUILD_PROJECT_SCHEMA_VERSION,
+    let diagnostics = orchestrator.diagnostics().diagnostics;
+    Ok(build_project_response_value(
         build_id,
-        status: status.state,
-        diagnostics: diagnostics
-            .diagnostics
-            .into_iter()
-            .map(NovaDiagnostic::from)
-            .collect(),
-    };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+        status.state,
+        diagnostics,
+    ))
 }
 
 pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -537,15 +548,22 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
     status_guard.finish_from_result(&classpath_result);
     let (classpath, module_path, source_roots, language_level, output_dirs) = classpath_result?;
 
-    let resp = NovaClasspathResponse {
-        classpath,
-        module_path,
-        source_roots,
-        generated_source_roots: metadata.generated_source_roots,
-        language_level,
-        output_dirs,
-    };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("classpath".to_string(), string_array_value(classpath));
+        resp.insert("modulePath".to_string(), string_array_value(module_path));
+        resp.insert("sourceRoots".to_string(), string_array_value(source_roots));
+        resp.insert(
+            "generatedSourceRoots".to_string(),
+            string_array_value(metadata.generated_source_roots),
+        );
+        resp.insert(
+            "languageLevel".to_string(),
+            language_level_value(language_level),
+        );
+        resp.insert("outputDirs".to_string(), output_dirs_value(output_dirs));
+        resp
+    }))
 }
 
 pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -579,11 +597,49 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
     Ok(serde_json::Value::Null)
 }
 
-fn parse_params(value: serde_json::Value) -> Result<NovaProjectParams> {
-    serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
+fn parse_params(params: serde_json::Value) -> Result<ProjectParams> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let project_root = super::get_str(obj, &["projectRoot", "project_root", "root"])
+        .ok_or_else(|| NovaLspError::InvalidParams("missing required `projectRoot`".to_string()))?
+        .to_string();
+
+    let build_tool = match super::get_str(obj, &["buildTool", "build_tool", "kind"]) {
+        None => None,
+        Some(tool) => {
+            let tool = tool.trim();
+            if tool.is_empty() {
+                None
+            } else {
+                Some(match tool.to_ascii_lowercase().as_str() {
+                    "auto" => BuildTool::Auto,
+                    "maven" => BuildTool::Maven,
+                    "gradle" => BuildTool::Gradle,
+                    _ => {
+                        return Err(NovaLspError::InvalidParams(format!(
+                            "invalid build tool `{tool}`"
+                        )));
+                    }
+                })
+            }
+        }
+    };
+
+    let module = super::get_str(obj, &["module"]).map(str::to_string);
+    let project_path = super::get_str(obj, &["projectPath", "project_path"]).map(str::to_string);
+    let target = super::get_str(obj, &["target"]).map(str::to_string);
+
+    Ok(ProjectParams {
+        project_root,
+        build_tool,
+        module,
+        project_path,
+        target,
+    })
 }
 
-fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Classpath> {
+fn run_classpath(build: &BuildManager, params: &ProjectParams) -> Result<Classpath> {
     let root = PathBuf::from(&params.project_root);
     match detect_kind(&root, params.build_tool)? {
         BuildKind::Maven => build
@@ -742,7 +798,7 @@ struct BuildMetadata {
     output_dirs: OutputDirs,
 }
 
-fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
+fn load_build_metadata(params: &ProjectParams) -> BuildMetadata {
     let root = PathBuf::from(&params.project_root);
     let kind = match detect_kind(&root, params.build_tool) {
         Ok(kind) => kind,
@@ -851,51 +907,39 @@ fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
 // Target-aware build metadata (Bazel/BSP)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TargetClasspathParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
-    #[serde(default)]
-    pub target: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileClasspathParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
-    pub uri: Option<String>,
-    #[serde(default)]
-    pub run_target: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TargetClasspathResult {
-    pub project_root: String,
-    #[serde(default)]
-    pub target: Option<String>,
-    pub classpath: Vec<String>,
-    #[serde(default)]
-    pub module_path: Vec<String>,
-    #[serde(default)]
-    pub source_roots: Vec<String>,
-    #[serde(default)]
-    pub source: Option<String>,
-    #[serde(default)]
-    pub target_version: Option<String>,
-    #[serde(default)]
-    pub release: Option<String>,
-    #[serde(default)]
-    pub output_dir: Option<String>,
-    #[serde(default)]
-    pub enable_preview: bool,
+fn target_classpath_value(
+    project_root: String,
+    target: Option<String>,
+    classpath: Vec<String>,
+    module_path: Vec<String>,
+    source_roots: Vec<String>,
+    source: Option<String>,
+    target_version: Option<String>,
+    release: Option<String>,
+    output_dir: Option<String>,
+    enable_preview: bool,
+) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("projectRoot".to_string(), Value::String(project_root));
+        value.insert("target".to_string(), opt_string_value(target));
+        value.insert("classpath".to_string(), string_array_value(classpath));
+        value.insert("modulePath".to_string(), string_array_value(module_path));
+        value.insert("sourceRoots".to_string(), string_array_value(source_roots));
+        value.insert("source".to_string(), opt_string_value(source));
+        value.insert(
+            "targetVersion".to_string(),
+            opt_string_value(target_version),
+        );
+        value.insert("release".to_string(), opt_string_value(release));
+        value.insert("outputDir".to_string(), opt_string_value(output_dir));
+        value.insert("enablePreview".to_string(), Value::Bool(enable_preview));
+        value
+    })
 }
 
 pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: TargetClasspathParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req = parse_params(params)?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -923,19 +967,18 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 .target_compile_info(&target)
                 .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-            let result = TargetClasspathResult {
-                project_root: workspace_root.to_string_lossy().to_string(),
-                target: Some(target),
-                classpath: info.classpath,
-                module_path: info.module_path,
-                source_roots: info.source_roots,
-                source: info.source,
-                target_version: info.target,
-                release: info.release,
-                output_dir: info.output_dir,
-                enable_preview: info.preview,
-            };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            Ok(target_classpath_value(
+                workspace_root.to_string_lossy().to_string(),
+                Some(target),
+                info.classpath,
+                info.module_path,
+                info.source_roots,
+                info.source,
+                info.target,
+                info.release,
+                info.output_dir,
+                info.preview,
+            ))
         })();
         status_guard.finish_from_result(&value_result);
         value_result
@@ -1131,9 +1174,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 )),
             }?;
 
-            let result = TargetClasspathResult {
-                project_root: project_root.to_string_lossy().to_string(),
-                target: normalized_target,
+            Ok(target_classpath_value(
+                project_root.to_string_lossy().to_string(),
+                normalized_target,
                 classpath,
                 module_path,
                 source_roots,
@@ -1142,8 +1185,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 release,
                 output_dir,
                 enable_preview,
-            };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            ))
         })();
 
         status_guard.finish_from_result(&value_result);
@@ -1152,8 +1194,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
 }
 
 pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: FileClasspathParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req = parse_params(params.clone())?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -1161,11 +1202,20 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
         ));
     }
 
-    let Some(uri) = req.uri.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let Some(uri) = obj.get("uri").and_then(serde_json::Value::as_str) else {
         return Err(NovaLspError::InvalidParams(
             "`uri` must be provided".to_string(),
         ));
     };
+    let uri = uri.trim();
+    if uri.is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`uri` must be provided".to_string(),
+        ));
+    }
 
     let requested_root = PathBuf::from(&req.project_root);
     let requested_root = requested_root
@@ -1189,12 +1239,10 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
         let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
         let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
 
-        let info = match req
-            .run_target
-            .as_deref()
+        let run_target = super::get_str(obj, &["runTarget", "run_target"])
             .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
+            .filter(|t| !t.is_empty());
+        let info = match run_target {
             Some(run_target) => workspace
                 .compile_info_for_file_in_run_target_closure(&path, run_target)
                 .map_err(|err| NovaLspError::Internal(err.to_string()))?,
@@ -1207,19 +1255,18 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
             return Ok(serde_json::Value::Null);
         };
 
-        let result = TargetClasspathResult {
-            project_root: workspace_root.to_string_lossy().to_string(),
-            target: None,
-            classpath: info.classpath,
-            module_path: info.module_path,
-            source_roots: info.source_roots,
-            source: info.source,
-            target_version: info.target,
-            release: info.release,
-            output_dir: info.output_dir,
-            enable_preview: info.preview,
-        };
-        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        Ok(target_classpath_value(
+            workspace_root.to_string_lossy().to_string(),
+            None,
+            info.classpath,
+            info.module_path,
+            info.source_roots,
+            info.source,
+            info.target,
+            info.release,
+            info.output_dir,
+            info.preview,
+        ))
     })();
     status_guard.finish_from_result(&value_result);
     value_result
@@ -1229,82 +1276,67 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
 // Unified project model (Maven/Gradle/Bazel)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectModelParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
+fn java_language_level_value(
+    source: Option<String>,
+    target: Option<String>,
+    release: Option<String>,
+) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("source".to_string(), opt_string_value(source));
+        value.insert("target".to_string(), opt_string_value(target));
+        value.insert("release".to_string(), opt_string_value(release));
+        value
+    })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct JavaLanguageLevel {
-    #[serde(default)]
-    pub source: Option<String>,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(default)]
-    pub release: Option<String>,
+fn opt_java_language_level_value(
+    level: Option<(Option<String>, Option<String>, Option<String>)>,
+) -> Value {
+    match level {
+        Some((source, target, release)) => java_language_level_value(source, target, release),
+        None => Value::Null,
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectModelResult {
-    pub project_root: String,
-    pub units: Vec<ProjectModelUnit>,
+fn project_model_unit_value(
+    kind: &'static str,
+    unit_key: &'static str,
+    unit_value: String,
+    compile_classpath: Vec<String>,
+    module_path: Vec<String>,
+    source_roots: Vec<String>,
+    language_level: Option<(Option<String>, Option<String>, Option<String>)>,
+) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("kind".to_string(), Value::String(kind.to_string()));
+        value.insert(unit_key.to_string(), Value::String(unit_value));
+        value.insert(
+            "compileClasspath".to_string(),
+            string_array_value(compile_classpath),
+        );
+        value.insert("modulePath".to_string(), string_array_value(module_path));
+        value.insert("sourceRoots".to_string(), string_array_value(source_roots));
+        value.insert(
+            "languageLevel".to_string(),
+            opt_java_language_level_value(language_level),
+        );
+        value
+    })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum ProjectModelUnit {
-    Maven {
-        /// Maven module directory relative to the workspace root (e.g. `.`, `module-a`).
-        module: String,
-        compile_classpath: Vec<String>,
-        #[serde(default)]
-        module_path: Vec<String>,
-        #[serde(default)]
-        source_roots: Vec<String>,
-        #[serde(default)]
-        language_level: Option<JavaLanguageLevel>,
-    },
-    Gradle {
-        /// Gradle project path (e.g. `:`, `:app`, `:lib:core`).
-        project_path: String,
-        compile_classpath: Vec<String>,
-        #[serde(default)]
-        module_path: Vec<String>,
-        #[serde(default)]
-        source_roots: Vec<String>,
-        #[serde(default)]
-        language_level: Option<JavaLanguageLevel>,
-    },
-    Bazel {
-        /// Bazel label (e.g. `//java/com/example:lib`).
-        target: String,
-        compile_classpath: Vec<String>,
-        #[serde(default)]
-        module_path: Vec<String>,
-        #[serde(default)]
-        source_roots: Vec<String>,
-        #[serde(default)]
-        language_level: Option<JavaLanguageLevel>,
-    },
-    Simple {
-        module: String,
-        compile_classpath: Vec<String>,
-        #[serde(default)]
-        module_path: Vec<String>,
-        #[serde(default)]
-        source_roots: Vec<String>,
-        #[serde(default)]
-        language_level: Option<JavaLanguageLevel>,
-    },
+fn project_model_result_value(project_root: String, units: Vec<Value>) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("projectRoot".to_string(), Value::String(project_root));
+        value.insert("units".to_string(), Value::Array(units));
+        value
+    })
 }
 
 pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: ProjectModelParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let req = parse_params(params)?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -1332,24 +1364,21 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 let info = workspace
                     .target_compile_info(&target)
                     .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-                units.push(ProjectModelUnit::Bazel {
+                units.push(project_model_unit_value(
+                    "bazel",
+                    "target",
                     target,
-                    compile_classpath: info.classpath,
-                    module_path: info.module_path,
-                    source_roots: info.source_roots,
-                    language_level: Some(JavaLanguageLevel {
-                        source: info.source,
-                        target: info.target,
-                        release: None,
-                    }),
-                });
+                    info.classpath,
+                    info.module_path,
+                    info.source_roots,
+                    Some((info.source, info.target, None)),
+                ));
             }
 
-            let result = ProjectModelResult {
-                project_root: workspace_root.to_string_lossy().to_string(),
+            Ok(project_model_result_value(
+                workspace_root.to_string_lossy().to_string(),
                 units,
-            };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            ))
         })();
 
         status_guard.finish_from_result(&value_result);
@@ -1420,10 +1449,12 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             source_roots.sort();
                             source_roots.dedup();
 
-                            Ok(ProjectModelUnit::Maven {
-                                module: rel,
-                                compile_classpath: paths_to_strings(compile_classpath.iter()),
-                                module_path: if cfg_module_path.is_empty() {
+                            Ok(project_model_unit_value(
+                                "maven",
+                                "module",
+                                rel,
+                                paths_to_strings(compile_classpath.iter()),
+                                if cfg_module_path.is_empty() {
                                     config
                                         .module_path
                                         .iter()
@@ -1433,14 +1464,12 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                     paths_to_strings(cfg_module_path.iter())
                                 },
                                 source_roots,
-                                language_level: Some(JavaLanguageLevel {
-                                    source: source
-                                        .or_else(|| Some(config.java.source.0.to_string())),
-                                    target: target
-                                        .or_else(|| Some(config.java.target.0.to_string())),
+                                Some((
+                                    source.or_else(|| Some(config.java.source.0.to_string())),
+                                    target.or_else(|| Some(config.java.target.0.to_string())),
                                     release,
-                                }),
-                            })
+                                )),
+                            ))
                         })
                         .collect::<Result<Vec<_>>>()?,
                     nova_project::BuildSystem::Gradle => {
@@ -1497,8 +1526,10 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
                             let composite_root_project_path =
                                 composite_gradle_build_root_project_path(&project_path);
-                            let is_buildsrc = composite_root_project_path
-                                .is_some_and(|root_project_path| root_project_path == ":__buildSrc");
+                            let is_buildsrc =
+                                composite_root_project_path.is_some_and(|root_project_path| {
+                                    root_project_path == ":__buildSrc"
+                                });
 
                             // `nova-build` already knows how to invoke Gradle's special `buildSrc`
                             // build by passing `--project-dir buildSrc` when the project path is
@@ -1569,10 +1600,12 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             source_roots.sort();
                             source_roots.dedup();
 
-                            units.push(ProjectModelUnit::Gradle {
+                            units.push(project_model_unit_value(
+                                "gradle",
+                                "projectPath",
                                 project_path,
-                                compile_classpath: paths_to_strings(compile_classpath.iter()),
-                                module_path: if cfg_module_path.is_empty() {
+                                paths_to_strings(compile_classpath.iter()),
+                                if cfg_module_path.is_empty() {
                                     config
                                         .module_path
                                         .iter()
@@ -1582,14 +1615,12 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                     paths_to_strings(cfg_module_path.iter())
                                 },
                                 source_roots,
-                                language_level: Some(JavaLanguageLevel {
-                                    source: source
-                                        .or_else(|| Some(config.java.source.0.to_string())),
-                                    target: target
-                                        .or_else(|| Some(config.java.target.0.to_string())),
+                                Some((
+                                    source.or_else(|| Some(config.java.source.0.to_string())),
+                                    target.or_else(|| Some(config.java.target.0.to_string())),
                                     release,
-                                }),
-                            });
+                                )),
+                            ));
                         }
 
                         units
@@ -1599,11 +1630,10 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     }
                 };
 
-                let result = ProjectModelResult {
-                    project_root: project_root.to_string_lossy().to_string(),
+                Ok(project_model_result_value(
+                    project_root.to_string_lossy().to_string(),
                     units,
-                };
-                serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+                ))
             })();
 
             status_guard.finish_from_result(&value_result);
@@ -1615,31 +1645,30 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 .iter()
                 .map(|root| root.path.to_string_lossy().to_string())
                 .collect();
-            let units = vec![ProjectModelUnit::Simple {
-                module: ".".to_string(),
-                compile_classpath: config
-                    .classpath
-                    .iter()
-                    .map(|entry| entry.path.to_string_lossy().to_string())
-                    .collect(),
-                module_path: config
-                    .module_path
-                    .iter()
-                    .map(|entry| entry.path.to_string_lossy().to_string())
-                    .collect(),
-                source_roots,
-                language_level: Some(JavaLanguageLevel {
-                    source: Some(config.java.source.0.to_string()),
-                    target: Some(config.java.target.0.to_string()),
-                    release: None,
-                }),
-            }];
-
-            let result = ProjectModelResult {
-                project_root: project_root.to_string_lossy().to_string(),
-                units,
-            };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            Ok(project_model_result_value(
+                project_root.to_string_lossy().to_string(),
+                vec![project_model_unit_value(
+                    "simple",
+                    "module",
+                    ".".to_string(),
+                    config
+                        .classpath
+                        .iter()
+                        .map(|entry| entry.path.to_string_lossy().to_string())
+                        .collect(),
+                    config
+                        .module_path
+                        .iter()
+                        .map(|entry| entry.path.to_string_lossy().to_string())
+                        .collect(),
+                    source_roots,
+                    Some((
+                        Some(config.java.source.0.to_string()),
+                        Some(config.java.target.0.to_string()),
+                        None,
+                    )),
+                )],
+            ))
         }
         nova_project::BuildSystem::Bazel => Err(NovaLspError::InvalidParams(
             "Bazel workspace was not detected at the requested root".to_string(),
@@ -1900,43 +1929,33 @@ impl BazelBuildExecutor for BuildStatusBazelBuildExecutor {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildStatusParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
-}
-
 pub const BUILD_STATUS_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildStatus {
     Idle,
     Building,
     Failed,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildStatusResult {
-    pub schema_version: u32,
-    pub status: BuildStatus,
-    #[serde(default)]
-    pub last_error: Option<String>,
+fn build_status_string(status: BuildStatus) -> &'static str {
+    match status {
+        BuildStatus::Idle => "idle",
+        BuildStatus::Building => "building",
+        BuildStatus::Failed => "failed",
+    }
 }
 
 pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: BuildStatusParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let project_root = super::decode_project_root(params)?;
 
-    if req.project_root.trim().is_empty() {
+    if project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
             "`projectRoot` must not be empty".to_string(),
         ));
     }
 
-    let project_root = PathBuf::from(&req.project_root);
+    let project_root = PathBuf::from(&project_root);
     let key = canonicalize_project_root(&project_root);
     let orchestrator_snapshot = build_orchestrator_if_present(&key).map(|o| o.status());
     let orchestrator_state = orchestrator_snapshot.as_ref().map(|s| s.state);
@@ -1990,53 +2009,72 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
         }
     }
 
-    serde_json::to_value(BuildStatusResult {
-        schema_version: BUILD_STATUS_SCHEMA_VERSION,
-        status,
-        last_error,
-    })
-    .map_err(|err| NovaLspError::Internal(err.to_string()))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildDiagnosticsParams {
-    #[serde(alias = "root")]
-    pub project_root: String,
-    #[serde(default)]
-    pub target: Option<String>,
+    Ok(Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(BUILD_STATUS_SCHEMA_VERSION)),
+        );
+        value.insert(
+            "status".to_string(),
+            Value::String(build_status_string(status).to_string()),
+        );
+        value.insert("lastError".to_string(), opt_string_value(last_error));
+        value
+    }))
 }
 
 pub const BUILD_DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildDiagnosticsResult {
-    pub schema_version: u32,
-    #[serde(default)]
-    pub target: Option<String>,
-    pub status: BuildTaskState,
-    #[serde(default)]
-    pub build_id: Option<u64>,
-    #[serde(default)]
-    pub diagnostics: Vec<NovaDiagnostic>,
-    #[serde(default)]
-    pub source: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
+fn build_diagnostics_result_value(
+    target: Option<String>,
+    status: BuildTaskState,
+    build_id: Option<u64>,
+    diagnostics: Vec<nova_core::BuildDiagnostic>,
+    source: Option<String>,
+    error: Option<String>,
+) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "schemaVersion".to_string(),
+            Value::from(u64::from(BUILD_DIAGNOSTICS_SCHEMA_VERSION)),
+        );
+        value.insert("target".to_string(), opt_string_value(target));
+        value.insert(
+            "status".to_string(),
+            Value::String(build_task_state_string(status).to_string()),
+        );
+        value.insert("buildId".to_string(), opt_u64_value(build_id));
+        value.insert(
+            "diagnostics".to_string(),
+            Value::Array(
+                diagnostics
+                    .into_iter()
+                    .map(build_diagnostic_value)
+                    .collect(),
+            ),
+        );
+        value.insert("source".to_string(), opt_string_value(source));
+        value.insert("error".to_string(), opt_string_value(error));
+        value
+    })
 }
 
 pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json::Value> {
-    let req: BuildDiagnosticsParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let obj = params
+        .as_object()
+        .ok_or_else(|| NovaLspError::InvalidParams("params must be an object".to_string()))?;
+    let project_root = super::decode_project_root(serde_json::Value::Object(obj.clone()))?;
+    let target = super::get_str(obj, &["target"]).map(|s| s.to_string());
 
-    if req.project_root.trim().is_empty() {
+    if project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
             "`projectRoot` must not be empty".to_string(),
         ));
     }
 
-    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = PathBuf::from(&project_root);
     let requested_root = requested_root
         .canonicalize()
         .unwrap_or_else(|_| requested_root.clone());
@@ -2049,16 +2087,14 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
         error,
     }) = snapshot
     {
-        let resp = BuildDiagnosticsResult {
-            schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
-            target: req.target.clone(),
-            status: state,
+        return Ok(build_diagnostics_result_value(
+            target.clone(),
+            state,
             build_id,
-            diagnostics: diagnostics.into_iter().map(NovaDiagnostic::from).collect(),
-            source: None,
+            diagnostics,
+            None,
             error,
-        };
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+        ));
     }
 
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
@@ -2071,58 +2107,124 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
                 targets,
                 diagnostics,
                 error,
-            }) => BuildDiagnosticsResult {
-                schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
-                target: req.target.clone().or_else(|| targets.first().cloned()),
-                status: state,
+            }) => build_diagnostics_result_value(
+                target.clone().or_else(|| targets.first().cloned()),
+                state,
                 build_id,
-                diagnostics: diagnostics.into_iter().map(NovaDiagnostic::from).collect(),
-                source: Some("bsp".to_string()),
+                diagnostics,
+                Some("bsp".to_string()),
                 error,
-            },
-            None => BuildDiagnosticsResult {
-                schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
-                target: req.target.clone(),
-                status: BuildTaskState::Idle,
-                build_id: None,
-                diagnostics: Vec::new(),
-                source: None,
-                error: None,
-            },
+            ),
+            None => build_diagnostics_result_value(
+                target.clone(),
+                BuildTaskState::Idle,
+                None,
+                Vec::new(),
+                None,
+                None,
+            ),
         };
 
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+        return Ok(resp);
     }
-    let resp = BuildDiagnosticsResult {
-        schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
-        target: req.target,
-        status: BuildTaskState::Idle,
-        build_id: None,
-        diagnostics: Vec::new(),
-        source: None,
-        error: None,
-    };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    Ok(build_diagnostics_result_value(
+        target,
+        BuildTaskState::Idle,
+        None,
+        Vec::new(),
+        None,
+        None,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nova_test_utils::EnvVarGuard;
+    use serde_json::Value;
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::{fs, os::unix::fs::PermissionsExt};
     use tempfile::TempDir;
 
+    fn project_root_params(project_root: impl Into<String>) -> Value {
+        Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(project_root.into()),
+            );
+            obj
+        })
+    }
+
+    fn file_classpath_params(project_root: impl Into<String>, uri: impl Into<String>) -> Value {
+        Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "projectRoot".to_string(),
+                serde_json::Value::String(project_root.into()),
+            );
+            obj.insert("uri".to_string(), serde_json::Value::String(uri.into()));
+            obj
+        })
+    }
+
+    fn gradle_compile_config_payload(compile_classpath: Option<Vec<String>>) -> Value {
+        Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "compileClasspath".to_string(),
+                compile_classpath
+                    .map(|v| serde_json::Value::Array(v.into_iter().map(Value::String).collect()))
+                    .unwrap_or(Value::Null),
+            );
+            obj
+        })
+    }
+
+    fn gradle_batch_project_payload(
+        path: impl Into<String>,
+        project_dir: impl Into<String>,
+        config: Value,
+    ) -> Value {
+        Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert("path".to_string(), serde_json::Value::String(path.into()));
+            obj.insert(
+                "projectDir".to_string(),
+                serde_json::Value::String(project_dir.into()),
+            );
+            obj.insert("config".to_string(), config);
+            obj
+        })
+    }
+
+    fn gradle_batch_payload(projects: Vec<Value>) -> Value {
+        Value::Object({
+            let mut obj = serde_json::Map::new();
+            obj.insert("projects".to_string(), serde_json::Value::Array(projects));
+            obj
+        })
+    }
+
     #[test]
     fn params_accepts_project_root_aliases() {
-        let params: NovaProjectParams = serde_json::from_value(serde_json::json!({
-            "root": "/tmp/project",
-            "kind": "maven",
-            "project_path": ":app",
-        }))
-        .unwrap();
+        let mut params_obj = serde_json::Map::new();
+        params_obj.insert(
+            "root".to_string(),
+            serde_json::Value::String("/tmp/project".to_string()),
+        );
+        params_obj.insert(
+            "kind".to_string(),
+            serde_json::Value::String("maven".to_string()),
+        );
+        params_obj.insert(
+            "project_path".to_string(),
+            serde_json::Value::String(":app".to_string()),
+        );
+        let params = parse_params(serde_json::Value::Object(params_obj)).expect("params");
 
         assert_eq!(params.project_root, "/tmp/project");
         assert_eq!(params.build_tool, Some(BuildTool::Maven));
@@ -2179,7 +2281,7 @@ mod tests {
         std::fs::create_dir_all(&src_root).unwrap();
         std::fs::write(src_root.join("Hello.java"), "class Hello {}").unwrap();
 
-        let params = NovaProjectParams {
+        let params = ProjectParams {
             project_root: root.to_string_lossy().to_string(),
             build_tool: Some(BuildTool::Gradle),
             module: None,
@@ -2213,7 +2315,7 @@ mod tests {
         std::fs::create_dir_all(&src_root).unwrap();
         std::fs::write(src_root.join("Hello.java"), "class Hello {}").unwrap();
 
-        let params = NovaProjectParams {
+        let params = ProjectParams {
             project_root: workspace_root.to_string_lossy().to_string(),
             build_tool: Some(BuildTool::Gradle),
             module: None,
@@ -2280,16 +2382,28 @@ mod tests {
 
     #[test]
     fn classpath_response_is_backwards_compatible() {
-        let resp = NovaClasspathResponse {
-            classpath: vec!["/tmp/classes".to_string()],
-            module_path: Vec::new(),
-            source_roots: Vec::new(),
-            generated_source_roots: Vec::new(),
-            language_level: LanguageLevel::default(),
-            output_dirs: OutputDirs::default(),
-        };
-
-        let value = serde_json::to_value(resp).unwrap();
+        let value = Value::Object({
+            let mut resp = serde_json::Map::new();
+            resp.insert(
+                "classpath".to_string(),
+                string_array_value(vec!["/tmp/classes".to_string()]),
+            );
+            resp.insert("modulePath".to_string(), string_array_value(Vec::new()));
+            resp.insert("sourceRoots".to_string(), string_array_value(Vec::new()));
+            resp.insert(
+                "generatedSourceRoots".to_string(),
+                string_array_value(Vec::new()),
+            );
+            resp.insert(
+                "languageLevel".to_string(),
+                language_level_value(LanguageLevel::default()),
+            );
+            resp.insert(
+                "outputDirs".to_string(),
+                output_dirs_value(OutputDirs::default()),
+            );
+            resp
+        });
         assert_eq!(
             value
                 .get("classpath")
@@ -2437,10 +2551,8 @@ mod tests {
             "expected orchestrator to fail"
         );
 
-        let resp = handle_build_status(serde_json::json!({
-            "projectRoot": root.to_string_lossy(),
-        }))
-        .unwrap();
+        let resp =
+            handle_build_status(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("failed"));
         assert!(
@@ -2457,9 +2569,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
 
-        let err = handle_target_classpath(serde_json::json!({
-            "projectRoot": tmp.path().to_string_lossy(),
-        }))
+        let err = handle_target_classpath(project_root_params(
+            tmp.path().to_string_lossy().to_string(),
+        ))
         .unwrap_err();
 
         let msg = err.to_string();
@@ -2471,9 +2583,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
 
-        let err = handle_file_classpath(serde_json::json!({
-            "projectRoot": tmp.path().to_string_lossy(),
-        }))
+        let err = handle_file_classpath(project_root_params(
+            tmp.path().to_string_lossy().to_string(),
+        ))
         .unwrap_err();
 
         let msg = err.to_string();
@@ -2485,10 +2597,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
 
-        let err = handle_file_classpath(serde_json::json!({
-            "projectRoot": tmp.path().to_string_lossy(),
-            "uri": "http://example.com/Hello.java",
-        }))
+        let err = handle_file_classpath(file_classpath_params(
+            tmp.path().to_string_lossy().to_string(),
+            "http://example.com/Hello.java".to_string(),
+        ))
         .unwrap_err();
 
         let msg = err.to_string();
@@ -2500,10 +2612,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
 
-        let err = handle_file_classpath(serde_json::json!({
-            "projectRoot": tmp.path().to_string_lossy(),
-            "uri": "not a uri",
-        }))
+        let err = handle_file_classpath(file_classpath_params(
+            tmp.path().to_string_lossy().to_string(),
+            "not a uri".to_string(),
+        ))
         .unwrap_err();
 
         let msg = err.to_string();
@@ -2512,58 +2624,53 @@ mod tests {
 
     #[test]
     fn project_model_params_accepts_project_root_aliases() {
-        let params: ProjectModelParams = serde_json::from_value(serde_json::json!({
-            "root": "/tmp/project",
-        }))
-        .unwrap();
-
+        let mut params_obj = serde_json::Map::new();
+        params_obj.insert(
+            "root".to_string(),
+            serde_json::Value::String("/tmp/project".to_string()),
+        );
+        let params = parse_params(serde_json::Value::Object(params_obj)).expect("params");
         assert_eq!(params.project_root, "/tmp/project");
     }
 
     #[test]
     fn project_model_result_roundtrips_through_json() {
-        let result = ProjectModelResult {
-            project_root: "/workspace".into(),
-            units: vec![
-                ProjectModelUnit::Maven {
-                    module: ".".into(),
-                    compile_classpath: vec!["/workspace/target/classes".into()],
-                    module_path: vec![],
-                    source_roots: vec!["/workspace/src/main/java".into()],
-                    language_level: Some(JavaLanguageLevel {
-                        source: Some("17".into()),
-                        target: Some("17".into()),
-                        release: None,
-                    }),
-                },
-                ProjectModelUnit::Gradle {
-                    project_path: ":app".into(),
-                    compile_classpath: vec!["/workspace/app/build/classes/java/main".into()],
-                    module_path: vec![],
-                    source_roots: vec!["/workspace/app/src/main/java".into()],
-                    language_level: Some(JavaLanguageLevel {
-                        source: Some("17".into()),
-                        target: Some("17".into()),
-                        release: Some("17".into()),
-                    }),
-                },
-                ProjectModelUnit::Bazel {
-                    target: "//java/com/example:lib".into(),
-                    compile_classpath: vec!["/workspace/bazel-out/lib.jar".into()],
-                    module_path: vec!["/workspace/bazel-out/module.jar".into()],
-                    source_roots: vec!["/workspace/java/com/example".into()],
-                    language_level: Some(JavaLanguageLevel {
-                        source: Some("17".into()),
-                        target: Some("17".into()),
-                        release: None,
-                    }),
-                },
+        let value = project_model_result_value(
+            "/workspace".into(),
+            vec![
+                project_model_unit_value(
+                    "maven",
+                    "module",
+                    ".".into(),
+                    vec!["/workspace/target/classes".into()],
+                    Vec::new(),
+                    vec!["/workspace/src/main/java".into()],
+                    Some((Some("17".into()), Some("17".into()), None)),
+                ),
+                project_model_unit_value(
+                    "gradle",
+                    "projectPath",
+                    ":app".into(),
+                    vec!["/workspace/app/build/classes/java/main".into()],
+                    Vec::new(),
+                    vec!["/workspace/app/src/main/java".into()],
+                    Some((Some("17".into()), Some("17".into()), Some("17".into()))),
+                ),
+                project_model_unit_value(
+                    "bazel",
+                    "target",
+                    "//java/com/example:lib".into(),
+                    vec!["/workspace/bazel-out/lib.jar".into()],
+                    vec!["/workspace/bazel-out/module.jar".into()],
+                    vec!["/workspace/java/com/example".into()],
+                    Some((Some("17".into()), Some("17".into()), None)),
+                ),
             ],
-        };
+        );
 
-        let value = serde_json::to_value(&result).unwrap();
-        let decoded: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded, result);
+        let encoded = serde_json::to_vec(&value).unwrap();
+        let decoded: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, value);
     }
 
     fn env_lock() -> &'static Mutex<()> {
@@ -2632,16 +2739,20 @@ echo \"null\"\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let resp = handle_target_classpath(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let resp = handle_target_classpath(project_root_params(root.to_string_lossy().to_string()))
+            .unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: TargetClasspathResult = serde_json::from_value(resp).unwrap();
+        let classpath = resp
+            .get("classpath")
+            .and_then(|v| v.as_array())
+            .expect("classpath array");
         assert!(
-            result.classpath.iter().any(|p| p == &fake_jar_str),
+            classpath
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|p| p == fake_jar_str),
             "classpath should include entry from mocked `mvn`"
         );
     }
@@ -2673,16 +2784,20 @@ echo \"null\"\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let resp = handle_target_classpath(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let resp = handle_target_classpath(project_root_params(root.to_string_lossy().to_string()))
+            .unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: TargetClasspathResult = serde_json::from_value(resp).unwrap();
+        let classpath = resp
+            .get("classpath")
+            .and_then(|v| v.as_array())
+            .expect("classpath array");
         assert!(
-            result.classpath.iter().any(|p| p == &fake_jar_str),
+            classpath
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|p| p == fake_jar_str),
             "classpath should include entry from mocked `gradle`"
         );
     }
@@ -2716,21 +2831,39 @@ echo \"null\"\n",
         fs::write(&app_dep, "").unwrap();
         fs::write(&lib_dep, "").unwrap();
 
-        let batch_payload = serde_json::json!({
-            "projects": [
-                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
-                { "path": ":app", "projectDir": root.join("app").to_string_lossy(), "config": { "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()] } },
-                { "path": ":lib", "projectDir": root.join("lib").to_string_lossy(), "config": { "compileClasspath": [shared.to_string_lossy(), lib_dep.to_string_lossy()] } }
-            ]
-        });
+        let batch_payload = gradle_batch_payload(vec![
+            gradle_batch_project_payload(
+                ":".to_string(),
+                root.to_string_lossy().to_string(),
+                gradle_compile_config_payload(None),
+            ),
+            gradle_batch_project_payload(
+                ":app".to_string(),
+                root.join("app").to_string_lossy().to_string(),
+                gradle_compile_config_payload(Some(vec![
+                    shared.to_string_lossy().to_string(),
+                    app_dep.to_string_lossy().to_string(),
+                ])),
+            ),
+            gradle_batch_project_payload(
+                ":lib".to_string(),
+                root.join("lib").to_string_lossy().to_string(),
+                gradle_compile_config_payload(Some(vec![
+                    shared.to_string_lossy().to_string(),
+                    lib_dep.to_string_lossy().to_string(),
+                ])),
+            ),
+        ]);
 
-        let root_payload = serde_json::json!({ "compileClasspath": serde_json::Value::Null });
-        let app_payload = serde_json::json!({
-            "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()]
-        });
-        let lib_payload = serde_json::json!({
-            "compileClasspath": [shared.to_string_lossy(), lib_dep.to_string_lossy()]
-        });
+        let root_payload = gradle_compile_config_payload(None);
+        let app_payload = gradle_compile_config_payload(Some(vec![
+            shared.to_string_lossy().to_string(),
+            app_dep.to_string_lossy().to_string(),
+        ]));
+        let lib_payload = gradle_compile_config_payload(Some(vec![
+            shared.to_string_lossy().to_string(),
+            lib_dep.to_string_lossy().to_string(),
+        ]));
 
         write_executable(
             &bin_dir.join("gradle"),
@@ -2789,16 +2922,19 @@ esac\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let value = handle_project_model(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let value =
+            handle_project_model(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(result.project_root, root.to_string_lossy().to_string());
-        assert_eq!(result.units.len(), 2);
+        assert_eq!(
+            value.get("projectRoot").and_then(|v| v.as_str()),
+            Some(root.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            value.get("units").and_then(|v| v.as_array()).map(Vec::len),
+            Some(2)
+        );
 
         let count = fs::read_to_string(&counter)
             .unwrap_or_default()
@@ -2848,13 +2984,25 @@ project(':lib').projectDir = file('modules/library')\n",
         fs::write(&app_dep, "").unwrap();
         fs::write(&lib_dep, "").unwrap();
 
-        let batch_payload = serde_json::json!({
-            "projects": [
-                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
-                { "path": ":app", "projectDir": root.join("modules/application").to_string_lossy(), "config": { "compileClasspath": [app_dep.to_string_lossy()] } },
-                { "path": ":lib", "projectDir": root.join("modules/library").to_string_lossy(), "config": { "compileClasspath": [lib_dep.to_string_lossy()] } }
-            ]
-        });
+        let batch_payload = gradle_batch_payload(vec![
+            gradle_batch_project_payload(
+                ":".to_string(),
+                root.to_string_lossy().to_string(),
+                gradle_compile_config_payload(None),
+            ),
+            gradle_batch_project_payload(
+                ":app".to_string(),
+                root.join("modules/application")
+                    .to_string_lossy()
+                    .to_string(),
+                gradle_compile_config_payload(Some(vec![app_dep.to_string_lossy().to_string()])),
+            ),
+            gradle_batch_project_payload(
+                ":lib".to_string(),
+                root.join("modules/library").to_string_lossy().to_string(),
+                gradle_compile_config_payload(Some(vec![lib_dep.to_string_lossy().to_string()])),
+            ),
+        ]);
 
         write_executable(
             &bin_dir.join("gradle"),
@@ -2897,23 +3045,28 @@ esac\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let value = handle_project_model(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let value =
+            handle_project_model(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(result.project_root, root.to_string_lossy().to_string());
-        assert_eq!(result.units.len(), 2);
+        assert_eq!(
+            value.get("projectRoot").and_then(|v| v.as_str()),
+            Some(root.to_string_lossy().as_ref())
+        );
+        let units = value
+            .get("units")
+            .and_then(|v| v.as_array())
+            .expect("units array");
+        assert_eq!(units.len(), 2);
 
-        let paths: Vec<_> = result
-            .units
+        let paths: Vec<_> = units
             .iter()
-            .map(|unit| match unit {
-                ProjectModelUnit::Gradle { project_path, .. } => project_path.as_str(),
-                other => panic!("expected Gradle unit, got {other:?}"),
+            .map(|unit| {
+                assert_eq!(unit.get("kind").and_then(|v| v.as_str()), Some("gradle"));
+                unit.get("projectPath")
+                    .and_then(|v| v.as_str())
+                    .expect("projectPath")
             })
             .collect();
         assert_eq!(paths, vec![":app", ":lib"]);
@@ -2955,15 +3108,20 @@ esac\n",
         fs::write(&app_dep, "").unwrap();
         fs::write(&buildsrc_dep, "").unwrap();
 
-        let batch_payload = serde_json::json!({
-            "projects": [
-                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
-                { "path": ":app", "projectDir": root.join("app").to_string_lossy(), "config": { "compileClasspath": [app_dep.to_string_lossy()] } },
-            ]
-        });
-        let buildsrc_payload = serde_json::json!({
-            "compileClasspath": [buildsrc_dep.to_string_lossy()]
-        });
+        let batch_payload = gradle_batch_payload(vec![
+            gradle_batch_project_payload(
+                ":".to_string(),
+                root.to_string_lossy().to_string(),
+                gradle_compile_config_payload(None),
+            ),
+            gradle_batch_project_payload(
+                ":app".to_string(),
+                root.join("app").to_string_lossy().to_string(),
+                gradle_compile_config_payload(Some(vec![app_dep.to_string_lossy().to_string()])),
+            ),
+        ]);
+        let buildsrc_payload =
+            gradle_compile_config_payload(Some(vec![buildsrc_dep.to_string_lossy().to_string()]));
 
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
@@ -3050,29 +3208,37 @@ fi\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let value = handle_project_model(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let value =
+            handle_project_model(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(result.project_root, root.to_string_lossy().to_string());
-        assert_eq!(result.units.len(), 2);
+        assert_eq!(
+            value.get("projectRoot").and_then(|v| v.as_str()),
+            Some(root.to_string_lossy().as_ref())
+        );
+        let units = value
+            .get("units")
+            .and_then(|v| v.as_array())
+            .expect("units array");
+        assert_eq!(units.len(), 2);
 
         let mut units_by_path: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for unit in result.units {
-            match unit {
-                ProjectModelUnit::Gradle {
-                    project_path,
-                    compile_classpath,
-                    ..
-                } => {
-                    units_by_path.insert(project_path, compile_classpath);
-                }
-                other => panic!("expected Gradle unit, got {other:?}"),
-            }
+        for unit in units {
+            assert_eq!(unit.get("kind").and_then(|v| v.as_str()), Some("gradle"));
+            let path = unit
+                .get("projectPath")
+                .and_then(|v| v.as_str())
+                .expect("projectPath");
+            let compile_classpath = unit
+                .get("compileClasspath")
+                .and_then(|v| v.as_array())
+                .expect("compileClasspath array")
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            units_by_path.insert(path.to_string(), compile_classpath);
         }
 
         let app_dep_str = app_dep.to_string_lossy().to_string();
@@ -3159,31 +3325,37 @@ esac\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let value = handle_project_model(serde_json::json!({
-            "projectRoot": root.to_string_lossy().to_string(),
-        }))
-        .unwrap();
+        let value =
+            handle_project_model(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
-        assert_eq!(result.project_root, root.to_string_lossy().to_string());
-        assert_eq!(result.units.len(), 1);
-
-        match &result.units[0] {
-            ProjectModelUnit::Gradle {
-                project_path,
-                compile_classpath,
-                ..
-            } => {
-                assert_eq!(project_path, ":app");
-                assert!(
-                    compile_classpath.iter().any(|p| p == &fake_jar_str),
-                    "expected compile classpath to include jar from mocked `gradle`: {compile_classpath:?}"
-                );
-            }
-            other => panic!("expected Gradle unit, got {other:?}"),
-        }
+        assert_eq!(
+            value.get("projectRoot").and_then(|v| v.as_str()),
+            Some(root.to_string_lossy().as_ref())
+        );
+        let units = value
+            .get("units")
+            .and_then(|v| v.as_array())
+            .expect("units array");
+        assert_eq!(units.len(), 1);
+        let unit = &units[0];
+        assert_eq!(unit.get("kind").and_then(|v| v.as_str()), Some("gradle"));
+        assert_eq!(
+            unit.get("projectPath").and_then(|v| v.as_str()),
+            Some(":app")
+        );
+        let compile_classpath = unit
+            .get("compileClasspath")
+            .and_then(|v| v.as_array())
+            .expect("compileClasspath array");
+        assert!(
+            compile_classpath
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|p| p == fake_jar_str),
+            "expected compile classpath to include jar from mocked `gradle`: {compile_classpath:?}"
+        );
     }
 
     #[test]
@@ -3247,34 +3419,40 @@ esac\n",
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
 
-        let value = handle_project_model(serde_json::json!({
-            "projectRoot": workspace_root.to_string_lossy().to_string(),
-        }))
+        let value = handle_project_model(project_root_params(
+            workspace_root.to_string_lossy().to_string(),
+        ))
         .unwrap();
 
         std::env::set_var("PATH", original_path);
 
-        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
         assert_eq!(
-            result.project_root,
-            workspace_root.to_string_lossy().to_string()
+            value.get("projectRoot").and_then(|v| v.as_str()),
+            Some(workspace_root.to_string_lossy().as_ref())
         );
-        assert_eq!(result.units.len(), 1);
+        let units = value
+            .get("units")
+            .and_then(|v| v.as_array())
+            .expect("units array");
+        assert_eq!(units.len(), 1);
 
-        match &result.units[0] {
-            ProjectModelUnit::Gradle {
-                project_path,
-                compile_classpath,
-                ..
-            } => {
-                assert_eq!(project_path, ":application");
-                assert!(
-                    compile_classpath.iter().any(|p| p == &fake_jar_str),
-                    "expected compile classpath to include jar from mocked `gradle`: {compile_classpath:?}"
-                );
-            }
-            other => panic!("expected Gradle unit, got {other:?}"),
-        }
+        let unit = &units[0];
+        assert_eq!(unit.get("kind").and_then(|v| v.as_str()), Some("gradle"));
+        assert_eq!(
+            unit.get("projectPath").and_then(|v| v.as_str()),
+            Some(":application")
+        );
+        let compile_classpath = unit
+            .get("compileClasspath")
+            .and_then(|v| v.as_array())
+            .expect("compileClasspath array");
+        assert!(
+            compile_classpath
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|p| p == fake_jar_str),
+            "expected compile classpath to include jar from mocked `gradle`: {compile_classpath:?}"
+        );
     }
 
     #[test]
@@ -3290,9 +3468,9 @@ esac\n",
         )
         .unwrap();
 
-        let response = handle_target_classpath(serde_json::json!({
-            "projectRoot": tmp.path().to_string_lossy(),
-        }))
+        let response = handle_target_classpath(project_root_params(
+            tmp.path().to_string_lossy().to_string(),
+        ))
         .unwrap();
 
         let roots = response
