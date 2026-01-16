@@ -2437,7 +2437,6 @@ fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
 fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     static RE_PARENS: OnceLock<Regex> = OnceLock::new();
     static RE_NO_PARENS: OnceLock<Regex> = OnceLock::new();
-    let string_ranges = gradle_string_literal_ranges(contents);
 
     let re_parens = RE_PARENS.get_or_init(|| {
         // Keep this list conservative: only configurations that are commonly used for
@@ -2458,22 +2457,31 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     });
 
     let mut deps = Vec::new();
-    for re in [re_parens, re_no_parens] {
-        for caps in re.captures_iter(contents) {
-            let Some(m0) = caps.get(0) else {
-                continue;
-            };
-            if is_index_inside_string_ranges(m0.start(), &string_ranges) {
-                continue;
+    let mut candidates = extract_named_brace_blocks_from_stripped(contents, "dependencies");
+    if candidates.is_empty() {
+        candidates.push(contents.to_string());
+    }
+
+    for candidate in candidates {
+        let candidate = scrub_gradle_dependency_constraint_blocks(&candidate);
+        let string_ranges = gradle_string_literal_ranges(&candidate);
+        for re in [re_parens, re_no_parens] {
+            for caps in re.captures_iter(&candidate) {
+                let Some(m0) = caps.get(0) else {
+                    continue;
+                };
+                if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+                    continue;
+                }
+                let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
+                let project_path = project_path.trim();
+                if project_path.is_empty() {
+                    continue;
+                }
+                deps.push(normalize_project_path(project_path));
             }
-            let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
-                continue;
-            };
-            let project_path = project_path.trim();
-            if project_path.is_empty() {
-                continue;
-            }
-            deps.push(normalize_project_path(project_path));
         }
     }
     deps
@@ -4518,6 +4526,25 @@ def ignored = /implementation project(':ignored')/
 def ignored2 = $/implementation(project(path = ":ignored2"))/$
 
 dependencies {
+  implementation project(":real")
+}
+"#;
+
+        let stripped = strip_gradle_comments(build_script);
+        let deps = parse_gradle_project_dependencies_from_text(&stripped);
+        let got: BTreeSet<_> = deps.into_iter().collect();
+
+        let expected: BTreeSet<String> = [":real"].into_iter().map(str::to_string).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parses_gradle_project_dependencies_ignores_constraints_blocks() {
+        let build_script = r#"
+dependencies {
+  constraints {
+    implementation project(":ignored")
+  }
   implementation project(":real")
 }
 "#;
