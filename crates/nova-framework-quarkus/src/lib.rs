@@ -175,13 +175,10 @@ impl QuarkusAnalyzer {
         let mut file_to_source_idx = HashMap::with_capacity(java_files.len());
         let mut sources: Vec<Cow<'_, str>> = Vec::with_capacity(java_files.len());
         for file in java_files.iter().copied() {
-            let text = db
-                .file_text(file)
-                .map(Cow::Borrowed)
-                .or_else(|| {
-                    let path = db.file_path(file)?;
-                    std::fs::read_to_string(path).ok().map(Cow::Owned)
-                });
+            let text = db.file_text(file).map(Cow::Borrowed).or_else(|| {
+                let path = db.file_path(file)?;
+                std::fs::read_to_string(path).ok().map(Cow::Owned)
+            });
             let Some(text) = text else {
                 continue;
             };

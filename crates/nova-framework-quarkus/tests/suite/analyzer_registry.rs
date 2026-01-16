@@ -1011,7 +1011,12 @@ fn registry_cdi_diagnostics_use_disk_sources_when_java_file_text_is_unavailable(
             nova_framework::Database::all_files(&self.inner, project)
         }
 
-        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        fn has_dependency(
+            &self,
+            project: nova_core::ProjectId,
+            group: &str,
+            artifact: &str,
+        ) -> bool {
             nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
         }
 
@@ -1019,7 +1024,11 @@ fn registry_cdi_diagnostics_use_disk_sources_when_java_file_text_is_unavailable(
             nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
         }
 
-        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+        fn has_class_on_classpath_prefix(
+            &self,
+            project: nova_core::ProjectId,
+            prefix: &str,
+        ) -> bool {
             nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
         }
     }

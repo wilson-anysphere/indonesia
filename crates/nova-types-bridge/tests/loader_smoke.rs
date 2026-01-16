@@ -81,7 +81,10 @@ fn does_not_overwrite_non_placeholder_minimal_jdk_types() {
         let ensured_math = loader
             .ensure_class("java.lang.Math")
             .expect("math should still be present");
-        assert_eq!(ensured_math, math_id, "expected ensure_class to reuse Math ClassId");
+        assert_eq!(
+            ensured_math, math_id,
+            "expected ensure_class to reuse Math ClassId"
+        );
         let ensured_collections = loader
             .ensure_class("java.util.Collections")
             .expect("collections should still be present");

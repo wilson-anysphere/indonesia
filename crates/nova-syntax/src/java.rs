@@ -1690,7 +1690,9 @@ impl Lowerer {
 
     fn lower_assert_stmt(&self, node: &SyntaxNode) -> ast::AssertStmt {
         let range = self.spans.map_node(node);
-        let mut exprs = node.children().filter(|child| is_expression_kind(child.kind()));
+        let mut exprs = node
+            .children()
+            .filter(|child| is_expression_kind(child.kind()));
         let condition = exprs
             .next()
             .map(|expr| self.lower_expr(&expr))
@@ -3061,7 +3063,9 @@ impl Lowerer {
                 dims.children()
                     // Dims can appear as either `Dim` or `AnnotatedDim` nodes depending on whether
                     // there are type annotations on the brackets.
-                    .filter(|child| matches!(child.kind(), SyntaxKind::Dim | SyntaxKind::AnnotatedDim))
+                    .filter(|child| {
+                        matches!(child.kind(), SyntaxKind::Dim | SyntaxKind::AnnotatedDim)
+                    })
                     .count()
             })
             .unwrap_or(0);
