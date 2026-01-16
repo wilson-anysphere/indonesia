@@ -2708,7 +2708,7 @@ fn parse_gradle_local_classpath_entries_from_text(
 ) -> Vec<ClasspathEntry> {
     static FILE_TREE_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
     static FILE_TREE_MAP_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
-    static CONFIG_RE: OnceLock<Regex> = OnceLock::new();
+    static CONFIG_CALL_RE: OnceLock<Regex> = OnceLock::new();
 
     // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
     // parseable without a real Groovy/Kotlin parser.
@@ -2728,9 +2728,9 @@ fn parse_gradle_local_classpath_entries_from_text(
             .expect("valid regex")
     });
 
-    let config_re = CONFIG_RE.get_or_init(|| {
+    let config_call_re = CONFIG_CALL_RE.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
-        Regex::new(&format!(r#"(?i)^{configs}$"#)).expect("valid regex")
+        Regex::new(&format!(r#"(?i)\b(?P<config>{configs})\b"#)).expect("valid regex")
     });
 
     let stripped = strip_gradle_comments(contents);
@@ -2741,34 +2741,75 @@ fn parse_gradle_local_classpath_entries_from_text(
 
     let mut out = Vec::new();
 
-    fn preceding_identifier<'a>(contents: &'a str, start: usize) -> Option<&'a str> {
-        let bytes = contents.as_bytes();
-        let mut end = start;
-        while end > 0 {
-            let b = bytes[end - 1];
-            if b.is_ascii_whitespace() || b == b'(' || b == b')' || b == b'.' || b == b',' {
-                end -= 1;
-                continue;
-            }
-            break;
-        }
-        if end == 0 {
-            return None;
+    fn maybe_add_path(out: &mut Vec<ClasspathEntry>, module_root: &Path, raw: &str) {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return;
         }
 
-        let mut begin = end;
-        while begin > 0 {
-            let b = bytes[begin - 1];
-            if b.is_ascii_alphanumeric() || b == b'_' {
-                begin -= 1;
+        let raw_path = PathBuf::from(raw);
+        let path = if raw_path.is_absolute() {
+            raw_path
+        } else {
+            module_root.join(raw_path)
+        };
+
+        if path.is_file() {
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                })
+            {
+                out.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path,
+                });
+            }
+        } else if path.is_dir() {
+            out.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path,
+            });
+        }
+    }
+
+    fn add_file_tree_dir(out: &mut Vec<ClasspathEntry>, module_root: &Path, dir: &str) {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            return;
+        }
+
+        let raw_dir = PathBuf::from(dir);
+        let dir_path = if raw_dir.is_absolute() {
+            raw_dir
+        } else {
+            module_root.join(raw_dir)
+        };
+
+        if !dir_path.is_dir() {
+            return;
+        }
+
+        for entry in WalkDir::new(&dir_path).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
                 continue;
             }
-            break;
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                })
+            {
+                out.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: path.to_path_buf(),
+                });
+            }
         }
-        if begin == end {
-            return None;
-        }
-        contents.get(begin..end)
     }
 
     // `files(...)` and no-parens `files "..."` style calls.
@@ -2778,17 +2819,18 @@ fn parse_gradle_local_classpath_entries_from_text(
     for candidate in candidates {
         let candidate = scrub_gradle_dependency_constraint_blocks(&candidate);
         let contents = candidate.as_str();
+        let string_ranges = gradle_string_literal_ranges(contents);
+        let bytes = contents.as_bytes();
 
-        for start in find_keyword_outside_strings(contents, "files") {
-            let Some(prev) = preceding_identifier(contents, start) else {
+        for caps in config_call_re.captures_iter(contents) {
+            let Some(m0) = caps.get(0) else {
                 continue;
             };
-            if !config_re.is_match(prev) {
+            if is_index_inside_string_ranges(m0.start(), &string_ranges) {
                 continue;
             }
 
-            let mut idx = start + "files".len();
-            let bytes = contents.as_bytes();
+            let mut idx = m0.end();
             while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
                 idx += 1;
             }
@@ -2796,7 +2838,7 @@ fn parse_gradle_local_classpath_entries_from_text(
                 continue;
             }
 
-            let args = if bytes[idx] == b'(' {
+            let args_expr = if bytes[idx] == b'(' {
                 extract_balanced_parens(contents, idx)
                     .map(|(args, _end)| args)
                     .unwrap_or_default()
@@ -2804,122 +2846,66 @@ fn parse_gradle_local_classpath_entries_from_text(
                 extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
             };
 
-            for raw in extract_quoted_strings(&args) {
-                let raw = raw.trim();
-                if raw.is_empty() {
+            for start in find_keyword_outside_strings(&args_expr, "files") {
+                let mut j = start + "files".len();
+                let arg_bytes = args_expr.as_bytes();
+                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= arg_bytes.len() {
                     continue;
                 }
 
-                let raw_path = PathBuf::from(raw);
-                let path = if raw_path.is_absolute() {
-                    raw_path
+                let args = if arg_bytes[j] == b'(' {
+                    extract_balanced_parens(&args_expr, j)
+                        .map(|(args, _end)| args)
+                        .unwrap_or_default()
                 } else {
-                    module_root.join(raw_path)
+                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
                 };
 
-                if path.is_file() {
-                    if path
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .is_some_and(|ext| {
-                            ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                        })
-                    {
-                        out.push(ClasspathEntry {
-                            kind: ClasspathEntryKind::Jar,
-                            path,
-                        });
-                    }
-                } else if path.is_dir() {
-                    out.push(ClasspathEntry {
-                        kind: ClasspathEntryKind::Directory,
-                        path,
-                    });
+                for raw in extract_quoted_strings(&args) {
+                    maybe_add_path(&mut out, module_root, &raw);
                 }
             }
-        }
 
-        let mut add_file_tree_dir = |dir: &str| {
-            let dir = dir.trim();
-            if dir.is_empty() {
-                return;
-            }
-
-            let raw_dir = PathBuf::from(dir);
-            let dir_path = if raw_dir.is_absolute() {
-                raw_dir
-            } else {
-                module_root.join(raw_dir)
-            };
-
-            if !dir_path.is_dir() {
-                return;
-            }
-
-            for entry in WalkDir::new(&dir_path).into_iter().filter_map(Result::ok) {
-                if !entry.file_type().is_file() {
+            for start in find_keyword_outside_strings(&args_expr, "fileTree") {
+                let mut j = start + "fileTree".len();
+                let arg_bytes = args_expr.as_bytes();
+                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= arg_bytes.len() {
                     continue;
                 }
-                let path = entry.path();
-                if path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                    })
+
+                let args = if arg_bytes[j] == b'(' {
+                    extract_balanced_parens(&args_expr, j)
+                        .map(|(args, _end)| args)
+                        .unwrap_or_default()
+                } else {
+                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
+                };
+
+                if let Some(dir) = file_tree_map_dir_arg_re
+                    .captures(&args)
+                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
                 {
-                    out.push(ClasspathEntry {
-                        kind: ClasspathEntryKind::Jar,
-                        path: path.to_path_buf(),
-                    });
+                    add_file_tree_dir(&mut out, module_root, dir);
+                    continue;
                 }
-            }
-        };
 
-        // `fileTree(...)` calls (named args, mapOf, or positional `"libs"` form).
-        for start in find_keyword_outside_strings(contents, "fileTree") {
-            let Some(prev) = preceding_identifier(contents, start) else {
-                continue;
-            };
-            if !config_re.is_match(prev) {
-                continue;
-            }
+                if let Some(dir) = file_tree_dir_arg_re
+                    .captures(&args)
+                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+                {
+                    add_file_tree_dir(&mut out, module_root, dir);
+                    continue;
+                }
 
-            let mut idx = start + "fileTree".len();
-            let bytes = contents.as_bytes();
-            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                idx += 1;
-            }
-            if idx >= bytes.len() {
-                continue;
-            }
-
-            let args = if bytes[idx] == b'(' {
-                extract_balanced_parens(contents, idx)
-                    .map(|(args, _end)| args)
-                    .unwrap_or_default()
-            } else {
-                extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
-            };
-
-            if let Some(dir) = file_tree_map_dir_arg_re
-                .captures(&args)
-                .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
-            {
-                add_file_tree_dir(dir);
-                continue;
-            }
-
-            if let Some(dir) = file_tree_dir_arg_re
-                .captures(&args)
-                .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
-            {
-                add_file_tree_dir(dir);
-                continue;
-            }
-
-            if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
-                add_file_tree_dir(&dir);
+                if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
+                    add_file_tree_dir(&mut out, module_root, &dir);
+                }
             }
         }
     }
@@ -5126,6 +5112,52 @@ dependencies {
         let script = r#"
 dependencies {
   implementation fileTree(dir: "libs/a) b", include: ["*.jar"])
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_project_files_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  implementation(project.files("libs/a.jar"))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_project_file_tree_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  implementation(project.fileTree(dir: "libs", include: ["*.jar"]))
 }
 "#;
 
