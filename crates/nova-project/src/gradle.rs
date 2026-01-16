@@ -1742,12 +1742,11 @@ fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<
     nova_build_model::groovy_scan::find_keyword_positions_outside_strings(contents, keyword)
 }
 
-fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
+fn extract_named_brace_blocks_from_stripped(stripped: &str, keyword: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let stripped = strip_gradle_comments(contents);
     let bytes = stripped.as_bytes();
 
-    for start in find_keyword_positions_outside_strings(&stripped, keyword) {
+    for start in find_keyword_positions_outside_strings(stripped, keyword) {
         let mut idx = start + keyword.len();
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
             idx += 1;
@@ -1758,7 +1757,7 @@ fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
 
         // Handle `keyword(...) { ... }` form by skipping a single balanced `(...)` argument list.
         if bytes[idx] == b'(' {
-            if let Some((_args, end)) = extract_balanced_parens(&stripped, idx) {
+            if let Some((_args, end)) = extract_balanced_parens(stripped, idx) {
                 idx = end;
                 while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
                     idx += 1;
@@ -1770,12 +1769,17 @@ fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
             continue;
         }
 
-        if let Some((body, _end)) = extract_balanced_braces(&stripped, idx) {
+        if let Some((body, _end)) = extract_balanced_braces(stripped, idx) {
             out.push(body);
         }
     }
 
     out
+}
+
+fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
+    let stripped = strip_gradle_comments(contents);
+    extract_named_brace_blocks_from_stripped(&stripped, keyword)
 }
 
 fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start: usize) -> String {
@@ -2862,16 +2866,16 @@ fn parse_gradle_dependencies_from_text(
     version_catalog: Option<&GradleVersionCatalog>,
     gradle_properties: &GradleProperties,
 ) -> Vec<Dependency> {
-    // Strip comments before running dependency regexes so commented-out dependency lines don't
-    // end up polluting the extracted dependency list.
-    //
-    // This is best-effort but preserves quoted strings, so typical Gradle/Maven coordinate literals
-    // are unaffected.
-    let contents = strip_gradle_comments(contents);
-    let contents = contents.as_str();
-    let string_ranges = gradle_string_literal_ranges(contents);
-
     let mut deps = Vec::new();
+
+    // Strip comments before scanning dependency blocks so commented-out dependency lines don't end
+    // up polluting the extracted dependency list. This is best-effort but preserves quoted strings,
+    // so typical Gradle/Maven coordinate literals are unaffected.
+    let stripped = strip_gradle_comments(contents);
+    let mut candidates = extract_named_brace_blocks_from_stripped(&stripped, "dependencies");
+    if candidates.is_empty() {
+        candidates.push(stripped);
+    }
 
     // `implementation "g:a:v"` and similar (string notation).
     //
@@ -2890,40 +2894,6 @@ fn parse_gradle_dependencies_from_text(
         ))
         .expect("valid regex")
     });
-
-    for caps in re_gav.captures_iter(contents) {
-        let Some(m0) = caps.get(0) else {
-            continue;
-        };
-        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
-            continue;
-        }
-        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
-            continue;
-        };
-        let scope = gradle_scope_from_configuration(config).map(str::to_string);
-        let version = caps
-            .name("version")
-            .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
-        let classifier = caps
-            .name("classifier")
-            .map(|m| m.as_str().trim())
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        let type_ = caps
-            .name("type")
-            .map(|m| m.as_str().trim())
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        deps.push(Dependency {
-            group_id: caps["group"].to_string(),
-            artifact_id: caps["artifact"].to_string(),
-            version,
-            scope,
-            classifier,
-            type_,
-        });
-    }
 
     // `implementation group: 'g', name: 'a', version: 'v'` (Groovy map notation),
     // `implementation(group = "g", name = "a", version = "v")` (Kotlin named args),
@@ -2950,41 +2920,134 @@ fn parse_gradle_dependencies_from_text(
         .expect("valid regex")
     });
 
-    for caps in re_map.captures_iter(contents) {
-        let Some(m0) = caps.get(0) else {
-            continue;
-        };
-        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
-            continue;
-        }
-        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
-            continue;
-        };
-        let scope = gradle_scope_from_configuration(config).map(str::to_string);
-        let version = caps
-            .name("version")
-            .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
-        deps.push(Dependency {
-            group_id: caps["group"].to_string(),
-            artifact_id: caps["artifact"].to_string(),
-            version,
-            scope,
-            classifier: None,
-            type_: None,
-        });
-    }
+    for candidate in candidates {
+        let candidate = scrub_gradle_dependency_constraint_blocks(&candidate);
+        let contents = candidate.as_str();
+        let string_ranges = gradle_string_literal_ranges(contents);
 
-    // Version catalog references (`implementation(libs.foo)` / `implementation libs.foo`).
-    if let Some(version_catalog) = version_catalog {
-        deps.extend(resolve_version_catalog_dependencies(
-            contents,
-            version_catalog,
-            gradle_properties,
-            &string_ranges,
-        ));
+        for caps in re_gav.captures_iter(contents) {
+            let Some(m0) = caps.get(0) else {
+                continue;
+            };
+            if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+                continue;
+            }
+            let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+                continue;
+            };
+            let scope = gradle_scope_from_configuration(config).map(str::to_string);
+            let version = caps
+                .name("version")
+                .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
+            let classifier = caps
+                .name("classifier")
+                .map(|m| m.as_str().trim())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string);
+            let type_ = caps
+                .name("type")
+                .map(|m| m.as_str().trim())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string);
+            deps.push(Dependency {
+                group_id: caps["group"].to_string(),
+                artifact_id: caps["artifact"].to_string(),
+                version,
+                scope,
+                classifier,
+                type_,
+            });
+        }
+
+        for caps in re_map.captures_iter(contents) {
+            let Some(m0) = caps.get(0) else {
+                continue;
+            };
+            if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+                continue;
+            }
+            let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+                continue;
+            };
+            let scope = gradle_scope_from_configuration(config).map(str::to_string);
+            let version = caps
+                .name("version")
+                .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
+            deps.push(Dependency {
+                group_id: caps["group"].to_string(),
+                artifact_id: caps["artifact"].to_string(),
+                version,
+                scope,
+                classifier: None,
+                type_: None,
+            });
+        }
+
+        // Version catalog references (`implementation(libs.foo)` / `implementation libs.foo`).
+        if let Some(version_catalog) = version_catalog {
+            deps.extend(resolve_version_catalog_dependencies(
+                contents,
+                version_catalog,
+                gradle_properties,
+                &string_ranges,
+            ));
+        }
     }
     sort_dedup_dependencies(&mut deps);
     deps
+}
+
+fn scrub_gradle_dependency_constraint_blocks(contents: &str) -> String {
+    // `constraints { ... }` blocks inside `dependencies { ... }` don't add artifacts to the
+    // classpath; they only constrain versions. Treating them as dependencies produces false
+    // positives, so we scrub them before regex extraction.
+    let mut ranges = Vec::<std::ops::Range<usize>>::new();
+    let bytes = contents.as_bytes();
+
+    for keyword in ["constraints", "dependencyConstraints"] {
+        for start in find_keyword_positions_outside_strings(contents, keyword) {
+            let mut idx = start + keyword.len();
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            if idx >= bytes.len() {
+                continue;
+            }
+
+            // Handle `keyword(...) { ... }` form by skipping a single balanced `(...)` argument list.
+            if bytes[idx] == b'(' {
+                if let Some((_args, end)) = extract_balanced_parens(contents, idx) {
+                    idx = end;
+                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                }
+            }
+
+            if idx >= bytes.len() || bytes[idx] != b'{' {
+                continue;
+            }
+
+            if let Some((_body, end)) = extract_balanced_braces(contents, idx) {
+                ranges.push(start..end);
+            }
+        }
+    }
+
+    if ranges.is_empty() {
+        return contents.to_string();
+    }
+
+    let mut out = contents.as_bytes().to_vec();
+    for range in ranges {
+        for b in &mut out[range] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
 }
 
 fn resolve_version_catalog_dependencies(
@@ -4090,6 +4153,57 @@ dependencies {
             )),
             "expected non-commented dependency to be extracted"
         );
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_ignores_constraints_blocks() {
+        let script = r#"
+dependencies {
+  constraints {
+    implementation("com.example:ignored:1")
+    implementation platform("com.example:ignored2:2")
+    implementation group: "com.example", name: "ignored3", version: "3"
+  }
+  implementation("com.example:kept:4")
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored".to_string(),
+                Some("1".to_string())
+            )),
+            "constraints block should not contribute dependencies"
+        );
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored2".to_string(),
+                Some("2".to_string())
+            )),
+            "constraints wrapper entries should not contribute dependencies"
+        );
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored3".to_string(),
+                Some("3".to_string())
+            )),
+            "constraints map-notation should not contribute dependencies"
+        );
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "kept".to_string(),
+            Some("4".to_string())
+        )));
     }
 
     #[test]
