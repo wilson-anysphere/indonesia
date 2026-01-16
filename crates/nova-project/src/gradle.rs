@@ -5579,6 +5579,52 @@ dependencies {
     }
 
     #[test]
+    fn parse_gradle_local_classpath_entries_handles_add_file_tree_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  add("implementation", fileTree(dir: "libs", include: ["*.jar"]))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_add_project_file_tree_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  dependencies.add("implementation", project.fileTree(dir: "libs", include: ["*.jar"]))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
     fn parse_gradle_local_classpath_entries_ignores_add_classpath_files() {
         let dir = tempdir().expect("tempdir");
         let module_root = dir.path();
