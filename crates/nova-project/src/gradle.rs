@@ -2940,7 +2940,7 @@ fn parse_gradle_dependencies_from_text(
         // - We accept both `implementation group: ...` and `implementation(group: ...)` forms.
         // - We don't try to parse non-literal versions (variables, method calls, etc).
         Regex::new(&format!(
-            r#"(?is)\b(?P<config>{configs})\b\s*\(?\s*group\s*[:=]\s*['"](?P<group>[^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"](?P<artifact>[^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"](?P<version>[^'"]+)['"])?"#,
+            r#"(?is)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*group\s*[:=]\s*['"](?P<group>[^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"](?P<artifact>[^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"](?P<version>[^'"]+)['"])?"#,
         ))
         .expect("valid regex")
     });
@@ -3833,9 +3833,11 @@ dependencies {
 
     // Groovy map notation (no parens).
     implementation group: 'org.example', name: 'foo', version: '1.2.3'
+    implementation platform(group: 'org.example', name: 'wrapped', version: '9.9.9')
 
     // Map notation with double quotes.
     testImplementation group: "org.example", name: "bar", version: "4.5.6"
+    testImplementation(platform(group: "org.example", name: "wrapped2", version: "9.9.8"))
 
     // Kotlin named args (even in a Groovy file, this is just text for regex extraction).
     implementation(group = "org.example", name = "baz", version = "7.8.9")
@@ -3869,8 +3871,18 @@ dependencies {
         )));
         assert!(got.contains(&(
             "org.example".to_string(),
+            "wrapped".to_string(),
+            Some("9.9.9".to_string())
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
             "bar".to_string(),
             Some("4.5.6".to_string())
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "wrapped2".to_string(),
+            Some("9.9.8".to_string())
         )));
         assert!(got.contains(&(
             "org.example".to_string(),
