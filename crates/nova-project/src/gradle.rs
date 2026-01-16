@@ -2927,8 +2927,41 @@ fn parse_gradle_local_classpath_entries_from_text(
             }
         }
 
+        let is_dependency_add_call = |start: usize| -> bool {
+            let mut i = start;
+            while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                i -= 1;
+            }
+            if i == 0 || bytes[i - 1] != b'.' {
+                return true;
+            }
+
+            i -= 1;
+            while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                i -= 1;
+            }
+
+            let mut begin = i;
+            while begin > 0 {
+                let b = bytes[begin - 1];
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    begin -= 1;
+                    continue;
+                }
+                break;
+            }
+            let Some(ident) = contents.get(begin..i) else {
+                return false;
+            };
+
+            ident.eq_ignore_ascii_case("dependencies")
+        };
+
         for start in find_keyword_outside_strings(contents, "add") {
             if is_index_inside_string_ranges(start, &string_ranges) {
+                continue;
+            }
+            if !is_dependency_add_call(start) {
                 continue;
             }
 
@@ -5621,6 +5654,27 @@ dependencies {
                 .iter()
                 .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
             "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_ignores_non_dependency_add_calls() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  foo.add("implementation", files("libs/a.jar"))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries.is_empty(),
+            "expected foo.add(...) to be ignored; got: {entries:?}"
         );
     }
 
