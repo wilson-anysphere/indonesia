@@ -38,22 +38,14 @@ use nova_vfs::{
 };
 
 use crate::snapshot::WorkspaceDbView;
-use crate::watch::{categorize_event, ChangeCategory, WatchConfig};
+use crate::watch::{categorize_event, normalize_watch_path, ChangeCategory, WatchConfig};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
-
-fn normalize_vfs_local_path(path: PathBuf) -> PathBuf {
-    match VfsPath::local(path) {
-        VfsPath::Local(path) => path,
-        // `VfsPath::local` always returns the local variant.
-        _ => unreachable!("VfsPath::local produced a non-local path"),
-    }
-}
 
 fn compute_watch_roots(
     workspace_root: &Path,
     watch_config: &WatchConfig,
 ) -> Vec<(PathBuf, WatchMode)> {
-    let workspace_root = normalize_vfs_local_path(workspace_root.to_path_buf());
+    let workspace_root = normalize_watch_path(workspace_root.to_path_buf());
 
     let mut roots: Vec<(PathBuf, WatchMode)> = Vec::new();
     roots.push((workspace_root.clone(), WatchMode::Recursive));
@@ -66,7 +58,7 @@ fn compute_watch_roots(
         .chain(watch_config.generated_source_roots.iter())
         .chain(watch_config.module_roots.iter())
     {
-        let root = normalize_vfs_local_path(root.clone());
+        let root = normalize_watch_path(root.clone());
         if root.starts_with(&workspace_root) {
             continue;
         }
@@ -76,7 +68,7 @@ fn compute_watch_roots(
     // Watch the discovered config file when it lives outside the workspace root. Use a
     // non-recursive watch so we don't accidentally watch huge trees like `$HOME`.
     if let Some(config_path) = watch_config.nova_config_path.as_ref() {
-        let config_path = normalize_vfs_local_path(config_path.clone());
+        let config_path = normalize_watch_path(config_path.clone());
         if !config_path.starts_with(&workspace_root) {
             roots.push((config_path, WatchMode::NonRecursive));
         }
@@ -858,6 +850,7 @@ fn default_build_runner() -> Arc<dyn CommandRunner> {
 #[derive(Debug)]
 struct DeadlineCommandRunner {
     deadline: Instant,
+    #[cfg(not(test))]
     cancellation: Option<CancellationToken>,
     inner: DeadlineCommandRunnerInner,
 }
@@ -866,9 +859,45 @@ struct DeadlineCommandRunner {
 enum DeadlineCommandRunnerInner {
     /// Use Nova's default command runner with a per-command timeout equal to the remaining
     /// time budget.
+    #[cfg(not(test))]
     Default,
     /// Delegate to a caller-supplied runner (primarily for tests).
     Custom(Arc<dyn CommandRunner>),
+}
+
+#[cfg(not(test))]
+fn deadline_command_runner(
+    deadline: Instant,
+    cancellation: &Option<CancellationToken>,
+    build_runner_is_default: bool,
+    build_runner: &Arc<dyn CommandRunner>,
+) -> Arc<dyn CommandRunner> {
+    if build_runner_is_default {
+        Arc::new(DeadlineCommandRunner {
+            deadline,
+            cancellation: cancellation.clone(),
+            inner: DeadlineCommandRunnerInner::Default,
+        })
+    } else {
+        Arc::new(DeadlineCommandRunner {
+            deadline,
+            cancellation: cancellation.clone(),
+            inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+        })
+    }
+}
+
+#[cfg(test)]
+fn deadline_command_runner(
+    deadline: Instant,
+    _cancellation: &Option<CancellationToken>,
+    _build_runner_is_default: bool,
+    build_runner: &Arc<dyn CommandRunner>,
+) -> Arc<dyn CommandRunner> {
+    Arc::new(DeadlineCommandRunner {
+        deadline,
+        inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+    })
 }
 
 impl CommandRunner for DeadlineCommandRunner {
@@ -888,6 +917,7 @@ impl CommandRunner for DeadlineCommandRunner {
         }
 
         match &self.inner {
+            #[cfg(not(test))]
             DeadlineCommandRunnerInner::Default => {
                 let runner = nova_build::DefaultCommandRunner {
                     timeout: Some(remaining),
@@ -1620,7 +1650,7 @@ impl WorkspaceEngine {
         // Helper: return the set of *known* local file paths that are under `dir`.
         // This must not allocate new `FileId`s.
         let known_files_under_dir = |dir: &Path| -> Vec<PathBuf> {
-            let dir = normalize_vfs_local_path(dir.to_path_buf());
+            let dir = normalize_watch_path(dir.to_path_buf());
             let mut files = Vec::new();
             for file_id in self.vfs.all_file_ids() {
                 let Some(vfs_path) = self.vfs.path_for_id(file_id) else {
@@ -1648,8 +1678,8 @@ impl WorkspaceEngine {
                     let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
                         continue;
                     };
-                    let from = normalize_vfs_local_path(from.to_path_buf());
-                    let to = normalize_vfs_local_path(to.to_path_buf());
+                    let from = normalize_watch_path(from.to_path_buf());
+                    let to = normalize_watch_path(to.to_path_buf());
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
@@ -1706,7 +1736,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_vfs_local_path(path.to_path_buf());
+                    let path = normalize_watch_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1729,7 +1759,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_vfs_local_path(path.to_path_buf());
+                    let path = normalize_watch_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -3330,11 +3360,11 @@ fn should_refresh_build_config(
     // lexical `.`/`..` resolution). This avoids missing prefix matches when module roots are
     // recorded with `..` segments (e.g. `../included`) but file change events arrive in a
     // normalized form.
-    let workspace_root = normalize_vfs_local_path(workspace_root.to_path_buf());
+    let workspace_root = normalize_watch_path(workspace_root.to_path_buf());
     let module_roots: Vec<(PathBuf, usize)> = module_roots
         .iter()
         .cloned()
-        .map(normalize_vfs_local_path)
+        .map(normalize_watch_path)
         .map(|root| {
             let len = root.components().count();
             (root, len)
@@ -3342,7 +3372,7 @@ fn should_refresh_build_config(
         .collect();
 
     changed_files.iter().any(|path| {
-        let path = normalize_vfs_local_path(path.clone());
+        let path = normalize_watch_path(path.clone());
 
         // Many build inputs are detected based on path components (e.g. ignoring `build/` output
         // directories). Use paths relative to the workspace root (or module roots) so absolute
@@ -3357,7 +3387,10 @@ fn should_refresh_build_config(
                 let mut best: Option<(&Path, usize)> = None;
                 for (root, root_len) in &module_roots {
                     if let Ok(stripped) = path.strip_prefix(root) {
-                        if best.map(|(_, best_len)| *root_len > best_len).unwrap_or(true) {
+                        if best
+                            .map(|(_, best_len)| *root_len > best_len)
+                            .unwrap_or(true)
+                        {
                             best = Some((stripped, *root_len));
                         }
                     }
@@ -3671,7 +3704,10 @@ fn reload_project_and_sync(
                     HashMap::new();
                 for project in &previous_projects {
                     configs.insert(*project, snap.project_config(*project));
-                    indexes.insert(*project, snap.classpath_index(*project).map(|index| index.0));
+                    indexes.insert(
+                        *project,
+                        snap.classpath_index(*project).map(|index| index.0),
+                    );
                 }
                 (configs, indexes)
             })
@@ -3703,15 +3739,24 @@ fn reload_project_and_sync(
                 })?;
         }
 
-        (loader.projects(), previous_configs, previous_classpath_indexes)
+        (
+            loader.projects(),
+            previous_configs,
+            previous_classpath_indexes,
+        )
     };
 
     // 2) Optional build tool integration (Maven/Gradle).
     //
     // This is intentionally best-effort: failures should not prevent the workspace from loading.
     if !projects.is_empty() {
-        let loaded_project_configs: Vec<(ProjectId, Arc<ProjectConfig>)> = query_db
-            .with_snapshot(|snap| projects.iter().map(|&project| (project, snap.project_config(project))).collect());
+        let loaded_project_configs: Vec<(ProjectId, Arc<ProjectConfig>)> =
+            query_db.with_snapshot(|snap| {
+                projects
+                    .iter()
+                    .map(|&project| (project, snap.project_config(project)))
+                    .collect()
+            });
 
         let mut module_roots: Vec<PathBuf> = loaded_project_configs
             .iter()
@@ -3757,17 +3802,14 @@ fn reload_project_and_sync(
         // metadata even when the file change set doesn't include build tool inputs. Otherwise, the
         // workspace would keep using heuristic classpaths until a build file changes (or the
         // workspace is restarted).
-        let refresh_maven = refresh_build_by_files
-            || mode_rank(maven_mode) > mode_rank(previous_maven_mode);
-        let refresh_gradle = refresh_build_by_files
-            || mode_rank(gradle_mode) > mode_rank(previous_gradle_mode);
+        let refresh_maven =
+            refresh_build_by_files || mode_rank(maven_mode) > mode_rank(previous_maven_mode);
+        let refresh_gradle =
+            refresh_build_by_files || mode_rank(gradle_mode) > mode_rank(previous_gradle_mode);
 
-        let has_build_projects = loaded_project_configs.iter().any(|(_, cfg)| {
-            matches!(
-                cfg.build_system,
-                BuildSystem::Maven | BuildSystem::Gradle
-            )
-        });
+        let has_build_projects = loaded_project_configs
+            .iter()
+            .any(|(_, cfg)| matches!(cfg.build_system, BuildSystem::Maven | BuildSystem::Gradle));
 
         if invalidate_build_cache && has_build_projects {
             let cache_dir = build_cache_dir(workspace_root, query_db);
@@ -3782,41 +3824,39 @@ fn reload_project_and_sync(
             }
         }
 
-        let apply_compile_config = |project: ProjectId,
-                                    base: &ProjectConfig,
-                                    cfg: &nova_build::JavaCompileConfig| {
-            let base = base.clone();
-            let updated =
-                apply_java_compile_config_to_project_config(base.clone(), cfg, &base);
-            query_db.set_project_config(project, Arc::new(updated.clone()));
+        let apply_compile_config =
+            |project: ProjectId, base: &ProjectConfig, cfg: &nova_build::JavaCompileConfig| {
+                let base = base.clone();
+                let updated = apply_java_compile_config_to_project_config(base.clone(), cfg, &base);
+                query_db.set_project_config(project, Arc::new(updated.clone()));
 
-            let requested_release = Some(updated.java.target.0)
-                .filter(|release| *release >= 1)
-                .or_else(|| Some(updated.java.source.0).filter(|release| *release >= 1));
+                let requested_release = Some(updated.java.target.0)
+                    .filter(|release| *release >= 1)
+                    .or_else(|| Some(updated.java.source.0).filter(|release| *release >= 1));
 
-            let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
-                .classpath
-                .iter()
-                .chain(updated.module_path.iter())
-                .map(nova_classpath::ClasspathEntry::from)
-                .collect();
+                let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
+                    .classpath
+                    .iter()
+                    .chain(updated.module_path.iter())
+                    .map(nova_classpath::ClasspathEntry::from)
+                    .collect();
 
-            if classpath_entries.is_empty() {
-                query_db.set_classpath_index(project, None);
-            } else {
-                let classpath_cache_dir = query_db.classpath_cache_dir();
-                match nova_classpath::ClasspathIndex::build_with_options(
-                    &classpath_entries,
-                    classpath_cache_dir.as_deref(),
-                    nova_classpath::IndexOptions {
-                        target_release: requested_release,
-                    },
-                ) {
-                    Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
-                    Err(_) => query_db.set_classpath_index(project, None),
+                if classpath_entries.is_empty() {
+                    query_db.set_classpath_index(project, None);
+                } else {
+                    let classpath_cache_dir = query_db.classpath_cache_dir();
+                    match nova_classpath::ClasspathIndex::build_with_options(
+                        &classpath_entries,
+                        classpath_cache_dir.as_deref(),
+                        nova_classpath::IndexOptions {
+                            target_release: requested_release,
+                        },
+                    ) {
+                        Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
+                        Err(_) => query_db.set_classpath_index(project, None),
+                    }
                 }
-            }
-        };
+            };
 
         // ---------------------------------------------------------------------
         // Maven integration.
@@ -3872,9 +3912,11 @@ fn reload_project_and_sync(
                                         continue;
                                     };
                                     if let Some(cfg) = module.java_compile_config.or_else(|| {
-                                        module.classpath.map(|classpath| nova_build::JavaCompileConfig {
-                                            compile_classpath: classpath,
-                                            ..nova_build::JavaCompileConfig::default()
+                                        module.classpath.map(|classpath| {
+                                            nova_build::JavaCompileConfig {
+                                                compile_classpath: classpath,
+                                                ..nova_build::JavaCompileConfig::default()
+                                            }
                                         })
                                     }) {
                                         apply_compile_config(*project, current_config, &cfg);
@@ -3886,32 +3928,12 @@ fn reload_project_and_sync(
                     BuildIntegrationMode::On => {
                         let cache_dir = build_cache_dir(workspace_root, query_db);
                         let deadline = Instant::now() + maven_timeout;
-                        let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
-                            #[cfg(not(test))]
-                            {
-                                Arc::new(DeadlineCommandRunner {
-                                    deadline,
-                                    cancellation: cancellation.clone(),
-                                    inner: DeadlineCommandRunnerInner::Default,
-                                })
-                            }
-                            #[cfg(test)]
-                            {
-                                Arc::new(DeadlineCommandRunner {
-                                    deadline,
-                                    cancellation: cancellation.clone(),
-                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(
-                                        build_runner,
-                                    )),
-                                })
-                            }
-                        } else {
-                            Arc::new(DeadlineCommandRunner {
-                                deadline,
-                                cancellation: cancellation.clone(),
-                                inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
-                            })
-                        };
+                        let runner: Arc<dyn CommandRunner> = deadline_command_runner(
+                            deadline,
+                            &cancellation,
+                            build_runner_is_default,
+                            build_runner,
+                        );
 
                         let build = BuildManager::with_runner(cache_dir, runner);
                         let single_maven_project = maven_projects.len() == 1;
@@ -3931,13 +3953,12 @@ fn reload_project_and_sync(
                                 rel.to_path_buf()
                             };
 
-                            let module_relative = if module_root == workspace_root
-                                && single_maven_project
-                            {
-                                None
-                            } else {
-                                Some(module_rel.as_path())
-                            };
+                            let module_relative =
+                                if module_root == workspace_root && single_maven_project {
+                                    None
+                                } else {
+                                    Some(module_rel.as_path())
+                                };
 
                             match build.java_compile_config_maven(workspace_root, module_relative) {
                                 Ok(cfg) => apply_compile_config(*project, current_config, &cfg),
@@ -4007,7 +4028,8 @@ fn reload_project_and_sync(
                                 let (project, current_config) = &gradle_projects[0];
                                 apply_compile_config(*project, current_config, &cfg);
                             }
-                        } else if let Ok(files) = nova_build::collect_gradle_build_files(workspace_root)
+                        } else if let Ok(files) =
+                            nova_build::collect_gradle_build_files(workspace_root)
                         {
                             if let Ok(fingerprint) =
                                 BuildFileFingerprint::from_files(workspace_root, files)
@@ -4101,32 +4123,12 @@ fn reload_project_and_sync(
                     BuildIntegrationMode::On => {
                         let cache_dir = build_cache_dir(workspace_root, query_db);
                         let deadline = Instant::now() + gradle_timeout;
-                        let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
-                            #[cfg(not(test))]
-                            {
-                                Arc::new(DeadlineCommandRunner {
-                                    deadline,
-                                    cancellation: cancellation.clone(),
-                                    inner: DeadlineCommandRunnerInner::Default,
-                                })
-                            }
-                            #[cfg(test)]
-                            {
-                                Arc::new(DeadlineCommandRunner {
-                                    deadline,
-                                    cancellation: cancellation.clone(),
-                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(
-                                        build_runner,
-                                    )),
-                                })
-                            }
-                        } else {
-                            Arc::new(DeadlineCommandRunner {
-                                deadline,
-                                cancellation: cancellation.clone(),
-                                inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
-                            })
-                        };
+                        let runner: Arc<dyn CommandRunner> = deadline_command_runner(
+                            deadline,
+                            &cancellation,
+                            build_runner_is_default,
+                            build_runner,
+                        );
 
                         let build = BuildManager::with_runner(cache_dir.clone(), runner);
 
@@ -4144,7 +4146,8 @@ fn reload_project_and_sync(
                                 ),
                             }
                         } else {
-                            let configs = match build.java_compile_configs_all_gradle(workspace_root)
+                            let configs = match build
+                                .java_compile_configs_all_gradle(workspace_root)
                             {
                                 Ok(configs) => configs,
                                 Err(err) => {
@@ -4181,7 +4184,8 @@ fn reload_project_and_sync(
                                     map.insert(canonicalize(&project.dir), project.path);
                                 }
                                 Some(map)
-                            })();
+                            })(
+                            );
 
                             if let Some(dir_to_path) = gradle_dir_map {
                                 for (project, current_config) in &gradle_projects {
@@ -5462,7 +5466,8 @@ mode = "off"
         // Register a second QueryCache evictor with lower eviction priority (default 0) but a
         // smaller footprint than `workspace_closed_file_texts`. With priority ordering, it should
         // be evicted first even though it is smaller.
-        let query_cache_evictor = TestEvictor::new(&memory, "test_query_cache", MemoryCategory::QueryCache);
+        let query_cache_evictor =
+            TestEvictor::new(&memory, "test_query_cache", MemoryCategory::QueryCache);
         query_cache_evictor.set_bytes(1_000);
 
         let before = query_db.with_snapshot(|snap| snap.file_content(file));
@@ -9023,7 +9028,7 @@ public class Bar {}"#;
             .read()
             .expect("workspace watch config lock poisoned")
             .clone();
-        let expected_src = normalize_vfs_local_path(project_root.join("src"));
+        let expected_src = normalize_watch_path(project_root.join("src"));
         assert!(
             config.source_roots.contains(&expected_src),
             "expected watch_config.source_roots to include {} (got {:?})",

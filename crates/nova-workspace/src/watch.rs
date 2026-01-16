@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nova_vfs::FileChange;
 
-fn normalize_watch_path(path: impl Into<PathBuf>) -> PathBuf {
+pub(crate) fn normalize_watch_path(path: impl Into<PathBuf>) -> PathBuf {
     match nova_vfs::VfsPath::local(path.into()) {
         nova_vfs::VfsPath::Local(path) => path,
         // `VfsPath::local` always returns the local variant.
@@ -629,7 +629,9 @@ mod tests {
 
     #[test]
     fn gradle_snapshot_file_is_a_build_file() {
-        assert!(is_build_file(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
+        assert!(is_build_file(Path::new(
+            nova_build_model::GRADLE_SNAPSHOT_REL_PATH
+        )));
     }
 
     #[test]
