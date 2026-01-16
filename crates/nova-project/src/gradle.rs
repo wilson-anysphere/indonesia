@@ -2043,6 +2043,9 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
 
 const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|provided|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|apt|testApt|kapt|kaptTest|ksp|kspTest)";
 
+const GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE: &str =
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*";
+
 type GradleProperties = HashMap<String, String>;
 
 fn load_gradle_properties(workspace_root: &Path) -> GradleProperties {
@@ -2882,7 +2885,8 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*{wrappers}['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
@@ -2940,7 +2944,8 @@ fn parse_gradle_dependencies_from_text(
         // - We accept both `implementation group: ...` and `implementation(group: ...)` forms.
         // - We don't try to parse non-literal versions (variables, method calls, etc).
         Regex::new(&format!(
-            r#"(?is)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*group\s*[:=]\s*['"](?P<group>[^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"](?P<artifact>[^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"](?P<version>[^'"]+)['"])?"#,
+            r#"(?is)\b(?P<config>{configs})\b\s*\(?\s*{wrappers}group\s*[:=]\s*['"](?P<group>[^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"](?P<artifact>[^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"](?P<version>[^'"]+)['"])?"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
@@ -2995,21 +3000,24 @@ fn resolve_version_catalog_dependencies(
     let re_dot = RE_DOT.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*{wrappers}libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
     let re_bracket = RE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*{wrappers}libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
     let re_bundle_bracket = RE_BUNDLE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*{wrappers}libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
