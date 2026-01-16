@@ -3078,6 +3078,7 @@ fn resolve_gradle_add_call_dependencies(
     static RE_ADD_GAV: OnceLock<Regex> = OnceLock::new();
     static RE_ADD_LIB_DOT: OnceLock<Regex> = OnceLock::new();
     static RE_ADD_LIB_BRACKET: OnceLock<Regex> = OnceLock::new();
+    static RE_ADD_LIB_BUNDLE_BRACKET: OnceLock<Regex> = OnceLock::new();
 
     let re_add_gav = RE_ADD_GAV.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
@@ -3101,6 +3102,15 @@ fn resolve_gradle_add_call_dependencies(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
             r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
+        ))
+        .expect("valid regex")
+    });
+
+    let re_add_lib_bundle_bracket = RE_ADD_LIB_BUNDLE_BRACKET.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?"#,
             wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
@@ -3170,6 +3180,32 @@ fn resolve_gradle_add_call_dependencies(
             }
             deps.extend(resolved);
         }
+    }
+
+    for caps in re_add_lib_bundle_bracket.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), string_ranges) {
+            continue;
+        }
+        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(bundle) = caps.name("bundle").map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let scope = gradle_scope_from_configuration(config).map(str::to_string);
+        let reference = format!("bundles.{bundle}");
+        let mut resolved = resolve_version_catalog_reference(version_catalog, &reference);
+        for dep in &mut resolved {
+            dep.scope = scope.clone();
+            if let Some(v) = dep.version.as_deref() {
+                dep.version = resolve_gradle_dependency_version(v, gradle_properties);
+            }
+        }
+        deps.extend(resolved);
     }
 
     deps
@@ -4422,6 +4458,61 @@ dependencies {
             Some("4.5.6".to_string()),
             Some("test".to_string()),
             Some("jar".to_string())
+        )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_add_calls_with_version_catalog() {
+        let gradle_properties = GradleProperties::new();
+
+        let catalog_toml = r#"
+[versions]
+foo = "1.0.0"
+guava = "32.0.0"
+junit = "4.13.2"
+
+[libraries]
+foo = { module = "com.example:foo", version = { ref = "foo" } }
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+junit = { module = "junit:junit", version = { ref = "junit" } }
+
+[bundles]
+test = ["junit", "guava"]
+"#;
+        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
+            .expect("parse catalog");
+
+        let build_script = r#"
+dependencies {
+  add("implementation", libs.foo)
+  dependencies.add("testImplementation", libs.bundles["test"].get())
+}
+"#;
+
+        let deps =
+            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))
+            .collect();
+
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "foo".to_string(),
+            Some("1.0.0".to_string()),
+            Some("compile".to_string())
+        )));
+        assert!(got.contains(&(
+            "junit".to_string(),
+            "junit".to_string(),
+            Some("4.13.2".to_string()),
+            Some("test".to_string())
+        )));
+        assert!(got.contains(&(
+            "com.google.guava".to_string(),
+            "guava".to_string(),
+            Some("32.0.0".to_string()),
+            Some("test".to_string())
         )));
     }
 
