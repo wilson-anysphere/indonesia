@@ -1960,7 +1960,10 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
     // 3) Otherwise, return `None` (caller uses defaults), unless we can still infer flags like
     //    `--enable-preview`.
     let contents = strip_gradle_comments(contents);
-    let enable_preview = contents.contains("--enable-preview");
+    let string_ranges = gradle_string_literal_ranges(&contents);
+    let enable_preview = contents
+        .match_indices("--enable-preview")
+        .any(|(idx, _)| !is_index_inside_string_ranges(idx, &string_ranges));
 
     let mut source = None;
     let mut target = None;
@@ -2017,9 +2020,18 @@ fn parse_java_toolchain_language_version(contents: &str) -> Option<JavaVersion> 
     let re = RE.get_or_init(|| {
         Regex::new(r#"JavaLanguageVersion\s*\.\s*of\s*\(\s*(\d+)\s*\)"#).expect("valid regex")
     });
-    let caps = re.captures(contents)?;
-    let version = caps.get(1)?.as_str();
-    JavaVersion::parse(version)
+    let string_ranges = gradle_string_literal_ranges(contents);
+    for caps in re.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
+        let version = caps.get(1)?.as_str();
+        return JavaVersion::parse(version);
+    }
+    None
 }
 
 fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
@@ -4006,12 +4018,13 @@ mod tests {
 
     use super::{
         append_included_build_module_refs, default_gradle_user_home, extract_named_brace_blocks,
+        extract_java_config_from_build_script,
         gradle_dependency_jar_paths, parse_gradle_dependencies_from_text,
         parse_gradle_local_classpath_entries_from_text,
         parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
         parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
         sort_dedup_dependencies, strip_gradle_comments, ClasspathEntryKind, Dependency,
-        GradleModuleRef, GradleProperties,
+        GradleModuleRef, GradleProperties, JavaVersion,
     };
     use crate::test_support::{env_lock, EnvVarGuard};
     use tempfile::tempdir;
@@ -5180,6 +5193,44 @@ def pattern = /unterminated
             !stripped.contains("should be stripped"),
             "expected line comment to be stripped even after unterminated slashy start; got: {stripped:?}"
         );
+    }
+
+    #[test]
+    fn extract_java_config_ignores_enable_preview_inside_string_literals() {
+        let script = r#"
+val ignored = "--enable-preview"
+
+java {
+  toolchain {
+    languageVersion.set(JavaLanguageVersion.of(21))
+  }
+}
+"#;
+
+        let cfg = extract_java_config_from_build_script(script).expect("expected config");
+        assert_eq!(cfg.source, JavaVersion::parse("21").expect("parse"));
+        assert_eq!(cfg.target, JavaVersion::parse("21").expect("parse"));
+        assert!(
+            !cfg.enable_preview,
+            "expected --enable-preview inside a string to be ignored"
+        );
+    }
+
+    #[test]
+    fn extract_java_config_ignores_toolchain_matches_inside_string_literals() {
+        let script = r#"
+val ignored = "JavaLanguageVersion.of(21)"
+
+java {
+  toolchain {
+    languageVersion.set(JavaLanguageVersion.of(17))
+  }
+}
+"#;
+
+        let cfg = extract_java_config_from_build_script(script).expect("expected config");
+        assert_eq!(cfg.source, JavaVersion::JAVA_17);
+        assert_eq!(cfg.target, JavaVersion::JAVA_17);
     }
 
     #[test]
