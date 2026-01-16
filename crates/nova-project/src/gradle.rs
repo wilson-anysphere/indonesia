@@ -2882,7 +2882,7 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
         ))
         .expect("valid regex")
     });
@@ -2995,21 +2995,21 @@ fn resolve_version_catalog_dependencies(
     let re_dot = RE_DOT.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
     let re_bracket = RE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
     let re_bundle_bracket = RE_BUNDLE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*|(?:platform|enforcedPlatform)\s+)*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
@@ -3969,6 +3969,36 @@ dependencies {
     }
 
     #[test]
+    fn parses_gradle_dependencies_from_text_gav_no_parens_wrappers() {
+        let script = r#"
+dependencies {
+  implementation platform "org.example:foo:1.2.3"
+  testImplementation enforcedPlatform 'org.example:bar:4.5.6@jar'
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let mut deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        sort_dedup_dependencies(&mut deps);
+
+        let foo = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "foo")
+            .expect("foo dep");
+        assert_eq!(foo.version.as_deref(), Some("1.2.3"));
+        assert_eq!(foo.type_.as_deref(), None);
+        assert_eq!(foo.scope.as_deref(), Some("compile"));
+
+        let bar = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "bar")
+            .expect("bar dep");
+        assert_eq!(bar.version.as_deref(), Some("4.5.6"));
+        assert_eq!(bar.type_.as_deref(), Some("jar"));
+        assert_eq!(bar.scope.as_deref(), Some("test"));
+    }
+
+    #[test]
     fn gradle_dependency_jar_paths_prefers_classifier_matches_when_present() {
         let dir = tempfile::tempdir().unwrap();
         let gradle_home = dir.path();
@@ -4445,6 +4475,8 @@ dependencies {
   implementation platform(libs["foo-bar"].get())
   testImplementation(platform(libs.bundles.test))
   testImplementation enforcedPlatform(libs.guava)
+  testImplementation platform libs["foo-bar"].get()
+  testImplementation enforcedPlatform libs.bundles.test
 }
 "#;
 
