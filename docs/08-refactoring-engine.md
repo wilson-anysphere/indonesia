@@ -535,22 +535,18 @@ pub fn generate_preview(
 pub fn safe_delete(
     db: &dyn Database,
     target: DeclarationId,
-) -> SafeDeleteResult {
+) -> SafeDeleteOutcome {
     let references = db.find_references(Symbol::Declaration(target), false);
     
     if references.is_empty() {
         // No usages, safe to delete
-        SafeDeleteResult::Safe {
+        SafeDeleteOutcome::Applied {
             edit: delete_declaration_edit(db, target),
         }
     } else {
-        // Has usages, show to user
-        SafeDeleteResult::Unsafe {
-            usages: references,
-            delete_anyway: Box::new(move |db| {
-                // Option to delete references too
-                delete_with_usages(db, target, &references)
-            }),
+        // Has usages, return a preview report so the client can request confirmation.
+        SafeDeleteOutcome::Preview {
+            report: build_safe_delete_report(db, target, &references),
         }
     }
 }
