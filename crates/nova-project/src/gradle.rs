@@ -1600,120 +1600,8 @@ fn extract_quoted_strings(text: &str) -> Vec<String> {
     out
 }
 
-fn is_probable_slashy_string_start(bytes: &[u8], idx: usize) -> bool {
-    // Best-effort heuristic for Groovy "slashy" strings (`/.../`), which are commonly used for
-    // regex literals inside `build.gradle`.
-    //
-    // Slashy strings are ambiguous with division operators (`a / b`). We bias toward treating `/`
-    // as a string delimiter when it appears in a context that's unlikely to be division:
-    // - at the start of the file, or
-    // - preceded by a non-word, non-closer token (after skipping whitespace).
-    //
-    // This heuristic is intentionally conservative; it is only used to avoid interpreting braces/
-    // keywords inside slashy strings as structural Gradle DSL constructs.
-    if bytes.get(idx) != Some(&b'/') {
-        return false;
-    }
-
-    // Exclude comment starters.
-    match bytes.get(idx + 1) {
-        Some(b'/') | Some(b'*') | None => return false,
-        _ => {}
-    }
-
-    let mut j = idx;
-    while j > 0 {
-        let prev = bytes[j - 1];
-        if prev.is_ascii_whitespace() {
-            j -= 1;
-            continue;
-        }
-
-        // If the previous token looks like it could end an expression (`foo/`, `) /`, etc),
-        // treat this `/` as division.
-        if prev.is_ascii_alphanumeric()
-            || prev == b'_'
-            || prev == b')'
-            || prev == b']'
-            || prev == b'}'
-        {
-            return false;
-        }
-
-        // Otherwise, treat it as a string delimiter.
-        return true;
-    }
-
-    // Start of file.
-    true
-}
-
-fn slashy_string_has_terminator_on_line(bytes: &[u8], start: usize) -> bool {
-    // Groovy slashy strings (`/.../`) can span lines, but treating an unterminated `/...` as a
-    // slashy string would cause our best-effort scanners to effectively ignore the rest of the
-    // file. For resilient parsing, only treat `/` as slashy when there is a closing `/` on the
-    // same line.
-    let mut i = start + 1;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\n' {
-            return false;
-        }
-        if b == b'\\' {
-            i = (i + 2).min(bytes.len());
-            continue;
-        }
-        if b == b'/' {
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
 fn gradle_string_literal_ranges(contents: &str) -> Vec<Range<usize>> {
-    // Best-effort string literal range extraction (for parsing Gradle scripts with regexes).
-    //
-    // Supports:
-    // - `'...'`
-    // - `"..."` (with backslash escapes)
-    // - `'''...'''` / `"""..."""` (Groovy / Kotlin raw strings)
-    // - Groovy slashy strings: `/.../` (best-effort, single-line)
-    // - Groovy dollar slashy strings: `$/.../$`
-    //
-    // Ranges are half-open (`start..end`) and include the opening/closing quote delimiters.
-    let bytes = contents.as_bytes();
-    let mut out: Vec<Range<usize>> = Vec::new();
-
-    let mut state = GroovyStringState::default();
-    let mut start = None::<usize>;
-
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let was_in_string = state.is_in_string();
-        if let Some(next) = state.advance(bytes, i) {
-            let is_in_string = state.is_in_string();
-            if !was_in_string && is_in_string {
-                start = Some(i);
-            } else if was_in_string && !is_in_string {
-                if let Some(start) = start.take() {
-                    out.push(start..next);
-                }
-            }
-            i = next;
-            continue;
-        }
-
-        i += 1;
-    }
-
-    if state.is_in_string() {
-        if let Some(start) = start.take() {
-            out.push(start..bytes.len());
-        }
-    }
-
-    out
+    nova_build_model::groovy_scan::gradle_string_literal_ranges(contents)
 }
 
 fn is_index_inside_string_ranges(idx: usize, ranges: &[Range<usize>]) -> bool {
@@ -1751,167 +1639,8 @@ fn heuristic_dir_rel_for_project_path(project_path: &str) -> String {
     }
 }
 
-fn is_word_byte(b: u8) -> bool {
-    // Keep semantics aligned with Regex `\b` for ASCII: alphanumeric + underscore.
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-#[derive(Default)]
-struct GroovyStringState {
-    in_single: bool,
-    in_double: bool,
-    in_triple_single: bool,
-    in_triple_double: bool,
-    in_slashy: bool,
-    in_dollar_slashy: bool,
-}
-
-impl GroovyStringState {
-    fn is_in_string(&self) -> bool {
-        self.in_single
-            || self.in_double
-            || self.in_triple_single
-            || self.in_triple_double
-            || self.in_slashy
-            || self.in_dollar_slashy
-    }
-
-    fn advance(&mut self, bytes: &[u8], i: usize) -> Option<usize> {
-        let b = *bytes.get(i)?;
-
-        if self.in_dollar_slashy {
-            if bytes[i..].starts_with(b"/$") {
-                self.in_dollar_slashy = false;
-                return Some(i + 2);
-            }
-
-            if b == b'$' {
-                if let Some(next) = bytes.get(i + 1) {
-                    if *next == b'$' || *next == b'/' {
-                        return Some((i + 2).min(bytes.len()));
-                    }
-                }
-            }
-
-            return Some(i + 1);
-        }
-
-        if self.in_slashy {
-            if b == b'\\' {
-                return Some((i + 2).min(bytes.len()));
-            }
-            if b == b'/' {
-                self.in_slashy = false;
-            }
-            return Some(i + 1);
-        }
-
-        if self.in_triple_single {
-            if bytes[i..].starts_with(b"'''") {
-                self.in_triple_single = false;
-                return Some(i + 3);
-            }
-            return Some(i + 1);
-        }
-
-        if self.in_triple_double {
-            if bytes[i..].starts_with(b"\"\"\"") {
-                self.in_triple_double = false;
-                return Some(i + 3);
-            }
-            return Some(i + 1);
-        }
-
-        if self.in_single {
-            if b == b'\\' {
-                return Some((i + 2).min(bytes.len()));
-            }
-            if b == b'\'' {
-                self.in_single = false;
-            }
-            return Some(i + 1);
-        }
-
-        if self.in_double {
-            if b == b'\\' {
-                return Some((i + 2).min(bytes.len()));
-            }
-            if b == b'"' {
-                self.in_double = false;
-            }
-            return Some(i + 1);
-        }
-
-        if bytes[i..].starts_with(b"'''") {
-            self.in_triple_single = true;
-            return Some(i + 3);
-        }
-
-        if bytes[i..].starts_with(b"\"\"\"") {
-            self.in_triple_double = true;
-            return Some(i + 3);
-        }
-
-        if bytes[i..].starts_with(b"$/") {
-            self.in_dollar_slashy = true;
-            return Some(i + 2);
-        }
-
-        if b == b'/'
-            && is_probable_slashy_string_start(bytes, i)
-            && slashy_string_has_terminator_on_line(bytes, i)
-        {
-            self.in_slashy = true;
-            return Some(i + 1);
-        }
-
-        if b == b'\'' {
-            self.in_single = true;
-            return Some(i + 1);
-        }
-
-        if b == b'"' {
-            self.in_double = true;
-            return Some(i + 1);
-        }
-
-        None
-    }
-}
-
 fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
-    let bytes = contents.as_bytes();
-    let kw = keyword.as_bytes();
-    if kw.is_empty() {
-        return Vec::new();
-    }
-
-    let mut out = Vec::new();
-    let mut state = GroovyStringState::default();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if let Some(next) = state.advance(bytes, i) {
-            i = next;
-            continue;
-        }
-
-        if bytes[i..].starts_with(kw) {
-            let prev_is_word = i
-                .checked_sub(1)
-                .and_then(|idx| bytes.get(idx))
-                .is_some_and(|b| is_word_byte(*b));
-            let next_is_word = bytes.get(i + kw.len()).is_some_and(|b| is_word_byte(*b));
-            if !prev_is_word && !next_is_word {
-                out.push(i);
-                i += kw.len();
-                continue;
-            }
-        }
-
-        i += 1;
-    }
-
-    out
+    nova_build_model::groovy_scan::find_keyword_outside_strings(contents, keyword)
 }
 
 fn normalize_dir_rel(dir_rel: &str) -> Option<String> {
@@ -2016,115 +1745,15 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
 }
 
 fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(String, usize)> {
-    let bytes = contents.as_bytes();
-    if bytes.get(open_paren_index) != Some(&b'(') {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    let mut state = GroovyStringState::default();
-
-    let mut i = open_paren_index;
-    while i < bytes.len() {
-        if let Some(next) = state.advance(bytes, i) {
-            i = next;
-            continue;
-        }
-
-        match bytes[i] {
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-                if depth == 0 {
-                    let args = &contents[open_paren_index + 1..i - 1];
-                    return Some((args.to_string(), i));
-                }
-            }
-            _ => i += 1,
-        }
-    }
-
-    None
+    nova_build_model::groovy_scan::extract_balanced_parens(contents, open_paren_index)
 }
 
 fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(String, usize)> {
-    let bytes = contents.as_bytes();
-    if bytes.get(open_brace_index) != Some(&b'{') {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    let mut state = GroovyStringState::default();
-
-    let mut i = open_brace_index;
-    while i < bytes.len() {
-        if let Some(next) = state.advance(bytes, i) {
-            i = next;
-            continue;
-        }
-
-        match bytes[i] {
-            b'{' => {
-                depth += 1;
-                i += 1;
-            }
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-                if depth == 0 {
-                    let body = &contents[open_brace_index + 1..i - 1];
-                    return Some((body.to_string(), i));
-                }
-            }
-            _ => i += 1,
-        }
-    }
-
-    None
+    nova_build_model::groovy_scan::extract_balanced_braces(contents, open_brace_index)
 }
 
 fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
-    let keyword = keyword.trim();
-    if keyword.is_empty() {
-        return Vec::new();
-    }
-
-    let bytes = contents.as_bytes();
-    let kw_bytes = keyword.as_bytes();
-    let mut out = Vec::new();
-
-    let mut state = GroovyStringState::default();
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        if let Some(next) = state.advance(bytes, i) {
-            i = next;
-            continue;
-        }
-
-        if i + kw_bytes.len() <= bytes.len() && &bytes[i..i + kw_bytes.len()] == kw_bytes {
-            let prev_ok = i == 0
-                || !bytes[i - 1].is_ascii_alphanumeric()
-                    && bytes[i - 1] != b'_'
-                    && bytes[i - 1] != b'.';
-            let next_ok = i + kw_bytes.len() == bytes.len()
-                || !bytes[i + kw_bytes.len()].is_ascii_alphanumeric()
-                    && bytes[i + kw_bytes.len()] != b'_';
-            if prev_ok && next_ok {
-                out.push(i);
-                i += kw_bytes.len();
-                continue;
-            }
-        }
-
-        i += 1;
-    }
-
-    out
+    nova_build_model::groovy_scan::find_keyword_positions_outside_strings(contents, keyword)
 }
 
 fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
@@ -2164,24 +1793,9 @@ fn extract_named_brace_blocks(contents: &str, keyword: &str) -> Vec<String> {
 }
 
 fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start: usize) -> String {
-    // Groovy allows method calls without parentheses:
-    //   include ':app', ':lib'
-    // and can span lines after commas:
-    //   include ':app',
-    //           ':lib'
-    let len = contents.len();
-    let mut cursor = start;
-
-    loop {
-        let rest = &contents[cursor..];
-        let line_break = rest.find('\n').map(|off| cursor + off).unwrap_or(len);
-        let line = &contents[cursor..line_break];
-        if line.trim_end().ends_with(',') && line_break < len {
-            cursor = line_break + 1;
-            continue;
-        }
-        return contents[start..line_break].to_string();
-    }
+    nova_build_model::groovy_scan::extract_unparenthesized_args_until_eol_or_continuation(
+        contents, start,
+    )
 }
 
 fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<String, String> {

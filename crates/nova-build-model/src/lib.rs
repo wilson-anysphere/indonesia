@@ -3,6 +3,7 @@
 mod build_files;
 mod generated_roots_snapshot;
 mod gradle_snapshot;
+pub mod groovy_scan;
 mod model;
 pub mod package;
 
