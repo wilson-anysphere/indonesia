@@ -2278,7 +2278,15 @@ mod bazel_use_bsp_env_tests {
     fn bazel_use_bsp_from_env_parses_false_values_with_optional_quotes() {
         let _lock = crate::test_support::env_lock();
 
-        for raw in ["0", "false", "FALSE", r#""0""#, r#""false""#, "'0'", "'false'"] {
+        for raw in [
+            "0",
+            "false",
+            "FALSE",
+            r#""0""#,
+            r#""false""#,
+            "'0'",
+            "'false'",
+        ] {
             let _guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some(raw));
             assert!(
                 !bazel_use_bsp_from_env(),

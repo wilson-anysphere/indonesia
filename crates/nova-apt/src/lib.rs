@@ -468,7 +468,9 @@ impl From<CachedDiagnosticSeverity> for nova_core::BuildDiagnosticSeverity {
         match value {
             CachedDiagnosticSeverity::Error => nova_core::BuildDiagnosticSeverity::Error,
             CachedDiagnosticSeverity::Warning => nova_core::BuildDiagnosticSeverity::Warning,
-            CachedDiagnosticSeverity::Information => nova_core::BuildDiagnosticSeverity::Information,
+            CachedDiagnosticSeverity::Information => {
+                nova_core::BuildDiagnosticSeverity::Information
+            }
             CachedDiagnosticSeverity::Hint => nova_core::BuildDiagnosticSeverity::Hint,
         }
     }
@@ -1760,8 +1762,10 @@ impl AptManager {
             return None;
         }
 
-        let mut options = LoadOptions::default();
-        options.nova_config = self.config.clone();
+        let options = LoadOptions {
+            nova_config: self.config.clone(),
+            ..Default::default()
+        };
 
         let model =
             load_workspace_model_with_options(&self.project.workspace_root, &options).ok()?;

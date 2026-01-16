@@ -90,7 +90,9 @@ impl From<&nova_core::BuildDiagnostic> for CachedDiagnostic {
             severity: match value.severity {
                 nova_core::BuildDiagnosticSeverity::Error => CachedDiagnosticSeverity::Error,
                 nova_core::BuildDiagnosticSeverity::Warning => CachedDiagnosticSeverity::Warning,
-                nova_core::BuildDiagnosticSeverity::Information => CachedDiagnosticSeverity::Information,
+                nova_core::BuildDiagnosticSeverity::Information => {
+                    CachedDiagnosticSeverity::Information
+                }
                 nova_core::BuildDiagnosticSeverity::Hint => CachedDiagnosticSeverity::Hint,
             },
             message: value.message.clone(),

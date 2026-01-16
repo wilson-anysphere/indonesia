@@ -863,9 +863,9 @@ fn build_symbols(
                         );
                     }
                     nova_hir::item_tree::Member::Initializer(_) => {}
-                    nova_hir::item_tree::Member::Type(item) => collect_item_symbols(
-                        tree, *item, line_index, text, path, out,
-                    ),
+                    nova_hir::item_tree::Member::Type(item) => {
+                        collect_item_symbols(tree, *item, line_index, text, path, out)
+                    }
                 }
             }
         }
@@ -889,14 +889,7 @@ fn build_symbols(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Interface(id) => {
                     let data = tree.interface(id);
@@ -908,14 +901,7 @@ fn build_symbols(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Enum(id) => {
                     let data = tree.enum_(id);
@@ -927,14 +913,7 @@ fn build_symbols(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Record(id) => {
                     let data = tree.record(id);
@@ -946,14 +925,7 @@ fn build_symbols(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
                 nova_hir::item_tree::Item::Annotation(id) => {
                     let data = tree.annotation(id);
@@ -965,14 +937,7 @@ fn build_symbols(
                         path,
                         data.name_range.start,
                     );
-                    collect_member_symbols(
-                        tree,
-                        &data.members,
-                        line_index,
-                        text,
-                        path,
-                        out,
-                    );
+                    collect_member_symbols(tree, &data.members, line_index, text, path, out);
                 }
             }
         }
