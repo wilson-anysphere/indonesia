@@ -88,7 +88,9 @@ impl std::fmt::Display for PathToUriError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PathToUriError::NonUtf8Path => f.write_str("path is not valid UTF-8"),
-            PathToUriError::InvalidUri => f.write_str("path could not be converted into a valid URI"),
+            PathToUriError::InvalidUri => {
+                f.write_str("path could not be converted into a valid URI")
+            }
             PathToUriError::UnsupportedWindowsPath => f.write_str("unsupported Windows path"),
         }
     }
@@ -436,7 +438,10 @@ mod tests {
     #[cfg(not(windows))]
     fn unix_file_uri_allows_percent_encoded_reserved_chars() {
         let path = file_uri_to_path("file:///tmp/a%3Fb.java").unwrap();
-        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/tmp/a?b.java")).unwrap());
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from("/tmp/a?b.java")).unwrap()
+        );
     }
 
     #[test]

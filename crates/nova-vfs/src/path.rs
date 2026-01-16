@@ -309,9 +309,9 @@ fn percent_encode_archive_entry(entry: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
     let bytes = entry.as_bytes();
-    let needs_encoding = bytes.iter().any(|&b| {
-        !(is_unreserved(b) || is_sub_delim(b) || matches!(b, b'/' | b':' | b'@'))
-    });
+    let needs_encoding = bytes
+        .iter()
+        .any(|&b| !(is_unreserved(b) || is_sub_delim(b) || matches!(b, b'/' | b':' | b'@')));
     if !needs_encoding {
         return entry.to_string();
     }
@@ -652,6 +652,28 @@ mod tests {
     }
 
     #[test]
+    fn jar_uri_entry_allows_percent_encoded_query_and_fragment_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+        let abs = AbsPathBuf::new(archive_path.clone()).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+
+        let parsed = VfsPath::uri(format!("jar:{archive_uri}!/com/example/A%3FB%23C.class"));
+        assert_eq!(
+            parsed,
+            VfsPath::jar(archive_path.clone(), "/com/example/A?B#C.class")
+        );
+
+        let jar = VfsPath::jar(archive_path, "/com/example/A?B#C.class");
+        let uri = jar.to_uri().expect("jar uri");
+        assert!(
+            uri.contains("A%3FB%23C.class"),
+            "expected percent-encoded reserved chars in uri: {uri:?}"
+        );
+        assert_eq!(VfsPath::uri(uri), jar);
+    }
+
+    #[test]
     fn jar_uri_entry_unicode_roundtrips_via_percent_encoding() {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("lib.jar");
@@ -729,7 +751,10 @@ mod tests {
     #[cfg(not(windows))]
     fn file_uri_localhost_is_case_insensitive() {
         let uri = "file://LOCALHOST/tmp/A.java";
-        assert_eq!(VfsPath::uri(uri), VfsPath::Local(PathBuf::from("/tmp/A.java")));
+        assert_eq!(
+            VfsPath::uri(uri),
+            VfsPath::Local(PathBuf::from("/tmp/A.java"))
+        );
     }
 
     #[test]
