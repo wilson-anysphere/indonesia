@@ -3046,8 +3046,121 @@ fn parse_gradle_dependencies_from_text(
                 &string_ranges,
             ));
         }
+
+        deps.extend(resolve_gradle_add_call_dependencies(
+            contents,
+            version_catalog,
+            gradle_properties,
+            &string_ranges,
+        ));
     }
     sort_dedup_dependencies(&mut deps);
+    deps
+}
+
+fn resolve_gradle_add_call_dependencies(
+    contents: &str,
+    version_catalog: Option<&GradleVersionCatalog>,
+    gradle_properties: &GradleProperties,
+    string_ranges: &[Range<usize>],
+) -> Vec<Dependency> {
+    static RE_ADD_GAV: OnceLock<Regex> = OnceLock::new();
+    static RE_ADD_LIB_DOT: OnceLock<Regex> = OnceLock::new();
+    static RE_ADD_LIB_BRACKET: OnceLock<Regex> = OnceLock::new();
+
+    let re_add_gav = RE_ADD_GAV.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
+        ))
+        .expect("valid regex")
+    });
+
+    let re_add_lib_dot = RE_ADD_LIB_DOT.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
+        ))
+        .expect("valid regex")
+    });
+
+    let re_add_lib_bracket = RE_ADD_LIB_BRACKET.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?:dependencies\s*\.\s*)?add\s*\(\s*['"](?P<config>{configs})['"]\s*,\s*{wrappers}libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
+        ))
+        .expect("valid regex")
+    });
+
+    let mut deps = Vec::new();
+    for caps in re_add_gav.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), string_ranges) {
+            continue;
+        }
+        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = gradle_scope_from_configuration(config).map(str::to_string);
+        let version = caps
+            .name("version")
+            .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
+        let classifier = caps
+            .name("classifier")
+            .map(|m| m.as_str().trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let type_ = caps
+            .name("type")
+            .map(|m| m.as_str().trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        deps.push(Dependency {
+            group_id: caps["group"].to_string(),
+            artifact_id: caps["artifact"].to_string(),
+            version,
+            scope,
+            classifier,
+            type_,
+        });
+    }
+
+    let Some(version_catalog) = version_catalog else {
+        return deps;
+    };
+
+    for re in [re_add_lib_dot, re_add_lib_bracket] {
+        for caps in re.captures_iter(contents) {
+            let Some(m0) = caps.get(0) else {
+                continue;
+            };
+            if is_index_inside_string_ranges(m0.start(), string_ranges) {
+                continue;
+            }
+            let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
+                continue;
+            };
+
+            let scope = gradle_scope_from_configuration(config).map(str::to_string);
+            let mut resolved = resolve_version_catalog_reference(version_catalog, reference);
+            for dep in &mut resolved {
+                dep.scope = scope.clone();
+                if let Some(v) = dep.version.as_deref() {
+                    dep.version = resolve_gradle_dependency_version(v, gradle_properties);
+                }
+            }
+            deps.extend(resolved);
+        }
+    }
+
     deps
 }
 
@@ -4217,6 +4330,7 @@ dependencies {
     implementation("com.example:ignored:1")
     implementation platform("com.example:ignored2:2")
     implementation group: "com.example", name: "ignored3", version: "3"
+    add("implementation", "com.example:ignored4:4")
   }
   implementation("com.example:kept:4")
 }
@@ -4253,10 +4367,50 @@ dependencies {
             )),
             "constraints map-notation should not contribute dependencies"
         );
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored4".to_string(),
+                Some("4".to_string())
+            )),
+            "constraints add() calls should not contribute dependencies"
+        );
         assert!(got.contains(&(
             "com.example".to_string(),
             "kept".to_string(),
             Some("4".to_string())
+        )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_add_calls() {
+        let script = r#"
+dependencies {
+  add("implementation", "org.example:foo:1.2.3")
+  dependencies.add("testImplementation", platform("org.example:bar:4.5.6@jar"))
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version, d.scope, d.type_))
+            .collect();
+
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "foo".to_string(),
+            Some("1.2.3".to_string()),
+            Some("compile".to_string()),
+            None
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "bar".to_string(),
+            Some("4.5.6".to_string()),
+            Some("test".to_string()),
+            Some("jar".to_string())
         )));
     }
 
