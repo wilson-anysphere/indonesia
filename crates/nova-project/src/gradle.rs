@@ -2443,7 +2443,8 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
         // Java compilation or annotation processing.
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b{configs}\b\s*\(?\s*project\s*\(\s*(?:path\s*[:=]\s*)?['"]([^'"]+)['"][^)]*\)\s*\)?"#,
+            r#"(?i)\b{configs}\b\s*\(?\s*{wrappers}project\s*\(\s*(?:path\s*[:=]\s*)?['"]([^'"]+)['"][^)]*\)\s*\)?"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
@@ -2451,7 +2452,8 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     let re_no_parens = RE_NO_PARENS.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b{configs}\b\s*\(?\s*project\s+(?:path\s*[:=]\s*)?['"]([^'"]+)['"]"#,
+            r#"(?i)\b{configs}\b\s*\(?\s*{wrappers}project\s+(?:path\s*[:=]\s*)?['"]([^'"]+)['"]"#,
+            wrappers = GRADLE_DEPENDENCY_WRAPPER_PREFIX_RE,
         ))
         .expect("valid regex")
     });
@@ -4532,6 +4534,7 @@ dependencies {
 dependencies {
     implementation project(':lib')
     implementation(project(":lib2"))
+    implementation(platform(project(":libWrapped")))
 
     // Groovy map notation.
     implementation project(path: ':lib3')
@@ -4554,11 +4557,19 @@ dependencies {
         let deps = parse_gradle_project_dependencies_from_text(&stripped);
         let got: BTreeSet<_> = deps.into_iter().collect();
 
-        let expected: BTreeSet<String> =
-            [":lib", ":lib2", ":lib3", ":lib4", ":lib5", ":lib6", ":lib7"]
-                .into_iter()
-                .map(str::to_string)
-                .collect();
+        let expected: BTreeSet<String> = [
+            ":lib",
+            ":lib2",
+            ":libWrapped",
+            ":lib3",
+            ":lib4",
+            ":lib5",
+            ":lib6",
+            ":lib7",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
 
         assert_eq!(got, expected);
     }
