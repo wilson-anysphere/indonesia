@@ -2995,21 +2995,21 @@ fn resolve_version_catalog_dependencies(
     let re_dot = RE_DOT.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
     let re_bracket = RE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?\s*(?:\)|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
     let re_bundle_bracket = RE_BUNDLE_BRACKET.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?\s*(?:\)|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?(?:\s*\)|\s*,|\s|$)"#,
         ))
         .expect("valid regex")
     });
@@ -4349,6 +4349,61 @@ dependencies {
     implementation(libs["foo-bar"].get())
     testImplementation(libs.bundles["test"].get())
  }
+"#;
+
+        let deps =
+            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))
+            .collect();
+
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "foo-bar".to_string(),
+            Some("1.0.0".to_string()),
+            Some("compile".to_string())
+        )));
+        assert!(got.contains(&(
+            "junit".to_string(),
+            "junit".to_string(),
+            Some("4.13.2".to_string()),
+            Some("test".to_string())
+        )));
+        assert!(got.contains(&(
+            "com.google.guava".to_string(),
+            "guava".to_string(),
+            Some("32.0.0".to_string()),
+            Some("test".to_string())
+        )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_version_catalog_wrappers_and_no_parens() {
+        let gradle_properties = GradleProperties::new();
+
+        let catalog_toml = r#"
+[versions]
+guava = "32.0.0"
+junit = "4.13.2"
+
+[libraries]
+foo-bar = { module = "com.example:foo-bar", version = "1.0.0" }
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+junit = { module = "junit:junit", version = { ref = "junit" } }
+
+[bundles]
+test = ["junit", "guava"]
+"#;
+        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
+            .expect("parse catalog");
+
+        let build_script = r#"
+dependencies {
+  implementation platform(libs["foo-bar"].get())
+  testImplementation(platform(libs.bundles.test))
+  testImplementation enforcedPlatform(libs.guava)
+}
 "#;
 
         let deps =
