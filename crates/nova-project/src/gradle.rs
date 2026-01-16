@@ -2722,6 +2722,7 @@ fn parse_gradle_local_classpath_entries_from_text(
     static FILE_TREE_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
     static FILE_TREE_MAP_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
     static CONFIG_CALL_RE: OnceLock<Regex> = OnceLock::new();
+    static CONFIG_NAME_RE: OnceLock<Regex> = OnceLock::new();
 
     // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
     // parseable without a real Groovy/Kotlin parser.
@@ -2744,6 +2745,10 @@ fn parse_gradle_local_classpath_entries_from_text(
     let config_call_re = CONFIG_CALL_RE.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(r#"(?i)\b(?P<config>{configs})\b"#)).expect("valid regex")
+    });
+    let config_name_re = CONFIG_NAME_RE.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(r#"(?i)^{configs}$"#)).expect("valid regex")
     });
 
     let stripped = strip_gradle_comments(contents);
@@ -2858,6 +2863,92 @@ fn parse_gradle_local_classpath_entries_from_text(
             } else {
                 extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
             };
+
+            for start in find_keyword_outside_strings(&args_expr, "files") {
+                let mut j = start + "files".len();
+                let arg_bytes = args_expr.as_bytes();
+                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= arg_bytes.len() {
+                    continue;
+                }
+
+                let args = if arg_bytes[j] == b'(' {
+                    extract_balanced_parens(&args_expr, j)
+                        .map(|(args, _end)| args)
+                        .unwrap_or_default()
+                } else {
+                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
+                };
+
+                for raw in extract_quoted_strings(&args) {
+                    maybe_add_path(&mut out, module_root, &raw);
+                }
+            }
+
+            for start in find_keyword_outside_strings(&args_expr, "fileTree") {
+                let mut j = start + "fileTree".len();
+                let arg_bytes = args_expr.as_bytes();
+                while j < arg_bytes.len() && arg_bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= arg_bytes.len() {
+                    continue;
+                }
+
+                let args = if arg_bytes[j] == b'(' {
+                    extract_balanced_parens(&args_expr, j)
+                        .map(|(args, _end)| args)
+                        .unwrap_or_default()
+                } else {
+                    extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
+                };
+
+                if let Some(dir) = file_tree_map_dir_arg_re
+                    .captures(&args)
+                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+                {
+                    add_file_tree_dir(&mut out, module_root, dir);
+                    continue;
+                }
+
+                if let Some(dir) = file_tree_dir_arg_re
+                    .captures(&args)
+                    .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+                {
+                    add_file_tree_dir(&mut out, module_root, dir);
+                    continue;
+                }
+
+                if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
+                    add_file_tree_dir(&mut out, module_root, &dir);
+                }
+            }
+        }
+
+        for start in find_keyword_outside_strings(contents, "add") {
+            if is_index_inside_string_ranges(start, &string_ranges) {
+                continue;
+            }
+
+            let mut idx = start + "add".len();
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            if bytes.get(idx) != Some(&b'(') {
+                continue;
+            }
+            let Some((args_expr, _end)) = extract_balanced_parens(contents, idx) else {
+                continue;
+            };
+
+            let Some(config) = extract_quoted_strings(&args_expr).into_iter().next() else {
+                continue;
+            };
+            if !config_name_re.is_match(config.trim()) {
+                continue;
+            }
 
             for start in find_keyword_outside_strings(&args_expr, "files") {
                 let mut j = start + "files".len();
@@ -5438,6 +5529,96 @@ dependencies {
                 .iter()
                 .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
             "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_add_files_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  add("implementation", files("libs/a.jar"))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_add_project_files_method_call() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  dependencies.add("implementation", project.files("libs/a.jar"))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_ignores_add_classpath_files() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  add("classpath", files("libs/a.jar"))
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries.is_empty(),
+            "expected classpath add() to be ignored; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_ignores_add_files_in_constraints_block() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  constraints {
+    add("implementation", files("libs/a.jar"))
+  }
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries.is_empty(),
+            "expected constraints add(files) to be ignored; got: {entries:?}"
         );
     }
 
