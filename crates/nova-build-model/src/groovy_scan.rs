@@ -198,6 +198,20 @@ pub fn gradle_string_literal_ranges(contents: &str) -> Vec<Range<usize>> {
     out
 }
 
+pub fn is_index_inside_string_ranges(idx: usize, ranges: &[Range<usize>]) -> bool {
+    ranges
+        .binary_search_by(|range| {
+            if idx < range.start {
+                std::cmp::Ordering::Greater
+            } else if idx >= range.end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
 pub fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
     let bytes = contents.as_bytes();
     let kw = keyword.as_bytes();

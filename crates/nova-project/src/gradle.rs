@@ -1,10 +1,10 @@
 use std::borrow::Cow;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use nova_build_model::groovy_scan::is_index_inside_string_ranges;
 use nova_build_model::{
     collect_gradle_build_files, is_gradle_marker_root, strip_gradle_comments, BuildFileFingerprint,
     GradleSnapshotFile, GradleSnapshotJavaCompileConfig, GRADLE_SNAPSHOT_REL_PATH,
@@ -1602,20 +1602,6 @@ fn extract_quoted_strings(text: &str) -> Vec<String> {
 
 fn gradle_string_literal_ranges(contents: &str) -> Vec<Range<usize>> {
     nova_build_model::groovy_scan::gradle_string_literal_ranges(contents)
-}
-
-fn is_index_inside_string_ranges(idx: usize, ranges: &[Range<usize>]) -> bool {
-    ranges
-        .binary_search_by(|range| {
-            if idx < range.start {
-                Ordering::Greater
-            } else if idx >= range.end {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
-        })
-        .is_ok()
 }
 
 fn normalize_project_path(project_path: &str) -> String {
