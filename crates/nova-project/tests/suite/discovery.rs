@@ -1671,8 +1671,7 @@ dependencies {
         ..LoadOptions::default()
     };
 
-    let config =
-        load_project_with_options(&workspace_root, &options).expect("load gradle project");
+    let config = load_project_with_options(&workspace_root, &options).expect("load gradle project");
     assert!(
         config.dependencies.iter().any(|d| {
             d.group_id == "com.google.guava"

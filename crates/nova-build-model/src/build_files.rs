@@ -701,6 +701,129 @@ fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start:
     }
 }
 
+#[derive(Default)]
+struct GroovyStringState {
+    in_single: bool,
+    in_double: bool,
+    in_triple_single: bool,
+    in_triple_double: bool,
+    in_slashy: bool,
+    in_dollar_slashy: bool,
+}
+
+impl GroovyStringState {
+    fn is_in_string(&self) -> bool {
+        self.in_single
+            || self.in_double
+            || self.in_triple_single
+            || self.in_triple_double
+            || self.in_slashy
+            || self.in_dollar_slashy
+    }
+
+    fn advance(&mut self, bytes: &[u8], i: usize) -> Option<usize> {
+        let b = *bytes.get(i)?;
+
+        if self.in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                self.in_dollar_slashy = false;
+                return Some(i + 2);
+            }
+
+            if b == b'$'
+                && bytes
+                    .get(i + 1)
+                    .is_some_and(|next| *next == b'$' || *next == b'/')
+            {
+                return Some((i + 2).min(bytes.len()));
+            }
+
+            return Some(i + 1);
+        }
+
+        if self.in_slashy {
+            if b == b'\\' {
+                return Some((i + 2).min(bytes.len()));
+            }
+            if b == b'/' {
+                self.in_slashy = false;
+            }
+            return Some(i + 1);
+        }
+
+        if self.in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                self.in_triple_single = false;
+                return Some(i + 3);
+            }
+            return Some(i + 1);
+        }
+
+        if self.in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                self.in_triple_double = false;
+                return Some(i + 3);
+            }
+            return Some(i + 1);
+        }
+
+        if self.in_single {
+            if b == b'\\' {
+                return Some((i + 2).min(bytes.len()));
+            }
+            if b == b'\'' {
+                self.in_single = false;
+            }
+            return Some(i + 1);
+        }
+
+        if self.in_double {
+            if b == b'\\' {
+                return Some((i + 2).min(bytes.len()));
+            }
+            if b == b'"' {
+                self.in_double = false;
+            }
+            return Some(i + 1);
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            self.in_triple_single = true;
+            return Some(i + 3);
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            self.in_triple_double = true;
+            return Some(i + 3);
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            self.in_dollar_slashy = true;
+            return Some(i + 2);
+        }
+
+        if b == b'/'
+            && is_probable_slashy_string_start(bytes, i)
+            && slashy_string_has_terminator_on_line(bytes, i)
+        {
+            self.in_slashy = true;
+            return Some(i + 1);
+        }
+
+        if b == b'\'' {
+            self.in_single = true;
+            return Some(i + 1);
+        }
+
+        if b == b'"' {
+            self.in_double = true;
+            return Some(i + 1);
+        }
+
+        None
+    }
+}
+
 fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(String, usize)> {
     let bytes = contents.as_bytes();
     if bytes.get(open_paren_index) != Some(&b'(') {
@@ -708,80 +831,16 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     }
 
     let mut depth = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_triple_single = false;
-    let mut in_triple_double = false;
+    let mut state = GroovyStringState::default();
 
     let mut i = open_paren_index;
     while i < bytes.len() {
-        let b = bytes[i];
-
-        if in_triple_single {
-            if bytes[i..].starts_with(b"'''") {
-                in_triple_single = false;
-                i += 3;
-                continue;
-            }
-            i += 1;
+        if let Some(next) = state.advance(bytes, i) {
+            i = next;
             continue;
         }
 
-        if in_triple_double {
-            if bytes[i..].starts_with(b"\"\"\"") {
-                in_triple_double = false;
-                i += 3;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_single {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'\'' {
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if bytes[i..].starts_with(b"'''") {
-            in_triple_single = true;
-            i += 3;
-            continue;
-        }
-
-        if bytes[i..].starts_with(b"\"\"\"") {
-            in_triple_double = true;
-            i += 3;
-            continue;
-        }
-
-        match b {
-            b'\'' => {
-                in_single = true;
-                i += 1;
-            }
-            b'"' => {
-                in_double = true;
-                i += 1;
-            }
+        match bytes[i] {
             b'(' => {
                 depth += 1;
                 i += 1;
@@ -801,28 +860,27 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     None
 }
 
-fn strip_gradle_comments(contents: &str) -> String {
+pub fn strip_gradle_comments(contents: &str) -> String {
     // Best-effort comment stripping to avoid parsing commented-out `includeBuild` lines.
     //
     // This is intentionally conservative and only strips:
     // - `// ...` to end-of-line
     // - `/* ... */` block comments
-    // while preserving quoted strings (`'...'` / `"..."` / `'''...'''` / `"""..."""`).
+    // while preserving string literals:
+    // - `'...'` / `"..."` / `'''...'''` / `"""..."""`
+    // - Groovy slashy strings: `/.../`
+    // - Groovy dollar slashy strings: `$/.../$`
     let bytes = contents.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
 
+    let mut state = GroovyStringState::default();
     let mut i = 0;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_triple_single = false;
-    let mut in_triple_double = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
     while i < bytes.len() {
-        let b = bytes[i];
-
         if in_line_comment {
+            let b = bytes[i];
             if b == b'\n' {
                 in_line_comment = false;
                 out.push(b'\n');
@@ -832,6 +890,7 @@ fn strip_gradle_comments(contents: &str) -> String {
         }
 
         if in_block_comment {
+            let b = bytes[i];
             if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
                 in_block_comment = false;
                 i += 2;
@@ -841,105 +900,99 @@ fn strip_gradle_comments(contents: &str) -> String {
             continue;
         }
 
-        if in_triple_single {
-            out.push(b);
-            if bytes[i..].starts_with(b"'''") {
-                in_triple_single = false;
-                out.extend_from_slice(b"''");
-                i += 3;
-                continue;
-            }
-            i += 1;
+        if state.is_in_string() {
+            let next = state
+                .advance(bytes, i)
+                .unwrap_or_else(|| (i + 1).min(bytes.len()));
+            out.extend_from_slice(&bytes[i..next]);
+            i = next;
             continue;
         }
 
-        if in_triple_double {
-            out.push(b);
-            if bytes[i..].starts_with(b"\"\"\"") {
-                in_triple_double = false;
-                out.extend_from_slice(b"\"\"");
-                i += 3;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_single {
-            out.push(b);
-            if b == b'\\' {
-                if let Some(next) = bytes.get(i + 1) {
-                    out.push(*next);
-                    i += 2;
-                    continue;
-                }
-            } else if b == b'\'' {
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double {
-            out.push(b);
-            if b == b'\\' {
-                if let Some(next) = bytes.get(i + 1) {
-                    out.push(*next);
-                    i += 2;
-                    continue;
-                }
-            } else if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
             in_line_comment = true;
             i += 2;
             continue;
         }
 
-        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
             in_block_comment = true;
             i += 2;
             continue;
         }
 
-        if bytes[i..].starts_with(b"'''") {
-            in_triple_single = true;
-            out.extend_from_slice(b"'''");
-            i += 3;
+        if let Some(next) = state.advance(bytes, i) {
+            out.extend_from_slice(&bytes[i..next]);
+            i = next;
             continue;
         }
 
-        if bytes[i..].starts_with(b"\"\"\"") {
-            in_triple_double = true;
-            out.extend_from_slice(b"\"\"\"");
-            i += 3;
-            continue;
-        }
-
-        if b == b'\'' {
-            in_single = true;
-            out.push(b'\'');
-            i += 1;
-            continue;
-        }
-
-        if b == b'"' {
-            in_double = true;
-            out.push(b'"');
-            i += 1;
-            continue;
-        }
-
-        out.push(b);
+        out.push(bytes[i]);
         i += 1;
     }
 
     String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
+}
+
+fn slashy_string_has_terminator_on_line(bytes: &[u8], start: usize) -> bool {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\n' {
+            return false;
+        }
+        if b == b'\\' {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if b == b'/' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_probable_slashy_string_start(bytes: &[u8], idx: usize) -> bool {
+    // Best-effort heuristic for Groovy "slashy" strings (`/.../`).
+    //
+    // Slashy strings are ambiguous with division operators (`a / b`). We bias toward treating `/`
+    // as division when it follows an expression end (`foo /`, `) /`, etc), and toward strings
+    // otherwise. This is intentionally conservative: we only use it to avoid interpreting comment
+    // markers or Gradle keywords inside slashy strings.
+    if bytes.get(idx) != Some(&b'/') {
+        return false;
+    }
+
+    // Exclude comment starters.
+    match bytes.get(idx + 1) {
+        Some(b'/') | Some(b'*') | None => return false,
+        _ => {}
+    }
+
+    let mut j = idx;
+    while j > 0 {
+        let prev = bytes[j - 1];
+        if prev.is_ascii_whitespace() {
+            j -= 1;
+            continue;
+        }
+
+        // If the previous token looks like it could end an expression, treat this `/` as division.
+        if prev.is_ascii_alphanumeric()
+            || prev == b'_'
+            || prev == b')'
+            || prev == b']'
+            || prev == b'}'
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    // Start of file.
+    true
 }
 
 fn is_word_byte(b: u8) -> bool {
@@ -955,80 +1008,11 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
     }
 
     let mut out = Vec::new();
-
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_triple_single = false;
-    let mut in_triple_double = false;
+    let mut state = GroovyStringState::default();
     let mut i = 0usize;
     while i < bytes.len() {
-        let b = bytes[i];
-
-        if in_triple_single {
-            if bytes[i..].starts_with(b"'''") {
-                in_triple_single = false;
-                i += 3;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_triple_double {
-            if bytes[i..].starts_with(b"\"\"\"") {
-                in_triple_double = false;
-                i += 3;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_single {
-            if b == b'\\' {
-                i = (i + 2).min(bytes.len());
-                continue;
-            }
-            if b == b'\'' {
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double {
-            if b == b'\\' {
-                i = (i + 2).min(bytes.len());
-                continue;
-            }
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if bytes[i..].starts_with(b"'''") {
-            in_triple_single = true;
-            i += 3;
-            continue;
-        }
-
-        if bytes[i..].starts_with(b"\"\"\"") {
-            in_triple_double = true;
-            i += 3;
-            continue;
-        }
-
-        if b == b'\'' {
-            in_single = true;
-            i += 1;
-            continue;
-        }
-
-        if b == b'"' {
-            in_double = true;
-            i += 1;
+        if let Some(next) = state.advance(bytes, i) {
+            i = next;
             continue;
         }
 
@@ -1710,6 +1694,53 @@ mod tests {
         let contents = r#"
             println("includeBuild('../ignored')")
             includeBuild('../included')
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_inside_slashy_strings() {
+        let contents = r#"
+            def ignored = /includeBuild("../ignored")/
+            def ignored2 = $/includeBuild("../ignored2")/$
+            includeBuild("../included")
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_comment_markers_inside_slashy_strings() {
+        let contents = r#"
+            // The `\/\/` escapes ensure these are still inside the slashy string.
+            def ignored = /includeBuild("../ignored") \/\/ not a comment/
+            def ignored2 = /includeBuild("../ignored2") \/\* not a comment \*\/ /
+            def ignored3 = $/includeBuild("../ignored3") // not a comment/$
+            def ignored4 = $/includeBuild("../ignored4") /* not a comment */ /$
+            includeBuild("../included")
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_in_comments_after_division() {
+        let contents = r#"
+            // Regression: a division operator should not be misclassified as a slashy string start,
+            // otherwise comment stripping can fail and we may parse commented-out includeBuild calls.
+            def ratio = 1 / 2 // includeBuild("../ignored-line")
+            def ratio2 = 1 / 2 /* includeBuild("../ignored-block") */
+            includeBuild("../included")
         "#;
 
         assert_eq!(

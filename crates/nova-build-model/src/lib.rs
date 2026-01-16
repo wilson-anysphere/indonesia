@@ -8,7 +8,7 @@ pub mod package;
 
 pub use build_files::{
     collect_gradle_build_files, is_gradle_marker_root, parse_gradle_settings_included_builds,
-    BuildFileFingerprint,
+    strip_gradle_comments, BuildFileFingerprint,
 };
 pub use generated_roots_snapshot::*;
 pub use gradle_snapshot::*;

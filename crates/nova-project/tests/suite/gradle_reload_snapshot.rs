@@ -73,7 +73,8 @@ fn reload_project_reloads_on_gradle_snapshot_handoff_change_when_changed_path_us
     fs::write(&snapshot_path, "{}").expect("write gradle snapshot");
 
     let mut options = LoadOptions::default();
-    let config = nova_project::load_project_with_options(&link_root, &options).expect("load project");
+    let config =
+        nova_project::load_project_with_options(&link_root, &options).expect("load project");
     assert_eq!(config.java.source, JavaVersion(11));
     assert_eq!(config.java.target, JavaVersion(11));
 

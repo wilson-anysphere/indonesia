@@ -260,7 +260,11 @@ fn loads_maven_repo_from_mvn_maven_config_resolves_relative_repo_local_to_worksp
 
     // Relative paths should be interpreted relative to the workspace root, since `.mvn/maven.config`
     // behaves like command line args and Maven is typically run from the project root.
-    fs::write(workspace_root.join(".mvn/maven.config"), "-Dmaven.repo.local=relative-m2").unwrap();
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        "-Dmaven.repo.local=relative-m2",
+    )
+    .unwrap();
 
     let config = load_project_with_options(workspace_root, &LoadOptions::default())
         .expect("load maven project");
