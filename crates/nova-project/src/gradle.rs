@@ -2705,34 +2705,29 @@ fn parse_gradle_local_classpath_entries_from_text(
     module_root: &Path,
     contents: &str,
 ) -> Vec<ClasspathEntry> {
-    static FILE_TREE_DIR_RE: OnceLock<Regex> = OnceLock::new();
-    static FILE_TREE_POSITIONAL_RE: OnceLock<Regex> = OnceLock::new();
-    static FILE_TREE_MAP_RE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TREE_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TREE_MAP_DIR_ARG_RE: OnceLock<Regex> = OnceLock::new();
 
     // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
-    // parseable without a real Groovy/Kotlin parser. We rely on "exists on disk" checks to
-    // avoid false positives.
-    let file_tree_dir_re = FILE_TREE_DIR_RE.get_or_init(|| {
+    // parseable without a real Groovy/Kotlin parser.
+    //
+    // We first extract a `fileTree(...)` argument list using the Groovy-aware balanced-parens
+    // scanner, then apply small regexes *within that argument list* to pull out the `dir` value.
+    // This avoids false negatives caused by `)` inside quoted strings.
+    let file_tree_dir_arg_re = FILE_TREE_DIR_ARG_RE.get_or_init(|| {
         Regex::new(
-            r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*(?:[:=])\s*(?:(?:[\w.]+\.)?file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#,
+            r#"(?s)\bdir\s*(?:[:=])\s*(?:(?:[\w.]+\.)?file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#,
         )
         .expect("valid regex")
     });
-    let file_tree_positional_re = FILE_TREE_POSITIONAL_RE.get_or_init(|| {
-        Regex::new(r#"(?s)\bfileTree\s*\(\s*['"](?P<dir>[^'"]+)['"]"#).expect("valid regex")
-    });
-    let file_tree_map_re = FILE_TREE_MAP_RE.get_or_init(|| {
+    let file_tree_map_dir_arg_re = FILE_TREE_MAP_DIR_ARG_RE.get_or_init(|| {
         // Kotlin DSL also supports `fileTree(mapOf("dir" to "libs", ...))` style configuration.
-        // We only extract the `"dir" to "..."` value and then add all `*.jar` entries under it.
-        Regex::new(
-            r#"(?s)\bfileTree\s*\(\s*mapOf\s*\(\s*.*?['"]dir['"]\s*to\s*(?:file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#,
-        )
-        .expect("valid regex")
+        Regex::new(r#"(?s)['"]dir['"]\s*to\s*(?:file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#)
+            .expect("valid regex")
     });
 
     let contents = strip_gradle_comments(contents);
     let contents = contents.as_str();
-    let string_ranges = gradle_string_literal_ranges(contents);
 
     let mut out = Vec::new();
 
@@ -2830,39 +2825,43 @@ fn parse_gradle_local_classpath_entries_from_text(
         }
     };
 
-    for caps in file_tree_dir_re.captures_iter(contents) {
-        let Some(m0) = caps.get(0) else {
-            continue;
-        };
-        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+    // `fileTree(...)` calls (named args, mapOf, or positional `"libs"` form).
+    for start in find_keyword_outside_strings(contents, "fileTree") {
+        let mut idx = start + "fileTree".len();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
             continue;
         }
-        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
-            add_file_tree_dir(dir);
-        }
-    }
 
-    for caps in file_tree_positional_re.captures_iter(contents) {
-        let Some(m0) = caps.get(0) else {
-            continue;
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
-        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
-            continue;
-        }
-        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
-            add_file_tree_dir(dir);
-        }
-    }
 
-    for caps in file_tree_map_re.captures_iter(contents) {
-        let Some(m0) = caps.get(0) else {
-            continue;
-        };
-        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+        if let Some(dir) = file_tree_map_dir_arg_re
+            .captures(&args)
+            .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+        {
+            add_file_tree_dir(dir);
             continue;
         }
-        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
+
+        if let Some(dir) = file_tree_dir_arg_re
+            .captures(&args)
+            .and_then(|caps| caps.name("dir").map(|m| m.as_str()))
+        {
             add_file_tree_dir(dir);
+            continue;
+        }
+
+        if let Some(dir) = extract_quoted_strings(&args).into_iter().next() {
+            add_file_tree_dir(&dir);
         }
     }
 
@@ -4770,6 +4769,29 @@ def ignored2 = $/fileTree(dir: "libs", include: ["*.jar"])/$
         let script = r#"
 dependencies {
   implementation files('libs/a) b.jar')
+}
+"#;
+
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, script);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_handles_parens_inside_file_tree_dir_string_literal() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs").join("a) b")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a) b").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let script = r#"
+dependencies {
+  implementation fileTree(dir: "libs/a) b", include: ["*.jar"])
 }
 "#;
 
