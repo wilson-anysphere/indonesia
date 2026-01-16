@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     net::IpAddr,
     path::PathBuf,
     process::Stdio,
@@ -207,7 +208,7 @@ where
     let (initialized_tx, initialized_rx) = watch::channel(false);
 
     let writer_shutdown = server_shutdown.clone();
-    let mut writer_task = tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         let mut writer = DapWriter::new(writer);
         let mut lo_enabled = true;
         loop {
@@ -330,13 +331,7 @@ where
 
     drop(out_tx);
     // The writer can block indefinitely if the client isn't reading. Avoid deadlocking shutdown.
-    tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(2)) => {
-            writer_task.abort();
-            let _ = writer_task.await;
-        }
-        _ = &mut writer_task => {}
-    }
+    join_or_abort(writer_task, Duration::from_secs(2), None).await;
     Ok(())
 }
 
@@ -1207,34 +1202,19 @@ async fn handle_request_inner(
                 source_roots,
                 attach_timeout,
             );
-            let dbg = tokio::select! {
-                _ = cancel.cancelled() => {
-                    if let Some(tx) = launch_outcome_tx.take() {
-                        let _ = tx.send(Some(false));
-                    }
-                    terminate_existing_process(launched_process).await;
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string())).await;
-                    return;
-                }
-                res = attach_fut => match res {
-                    Ok(dbg) => dbg,
-                    Err(err) => {
-                       if let Some(tx) = launch_outcome_tx.take() {
-                           let _ = tx.send(Some(false));
-                       }
-                       terminate_existing_process(launched_process).await;
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some(format!("failed to attach to {attach_target_label}: {err}")),
-                        )
-                        .await;
-                        return;
-                    }
-                }
+            let Some(dbg) = attach_debugger_or_respond(
+                cancel,
+                &attach_target_label,
+                attach_fut,
+                request,
+                out_tx,
+                seq,
+                launched_process,
+                &mut launch_outcome_tx,
+            )
+            .await
+            else {
+                return;
             };
 
             {
@@ -1984,34 +1964,19 @@ async fn handle_request_inner(
                 source_roots,
                 attach_timeout,
             );
-            let dbg = tokio::select! {
-                _ = cancel.cancelled() => {
-                    if let Some(tx) = launch_outcome_tx.take() {
-                        let _ = tx.send(Some(false));
-                    }
-                    terminate_existing_process(launched_process).await;
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string())).await;
-                    return;
-                }
-                res = attach_fut => match res {
-                    Ok(dbg) => dbg,
-                    Err(err) => {
-                        if let Some(tx) = launch_outcome_tx.take() {
-                            let _ = tx.send(Some(false));
-                        }
-                        terminate_existing_process(launched_process).await;
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some(format!("failed to attach to {attach_target_label}: {err}")),
-                        )
-                        .await;
-                        return;
-                    }
-                }
+            let Some(dbg) = attach_debugger_or_respond(
+                cancel,
+                &attach_target_label,
+                attach_fut,
+                request,
+                out_tx,
+                seq,
+                launched_process,
+                &mut launch_outcome_tx,
+            )
+            .await
+            else {
+                return;
             };
 
             {
@@ -4300,7 +4265,10 @@ async fn handle_request_inner(
                 seq,
                 request,
                 true,
-                Some(serde_json::to_value(result).unwrap_or_else(|_| json!({}))),
+                Some(
+                    serde_json::to_value(result)
+                        .unwrap_or_else(|_| Value::Object(serde_json::Map::new())),
+                ),
                 None,
             )
             .await;
@@ -4448,6 +4416,64 @@ async fn handle_request_inner(
                 Some(format!("unhandled request {}", request.command)),
             )
             .await;
+        }
+    }
+}
+
+async fn attach_debugger_or_respond(
+    cancel: &CancellationToken,
+    attach_target_label: &str,
+    attach_fut: impl Future<Output = std::result::Result<Debugger, DebuggerError>>,
+    request: &Request,
+    out_tx: &OutgoingSender,
+    seq: &Arc<AtomicI64>,
+    launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
+    launch_outcome_tx: &mut Option<watch::Sender<Option<bool>>>,
+) -> Option<Debugger> {
+    async fn fail_launch(
+        request: &Request,
+        out_tx: &OutgoingSender,
+        seq: &Arc<AtomicI64>,
+        launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
+        launch_outcome_tx: &mut Option<watch::Sender<Option<bool>>>,
+        message: String,
+    ) {
+        if let Some(tx) = launch_outcome_tx.take() {
+            let _ = tx.send(Some(false));
+        }
+        terminate_existing_process(launched_process).await;
+        send_response(out_tx, seq, request, false, None, Some(message)).await;
+    }
+
+    match crate::async_util::cancellable(cancel, attach_fut, || {
+        DebuggerError::Jdwp(JdwpError::Cancelled)
+    })
+    .await
+    {
+        Ok(dbg) => Some(dbg),
+        Err(err) if is_cancelled_error(&err) => {
+            fail_launch(
+                request,
+                out_tx,
+                seq,
+                launched_process,
+                launch_outcome_tx,
+                "cancelled".to_string(),
+            )
+            .await;
+            None
+        }
+        Err(err) => {
+            fail_launch(
+                request,
+                out_tx,
+                seq,
+                launched_process,
+                launch_outcome_tx,
+                format!("failed to attach to {attach_target_label}: {err}"),
+            )
+            .await;
+            None
         }
     }
 }
@@ -4953,6 +4979,26 @@ fn spawn_launched_process_exit_task(
     )
 }
 
+async fn join_or_abort<T>(
+    mut handle: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    abort_timeout: Option<Duration>,
+) {
+    if tokio::time::timeout(timeout, &mut handle).await.is_ok() {
+        return;
+    }
+
+    handle.abort();
+    match abort_timeout {
+        Some(timeout) => {
+            let _ = tokio::time::timeout(timeout, handle).await;
+        }
+        None => {
+            let _ = handle.await;
+        }
+    }
+}
+
 async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
     let proc = {
         let mut guard = launched_process.lock().await;
@@ -4962,14 +5008,12 @@ async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedPro
     let Some(proc) = proc else { return };
 
     proc.detach.cancel();
-    let mut monitor = proc.monitor;
-    if tokio::time::timeout(Duration::from_millis(250), &mut monitor)
-        .await
-        .is_err()
-    {
-        monitor.abort();
-        let _ = tokio::time::timeout(Duration::from_millis(250), monitor).await;
-    }
+    join_or_abort(
+        proc.monitor,
+        Duration::from_millis(250),
+        Some(Duration::from_millis(250)),
+    )
+    .await;
 }
 
 async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
@@ -4983,14 +5027,12 @@ async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Launched
     let _ = proc.kill.send(true);
 
     // Reap the process via the monitor task, but don't hang shutdown if it refuses to die.
-    let mut monitor = proc.monitor;
-    if tokio::time::timeout(Duration::from_secs(2), &mut monitor)
-        .await
-        .is_err()
-    {
-        monitor.abort();
-        let _ = tokio::time::timeout(Duration::from_millis(250), monitor).await;
-    }
+    join_or_abort(
+        proc.monitor,
+        Duration::from_secs(2),
+        Some(Duration::from_millis(250)),
+    )
+    .await;
 }
 
 async fn disconnect_debugger(debugger: &Arc<Mutex<Option<Debugger>>>) {
@@ -5012,13 +5054,14 @@ async fn wait_initialized(
             return true;
         }
 
-        tokio::select! {
-            _ = cancel.cancelled() => return false,
-            changed = initialized.changed() => {
-                if changed.is_err() {
-                    return false;
-                }
-            }
+        let changed_ok = crate::async_util::cancellable_value(
+            cancel,
+            async { initialized.changed().await.is_ok() },
+            || false,
+        )
+        .await;
+        if !changed_ok {
+            return false;
         }
     }
 }
@@ -5027,10 +5070,7 @@ async fn lock_or_cancel<'a, T>(
     cancel: &'a CancellationToken,
     mutex: &'a Mutex<T>,
 ) -> Option<tokio::sync::MutexGuard<'a, T>> {
-    tokio::select! {
-        _ = cancel.cancelled() => None,
-        guard = mutex.lock() => Some(guard),
-    }
+    crate::async_util::cancellable_value(cancel, async { Some(mutex.lock().await) }, || None).await
 }
 
 async fn send_event(
@@ -5042,7 +5082,7 @@ async fn send_event(
     let event = event.into();
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event.clone(), body);
-    let value = serde_json::to_value(evt).unwrap_or_else(|_| json!({}));
+    let value = serde_json::to_value(evt).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
 
     if event == "output" {
         match tx.lo.try_send(value) {
@@ -5067,7 +5107,8 @@ async fn send_event(
                             "output": "<output dropped>\\n",
                         })),
                     );
-                    let notice_value = serde_json::to_value(notice).unwrap_or_else(|_| json!({}));
+                    let notice_value = serde_json::to_value(notice)
+                        .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
                     let _ = tx.hi.try_send(notice_value);
                 }
             }
@@ -5109,7 +5150,8 @@ async fn send_response(
     }
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
-    let value = serde_json::to_value(resp).unwrap_or_else(|_| json!({}));
+    let value =
+        serde_json::to_value(resp).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
     if matches!(request.command.as_str(), "disconnect" | "terminate") {
         let _ = tx.shutdown.send(value).await;
     } else {

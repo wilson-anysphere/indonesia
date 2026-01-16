@@ -858,7 +858,8 @@ pub const DEFINED_STAGE0_METHOD_ID: u64 = 0x4009;
 // stream debugger relies on the helper exposing `stage0..stageN` methods (plus an optional
 // `terminal`) so tests can exercise the compile+inject pipeline without requiring a system JDK.
 const DEFINED_STAGE_METHOD_COUNT: u32 = 64;
-const DEFINED_TERMINAL_METHOD_ID: u64 = DEFINED_STAGE0_METHOD_ID + DEFINED_STAGE_METHOD_COUNT as u64;
+const DEFINED_TERMINAL_METHOD_ID: u64 =
+    DEFINED_STAGE0_METHOD_ID + DEFINED_STAGE_METHOD_COUNT as u64;
 const SMART_STEP_METHOD_IDS: [u64; 6] = [
     SMART_STEP_BAR_METHOD_ID,
     SMART_STEP_QUX_METHOD_ID,

@@ -156,7 +156,11 @@ async fn collect_in_scope_locals(
         .method_variable_table_with_generic(location.class_id, location.method_id)
         .await
     {
-        Ok((_argc, vars)) => Some(vars.into_iter().map(VarInfo::from_generic).collect::<Vec<_>>()),
+        Ok((_argc, vars)) => Some(
+            vars.into_iter()
+                .map(VarInfo::from_generic)
+                .collect::<Vec<_>>(),
+        ),
         Err(err) if is_unsupported_command_error(&err) => None,
         Err(err) => return Err(err),
     };
@@ -165,7 +169,11 @@ async fn collect_in_scope_locals(
         .method_variable_table(location.class_id, location.method_id)
         .await
     {
-        Ok((_argc, vars)) => Some(vars.into_iter().map(VarInfo::from_erased).collect::<Vec<_>>()),
+        Ok((_argc, vars)) => Some(
+            vars.into_iter()
+                .map(VarInfo::from_erased)
+                .collect::<Vec<_>>(),
+        ),
         Err(err) if is_unsupported_command_error(&err) => None,
         Err(err) => return Err(err),
     };

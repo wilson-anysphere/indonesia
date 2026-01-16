@@ -24,23 +24,21 @@ use std::{
 #[cfg(test)]
 use std::path::Path;
 
-use nova_jdwp::wire::{
-    inspect, JdwpClient, JdwpError, JdwpValue, ObjectId, ThreadId,
+use crate::javac::{resolve_hot_swap_javac_config, HotSwapJavacConfig};
+use crate::wire_stream_eval::{
+    compile_and_inject_helper_with_compiler, JavacStreamEvalCompiler, StreamEvalCompiler,
+    StreamEvalError, StreamEvalHelper,
 };
+use nova_jdwp::wire::types::{FrameId, Location};
+use nova_jdwp::wire::{inspect, JdwpClient, JdwpError, JdwpValue, ObjectId, ThreadId};
 #[cfg(test)]
 use nova_jdwp::wire::{MethodId, ReferenceTypeId};
-use nova_jdwp::wire::types::{FrameId, Location};
 use nova_scheduler::CancellationToken;
 use nova_stream_debug::{
     StreamAnalysisError, StreamChain, StreamDebugConfig, StreamDebugResult, StreamOperation,
     StreamSample, StreamStepResult, StreamTerminalResult,
 };
 use thiserror::Error;
-use crate::javac::{resolve_hot_swap_javac_config, HotSwapJavacConfig};
-use crate::wire_stream_eval::{
-    compile_and_inject_helper_with_compiler, JavacStreamEvalCompiler, StreamEvalCompiler,
-    StreamEvalError, StreamEvalHelper,
-};
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -87,7 +85,10 @@ impl TemporaryObjectPin {
     pub(crate) async fn release(mut self) {
         let object_id = std::mem::take(&mut self.object_id);
         if object_id != 0 {
-            let _ = self.jdwp.object_reference_enable_collection(object_id).await;
+            let _ = self
+                .jdwp
+                .object_reference_enable_collection(object_id)
+                .await;
         }
     }
 }
@@ -205,36 +206,12 @@ async fn cancellable_jdwp<T>(
     cancel: &CancellationToken,
     fut: impl Future<Output = Result<T, JdwpError>>,
 ) -> Result<T, WireStreamDebugError> {
-    tokio::select! {
-        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-        res = fut => Ok(res?),
-    }
-}
-
-async fn budgeted_jdwp<T>(
-    cancel: &CancellationToken,
-    budget_start: Instant,
-    budget: Duration,
-    fut: impl Future<Output = Result<T, JdwpError>>,
-) -> Result<T, WireStreamDebugError> {
-    if cancel.is_cancelled() {
-        return Err(WireStreamDebugError::Cancelled);
-    }
-
-    let elapsed = budget_start.elapsed();
-    let remaining = budget.checked_sub(elapsed).unwrap_or(Duration::ZERO);
-    if remaining.is_zero() {
-        return Err(WireStreamDebugError::Timeout);
-    }
-
-    tokio::select! {
-        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-        res = tokio::time::timeout(remaining, fut) => match res {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(err)) => Err(err.into()),
-            Err(_elapsed) => Err(WireStreamDebugError::Timeout),
-        }
-    }
+    crate::async_util::cancellable(
+        cancel,
+        async { fut.await.map_err(WireStreamDebugError::from) },
+        || WireStreamDebugError::Cancelled,
+    )
+    .await
 }
 
 fn should_execute_intermediate(op: &StreamOperation, config: &StreamDebugConfig) -> bool {
@@ -288,27 +265,47 @@ fn map_stream_eval_error(err: StreamEvalError) -> WireStreamDebugError {
         StreamEvalError::Jdwp(other) => WireStreamDebugError::Jdwp(other),
         StreamEvalError::Compile(err) => WireStreamDebugError::Compile(err.to_string()),
         StreamEvalError::Io(err) => WireStreamDebugError::Compile(err.to_string()),
-        StreamEvalError::MissingHelperClass(name) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
-            format!("javac did not produce expected helper class `{name}`"),
-        )),
-        StreamEvalError::MissingHelperMethod(name) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
-            format!("injected class did not expose required method `{name}`"),
-        )),
-        StreamEvalError::InvalidStage { stage, len } => WireStreamDebugError::Jdwp(JdwpError::Protocol(
-            format!("invalid stage index {stage} (have {len})"),
-        )),
+        StreamEvalError::MissingHelperClass(name) => {
+            WireStreamDebugError::Jdwp(JdwpError::Protocol(format!(
+                "javac did not produce expected helper class `{name}`"
+            )))
+        }
+        StreamEvalError::MissingHelperMethod(name) => {
+            WireStreamDebugError::Jdwp(JdwpError::Protocol(format!(
+                "injected class did not expose required method `{name}`"
+            )))
+        }
+        StreamEvalError::InvalidStage { stage, len } => WireStreamDebugError::Jdwp(
+            JdwpError::Protocol(format!("invalid stage index {stage} (have {len})")),
+        ),
         StreamEvalError::MissingTerminalMethod => WireStreamDebugError::Jdwp(JdwpError::Protocol(
             "terminal method was not generated".to_string(),
         )),
-        StreamEvalError::InvocationException { method, thrown } => {
-            WireStreamDebugError::Jdwp(JdwpError::Protocol(format!(
-                "helper invocation ({method}) threw {thrown}"
-            )))
-        }
+        StreamEvalError::InvocationException { method, thrown } => WireStreamDebugError::Jdwp(
+            JdwpError::Protocol(format!("helper invocation ({method}) threw {thrown}")),
+        ),
         StreamEvalError::ExpectedObject(value) => WireStreamDebugError::Jdwp(JdwpError::Protocol(
             format!("expected object value, got {value:?}"),
         )),
     }
+}
+
+async fn budgeted_jdwp<T>(
+    cancel: &CancellationToken,
+    budget_start: Instant,
+    budget: Duration,
+    fut: impl Future<Output = Result<T, JdwpError>>,
+) -> Result<T, WireStreamDebugError> {
+    crate::async_util::budgeted_with_timeout(
+        cancel,
+        budget_start,
+        budget,
+        fut,
+        || WireStreamDebugError::Cancelled,
+        || WireStreamDebugError::Timeout,
+        |err| err.into(),
+    )
+    .await
 }
 
 async fn budgeted_eval<T>(
@@ -317,24 +314,16 @@ async fn budgeted_eval<T>(
     budget: Duration,
     fut: impl Future<Output = Result<T, StreamEvalError>>,
 ) -> Result<T, WireStreamDebugError> {
-    if cancel.is_cancelled() {
-        return Err(WireStreamDebugError::Cancelled);
-    }
-
-    let elapsed = budget_start.elapsed();
-    let remaining = budget.checked_sub(elapsed).unwrap_or(Duration::ZERO);
-    if remaining.is_zero() {
-        return Err(WireStreamDebugError::Timeout);
-    }
-
-    tokio::select! {
-        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-        res = tokio::time::timeout(remaining, fut) => match res {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(err)) => Err(map_stream_eval_error(err)),
-            Err(_) => Err(WireStreamDebugError::Timeout),
-        }
-    }
+    crate::async_util::budgeted_with_timeout(
+        cancel,
+        budget_start,
+        budget,
+        fut,
+        || WireStreamDebugError::Cancelled,
+        || WireStreamDebugError::Timeout,
+        map_stream_eval_error,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -346,12 +335,16 @@ async fn resolve_first_frame(
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| WireStreamDebugError::Jdwp(JdwpError::Protocol("no threads available".to_string())))?;
+        .ok_or_else(|| {
+            WireStreamDebugError::Jdwp(JdwpError::Protocol("no threads available".to_string()))
+        })?;
     let frame = cancellable_jdwp(cancel, jdwp.frames(thread, 0, 1))
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| WireStreamDebugError::Jdwp(JdwpError::Protocol("no frames available".to_string())))?;
+        .ok_or_else(|| {
+            WireStreamDebugError::Jdwp(JdwpError::Protocol("no frames available".to_string()))
+        })?;
     Ok((thread, frame.frame_id, frame.location))
 }
 
@@ -388,13 +381,16 @@ async fn setup_stream_eval_helper(
         .map_err(map_stream_eval_error)
     };
 
-    tokio::select! {
-        _ = cancel.cancelled() => Err(WireStreamDebugError::Cancelled),
-        res = tokio::time::timeout(SETUP_TIMEOUT, setup) => match res {
-            Ok(res) => res,
-            Err(_) => Err(WireStreamDebugError::SetupTimeout),
-        }
-    }
+    crate::async_util::budgeted_with_timeout(
+        cancel,
+        Instant::now(),
+        SETUP_TIMEOUT,
+        setup,
+        || WireStreamDebugError::Cancelled,
+        || WireStreamDebugError::SetupTimeout,
+        |err| err,
+    )
+    .await
 }
 
 async fn eval_stage_sample(
@@ -405,7 +401,13 @@ async fn eval_stage_sample(
     helper: &StreamEvalHelper,
     stage: usize,
 ) -> Result<StreamSample, WireStreamDebugError> {
-    let value = budgeted_eval(cancel, eval_started, budget, helper.invoke_stage(jdwp, stage)).await?;
+    let value = budgeted_eval(
+        cancel,
+        eval_started,
+        budget,
+        helper.invoke_stage(jdwp, stage),
+    )
+    .await?;
     let object_id = match value {
         JdwpValue::Object { id, .. } => id,
         other => {
@@ -491,14 +493,7 @@ async fn debug_stream_wire_with_compiler(
 ) -> Result<StreamDebugResult, WireStreamDebugError> {
     let (thread, frame_id, location) = resolve_first_frame(jdwp, cancel).await?;
     debug_stream_wire_in_frame_with_compiler(
-        jdwp,
-        thread,
-        frame_id,
-        location,
-        chain,
-        config,
-        cancel,
-        compiler,
+        jdwp, thread, frame_id, location, chain, config, cancel, compiler,
     )
     .await
 }
@@ -541,7 +536,12 @@ async fn debug_stream_wire_in_frame_with_compiler(
         .terminal
         .as_ref()
         .filter(|term| should_execute_terminal(term, config))
-        .map(|term| format!("{safe_expr}.limit({}).{}", config.max_sample_size, term.call_source));
+        .map(|term| {
+            format!(
+                "{safe_expr}.limit({}).{}",
+                config.max_sample_size, term.call_source
+            )
+        });
 
     // --- Setup phase (excluded from max_total_time) -------------------------
     let javac = resolve_hot_swap_javac_config(cancel, jdwp, None).await;
@@ -774,11 +774,13 @@ pub(crate) async fn stream_sample_from_list_object(
 
         let children = inspector.object_children(list_object_id).await?;
 
-        let returned_size = children.iter().find_map(|child| match (child.name.as_str(), &child.value)
-        {
-            ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
-            _ => None,
-        });
+        let returned_size =
+            children
+                .iter()
+                .find_map(|child| match (child.name.as_str(), &child.value) {
+                    ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
+                    _ => None,
+                });
 
         let mut indexed_children: Vec<(usize, JdwpValue)> = children
             .into_iter()
@@ -1092,10 +1094,10 @@ mod tests {
                 >,
             > {
                 Box::pin(async move {
-                    Err(crate::hot_swap::CompileError::new(
-                        "/tmp/Foo.java:1:1: cannot find symbol",
+                    Err(
+                        crate::hot_swap::CompileError::new("/tmp/Foo.java:1:1: cannot find symbol")
+                            .into(),
                     )
-                    .into())
                 })
             }
         }
@@ -1314,14 +1316,19 @@ mod tests {
         > {
             let delay = self.delay;
             Box::pin(async move {
-                tokio::select! {
-                    _ = cancel.cancelled() => Err(StreamEvalError::Jdwp(JdwpError::Cancelled)),
-                    _ = tokio::time::sleep(delay) => Ok(vec![crate::hot_swap::CompiledClass {
-                        class_name: helper_fqcn.to_string(),
-                        // The mock JDWP server does not validate class bytes.
-                        bytecode: vec![0xCA, 0xFE, 0xBA, 0xBE],
-                    }]),
-                }
+                crate::async_util::cancellable(
+                    cancel,
+                    async {
+                        tokio::time::sleep(delay).await;
+                        Ok(vec![crate::hot_swap::CompiledClass {
+                            class_name: helper_fqcn.to_string(),
+                            // The mock JDWP server does not validate class bytes.
+                            bytecode: vec![0xCA, 0xFE, 0xBA, 0xBE],
+                        }])
+                    },
+                    || StreamEvalError::Jdwp(JdwpError::Cancelled),
+                )
+                .await
             })
         }
     }

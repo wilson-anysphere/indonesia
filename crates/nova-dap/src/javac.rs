@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use nova_build::{BuildManager, DefaultCommandRunner};
@@ -166,12 +166,19 @@ pub(crate) async fn resolve_vm_classpath(
     cancel: &CancellationToken,
     jdwp: &JdwpClient,
 ) -> Option<std::ffi::OsString> {
-    let paths = tokio::select! {
-        _ = cancel.cancelled() => return None,
-        res = tokio::time::timeout(Duration::from_secs(2), jdwp.virtual_machine_class_paths()) => match res {
-            Ok(Ok(paths)) => paths,
-            _ => return None,
-        }
+    let paths = match crate::async_util::budgeted_with_timeout(
+        cancel,
+        Instant::now(),
+        Duration::from_secs(2),
+        jdwp.virtual_machine_class_paths(),
+        || (),
+        || (),
+        |_| (),
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(()) => return None,
     };
 
     let base_dir = PathBuf::from(paths.base_dir);
@@ -219,20 +226,22 @@ async fn resolve_build_java_compile_config(
         }
     });
 
-    let cfg = tokio::select! {
-        _ = cancel.cancelled() => {
+    let cfg = match crate::async_util::budgeted_with_timeout(
+        cancel,
+        Instant::now(),
+        Duration::from_secs(10),
+        async { (&mut handle).await },
+        || (),
+        || (),
+        |_| (),
+    )
+    .await
+    {
+        Ok(Ok(cfg)) => cfg,
+        _ => {
             build_cancel.cancel();
             handle.abort();
             return None;
-        }
-        _ = tokio::time::sleep(Duration::from_secs(10)) => {
-            build_cancel.cancel();
-            handle.abort();
-            return None;
-        }
-        res = &mut handle => match res {
-            Ok(Ok(cfg)) => cfg,
-            _ => return None,
         }
     };
 
@@ -381,28 +390,47 @@ pub(crate) async fn compile_java_to_dir(
         tokio::spawn(async move { read_truncated_and_drain(stderr, MAX_JAVAC_OUTPUT_BYTES).await });
 
     let timeout = Duration::from_secs(30);
-    let status = tokio::select! {
-        _ = cancel.cancelled() => {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    enum WaitOutcome {
+        Cancelled,
+        Timeout,
+        WaitFailed(std::io::Error),
+    }
+
+    async fn kill_and_reap(child: &mut tokio::process::Child) {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    }
+
+    let status = match crate::async_util::budgeted_with_timeout(
+        cancel,
+        Instant::now(),
+        timeout,
+        async { child.wait().await },
+        || WaitOutcome::Cancelled,
+        || WaitOutcome::Timeout,
+        WaitOutcome::WaitFailed,
+    )
+    .await
+    {
+        Ok(status) => status,
+        Err(WaitOutcome::Cancelled) => {
+            kill_and_reap(&mut child).await;
             stdout_task.abort();
             stderr_task.abort();
             return Err(CompileError::new("cancelled"));
         }
-        res = tokio::time::timeout(timeout, child.wait()) => match res {
-            Ok(Ok(status)) => status,
-            Ok(Err(err)) => {
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(CompileError::new(format!("javac failed: {err}")));
-            }
-            Err(_elapsed) => {
-                let _ = child.start_kill();
-                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(CompileError::new(format!("javac timed out after {timeout:?}")));
-            }
+        Err(WaitOutcome::Timeout) => {
+            kill_and_reap(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(CompileError::new(format!(
+                "javac timed out after {timeout:?}"
+            )));
+        }
+        Err(WaitOutcome::WaitFailed(err)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(CompileError::new(format!("javac failed: {err}")));
         }
     };
 

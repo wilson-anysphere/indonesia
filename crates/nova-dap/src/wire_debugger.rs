@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
 use tokio::time::{sleep, Instant};
-use tokio_util::sync::CancellationToken;
 
 use nova_core::Line;
 use nova_db::InMemoryFileStore;
@@ -25,6 +24,7 @@ use nova_jdwp::wire::{
 use crate::breakpoints::map_line_breakpoints;
 use crate::eval_context::EvalOptions;
 use crate::object_registry::{ObjectHandle, ObjectRegistry, OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
+use nova_scheduler::CancellationToken;
 
 /// Internal representation of a DAP `SourceBreakpoint`.
 ///
@@ -355,10 +355,7 @@ async fn cancellable_jdwp<T, F>(
 where
     F: Future<Output = std::result::Result<T, JdwpError>>,
 {
-    tokio::select! {
-        _ = token.cancelled() => Err(JdwpError::Cancelled),
-        res = fut => res,
-    }
+    crate::async_util::cancellable(token, fut, || JdwpError::Cancelled).await
 }
 
 impl Debugger {
@@ -2491,7 +2488,6 @@ impl Debugger {
 
         Ok(crate::stream_debug::StreamDebugBody { analysis, runtime })
     }
-
 
     pub async fn set_variable(
         &mut self,

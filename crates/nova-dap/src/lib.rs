@@ -39,6 +39,8 @@ pub mod eval_context;
 /// Async/Tokio DAP codec helpers (used by the wire-level JDWP adapter).
 pub mod dap_tokio;
 
+pub(crate) mod async_util;
+
 /// Shared `javac` helpers used by hot swap and expression evaluation.
 pub(crate) mod javac;
 

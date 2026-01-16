@@ -25,8 +25,8 @@ use nova_scheduler::CancellationToken;
 use nova_stream_debug::StreamSample;
 use thiserror::Error;
 
-use crate::javac::{apply_stream_eval_defaults, compile_java_for_hot_swap, HotSwapJavacConfig};
 use crate::hot_swap::CompiledClass;
+use crate::javac::{apply_stream_eval_defaults, compile_java_for_hot_swap, HotSwapJavacConfig};
 static STREAM_EVAL_CLASS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
@@ -130,7 +130,8 @@ impl StreamEvalCompiler for JavacStreamEvalCompiler {
         javac: &'a HotSwapJavacConfig,
         source_file: &'a Path,
         _helper_fqcn: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompiledClass>, StreamEvalError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompiledClass>, StreamEvalError>> + Send + 'a>>
+    {
         Box::pin(async move { Ok(compile_java_for_hot_swap(cancel, javac, source_file).await?) })
     }
 }
