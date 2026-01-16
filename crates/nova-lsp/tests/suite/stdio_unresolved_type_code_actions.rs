@@ -1,19 +1,25 @@
-use lsp_types::{CodeAction, Position, Range, Uri};
+use lsp_types::{
+    CodeActionContext, CodeActionOrCommand, CodeActionParams, Diagnostic, NumberOrString,
+    PartialResultParams, Position, Range, TextDocumentIdentifier, Uri, WorkDoneProgressParams,
+};
 use nova_core::{
     LineIndex, Position as CorePosition, Range as CoreRange, TextEdit as CoreTextEdit, TextSize,
 };
-use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use url::Url;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_offers_unresolved_type_import_and_fqn_quick_fixes_for_cursor_at_end() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
@@ -55,88 +61,75 @@ fn stdio_server_offers_unresolved_type_import_and_fqn_quick_fixes_for_cursor_at_
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions with diagnostics context
+    let diagnostic = Diagnostic {
+        range: diag_range,
+        severity: None,
+        code: Some(NumberOrString::String("unresolved-type".to_string())),
+        code_description: None,
+        source: None,
+        message: "unresolved type `List`".to_string(),
+        related_information: None,
+        tags: None,
+        data: None,
+    };
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": selection_range,
-                "context": {
-                    "diagnostics": [{
-                        "range": diag_range,
-                        "code": "unresolved-type",
-                        "message": "unresolved type `List`"
-                    }]
-                }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: selection_range,
+                context: CodeActionContext {
+                    diagnostics: vec![diagnostic],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
-    let actions = code_action_resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("code actions array");
+    let actions: Vec<CodeActionOrCommand> = serde_json::from_value(
+        code_action_resp
+            .get("result")
+            .cloned()
+            .expect("code actions result"),
+    )
+    .expect("decode CodeActionResponse");
 
     let import_action = actions
         .iter()
-        .find(|action| {
-            action
-                .get("title")
-                .and_then(|v| v.as_str())
-                .is_some_and(|title| title == "Import java.util.List")
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) if action.title == "Import java.util.List" => {
+                Some(action.clone())
+            }
+            _ => None,
         })
         .expect("expected import quick fix");
     let fqn_action = actions
         .iter()
-        .find(|action| {
-            action
-                .get("title")
-                .and_then(|v| v.as_str())
-                .is_some_and(|title| title == "Use fully qualified name 'java.util.List'")
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action)
+                if action.title == "Use fully qualified name 'java.util.List'" =>
+            {
+                Some(action.clone())
+            }
+            _ => None,
         })
         .expect("expected FQN quick fix");
-
-    let import_action: CodeAction =
-        serde_json::from_value(import_action.clone()).expect("decode import CodeAction");
-    let fqn_action: CodeAction =
-        serde_json::from_value(fqn_action.clone()).expect("decode fqn CodeAction");
 
     let import_edit = import_action.edit.expect("expected import edit");
     let import_changes = import_edit.changes.expect("expected changes");
@@ -157,12 +150,9 @@ fn stdio_server_offers_unresolved_type_import_and_fqn_quick_fixes_for_cursor_at_
     );
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

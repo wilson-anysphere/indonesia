@@ -1,16 +1,21 @@
-use lsp_types::{CodeAction, Position, Range, Uri};
+use lsp_types::{
+    CodeAction, CodeActionContext, CodeActionParams, PartialResultParams, Position, Range,
+    TextDocumentIdentifier, Uri, WorkDoneProgressParams,
+};
 use nova_core::{
     LineIndex, Position as CorePosition, Range as CoreRange, TextEdit as CoreTextEdit, TextSize,
 };
 use pretty_assertions::assert_eq;
-use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use url::Url;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_resolves_extract_constant_code_action() {
@@ -49,51 +54,34 @@ fn stdio_server_resolves_extract_constant_code_action() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen (so resolution can read the in-memory snapshot)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions for the expression selection
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -132,12 +120,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
     // 4) resolve
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "codeAction/resolve",
-            "params": extract_constant.clone()
-        }),
+        &jsonrpc_request(extract_constant.clone(), 3, "codeAction/resolve"),
     );
 
     let resolve_resp = read_response_with_id(&mut stdout, 3);
@@ -192,12 +175,9 @@ fn stdio_server_resolves_extract_constant_code_action() {
     assert_eq!(updated, expected);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -240,49 +220,32 @@ fn stdio_server_resolves_extract_field_code_action() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -315,12 +278,7 @@ fn stdio_server_resolves_extract_field_code_action() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "codeAction/resolve",
-            "params": extract_field.clone()
-        }),
+        &jsonrpc_request(extract_field.clone(), 3, "codeAction/resolve"),
     );
 
     let resolve_resp = read_response_with_id(&mut stdout, 3);
@@ -369,12 +327,9 @@ fn stdio_server_resolves_extract_field_code_action() {
         "expected original expression to be replaced"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -420,49 +375,32 @@ public final /* 😀 */ class Point {\n\
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -495,12 +433,9 @@ public final /* 😀 */ class Point {\n\
         "expected class declaration to be rewritten"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -544,51 +479,34 @@ fn stdio_server_resolves_extract_variable_code_action() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen (so resolution can read the in-memory snapshot)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions for the expression selection
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -622,12 +540,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
     // 4) resolve
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "codeAction/resolve",
-            "params": extract_variable.clone()
-        }),
+        &jsonrpc_request(extract_variable.clone(), 3, "codeAction/resolve"),
     );
 
     let resolve_resp = read_response_with_id(&mut stdout, 3);
@@ -708,12 +621,9 @@ fn stdio_server_resolves_extract_variable_code_action() {
     );
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -760,51 +670,34 @@ fn stdio_server_does_not_offer_extract_variable_in_try_with_resources_header() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions for the expression selection
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -822,12 +715,9 @@ fn stdio_server_does_not_offer_extract_variable_in_try_with_resources_header() {
     }
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -867,51 +757,34 @@ fn stdio_server_offers_inline_variable_code_actions() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions at cursor
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -945,12 +818,9 @@ fn stdio_server_offers_inline_variable_code_actions() {
     assert_eq!(updated, expected);
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

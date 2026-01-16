@@ -1,14 +1,16 @@
-use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_jsonrpc_message, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_empty, initialized_notification, read_jsonrpc_message,
+    shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_loads_config_from_flag_and_initializes() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
     fs::write(&config_path, "[logging]\nlevel = \"debug\"\n").expect("write config");
@@ -33,28 +35,14 @@ fn stdio_server_loads_config_from_flag_and_initializes() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_jsonrpc_message(&mut stdout);
     assert_eq!(initialize_resp.get("id").and_then(|v| v.as_i64()), Some(1));
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(2));
     let _shutdown_resp = read_jsonrpc_message(&mut stdout);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

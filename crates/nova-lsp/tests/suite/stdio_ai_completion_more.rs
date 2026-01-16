@@ -1,13 +1,30 @@
-use lsp_types::{CompletionItem, CompletionList, Position, TextEdit};
-use nova_lsp::MoreCompletionsResult;
-use serde_json::json;
+use lsp_types::{
+    CompletionItem, CompletionList, CompletionParams, PartialResultParams, Position,
+    TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkDoneProgressParams,
+};
+use serde_json::{Map, Value};
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::support::{file_uri, read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, file_uri, initialize_request_empty,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
+
+fn start_test_ai_completion_server(completion_payload: &str) -> crate::support::TestAiServer {
+    crate::support::TestAiServer::start(Value::Object({
+        let mut resp = Map::new();
+        resp.insert(
+            "completion".to_string(),
+            Value::String(completion_payload.to_string()),
+        );
+        resp
+    }))
+}
 
 #[test]
 fn stdio_server_supports_ai_multi_token_completion_polling() {
@@ -26,8 +43,7 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
     }
     "#;
 
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = start_test_ai_completion_server(completion_payload);
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
@@ -97,44 +113,33 @@ model = "default"
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request baseline completions.
     let cursor = Position::new(8, 15); // end of "stream."
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -158,32 +163,34 @@ model = "default"
         .expect("completion_context_id present on at least one item");
 
     // 4) poll until AI items ready.
-    let mut resolved: Option<MoreCompletionsResult> = None;
+    let mut resolved: Option<(Vec<CompletionItem>, bool)> = None;
     for attempt in 0..50 {
         let request_id = 3 + attempt as i64;
+        let mut params = Map::new();
+        params.insert("context_id".to_string(), Value::String(context_id.clone()));
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "nova/completion/more",
-                "params": { "context_id": context_id.clone() }
-            }),
+            &jsonrpc_request(Value::Object(params), request_id, "nova/completion/more"),
         );
         let resp = read_response_with_id(&mut stdout, request_id);
         let result = resp.get("result").cloned().expect("result");
-        let more: MoreCompletionsResult =
-            serde_json::from_value(result).expect("decode more completions");
-        if !more.is_incomplete {
-            resolved = Some(more);
+        let is_incomplete = result
+            .get("is_incomplete")
+            .and_then(|v| v.as_bool())
+            .expect("is_incomplete");
+        let items: Vec<CompletionItem> =
+            serde_json::from_value(result.get("items").cloned().expect("items"))
+                .expect("decode items");
+        if !is_incomplete {
+            resolved = Some((items, is_incomplete));
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let more = resolved.expect("AI completions should resolve");
+    let (items, _) = resolved.expect("AI completions should resolve");
     assert!(
-        !more.items.is_empty(),
+        !items.is_empty(),
         "expected at least one AI completion item"
     );
     assert!(
@@ -192,15 +199,10 @@ model = "default"
     );
 
     // 5) Resolve an AI completion item to compute its import additionalTextEdits.
-    let unresolved_ai_item = more.items[0].clone();
+    let unresolved_ai_item = items[0].clone();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 999,
-            "method": "completionItem/resolve",
-            "params": unresolved_ai_item
-        }),
+        &jsonrpc_request(unresolved_ai_item, 999, "completionItem/resolve"),
     );
     let resolved_resp = read_response_with_id(&mut stdout, 999);
     let resolved_item: CompletionItem = serde_json::from_value(
@@ -242,12 +244,9 @@ model = "default"
     assert_eq!(insert_pos.character, 0);
 
     // 6) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(100));
     let _shutdown_resp = read_response_with_id(&mut stdout, 100);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -271,8 +270,7 @@ fn stdio_server_does_not_request_ai_completions_when_multi_token_feature_is_disa
     }
     "#;
 
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = start_test_ai_completion_server(completion_payload);
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
@@ -330,42 +328,31 @@ model = "default"
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -394,26 +381,30 @@ model = "default"
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert("context_id".to_string(), Value::String(context_id));
+                params
+            }),
+            3,
+            "nova/completion/more",
+        ),
     );
     let more_resp = read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult =
-        serde_json::from_value(more_result).expect("decode more completions");
-    assert!(!more.is_incomplete);
-    assert!(more.items.is_empty());
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    assert_eq!(
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+        Some(false)
     );
+    let items: Vec<CompletionItem> =
+        serde_json::from_value(more_result.get("items").cloned().expect("items"))
+            .expect("decode items");
+    assert!(items.is_empty());
+
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -438,8 +429,7 @@ fn stdio_server_does_not_request_ai_completions_when_disabled_by_env() {
       ]
     }
     "#;
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = start_test_ai_completion_server(completion_payload);
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
@@ -502,42 +492,31 @@ model = "default"
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -566,30 +545,34 @@ model = "default"
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert("context_id".to_string(), Value::String(context_id));
+                params
+            }),
+            3,
+            "nova/completion/more",
+        ),
     );
     let more_resp = read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult =
-        serde_json::from_value(more_result).expect("decode more completions");
-    assert!(!more.is_incomplete);
-    assert!(more.items.is_empty());
+    assert_eq!(
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let items: Vec<CompletionItem> =
+        serde_json::from_value(more_result.get("items").cloned().expect("items"))
+            .expect("decode items");
+    assert!(items.is_empty());
 
     // Give the server a brief chance to issue any unexpected background requests.
     std::thread::sleep(Duration::from_millis(50));
     ai_server.assert_hits(0);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -612,8 +595,7 @@ fn stdio_server_does_not_request_ai_completions_when_ai_is_disabled_by_env() {
       ]
     }
     "#;
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = start_test_ai_completion_server(completion_payload);
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
@@ -676,42 +658,31 @@ model = "default"
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -740,30 +711,34 @@ model = "default"
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert("context_id".to_string(), Value::String(context_id));
+                params
+            }),
+            3,
+            "nova/completion/more",
+        ),
     );
     let more_resp = read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult =
-        serde_json::from_value(more_result).expect("decode more completions");
-    assert!(!more.is_incomplete);
-    assert!(more.items.is_empty());
+    assert_eq!(
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let items: Vec<CompletionItem> =
+        serde_json::from_value(more_result.get("items").cloned().expect("items"))
+            .expect("decode items");
+    assert!(items.is_empty());
 
     // Give the server a brief chance to issue any unexpected background requests.
     std::thread::sleep(Duration::from_millis(50));
     ai_server.assert_hits(0);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

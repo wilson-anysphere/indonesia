@@ -1,11 +1,17 @@
-use lsp_types::{Position, Range, Uri};
+use lsp_types::{
+    FileChangeType, FileEvent, GotoDefinitionParams, PartialResultParams, Position, Range,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_empty, initialized_notification, jsonrpc_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &std::path::Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -99,30 +105,24 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 1) Request diagnostics for a file that doesn't exist. The server should cache "missing".
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     assert!(diagnostic_messages(&resp).is_empty());
@@ -138,12 +138,17 @@ fn did_change_watched_files_updates_cached_analysis_state() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     assert!(
@@ -154,23 +159,27 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     // 3) Notify about file creation; diagnostics should now see the unresolved reference.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": {
-                "changes": [{ "uri": uri, "type": 1 }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(uri.clone(), FileChangeType::CREATED)],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            4,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     assert!(diagnostic_messages(&resp)
@@ -189,12 +198,17 @@ fn did_change_watched_files_updates_cached_analysis_state() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            5,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     assert!(
@@ -207,23 +221,27 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     // 5) Notify about the change; diagnostics should clear.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": {
-                "changes": [{ "uri": uri, "type": 2 }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(uri.clone(), FileChangeType::CHANGED)],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            6,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 6);
     let messages = diagnostic_messages(&resp);
@@ -240,12 +258,18 @@ fn did_change_watched_files_updates_cached_analysis_state() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 7,
-            "method": "textDocument/definition",
-            "params": { "textDocument": { "uri": uri }, "position": position }
-        }),
+        &jsonrpc_request(
+            GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            7,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 7);
     let location = resp.get("result").cloned().expect("definition result");
@@ -257,12 +281,18 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     std::fs::remove_file(&file_path).expect("remove Main.java");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 8,
-            "method": "textDocument/definition",
-            "params": { "textDocument": { "uri": uri }, "position": position }
-        }),
+        &jsonrpc_request(
+            GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            8,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 8);
     assert!(resp.get("result").is_some_and(|v| !v.is_null()));
@@ -270,33 +300,35 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     // 7) Notify about deletion; definition should now treat the file as missing.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": {
-                "changes": [{ "uri": uri, "type": 3 }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(uri.clone(), FileChangeType::DELETED)],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 9,
-            "method": "textDocument/definition",
-            "params": { "textDocument": { "uri": uri }, "position": position }
-        }),
+        &jsonrpc_request(
+            GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            9,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 9);
     assert!(resp.get("result").is_some_and(|v| v.is_null()));
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 10, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(10));
     let _shutdown_resp = read_response_with_id(&mut stdout, 10);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -332,29 +364,13 @@ fn did_change_watched_files_reloads_nova_config() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 2, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     assert_eq!(
@@ -368,12 +384,7 @@ fn did_change_watched_files_reloads_nova_config() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 3, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     assert_eq!(
@@ -385,23 +396,17 @@ fn did_change_watched_files_reloads_nova_config() {
     // Notify about the file change; the server should reload `nova_config` from disk.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": {
-                "changes": [{ "uri": config_uri, "type": 2 }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(config_uri, FileChangeType::CHANGED)],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 4, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     assert_eq!(
@@ -410,12 +415,9 @@ fn did_change_watched_files_reloads_nova_config() {
         "expected didChangeWatchedFiles to reload nova.toml"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(5));
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -451,29 +453,13 @@ fn did_change_watched_files_falls_back_to_default_config_when_config_is_deleted(
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 2, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     assert_eq!(
@@ -486,12 +472,7 @@ fn did_change_watched_files_falls_back_to_default_config_when_config_is_deleted(
     std::fs::remove_file(&config_path).expect("remove nova.toml");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 3, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     assert_eq!(
@@ -503,23 +484,17 @@ fn did_change_watched_files_falls_back_to_default_config_when_config_is_deleted(
     // Notify about the deletion; the server should fall back to defaults.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": {
-                "changes": [{ "uri": config_uri, "type": 3 }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(config_uri, FileChangeType::DELETED)],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/extensions/status",
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 4, "nova/extensions/status"),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     assert_eq!(
@@ -528,12 +503,9 @@ fn did_change_watched_files_falls_back_to_default_config_when_config_is_deleted(
         "expected didChangeWatchedFiles to fall back to defaults when nova.toml is deleted"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(5));
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

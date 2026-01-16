@@ -1,8 +1,13 @@
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use lsp_types::{CancelParams, NumberOrString};
+
+use crate::support::{
+    empty_object, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_exit_without_shutdown_returns_failure_status() {
@@ -18,23 +23,12 @@ fn stdio_exit_without_shutdown_returns_failure_status() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // Exit without a shutdown request: per LSP the server should exit non-zero.
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -59,20 +53,9 @@ fn initialize_advertises_nova_experimental_capabilities() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let requests = initialize_resp
         .get("result")
@@ -91,12 +74,9 @@ fn initialize_advertises_nova_experimental_capabilities() {
         "expected capabilities.experimental.nova.requests to include nova/metrics, got: {requests:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(2));
     let _shutdown_resp = read_response_with_id(&mut stdout, 2);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -117,30 +97,16 @@ fn stdio_requests_after_shutdown_are_rejected() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(2));
     let _shutdown_resp = read_response_with_id(&mut stdout, 2);
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion", "params": {} }),
+        &jsonrpc_request(empty_object(), 3, "textDocument/completion"),
     );
     let completion_resp = read_response_with_id(&mut stdout, 3);
     assert_eq!(
@@ -152,7 +118,7 @@ fn stdio_requests_after_shutdown_are_rejected() {
         "expected requests after shutdown to be rejected, got: {completion_resp:?}"
     );
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -215,41 +181,42 @@ exit 0
     let mut stdout = BufReader::new(stdout);
 
     // Initialize + initialized
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // Send a long-running request to occupy the main loop.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/buildProject",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(root.to_string_lossy().to_string()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/buildProject",
+        ),
     );
 
     // Queue a second request behind it, then cancel it. Cancellation should be tracked by request id
     // and must not crash the server.
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 3 } }),
+        &jsonrpc_notification(
+            CancelParams {
+                id: NumberOrString::Number(3),
+            },
+            "$/cancelRequest",
+        ),
     );
 
     let _build_resp = read_response_with_id(&mut stdout, 2);
@@ -266,12 +233,9 @@ exit 0
     );
 
     // Proper shutdown + exit should still succeed.
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

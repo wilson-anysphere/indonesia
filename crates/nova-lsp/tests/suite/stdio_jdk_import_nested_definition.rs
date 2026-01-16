@@ -1,15 +1,25 @@
+use lsp_types::{
+    DidChangeTextDocumentParams, Position, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
 
-fn uri_for_path(path: &Path) -> String {
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("lsp uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -152,50 +162,29 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": main_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": explicit_text,
-                }
-            }
-        }),
+        &did_open_notification(main_uri.clone(), "java", 1, explicit_text),
     );
 
     let offset = explicit_text.rfind("Entry").expect("Entry token exists");
     let position = utf16_position(explicit_text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            2,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location = resp.get("result").expect("definition result");
@@ -209,29 +198,36 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     let wildcard_text = "import java.util.List.*;\nclass Main { Entry e; }\n";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str(), "version": 2 },
-                "contentChanges": [{ "text": wildcard_text }]
-            }
-        }),
+        &jsonrpc_notification(
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: wildcard_text.to_string(),
+                }],
+            },
+            "textDocument/didChange",
+        ),
     );
 
     let offset = wildcard_text.rfind("Entry").expect("Entry token exists");
     let position = utf16_position(wildcard_text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            3,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let location = resp.get("result").expect("definition result");
@@ -244,29 +240,36 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     let outer_text = "import java.util.List;\nclass Main { List.Entry e; }\n";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str(), "version": 3 },
-                "contentChanges": [{ "text": outer_text }]
-            }
-        }),
+        &jsonrpc_notification(
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                    version: 3,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: outer_text.to_string(),
+                }],
+            },
+            "textDocument/didChange",
+        ),
     );
 
     let offset = outer_text.rfind("Entry").expect("Entry token exists");
     let position = utf16_position(outer_text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            4,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     let location = resp.get("result").expect("definition result");
@@ -275,12 +278,9 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     };
     assert_eq!(uri, expected_uri);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(5));
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

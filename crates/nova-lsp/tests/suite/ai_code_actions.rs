@@ -1,7 +1,11 @@
 use httpmock::prelude::*;
-use lsp_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
+use lsp_types::{
+    ApplyWorkspaceEditResponse, CodeActionContext, CodeActionParams, CompletionParams, Diagnostic,
+    ExecuteCommandParams, NumberOrString, PartialResultParams, Position, Range,
+    TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, Uri, WorkDoneProgressParams,
+    WorkspaceEdit,
+};
 use pretty_assertions::assert_eq;
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -53,7 +57,14 @@ fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
 #[test]
 fn stdio_server_hides_cloud_ai_code_edit_actions_when_anonymization_is_enabled() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("mock".to_string()),
+        );
+        resp
+    }));
 
     let temp = TempDir::new().expect("tempdir");
 
@@ -107,36 +118,14 @@ local_only = false
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // open a document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // request code actions on an empty method body selection (would normally offer AI code edits).
@@ -148,24 +137,27 @@ local_only = false
         start: pos.lsp_position(start_offset).expect("start"),
         end: pos.lsp_position(end_offset).expect("end"),
     };
+    let uri: Uri = file_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "range": range,
-                "context": {
-                    "diagnostics": [{
-                        "range": range,
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -195,12 +187,9 @@ local_only = false
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -239,19 +228,40 @@ fn stdio_server_generate_method_body_with_ai_applies_workspace_edit() {
     let insert_end = pos
         .lsp_position(close_brace_offset)
         .expect("insert end pos");
+    let completion = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(file_rel.to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(insert_start, insert_end))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String("\n        return a + b;\n    ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
 
-    let patch = json!({
-        "edits": [{
-            "file": file_rel,
-            "range": {
-                "start": { "line": insert_start.line, "character": insert_start.character },
-                "end": { "line": insert_end.line, "character": insert_end.character }
-            },
-            "text": "\n        return a + b;\n    "
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(completion),
+        );
+        resp
+    }));
 
     let config_path = root.join("nova.toml");
     std::fs::write(
@@ -297,33 +307,14 @@ local_only = true
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri.clone(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // Request code actions over the empty method (must include `{}` so `detect_empty_method_signature` triggers).
@@ -333,19 +324,23 @@ local_only = true
     let selection_end = pos
         .lsp_position(close_brace_offset + 1)
         .expect("selection end pos");
+    let text_document_uri: Uri = uri_for_path(&file_path).parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri_for_path(&file_path) },
-                "range": Range::new(selection_start, selection_end),
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: text_document_uri,
+                },
+                range: Range::new(selection_start, selection_end),
+                context: CodeActionContext::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let actions = resp
@@ -367,14 +362,22 @@ local_only = true
         .expect("command arguments");
 
     // Execute the code action (triggers patch-based codegen).
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": { "command": cmd, "arguments": args }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let mut apply_edit = None;
@@ -385,11 +388,14 @@ local_only = true
             apply_edit = Some(msg.clone());
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -417,12 +423,9 @@ local_only = true
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -432,7 +435,14 @@ local_only = true
 #[test]
 fn stdio_ai_generate_method_body_custom_request_rejects_non_empty_method_body() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused".to_string()),
+        );
+        resp
+    }));
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
@@ -493,33 +503,14 @@ local_only = true
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // Select the method snippet including `{}`. The method body is *not* empty, so the request
@@ -539,17 +530,24 @@ local_only = true
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "method_signature": "int add(int a, int b)",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("int add(int a, int b)".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(file_uri));
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
 
     let mut saw_apply_edit = false;
@@ -560,11 +558,14 @@ local_only = true
             let id = msg.get("id").cloned().expect("applyEdit id");
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -603,12 +604,9 @@ local_only = true
 
     ai_server.assert_hits(0);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -650,24 +648,49 @@ fn stdio_server_generate_tests_with_ai_applies_workspace_edit() {
         .lsp_position(placeholder_end_offset)
         .expect("selection end pos");
 
-    let patch = json!({
-        "edits": [{
-            "file": test_rel,
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
-            "text": concat!(
-                "class TestTest {\n",
-                "    void testAdd() {\n",
-                "        // TODO: add assertions\n",
-                "    }\n",
-                "}\n"
-            )
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let completion = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(test_rel.to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(0, 0), Position::new(0, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        concat!(
+                            "class TestTest {\n",
+                            "    void testAdd() {\n",
+                            "        // TODO: add assertions\n",
+                            "    }\n",
+                            "}\n"
+                        )
+                        .to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(completion),
+        );
+        resp
+    }));
 
     let config_path = root.join("nova.toml");
     std::fs::write(
@@ -713,47 +736,33 @@ local_only = true
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri.clone(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
+
+    let text_document_uri: Uri = file_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri_for_path(&file_path) },
-                "range": Range::new(selection_start, selection_end),
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: text_document_uri,
+                },
+                range: Range::new(selection_start, selection_end),
+                context: CodeActionContext::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let actions = resp
@@ -773,15 +782,22 @@ local_only = true
         .pointer("/command/arguments")
         .cloned()
         .expect("command arguments");
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": { "command": cmd, "arguments": args }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let mut apply_edit = None;
@@ -792,11 +808,14 @@ local_only = true
             apply_edit = Some(msg.clone());
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -843,12 +862,9 @@ local_only = true
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -896,19 +912,39 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
     let insert_end = pos
         .lsp_position(close_brace_offset)
         .expect("insert end pos");
-
-    let patch = json!({
-        "edits": [{
-            "file": file_rel,
-            "range": {
-                "start": { "line": insert_start.line, "character": insert_start.character },
-                "end": { "line": insert_end.line, "character": insert_end.character }
-            },
-            "text": "\n        return a + b;\n    "
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let completion = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(file_rel.to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(insert_start, insert_end))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String("\n        return a + b;\n    ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(completion),
+        );
+        resp
+    }));
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -937,33 +973,14 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // Request over the empty method snippet (must include `{}` so the server can compute the insert range).
@@ -976,18 +993,29 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "workDoneToken": "t1",
-                "method_signature": "public int add(int a, int b)",
-                "context": null,
-                "uri": file_uri,
-                "range": Range::new(selection_start, selection_end)
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "workDoneToken".to_string(),
+                    serde_json::Value::String("t1".to_string()),
+                );
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("public int add(int a, int b)".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(file_uri));
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(selection_start, selection_end))
+                        .expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
 
     let mut apply_edit = None;
@@ -998,11 +1026,14 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
             apply_edit = Some(msg.clone());
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -1041,12 +1072,9 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1078,26 +1106,51 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
     std::fs::write(&file_path, source).expect("write Calculator.java");
 
     let test_rel = "src/test/java/com/example/CalculatorTest.java";
-    let patch = json!({
-        "edits": [{
-            "file": test_rel,
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
-            "text": concat!(
-                "package com.example;\n",
-                "\n",
-                "class CalculatorTest {\n",
-                "    void testAdd() {\n",
-                "        // TODO: add assertions\n",
-                "    }\n",
-                "}\n"
-            )
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let completion = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(test_rel.to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(0, 0), Position::new(0, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        concat!(
+                            "package com.example;\n",
+                            "\n",
+                            "class CalculatorTest {\n",
+                            "    void testAdd() {\n",
+                            "        // TODO: add assertions\n",
+                            "    }\n",
+                            "}\n"
+                        )
+                        .to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(completion),
+        );
+        resp
+    }));
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -1123,33 +1176,14 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(&file_uri, "java", 1, source),
     );
 
     // Select the method snippet so GenerateTestsArgs.target is meaningful.
@@ -1167,18 +1201,29 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateTests",
-            "params": {
-                "workDoneToken": "t1",
-                "target": "public int add(int a, int b)",
-                "context": null,
-                "uri": file_uri,
-                "range": Range::new(selection_start, selection_end)
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "workDoneToken".to_string(),
+                    serde_json::Value::String("t1".to_string()),
+                );
+                params.insert(
+                    "target".to_string(),
+                    serde_json::Value::String("public int add(int a, int b)".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(file_uri));
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(selection_start, selection_end))
+                        .expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateTests",
+        ),
     );
 
     let mut apply_edit = None;
@@ -1189,11 +1234,14 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
             apply_edit = Some(msg.clone());
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -1253,12 +1301,9 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1297,18 +1342,43 @@ fn stdio_server_generate_tests_prompt_includes_target_and_source_when_editing_de
     std::fs::write(&test_path, "").expect("write empty CalculatorTest.java");
 
     let expected_target = "int add(int a, int b) {";
-
-    let patch = json!({
-        "edits": [{
-            "file": "src/test/java/com/example/CalculatorTest.java",
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
-            "text": "package com.example;\n\nclass CalculatorTest {}\n"
-        }]
+    let completion = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(
+                        "src/test/java/com/example/CalculatorTest.java".to_string(),
+                    ),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(0, 0), Position::new(0, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        "package com.example;\n\nclass CalculatorTest {}\n".to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+    let completion_response = serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(completion),
+        );
+        resp
     });
-    let completion = serde_json::to_string(&patch).expect("patch json");
 
     let mock_server = MockServer::start();
     let mock = mock_server.mock(|when, then| {
@@ -1319,8 +1389,7 @@ fn stdio_server_generate_tests_prompt_includes_target_and_source_when_editing_de
             .body_contains(expected_target)
             .body_contains("Selected source snippet:")
             .body_contains("return a + b;");
-        then.status(200)
-            .json_body(json!({ "completion": completion }));
+        then.status(200).json_body(completion_response.clone());
     });
 
     let config_path = root.join("nova.toml");
@@ -1366,33 +1435,14 @@ local_only = true
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": source_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(source_uri.clone(), "java", 1, source),
     );
 
     // Select the method body so GenerateTestsArgs.target and the source snippet are meaningful.
@@ -1408,19 +1458,23 @@ local_only = true
         .lsp_position(method_start_offset)
         .expect("selection start");
     let selection_end = pos.lsp_position(method_end_offset).expect("selection end");
+    let source_uri_lsp: Uri = source_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri_for_path(&source_path) },
-                "range": Range::new(selection_start, selection_end),
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: source_uri_lsp,
+                },
+                range: Range::new(selection_start, selection_end),
+                context: CodeActionContext::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let actions = resp
@@ -1440,15 +1494,22 @@ local_only = true
         .pointer("/command/arguments")
         .cloned()
         .expect("command arguments");
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": { "command": cmd, "arguments": args }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let mut apply_edit = None;
@@ -1459,11 +1520,14 @@ local_only = true
             apply_edit = Some(msg.clone());
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -1520,12 +1584,9 @@ local_only = true
 
     mock.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1547,18 +1608,14 @@ fn stdio_server_ai_excluded_paths_blocks_patch_based_code_edits_without_model_ca
     let source = "class Example {\n    int add(int a, int b) {\n    }\n}\n";
     std::fs::write(&file_path, source).expect("write Example.java");
 
-    let patch = json!({
-        "edits": [{
-            "file": "secret/Example.java",
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
-            "text": "// should not be used\n"
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("// should not be used\n".to_string()),
+        );
+        resp
+    }));
 
     let config_path = root.join("nova.toml");
     std::fs::write(
@@ -1604,33 +1661,14 @@ excluded_paths = ["secret/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri.clone(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // Execute the command directly (AI code actions may be suppressed, but executeCommand should still fail closed).
@@ -1644,21 +1682,32 @@ excluded_paths = ["secret/**"]
     let range_start = pos.lsp_position(start_offset).expect("range start");
     let range_end = pos.lsp_position(end_offset).expect("range end");
 
-    let args = json!([{
-        "method_signature": "int add(int a, int b)",
-        "context": null,
-        "uri": file_uri,
-        "range": { "start": range_start, "end": range_end }
-    }]);
+    let arguments = vec![serde_json::Value::Object({
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "method_signature".to_string(),
+            serde_json::Value::String("int add(int a, int b)".to_string()),
+        );
+        args.insert("context".to_string(), serde_json::Value::Null);
+        args.insert("uri".to_string(), serde_json::Value::String(file_uri));
+        args.insert(
+            "range".to_string(),
+            serde_json::to_value(Range::new(range_start, range_end)).expect("serialize range"),
+        );
+        args
+    })];
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": { "command": nova_ide::COMMAND_GENERATE_METHOD_BODY, "arguments": args }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_METHOD_BODY.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let resp = loop {
@@ -1667,11 +1716,14 @@ excluded_paths = ["secret/**"]
             let id = msg.get("id").cloned().expect("applyEdit id");
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": false }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: false,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -1690,12 +1742,9 @@ excluded_paths = ["secret/**"]
         "expected excluded_paths to prevent model calls"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1714,24 +1763,17 @@ fn stdio_server_ai_excluded_paths_blocks_patch_based_generate_tests_without_mode
     std::fs::create_dir_all(&secret_dir).expect("create secret dir");
     let file_path = secret_dir.join("Example.java");
     let file_uri = uri_for_path(&file_path);
-    let source =
-        "class Example {\n    int add(int a, int b) {\n        return a + b;\n    }\n}\n";
+    let source = "class Example {\n    int add(int a, int b) {\n        return a + b;\n    }\n}\n";
     std::fs::write(&file_path, source).expect("write Example.java");
 
-    // If the server accidentally reaches the model, return a patch that would edit the excluded
-    // file so the failure is obvious.
-    let patch = json!({
-        "edits": [{
-            "file": "secret/Example.java",
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
-            "text": "// should not be used\n"
-        }]
-    });
-    let completion = serde_json::to_string(&patch).expect("patch json");
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("// should not be used\n".to_string()),
+        );
+        resp
+    }));
 
     let config_path = root.join("nova.toml");
     std::fs::write(
@@ -1777,33 +1819,14 @@ excluded_paths = ["secret/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri.clone(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // Execute the command directly (AI code actions are suppressed, but executeCommand should still
@@ -1815,21 +1838,32 @@ excluded_paths = ["secret/**"]
     let range_start = pos.lsp_position(start_offset).expect("range start");
     let range_end = pos.lsp_position(end_offset).expect("range end");
 
-    let args = json!([{
-        "target": "add",
-        "context": null,
-        "uri": file_uri,
-        "range": { "start": range_start, "end": range_end }
-    }]);
+    let arguments = vec![serde_json::Value::Object({
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "target".to_string(),
+            serde_json::Value::String("add".to_string()),
+        );
+        args.insert("context".to_string(), serde_json::Value::Null);
+        args.insert("uri".to_string(), serde_json::Value::String(file_uri));
+        args.insert(
+            "range".to_string(),
+            serde_json::to_value(Range::new(range_start, range_end)).expect("serialize range"),
+        );
+        args
+    })];
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": { "command": nova_ide::COMMAND_GENERATE_TESTS, "arguments": args }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_TESTS.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let resp = loop {
@@ -1838,11 +1872,14 @@ excluded_paths = ["secret/**"]
             let id = msg.get("id").cloned().expect("applyEdit id");
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": false }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: false,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -1861,12 +1898,9 @@ excluded_paths = ["secret/**"]
         "expected excluded_paths to prevent model calls"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1876,7 +1910,14 @@ excluded_paths = ["secret/**"]
 #[test]
 fn stdio_server_hides_ai_code_actions_for_excluded_paths() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("mock".to_string()),
+        );
+        resp
+    }));
 
     let temp = TempDir::new().expect("tempdir");
 
@@ -1933,36 +1974,14 @@ excluded_paths = ["secret/**"]
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // open a document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // request code actions on an empty method body selection (would normally offer AI code edits).
@@ -1974,24 +1993,27 @@ excluded_paths = ["secret/**"]
         start: pos.lsp_position(start_offset).expect("start"),
         end: pos.lsp_position(end_offset).expect("end"),
     };
+    let uri: Uri = file_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "range": range,
-                "context": {
-                    "diagnostics": [{
-                        "range": range,
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -2041,12 +2063,9 @@ excluded_paths = ["secret/**"]
     }
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2056,8 +2075,14 @@ excluded_paths = ["secret/**"]
 #[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": "mock explanation" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("mock explanation".to_string()),
+        );
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -2083,62 +2108,47 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // 2) open a document so the server can attach code snippets.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": "file:///Test.java",
-                    "languageId": "java",
-                    "version": 1,
-                    "text": "class Test { void run() { unknown(); } }"
-                }
-            }
-        }),
+        &crate::support::did_open_notification(
+            "file:///Test.java",
+            "java",
+            1,
+            "class Test { void run() { unknown(); } }",
+        ),
     );
 
     // 3) request code actions with a diagnostic.
+    let range = Range::new(
+        lsp_types::Position::new(0, 0),
+        lsp_types::Position::new(0, 10),
+    );
+    let uri: Uri = "file:///Test.java".parse().expect("lsp uri");
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": "file:///Test.java" },
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 10 }
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
                 },
-                "context": {
-                    "diagnostics": [{
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 10 }
-                        },
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -2169,19 +2179,26 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     assert_eq!(cmd, nova_ide::COMMAND_EXPLAIN_ERROR);
 
     // 4) Execute the command (this triggers the mock LLM call).
-    let progress_token = json!("progress-token");
+    let progress_token = serde_json::Value::String("progress-token".to_string());
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args,
-                "workDoneToken": progress_token.clone()
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams {
+                    work_done_token: Some(lsp_types::NumberOrString::String(
+                        "progress-token".to_string(),
+                    )),
+                },
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     // Collect work-done progress notifications emitted during the AI request.
@@ -2207,20 +2224,20 @@ fn stdio_server_handles_ai_explain_error_code_action() {
         }
         // Notification or unrelated response; ignore.
     };
-    assert_eq!(exec_resp.get("result"), Some(&json!("mock explanation")));
+    assert_eq!(
+        exec_resp.get("result"),
+        Some(&serde_json::Value::String("mock explanation".to_string())),
+    );
     assert!(progress_kinds.contains(&"begin".to_string()));
     assert!(progress_kinds.contains(&"end".to_string()));
 
     ai_server.assert_hits(1);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2236,8 +2253,14 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
             .path("/complete")
             .body_contains("## Project context")
             .body_contains("## Symbol/type info");
-        then.status(200)
-            .json_body(json!({ "completion": "mock explanation" }));
+        then.status(200).json_body(serde_json::Value::Object({
+            let mut resp = serde_json::Map::new();
+            resp.insert(
+                "completion".to_string(),
+                serde_json::Value::String("mock explanation".to_string()),
+            );
+            resp
+        }));
     });
 
     let temp = TempDir::new().expect("tempdir");
@@ -2275,34 +2298,15 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
     // 1) initialize with a workspace root so project context can be loaded.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // 2) open an on-disk document so hover/type info has a stable path.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // 3) request code actions with a diagnostic range over an identifier so hover returns info.
@@ -2320,24 +2324,29 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
         start: Position::new(start.line, start.character),
         end: Position::new(end.line, end.character),
     };
+    let text_document_uri: Uri = file_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "range": range,
-                "context": {
-                    "diagnostics": [{
-                        "range": range,
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: text_document_uri,
+                },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -2368,30 +2377,34 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
     assert_eq!(cmd, nova_ide::COMMAND_EXPLAIN_ERROR);
 
     // 4) Execute the command (this triggers the mock LLM call, which asserts on prompt contents).
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
     let exec_resp = read_response_with_id(&mut stdout, 3);
-    assert_eq!(exec_resp.get("result"), Some(&json!("mock explanation")));
+    assert_eq!(
+        exec_resp.get("result"),
+        Some(&serde_json::Value::String("mock explanation".to_string())),
+    );
     mock.assert_hits(1);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2431,19 +2444,36 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         pos.lsp_position(insert_start).expect("insert start"),
         pos.lsp_position(insert_end).expect("insert end"),
     );
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("src/main/java/com/example/Example.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(insert_range).expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String("\n        return 42;\n    ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
 
-    let patch = json!({
-      "edits": [
-        {
-          "file": "src/main/java/com/example/Example.java",
-          "range": insert_range,
-          "text": "\n        return 42;\n    "
-        }
-      ]
-    })
-    .to_string();
-
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("completion".to_string(), serde_json::Value::String(patch));
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -2470,49 +2500,34 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
     // initialize with a workspace root so file paths are relative.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, uri_for_path(root)),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
+    let text_document_uri: Uri = file_uri.parse().expect("lsp uri");
 
     // request code actions over the empty method range.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: text_document_uri,
+                },
+                range,
+                context: CodeActionContext::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -2537,19 +2552,23 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         .and_then(|c| c.get("arguments"))
         .cloned()
         .expect("command args");
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
 
     // execute the command
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let (messages, resp) = drain_notifications_until_id(&mut stdout, 3);
@@ -2603,22 +2622,22 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
 
     ai_server.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2658,19 +2677,36 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
         pos.lsp_position(insert_start).expect("insert start"),
         pos.lsp_position(insert_end).expect("insert end"),
     );
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("src/main/java/com/example/Example.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(insert_range).expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String("\n        return 42;\n    ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
 
-    let patch = json!({
-      "edits": [
-        {
-          "file": "src/main/java/com/example/Example.java",
-          "range": insert_range,
-          "text": "\n        return 42;\n    "
-        }
-      ]
-    })
-    .to_string();
-
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("completion".to_string(), serde_json::Value::String(patch));
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -2697,50 +2733,41 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
     // initialize with a workspace root so file paths are relative.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, uri_for_path(root)),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // Call the custom request endpoint.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "method_signature": "public int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("public int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert(
+                    "uri".to_string(),
+                    serde_json::Value::String(file_uri.clone()),
+                );
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
 
     let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
@@ -2777,22 +2804,22 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
 
     ai_server.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2823,7 +2850,14 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
         pos.lsp_position(selection_end).expect("end pos"),
     );
 
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused".to_string()),
+        );
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -2849,48 +2883,36 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, uri_for_path(root)),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "method_signature": "public int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("public int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(file_uri));
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -2907,12 +2929,9 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
         "expected error message mentioning method body, got: {resp:#?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2959,17 +2978,39 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
 
     // `ai.privacy.excluded_paths` prevents generating tests under `src/test/java`, so this should
     // fall back to inserting tests into the source file.
-    let patch = json!({
-      "edits": [
-        {
-          "file": "src/main/java/com/example/Example.java",
-          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
-          "text": "    // AI-generated tests would go here\n"
-        }
-      ]
-    })
-    .to_string();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("src/main/java/com/example/Example.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(4, 0), Position::new(4, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        "    // AI-generated tests would go here\n".to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("completion".to_string(), serde_json::Value::String(patch));
+        resp
+    }));
 
     // Write `nova.toml` with the actual AI server endpoint.
     std::fs::write(
@@ -3016,47 +3057,33 @@ excluded_paths = ["src/test/java/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, uri_for_path(root)),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
+
+    let text_document_uri: Uri = file_uri.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: text_document_uri,
+                },
+                range,
+                context: CodeActionContext::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
@@ -3081,18 +3108,22 @@ excluded_paths = ["src/test/java/**"]
         .and_then(|c| c.get("arguments"))
         .cloned()
         .expect("command args");
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let (messages, resp) = drain_notifications_until_id(&mut stdout, 3);
@@ -3228,21 +3259,21 @@ excluded_paths = ["src/test/java/**"]
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -3282,16 +3313,35 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
-    let patch = json!({
-      "edits": [
-        {
-          "file": "src/test/java/com/example/ExampleTest.java",
-          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
-          "text": "package com.example;\n\npublic class ExampleTest {}\n"
-        }
-      ]
-    })
-    .to_string();
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(
+                        "src/test/java/com/example/ExampleTest.java".to_string(),
+                    ),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(0, 0), Position::new(0, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        "package com.example;\n\npublic class ExampleTest {}\n".to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
     let mock_server = MockServer::start();
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
@@ -3302,7 +3352,14 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
             .body_contains("Source file under test: src/main/java/com/example/Example.java")
             .body_contains("Selected source snippet:")
             .body_contains("return 1;");
-        then.status(200).json_body(json!({ "completion": patch }));
+        then.status(200).json_body(serde_json::Value::Object({
+            let mut resp = serde_json::Map::new();
+            resp.insert(
+                "completion".to_string(),
+                serde_json::Value::String(patch.clone()),
+            );
+            resp
+        }));
     });
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -3329,49 +3386,40 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, uri_for_path(root)),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // Open the source document so the server can load document text from the overlay.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateTests",
-            "params": {
-                "target": "public int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "target".to_string(),
+                    serde_json::Value::String("public int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert(
+                    "uri".to_string(),
+                    serde_json::Value::String(file_uri.clone()),
+                );
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateTests",
+        ),
     );
 
     let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
@@ -3473,21 +3521,21 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
 
     mock.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -3534,17 +3582,39 @@ fn stdio_server_ai_generate_tests_custom_request_respects_excluded_paths() {
 
     // `ai.privacy.excluded_paths` prevents generating tests under `src/test/java`, so this should
     // fall back to inserting tests into the source file.
-    let patch = json!({
-      "edits": [
-        {
-          "file": "src/main/java/com/example/Example.java",
-          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
-          "text": "    // AI-generated tests would go here\n"
-        }
-      ]
-    })
-    .to_string();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("src/main/java/com/example/Example.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    serde_json::to_value(Range::new(Position::new(4, 0), Position::new(4, 0)))
+                        .expect("serialize range"),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(
+                        "    // AI-generated tests would go here\n".to_string(),
+                    ),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("completion".to_string(), serde_json::Value::String(patch));
+        resp
+    }));
 
     // Write `nova.toml` with the actual AI server endpoint.
     std::fs::write(
@@ -3594,48 +3664,39 @@ excluded_paths = ["src/test/java/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateTests",
-            "params": {
-                "target": "public int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "target".to_string(),
+                    serde_json::Value::String("public int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert(
+                    "uri".to_string(),
+                    serde_json::Value::String(file_uri.clone()),
+                );
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateTests",
+        ),
     );
 
     let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
@@ -3754,21 +3815,21 @@ excluded_paths = ["src/test/java/**"]
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -3778,7 +3839,14 @@ excluded_paths = ["src/test/java/**"]
 #[test]
 fn stdio_server_ai_custom_requests_reject_excluded_paths() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused".to_string()),
+        );
+        resp
+    }));
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
     let root_uri = uri_for_path(root);
@@ -3838,50 +3906,41 @@ excluded_paths = ["src/secrets/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     let range = Range::new(Position::new(0, 0), Position::new(0, 0));
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "method_signature": "int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert(
+                    "uri".to_string(),
+                    serde_json::Value::String(file_uri.clone()),
+                );
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -3900,17 +3959,24 @@ excluded_paths = ["src/secrets/**"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/ai/generateTests",
-            "params": {
-                "target": "int answer()",
-                "context": null,
-                "uri": file_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "target".to_string(),
+                    serde_json::Value::String("int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(file_uri));
+                params.insert(
+                    "range".to_string(),
+                    serde_json::to_value(range).expect("serialize range"),
+                );
+                params
+            }),
+            3,
+            "nova/ai/generateTests",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 3);
@@ -3927,12 +3993,9 @@ excluded_paths = ["src/secrets/**"]
         "expected error message to mention excluded_paths, got: {resp:#?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -3943,7 +4006,14 @@ excluded_paths = ["src/secrets/**"]
 #[test]
 fn stdio_server_ai_custom_requests_require_document_text() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused".to_string()),
+        );
+        resp
+    }));
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
     let root_uri = uri_for_path(root);
@@ -3978,32 +4048,31 @@ fn stdio_server_ai_custom_requests_require_document_text() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/generateMethodBody",
-            "params": {
-                "method_signature": "int answer()",
-                "context": null,
-                "uri": missing_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "method_signature".to_string(),
+                    serde_json::Value::String("int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert(
+                    "uri".to_string(),
+                    serde_json::Value::String(missing_uri.clone()),
+                );
+                params.insert("range".to_string(), crate::support::json_value(range));
+                params
+            }),
+            2,
+            "nova/ai/generateMethodBody",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let error = resp
@@ -4021,17 +4090,21 @@ fn stdio_server_ai_custom_requests_require_document_text() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/ai/generateTests",
-            "params": {
-                "target": "int answer()",
-                "context": null,
-                "uri": missing_uri,
-                "range": range
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "target".to_string(),
+                    serde_json::Value::String("int answer()".to_string()),
+                );
+                params.insert("context".to_string(), serde_json::Value::Null);
+                params.insert("uri".to_string(), serde_json::Value::String(missing_uri));
+                params.insert("range".to_string(), crate::support::json_value(range));
+                params
+            }),
+            3,
+            "nova/ai/generateTests",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let error = resp
@@ -4047,12 +4120,9 @@ fn stdio_server_ai_custom_requests_require_document_text() {
         "expected missing document text error, got: {resp:#?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4070,7 +4140,14 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
     let long = "Nova AI output ".repeat(4_000);
     let mock = mock_server.mock(|when, then| {
         when.method(POST).path("/complete");
-        then.status(200).json_body(json!({ "completion": long }));
+        then.status(200).json_body(serde_json::Value::Object({
+            let mut resp = serde_json::Map::new();
+            resp.insert(
+                "completion".to_string(),
+                serde_json::Value::String(long.clone()),
+            );
+            resp
+        }));
     });
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -4094,62 +4171,47 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // open document so the server can attach snippets.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": "file:///Test.java",
-                    "languageId": "java",
-                    "version": 1,
-                    "text": "class Test { void run() { unknown(); } }"
-                }
-            }
-        }),
+        &crate::support::did_open_notification(
+            "file:///Test.java",
+            "java",
+            1,
+            "class Test { void run() { unknown(); } }",
+        ),
     );
 
     // request code actions with a diagnostic.
+    let range = Range::new(
+        lsp_types::Position::new(0, 0),
+        lsp_types::Position::new(0, 10),
+    );
+    let uri: Uri = "file:///Test.java".parse().expect("lsp uri");
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": "file:///Test.java" },
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 10 }
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
                 },
-                "context": {
-                    "diagnostics": [{
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 10 }
-                        },
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
     let code_actions_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_actions_resp
@@ -4174,19 +4236,25 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
         .expect("arguments");
 
     // execute command (triggers the mock AI call).
-    let progress_token = json!("progress-token");
+    let progress_token = NumberOrString::String("progress-token".to_string());
+    let progress_token_value = crate::support::json_value(progress_token.clone());
+    let arguments = args
+        .as_array()
+        .cloned()
+        .expect("command.arguments must be an array");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args,
-                "workDoneToken": progress_token.clone()
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: cmd.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams {
+                    work_done_token: Some(progress_token.clone()),
+                },
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let mut progress_kinds = Vec::new();
@@ -4195,7 +4263,7 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
         let msg = read_jsonrpc_message(&mut stdout);
 
         if msg.get("method").and_then(|v| v.as_str()) == Some("$/progress") {
-            if msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token) {
+            if msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token_value) {
                 if let Some(kind) = msg
                     .get("params")
                     .and_then(|p| p.get("value"))
@@ -4246,12 +4314,9 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
     mock.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4302,37 +4367,15 @@ completion_ranking = true
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
-    let uri = "file:///Test.java";
+    let uri_str = "file:///Test.java";
     let text = "class Test { void run() { String s = \"hi\"; s. } }";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(uri_str, "java", 1, text),
     );
 
     let offset = text.find("s.").expect("cursor");
@@ -4342,17 +4385,23 @@ completion_ranking = true
         TextSize::from(u32::try_from(offset + 2).expect("offset fits in u32")),
     );
     let pos = Position::new(pos.line, pos.character);
+    let uri: Uri = uri_str.parse().expect("lsp uri");
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": pos
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: pos,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
 
@@ -4368,13 +4417,10 @@ completion_ranking = true
         .expect("completion list");
     assert!(!items.is_empty(), "expected completion items");
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4386,8 +4432,14 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     let _lock = crate::support::stdio_server_lock();
     // The code action request itself should not invoke the provider, but we need
     // a valid endpoint so the server considers AI configured.
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": "unused in this test" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused in this test".to_string()),
+        );
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -4416,37 +4468,15 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
-    let uri = "file:///Test.java";
+    let uri_str = "file:///Test.java";
     let text = "class Test { void run() { String s = \"😀\"; } }\n";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(uri_str, "java", 1, text),
     );
 
     let emoji_offset = text.find('😀').expect("emoji present");
@@ -4461,19 +4491,24 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     );
     let start = Position::new(start.line, start.character);
     let end = Position::new(end.line, end.character);
+    let uri: Uri = uri_str.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": Range::new(start, end),
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range: Range::new(start, end),
+                context: CodeActionContext {
+                    diagnostics: vec![],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -4510,12 +4545,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4525,8 +4557,14 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
 #[test]
 fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": "unused in this test" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused in this test".to_string()),
+        );
+        resp
+    }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -4551,37 +4589,15 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
-    let uri = "file:///Test.java";
+    let uri_str = "file:///Test.java";
     let text = "class Test { String s = \"😀\"; }\n";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(uri_str, "java", 1, text),
     );
 
     let emoji_offset = text.find('😀').expect("emoji present");
@@ -4593,19 +4609,24 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
     let start = Position::new(start.line, start.character);
     let inside = Position::new(start.line, start.character + 1);
     let end = Position::new(start.line, start.character + 2);
+    let uri: Uri = uri_str.parse().expect("lsp uri");
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": Range::new(inside, end),
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri },
+                range: Range::new(inside, end),
+                context: CodeActionContext {
+                    diagnostics: vec![],
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -4626,12 +4647,9 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
         "codeAction should not call the AI provider"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4641,7 +4659,14 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
 #[test]
 fn stdio_server_rejects_cloud_ai_code_edits_when_anonymization_is_enabled() {
     let _lock = crate::support::stdio_server_lock();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused".to_string()),
+        );
+        resp
+    }));
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
@@ -4693,18 +4718,10 @@ local_only = false
     // initialize
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     let file_path = temp.path().join("Main.java");
     let file_uri = uri_for_path(&file_path);
@@ -4713,18 +4730,7 @@ local_only = false
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     let selection = "void run() { }";
@@ -4738,22 +4744,32 @@ local_only = false
 
     // Even when privacy policy disallows edits, `workspace/executeCommand` must still enforce the
     // policy for clients that attempt to invoke the command directly.
+    let arguments = vec![serde_json::Value::Object({
+        let mut arg = serde_json::Map::new();
+        arg.insert(
+            "method_signature".to_string(),
+            serde_json::Value::String("void run()".to_string()),
+        );
+        arg.insert("context".to_string(), serde_json::Value::Null);
+        arg.insert(
+            "uri".to_string(),
+            serde_json::Value::String(file_uri.clone()),
+        );
+        arg.insert("range".to_string(), crate::support::json_value(range));
+        arg
+    })];
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-           "jsonrpc": "2.0",
-           "id": 2,
-           "method": "workspace/executeCommand",
-           "params": {
-               "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                "arguments": [{
-                    "method_signature": "void run()",
-                    "context": null,
-                    "uri": file_uri,
-                    "range": range
-                }]
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_METHOD_BODY.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let exec_resp = read_response_with_id(&mut stdout, 2);
@@ -4775,12 +4791,9 @@ local_only = false
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -4822,15 +4835,38 @@ fn stdio_server_execute_command_generate_method_body_applies_workspace_edit() {
         .lsp_position(open + 1)
         .expect("insert start");
     let insert_end = TextPos::new(text).lsp_position(close).expect("insert end");
-
-    let patch = json!({
-        "edits": [{
-            "file": "src/Main.java",
-            "range": { "start": insert_start, "end": insert_end },
-            "text": " return a + b; "
-        }]
-    })
-    .to_string();
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("src/Main.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    crate::support::json_value(Range::new(insert_start, insert_end)),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(" return a + b; ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+    let completion_response = serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String(patch.clone()),
+        );
+        resp
+    });
 
     // Assert the server sends range markers *inside* the method body braces.
     let expected_marker = "int add(int a, int b) {/*__NOVA_AI_RANGE_START__*/";
@@ -4839,7 +4875,7 @@ fn stdio_server_execute_command_generate_method_body_applies_workspace_edit() {
             .path("/complete")
             .body_contains(expected_marker)
             .body_contains("/*__NOVA_AI_RANGE_END__*/");
-        then.status(200).json_body(json!({ "completion": patch }));
+        then.status(200).json_body(completion_response.clone());
     });
 
     let config_path = root.join("nova.toml");
@@ -4888,54 +4924,49 @@ local_only = true
     // Initialize with rootUri so file paths are workspace-relative.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     // Open document (in-memory overlay should be used for prompts + patch validation).
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
-    let progress_token = json!("progress-token");
+    let progress_token = NumberOrString::String("progress-token".to_string());
+    let progress_token_value = crate::support::json_value(progress_token.clone());
+    let arguments = vec![serde_json::Value::Object({
+        let mut arg = serde_json::Map::new();
+        arg.insert(
+            "method_signature".to_string(),
+            serde_json::Value::String("int add(int a, int b)".to_string()),
+        );
+        arg.insert("context".to_string(), serde_json::Value::Null);
+        arg.insert(
+            "uri".to_string(),
+            serde_json::Value::String(file_uri.clone()),
+        );
+        arg.insert(
+            "range".to_string(),
+            crate::support::json_value(Range::new(selection_start, selection_end)),
+        );
+        arg
+    })];
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                "arguments": [{
-                    "method_signature": "int add(int a, int b)",
-                    "context": null,
-                    "uri": file_uri,
-                    "range": { "start": selection_start, "end": selection_end }
-                }],
-                "workDoneToken": progress_token.clone()
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_METHOD_BODY.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams {
+                    work_done_token: Some(progress_token.clone()),
+                },
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     // Collect server->client messages (progress + workspace/applyEdit) until the command response.
@@ -4980,7 +5011,7 @@ local_only = true
     let progress_kinds: Vec<String> = notifications
         .iter()
         .filter(|msg| msg.get("method").and_then(|m| m.as_str()) == Some("$/progress"))
-        .filter(|msg| msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token))
+        .filter(|msg| msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token_value))
         .filter_map(|msg| {
             msg.get("params")
                 .and_then(|p| p.get("value"))
@@ -4995,12 +5026,9 @@ local_only = true
     mock.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
     let status = child.wait().expect("wait");
     assert!(status.success());
@@ -5040,15 +5068,35 @@ fn stdio_server_execute_command_generate_method_body_without_root_uri_applies_wo
     let insert_end = TextPos::new(text).lsp_position(close).expect("insert end");
 
     // With no rootUri, patch paths fall back to the basename (`My File.java`).
-    let patch = json!({
-        "edits": [{
-            "file": "My File.java",
-            "range": { "start": insert_start, "end": insert_end },
-            "text": " return a + b; "
-        }]
-    })
-    .to_string();
-    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let patch = serde_json::to_string(&serde_json::Value::Object({
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "edits".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object({
+                let mut edit = serde_json::Map::new();
+                edit.insert(
+                    "file".to_string(),
+                    serde_json::Value::String("My File.java".to_string()),
+                );
+                edit.insert(
+                    "range".to_string(),
+                    crate::support::json_value(Range::new(insert_start, insert_end)),
+                );
+                edit.insert(
+                    "text".to_string(),
+                    serde_json::Value::String(" return a + b; ".to_string()),
+                );
+                edit
+            })]),
+        );
+        patch
+    }))
+    .expect("patch json");
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert("completion".to_string(), serde_json::Value::String(patch));
+        resp
+    }));
 
     let config_path = temp.path().join("nova.toml");
     std::fs::write(
@@ -5094,53 +5142,44 @@ local_only = true
     let mut stdout = BufReader::new(stdout);
 
     // Intentionally omit rootUri so `patch_root_uri_and_file_rel` uses basename mode.
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
+
+    let arguments = vec![serde_json::Value::Object({
+        let mut arg = serde_json::Map::new();
+        arg.insert(
+            "method_signature".to_string(),
+            serde_json::Value::String("int add(int a, int b)".to_string()),
+        );
+        arg.insert("context".to_string(), serde_json::Value::Null);
+        arg.insert(
+            "uri".to_string(),
+            serde_json::Value::String(file_uri.clone()),
+        );
+        arg.insert(
+            "range".to_string(),
+            crate::support::json_value(Range::new(selection_start, selection_end)),
+        );
+        arg
+    })];
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                "arguments": [{
-                    "method_signature": "int add(int a, int b)",
-                    "context": null,
-                    "uri": file_uri,
-                    "range": { "start": selection_start, "end": selection_end }
-                }]
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_METHOD_BODY.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let (notifications, exec_resp) = drain_notifications_until_id(&mut stdout, 2);
@@ -5175,12 +5214,9 @@ local_only = true
     ai_server.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
     let status = child.wait().expect("wait");
     assert!(status.success());
@@ -5190,8 +5226,14 @@ local_only = true
 fn stdio_server_generate_method_body_refuses_excluded_paths_without_model_call() {
     let _lock = crate::support::stdio_server_lock();
 
-    let ai_server =
-        crate::support::TestAiServer::start(json!({ "completion": "unused in this test" }));
+    let ai_server = crate::support::TestAiServer::start(serde_json::Value::Object({
+        let mut resp = serde_json::Map::new();
+        resp.insert(
+            "completion".to_string(),
+            serde_json::Value::String("unused in this test".to_string()),
+        );
+        resp
+    }));
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
@@ -5250,33 +5292,14 @@ excluded_paths = ["src/Main.java"]
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &crate::support::initialize_request_with_root_uri(1, root_uri),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
+        &crate::support::did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     let selection_start = TextPos::new(text)
@@ -5286,22 +5309,35 @@ excluded_paths = ["src/Main.java"]
         .lsp_position(text.find('}').unwrap() + 1)
         .unwrap();
 
+    let arguments = vec![serde_json::Value::Object({
+        let mut arg = serde_json::Map::new();
+        arg.insert(
+            "method_signature".to_string(),
+            serde_json::Value::String("int add(int a, int b)".to_string()),
+        );
+        arg.insert("context".to_string(), serde_json::Value::Null);
+        arg.insert(
+            "uri".to_string(),
+            serde_json::Value::String(file_uri.clone()),
+        );
+        arg.insert(
+            "range".to_string(),
+            crate::support::json_value(Range::new(selection_start, selection_end)),
+        );
+        arg
+    })];
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                "arguments": [{
-                    "method_signature": "int add(int a, int b)",
-                    "context": null,
-                    "uri": file_uri,
-                    "range": { "start": selection_start, "end": selection_end }
-                }]
-            }
-        }),
+        &crate::support::jsonrpc_request(
+            ExecuteCommandParams {
+                command: nova_ide::COMMAND_GENERATE_METHOD_BODY.to_string(),
+                arguments,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -5315,12 +5351,9 @@ excluded_paths = ["src/Main.java"]
         "excluded_paths should prevent any model call"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &crate::support::shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &crate::support::exit_notification());
     drop(stdin);
     let status = child.wait().expect("wait");
     assert!(status.success());

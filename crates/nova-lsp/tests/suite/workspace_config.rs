@@ -28,23 +28,23 @@ fn lsp_endpoints_respect_workspace_generated_sources_config() {
     );
 
     let root_str = root.to_string_lossy().to_string();
+    let params = serde_json::Value::Object({
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            serde_json::Value::String(root_str),
+        );
+        params
+    });
 
-    let generated_sources = apt::handle_generated_sources(
-        serde_json::json!({
-            "projectRoot": root_str.clone(),
-        }),
-        CancellationToken::new(),
-    )
-    .unwrap();
+    let generated_sources =
+        apt::handle_generated_sources(params.clone(), CancellationToken::new()).unwrap();
     assert_eq!(
         generated_sources.get("enabled").and_then(|v| v.as_bool()),
         Some(false)
     );
 
-    let target_classpath = build::handle_target_classpath(serde_json::json!({
-        "projectRoot": root_str,
-    }))
-    .unwrap();
+    let target_classpath = build::handle_target_classpath(params).unwrap();
     let source_roots = target_classpath
         .get("sourceRoots")
         .and_then(|v| v.as_array())

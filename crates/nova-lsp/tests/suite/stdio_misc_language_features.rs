@@ -1,15 +1,27 @@
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use lsp_types::{
+    DocumentHighlight, DocumentHighlightParams, FoldingRange, FoldingRangeParams,
+    PartialResultParams, Position, SelectionRange, SelectionRangeParams, TextDocumentIdentifier,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
 
-fn uri_for_path(path: &Path) -> String {
+use crate::support::{
+    decode_initialize_result, did_open_notification, exit_notification,
+    initialize_request_with_root_uri, initialized_notification, jsonrpc_request,
+    read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
+
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -63,80 +75,52 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
     );
     let initialize_resp = read_response_with_id(&mut stdout, 1);
+    let init = decode_initialize_result(&initialize_resp);
     assert!(
-        initialize_resp
-            .pointer("/result/capabilities/documentHighlightProvider")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "expected documentHighlightProvider capability",
+        init.capabilities.document_highlight_provider.is_some(),
+        "expected documentHighlightProvider capability: {initialize_resp:#}",
     );
     assert!(
-        initialize_resp
-            .pointer("/result/capabilities/selectionRangeProvider")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "expected selectionRangeProvider capability",
+        init.capabilities.selection_range_provider.is_some(),
+        "expected selectionRangeProvider capability: {initialize_resp:#}",
     );
-    let folding_cap = initialize_resp.pointer("/result/capabilities/foldingRangeProvider");
-    let folding_supported = folding_cap.is_some_and(|cap| {
-        cap.as_bool().unwrap_or(false)
-            || cap
-                .get("lineFoldingOnly")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-    });
     assert!(
-        folding_supported,
-        "expected foldingRangeProvider capability"
+        init.capabilities.folding_range_provider.is_some(),
+        "expected foldingRangeProvider capability: {initialize_resp:#}"
     );
+
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // 1) documentHighlight
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentHighlight",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "position": { "line": foo_pos.line, "character": foo_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            DocumentHighlightParams {
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(foo_pos.line, foo_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/documentHighlight",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let highlights = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("documentHighlight result array");
+    let highlights: Vec<DocumentHighlight> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("documentHighlight result array");
     assert!(
         highlights.len() >= 2,
         "expected >= 2 document highlights for `foo`"
@@ -145,62 +129,62 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
     // 2) foldingRange
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/foldingRange",
-            "params": { "textDocument": { "uri": file_uri } }
-        }),
+        &jsonrpc_request(
+            FoldingRangeParams {
+                text_document: TextDocumentIdentifier {
+                    uri: file_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "textDocument/foldingRange",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let ranges = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("foldingRange result array");
+    let ranges: Vec<FoldingRange> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("foldingRange result array");
     assert!(
-        ranges.iter().any(
-            |range| range.get("startLine").and_then(|v| v.as_i64()).unwrap_or(0)
-                < range.get("endLine").and_then(|v| v.as_i64()).unwrap_or(0)
-        ),
+        ranges.iter().any(|range| range.start_line < range.end_line),
         "expected at least one folding range with startLine < endLine",
     );
 
     // 3) selectionRange
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/selectionRange",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "positions": [{ "line": foo_pos.line, "character": foo_pos.character }],
-            }
-        }),
+        &jsonrpc_request(
+            SelectionRangeParams {
+                text_document: TextDocumentIdentifier {
+                    uri: file_uri.clone(),
+                },
+                positions: vec![Position::new(foo_pos.line, foo_pos.character)],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            4,
+            "textDocument/selectionRange",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let selections = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("selectionRange result array");
+    let selections: Vec<SelectionRange> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("selectionRange result array");
     assert_eq!(selections.len(), 1);
     let mut depth = 0usize;
     let mut current = selections[0].clone();
     loop {
         depth += 1;
-        match current.get("parent") {
-            Some(parent) if parent.is_object() => current = parent.clone(),
-            _ => break,
+        match current.parent {
+            Some(parent) => current = *parent,
+            None => break,
         }
     }
     assert!(depth > 1, "expected a nested SelectionRange chain");
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(5));
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

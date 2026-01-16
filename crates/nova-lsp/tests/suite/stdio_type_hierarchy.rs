@@ -1,15 +1,27 @@
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use lsp_types::{
+    PartialResultParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+    TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams, Uri, WorkDoneProgressParams,
+};
 
-fn uri_for_path(path: &Path) -> String {
+use crate::support::{
+    decode_initialize_result, did_open_notification, exit_notification, initialize_request_empty,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
+
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -41,41 +53,18 @@ fn stdio_server_handles_type_hierarchy_requests() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
+    let init = decode_initialize_result(&initialize_resp);
     assert!(
-        initialize_resp
-            .pointer("/result/capabilities/typeHierarchyProvider")
-            .is_some(),
-        "expected typeHierarchyProvider capability"
+        init.capabilities.type_hierarchy_provider.is_some(),
+        "expected typeHierarchyProvider capability: {initialize_resp:#}"
     );
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": file_text,
-                }
-            }
-        }),
+        &did_open_notification(file_uri.clone(), "java", 1, file_text),
     );
 
     // Prepare type hierarchy for B, then fetch supertypes -> A.
@@ -83,90 +72,97 @@ fn stdio_server_handles_type_hierarchy_requests() {
     let b_pos = utf16_position(file_text, b_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareTypeHierarchy",
-            "params": {
-                "textDocument": { "uri": file_uri.as_str() },
-                "position": { "line": b_pos.line, "character": b_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            TypeHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(b_pos.line, b_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "textDocument/prepareTypeHierarchy",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let items = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("prepareTypeHierarchy result array");
+    let items: Vec<TypeHierarchyItem> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("prepareTypeHierarchy result array");
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].get("name").and_then(|v| v.as_str()), Some("B"));
+    assert_eq!(items[0].name, "B");
     let item_b = items[0].clone();
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "typeHierarchy/supertypes",
-            "params": { "item": item_b }
-        }),
+        &jsonrpc_request(
+            TypeHierarchySupertypesParams {
+                item: item_b,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "typeHierarchy/supertypes",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let supers = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("typeHierarchy/supertypes result array");
+    let supers: Vec<TypeHierarchyItem> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("typeHierarchy/supertypes result array");
     assert_eq!(supers.len(), 1);
-    assert_eq!(supers[0].get("name").and_then(|v| v.as_str()), Some("A"));
+    assert_eq!(supers[0].name, "A");
 
     // Prepare type hierarchy for A, then fetch subtypes -> B.
     let a_offset = file_text.find("class A").expect("class A decl exists") + "class ".len();
     let a_pos = utf16_position(file_text, a_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/prepareTypeHierarchy",
-            "params": {
-                "textDocument": { "uri": file_uri.as_str() },
-                "position": { "line": a_pos.line, "character": a_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            TypeHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(a_pos.line, a_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            4,
+            "textDocument/prepareTypeHierarchy",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let items = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("prepareTypeHierarchy result array");
+    let items: Vec<TypeHierarchyItem> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("prepareTypeHierarchy result array");
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].get("name").and_then(|v| v.as_str()), Some("A"));
+    assert_eq!(items[0].name, "A");
     let item_a = items[0].clone();
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "typeHierarchy/subtypes",
-            "params": { "item": item_a }
-        }),
+        &jsonrpc_request(
+            TypeHierarchySubtypesParams {
+                item: item_a,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            5,
+            "typeHierarchy/subtypes",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
-    let subs = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("typeHierarchy/subtypes result array");
+    let subs: Vec<TypeHierarchyItem> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("typeHierarchy/subtypes result array");
     assert_eq!(subs.len(), 1);
-    assert_eq!(subs[0].get("name").and_then(|v| v.as_str()), Some("B"));
+    assert_eq!(subs[0].name, "B");
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

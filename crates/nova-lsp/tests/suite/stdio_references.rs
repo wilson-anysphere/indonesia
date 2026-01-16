@@ -1,11 +1,19 @@
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use lsp_types::{
+    Location, PartialResultParams, Position, ReferenceContext, ReferenceParams,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
+
+use crate::support::{
+    decode_initialize_result, did_open_notification, exit_notification,
+    initialize_request_with_root_uri, initialized_notification, jsonrpc_request,
+    read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -31,8 +39,8 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     let foo_path = root.join("Foo.java");
     let main_path = root.join("Main.java");
 
-    let foo_uri = uri_for_path(&foo_path);
-    let main_uri = uri_for_path(&main_path);
+    let foo_uri: Uri = uri_for_path(&foo_path).parse().expect("foo uri");
+    let main_uri: Uri = uri_for_path(&main_path).parse().expect("main uri");
 
     let foo_text = concat!("public class Foo {\n", "    public void foo() {}\n", "}\n",);
 
@@ -57,43 +65,19 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
-    assert_eq!(
-        initialize_resp
-            .pointer("/result/capabilities/referencesProvider")
-            .and_then(|v| v.as_bool()),
-        Some(true),
-        "server must advertise referencesProvider"
+    let init = decode_initialize_result(&initialize_resp);
+    assert!(
+        init.capabilities.references_provider.is_some(),
+        "server must advertise referencesProvider: {initialize_resp:#}"
     );
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     for (uri, text) in [(&foo_uri, foo_text), (&main_uri, main_text)] {
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "java",
-                        "version": 1,
-                        "text": text,
-                    }
-                }
-            }),
+            &did_open_notification(uri.clone(), "java", 1, text),
         );
     }
 
@@ -105,45 +89,41 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     // 1) includeDeclaration: false (should still return cross-file usage).
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/references",
-            "params": {
-                "textDocument": { "uri": foo_uri.as_str() },
-                "position": { "line": foo_def_pos.line, "character": foo_def_pos.character },
-                "context": { "includeDeclaration": false }
-            }
-        }),
+        &jsonrpc_request(
+            ReferenceParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: foo_uri.clone(),
+                    },
+                    Position::new(foo_def_pos.line, foo_def_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: ReferenceContext {
+                    include_declaration: false,
+                },
+            },
+            2,
+            "textDocument/references",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let locations = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("references result array");
+    let locations: Vec<Location> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("references result array");
 
     assert!(
         locations.iter().any(|loc| {
-            loc.get("uri").and_then(|v| v.as_str()) == Some(main_uri.as_str())
-                && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
-                    == Some(foo_usage_pos.line as u64)
-                && loc
-                    .pointer("/range/start/character")
-                    .and_then(|v| v.as_u64())
-                    == Some(foo_usage_pos.character as u64)
+            loc.uri == main_uri
+                && loc.range.start == Position::new(foo_usage_pos.line, foo_usage_pos.character)
         }),
         "expected references to include usage in Main.java; got {locations:?}"
     );
 
     assert!(
         !locations.iter().any(|loc| {
-            loc.get("uri").and_then(|v| v.as_str()) == Some(foo_uri.as_str())
-                && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
-                    == Some(foo_def_pos.line as u64)
-                && loc
-                    .pointer("/range/start/character")
-                    .and_then(|v| v.as_u64())
-                    == Some(foo_def_pos.character as u64)
+            loc.uri == foo_uri
+                && loc.range.start == Position::new(foo_def_pos.line, foo_def_pos.character)
         }),
         "expected includeDeclaration=false to omit foo declaration; got {locations:?}"
     );
@@ -151,42 +131,40 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     // 2) includeDeclaration: true (should include declaration).
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/references",
-            "params": {
-                "textDocument": { "uri": foo_uri.as_str() },
-                "position": { "line": foo_def_pos.line, "character": foo_def_pos.character },
-                "context": { "includeDeclaration": true }
-            }
-        }),
+        &jsonrpc_request(
+            ReferenceParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: foo_uri.clone(),
+                    },
+                    Position::new(foo_def_pos.line, foo_def_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            3,
+            "textDocument/references",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let locations = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("references result array");
+    let locations: Vec<Location> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("references result array");
     assert!(
         locations.iter().any(|loc| {
-            loc.get("uri").and_then(|v| v.as_str()) == Some(foo_uri.as_str())
-                && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
-                    == Some(foo_def_pos.line as u64)
-                && loc
-                    .pointer("/range/start/character")
-                    .and_then(|v| v.as_u64())
-                    == Some(foo_def_pos.character as u64)
+            loc.uri == foo_uri
+                && loc.range.start == Position::new(foo_def_pos.line, foo_def_pos.character)
         }),
         "expected includeDeclaration=true to include foo declaration; got {locations:?}"
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

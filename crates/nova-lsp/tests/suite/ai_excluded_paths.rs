@@ -1,4 +1,4 @@
-use serde_json::json;
+use lsp_types::{CodeActionContext, CodeActionParams, Diagnostic, Position, Range};
 use std::fs;
 use std::io::BufReader;
 use std::path::Path;
@@ -7,7 +7,11 @@ use std::process::{Command, Stdio};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use tempfile::TempDir;
 
-use crate::support;
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -16,7 +20,7 @@ fn uri_for_path(path: &Path) -> String {
 
 #[test]
 fn stdio_server_hides_ai_code_edit_actions_for_excluded_paths() {
-    let _lock = support::stdio_server_lock();
+    let _lock = stdio_server_lock();
 
     let temp = TempDir::new().expect("tempdir");
     let secret_dir = temp.path().join("secret");
@@ -71,36 +75,14 @@ excluded_paths = ["secret/**"]
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
-    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
-    support::write_jsonrpc_message(
+    write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri.clone(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) request code actions with a diagnostic + a non-empty selection. Normally, this would
@@ -109,32 +91,37 @@ excluded_paths = ["secret/**"]
     // The file matches `ai.privacy.excluded_paths`, so the server should hide AI *code-editing*
     // actions. Non-edit actions like explain-error remain available (but must omit any excluded
     // code context when building prompts).
-    support::write_jsonrpc_message(
+
+    let range = Range {
+        start: Position::new(0, 0),
+        end: Position::new(0, 10),
+    };
+
+    let uri = uri
+        .parse()
+        .expect("test file URI must parse as lsp_types::Uri");
+    write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri.clone() },
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 10 }
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                range,
+                context: CodeActionContext {
+                    diagnostics: vec![Diagnostic::new_simple(
+                        range,
+                        "cannot find symbol".to_string(),
+                    )],
+                    ..CodeActionContext::default()
                 },
-                "context": {
-                    "diagnostics": [{
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 10 }
-                        },
-                        "message": "cannot find symbol"
-                    }]
-                }
-            }
-        }),
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
-    let code_actions_resp = support::read_response_with_id(&mut stdout, 2);
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_actions_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -183,13 +170,10 @@ excluded_paths = ["secret/**"]
     }
 
     // 4) shutdown + exit
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
-    let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

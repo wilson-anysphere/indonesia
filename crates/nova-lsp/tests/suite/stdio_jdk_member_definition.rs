@@ -1,12 +1,17 @@
-use lsp_types::{Location, Position, Range, Uri};
+use lsp_types::{
+    Location, Position, Range, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -115,51 +120,30 @@ fn stdio_definition_into_jdk_member_methods_and_fields_returns_symbol_ranges() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) Method navigation: `l.get(0)` -> decompiled `List.get`.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": method_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": method_text,
-                }
-            }
-        }),
+        &did_open_notification(method_uri.as_str(), "java", 1, method_text),
     );
 
     let get_offset = method_text.find("get(0)").expect("get call");
     let get_position = utf16_position(method_text, get_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": method_uri.as_str() },
-                "position": { "line": get_position.line, "character": get_position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: method_uri.clone(),
+                },
+                Position::new(get_position.line, get_position.character),
+            ),
+            2,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location: Location = serde_json::from_value(resp["result"].clone()).expect("location");
@@ -170,33 +154,23 @@ fn stdio_definition_into_jdk_member_methods_and_fields_returns_symbol_ranges() {
     // 3) Field navigation: `java.lang.Custom.FOO` -> decompiled `Custom.FOO`.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": field_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": field_text,
-                }
-            }
-        }),
+        &did_open_notification(field_uri.as_str(), "java", 1, field_text),
     );
 
     let foo_offset = field_text.find("FOO").expect("FOO access");
     let foo_position = utf16_position(field_text, foo_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": field_uri.as_str() },
-                "position": { "line": foo_position.line, "character": foo_position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: field_uri.clone(),
+                },
+                Position::new(foo_position.line, foo_position.character),
+            ),
+            3,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let location: Location = serde_json::from_value(resp["result"].clone()).expect("location");
@@ -205,12 +179,9 @@ fn stdio_definition_into_jdk_member_methods_and_fields_returns_symbol_ranges() {
     assert_eq!(location.range, expected_foo_range);
 
     // 4) shutdown
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

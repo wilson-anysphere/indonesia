@@ -1,14 +1,19 @@
 #![cfg(unix)]
 
+use lsp_types::{FileChangeType, FileEvent, Uri, WorkspaceSymbolParams};
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_with_root_uri, initialized_notification,
+    jsonrpc_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::canonicalize(path).expect("abs path");
@@ -72,20 +77,22 @@ fn send_workspace_symbol_request(
     stdout: &mut impl std::io::BufRead,
     id: i64,
     query: &str,
-) -> serde_json::Value {
+) -> Value {
     write_jsonrpc_message(
         stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "workspace/symbol",
-            "params": { "query": query }
-        }),
+        &jsonrpc_request(
+            WorkspaceSymbolParams {
+                query: query.to_string(),
+                ..WorkspaceSymbolParams::default()
+            },
+            id,
+            "workspace/symbol",
+        ),
     );
     read_response_with_id(stdout, id)
 }
 
-fn response_contains_symbol(resp: &serde_json::Value, name: &str, uri: &str) -> bool {
+fn response_contains_symbol(resp: &Value, name: &str, uri: &str) -> bool {
     resp.get("result")
         .and_then(|v| v.as_array())
         .iter()
@@ -180,31 +187,11 @@ fn stdio_server_supports_workspace_symbol_requests_via_distributed_router() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/symbol",
-            "params": { "query": "Foo" }
-        }),
-    );
-    let resp = read_response_with_id(&mut stdout, 2);
+    let resp = send_workspace_symbol_request(&mut stdin, &mut stdout, 2, "Foo");
     let results = resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -219,12 +206,9 @@ fn stdio_server_supports_workspace_symbol_requests_via_distributed_router() {
         "expected to find Foo symbol pointing at Foo.java in distributed mode, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -246,8 +230,7 @@ fn stdio_distributed_workspace_symbol_reports_utf16_definition_positions() {
 
     let name_offset = file_text.find("Foo").expect("class name");
     let line_index = nova_core::LineIndex::new(file_text);
-    let expected =
-        line_index.position(file_text, nova_core::TextSize::from(name_offset as u32));
+    let expected = line_index.position(file_text, nova_core::TextSize::from(name_offset as u32));
     assert_eq!(expected.line, 2, "expected Foo on line 2 (0-based)");
     assert_eq!(
         expected.character, 22,
@@ -274,23 +257,19 @@ fn stdio_distributed_workspace_symbol_reports_utf16_definition_positions() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let mut next_id = 2i64;
-    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
+    wait_for_symbol(
+        &mut stdin,
+        &mut stdout,
+        &mut next_id,
+        "Foo",
+        "Foo",
+        &file_uri,
+    );
 
     let resp = send_workspace_symbol_request(&mut stdin, &mut stdout, next_id, "Foo");
     let results = resp
@@ -318,12 +297,9 @@ fn stdio_distributed_workspace_symbol_reports_utf16_definition_positions() {
     assert_eq!(line as u32, expected.line);
     assert_eq!(character as u32, expected.character);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": next_id + 1, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(next_id + 1));
     let _shutdown_resp = read_response_with_id(&mut stdout, next_id + 1);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -372,20 +348,9 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let mut next_id = 2i64;
     wait_for_symbol(
@@ -413,11 +378,17 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": { "changes": [{ "uri": file_uri, "type": 2 }] }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(
+                    file_uri
+                        .parse::<Uri>()
+                        .expect("file uri must be a valid LSP Uri"),
+                    FileChangeType::CHANGED,
+                )],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
     wait_for_symbol(
         &mut stdin,
@@ -431,11 +402,17 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
     std::fs::remove_file(&file_path).expect("delete java file");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didChangeWatchedFiles",
-            "params": { "changes": [{ "uri": file_uri, "type": 3 }] }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeWatchedFilesParams {
+                changes: vec![FileEvent::new(
+                    file_uri
+                        .parse::<Uri>()
+                        .expect("file uri must be a valid LSP Uri"),
+                    FileChangeType::DELETED,
+                )],
+            },
+            "workspace/didChangeWatchedFiles",
+        ),
     );
 
     wait_for_symbol_absent(
@@ -455,12 +432,9 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
         &file_uri,
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(next_id));
     let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,15 +1,26 @@
+use lsp_types::{
+    HoverParams, PartialResultParams, Position, ReferenceContext, ReferenceParams, SignatureHelp,
+    SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
+    WorkDoneProgressParams,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_with_root_uri,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
 
-fn uri_for_path(path: &Path) -> String {
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("lsp uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -30,7 +41,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let file_uri = uri_for_path(&file_path);
     let disk_file_path = root.join("OnDisk.java");
     let disk_file_uri = uri_for_path(&disk_file_path);
-    let root_uri = uri_for_path(root);
+    let root_uri = uri_for_path(root).as_str().to_string();
 
     let source = concat!(
         "class Main {\n",
@@ -68,15 +79,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
     let caps = initialize_resp
         .get("result")
@@ -86,26 +89,12 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         caps.get("referencesProvider").and_then(|v| v.as_bool()),
         Some(true)
     );
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(file_uri.clone(), "java", 1, source),
     );
 
     // hover on method identifier in declaration
@@ -115,15 +104,19 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let hover_pos = utf16_position(source, hover_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/hover",
-            "params": {
-                "textDocument": { "uri": file_uri.as_str() },
-                "position": { "line": hover_pos.line, "character": hover_pos.character }
-            }
-        }),
+        &jsonrpc_request(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(hover_pos.line, hover_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "textDocument/hover",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let hover_contents = resp
@@ -144,49 +137,58 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let call_pos = utf16_position(source, call_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/signatureHelp",
-            "params": {
-                "textDocument": { "uri": file_uri.as_str() },
-                "position": { "line": call_pos.line, "character": call_pos.character }
-            }
-        }),
+        &jsonrpc_request(
+            SignatureHelpParams {
+                context: None,
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(call_pos.line, call_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/signatureHelp",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let signatures = resp
-        .pointer("/result/signatures")
-        .and_then(|v| v.as_array())
-        .expect("signatureHelp signatures array");
-    assert!(!signatures.is_empty(), "expected non-empty signatures");
-    let label = signatures[0]
-        .get("label")
-        .and_then(|v| v.as_str())
-        .expect("signature label");
-    assert!(label.contains("foo"), "expected foo in signature label");
+    let help: SignatureHelp =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("signatureHelp result");
+    assert!(!help.signatures.is_empty(), "expected non-empty signatures");
+    assert!(
+        help.signatures[0].label.contains("foo"),
+        "expected foo in signature label"
+    );
 
     // references on call-site identifier
     let ref_offset = source.find("foo(1").expect("foo(1 call");
     let ref_pos = utf16_position(source, ref_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/references",
-            "params": {
-                "textDocument": { "uri": file_uri.as_str() },
-                "position": { "line": ref_pos.line, "character": ref_pos.character },
-                "context": { "includeDeclaration": true }
-            }
-        }),
+        &jsonrpc_request(
+            ReferenceParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: file_uri.clone(),
+                    },
+                    Position::new(ref_pos.line, ref_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            4,
+            "textDocument/references",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let locations = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("references result array");
+    let locations: Vec<lsp_types::Location> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("references result array");
     assert!(
         locations.len() >= 2,
         "expected at least 2 reference locations (including declaration)"
@@ -203,15 +205,19 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let hover_pos = utf16_position(disk_source, hover_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "textDocument/hover",
-            "params": {
-                "textDocument": { "uri": disk_file_uri.as_str() },
-                "position": { "line": hover_pos.line, "character": hover_pos.character }
-            }
-        }),
+        &jsonrpc_request(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: disk_file_uri.clone(),
+                    },
+                    Position::new(hover_pos.line, hover_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            5,
+            "textDocument/hover",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     let hover_contents = resp
@@ -232,61 +238,67 @@ fn stdio_server_supports_hover_signature_help_and_references() {
     let call_pos = utf16_position(disk_source, call_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "textDocument/signatureHelp",
-            "params": {
-                "textDocument": { "uri": disk_file_uri.as_str() },
-                "position": { "line": call_pos.line, "character": call_pos.character }
-            }
-        }),
+        &jsonrpc_request(
+            SignatureHelpParams {
+                context: None,
+                text_document_position_params: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: disk_file_uri.clone(),
+                    },
+                    Position::new(call_pos.line, call_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            6,
+            "textDocument/signatureHelp",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 6);
-    let signatures = resp
-        .pointer("/result/signatures")
-        .and_then(|v| v.as_array())
-        .expect("signatureHelp signatures array");
-    assert!(!signatures.is_empty(), "expected non-empty signatures");
-    let label = signatures[0]
-        .get("label")
-        .and_then(|v| v.as_str())
-        .expect("signature label");
-    assert!(label.contains("foo"), "expected foo in signature label");
+    let help: SignatureHelp =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("signatureHelp result");
+    assert!(!help.signatures.is_empty(), "expected non-empty signatures");
+    assert!(
+        help.signatures[0].label.contains("foo"),
+        "expected foo in signature label"
+    );
 
     // references on call-site identifier
     let ref_offset = disk_source.find("foo(1").expect("foo(1 call");
     let ref_pos = utf16_position(disk_source, ref_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 7,
-            "method": "textDocument/references",
-            "params": {
-                "textDocument": { "uri": disk_file_uri.as_str() },
-                "position": { "line": ref_pos.line, "character": ref_pos.character },
-                "context": { "includeDeclaration": true }
-            }
-        }),
+        &jsonrpc_request(
+            ReferenceParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: disk_file_uri.clone(),
+                    },
+                    Position::new(ref_pos.line, ref_pos.character),
+                ),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            7,
+            "textDocument/references",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 7);
-    let locations = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("references result array");
+    let locations: Vec<lsp_types::Location> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("references result array");
     assert!(
         locations.len() >= 2,
         "expected at least 2 reference locations (including declaration)"
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(8));
     let _shutdown_resp = read_response_with_id(&mut stdout, 8);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

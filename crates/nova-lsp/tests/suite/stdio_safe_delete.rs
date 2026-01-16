@@ -1,10 +1,17 @@
-use lsp_types::{TextEdit, Uri, WorkspaceEdit};
+use lsp_types::{
+    ApplyWorkspaceEditResponse, CodeActionContext, CodeActionParams, ExecuteCommandParams,
+    Position, Range, TextDocumentIdentifier, TextEdit, Uri, WorkspaceEdit,
+};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{drain_notifications_until_id, read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, drain_notifications_until_id, exit_notification,
+    initialize_request_empty, initialized_notification, jsonrpc_request, read_response_with_id,
+    shutdown_request, write_jsonrpc_message,
+};
 
 fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
     if edits.is_empty() {
@@ -54,32 +61,15 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document (required for safe delete symbol IDs to be stable in the stdio server)
     let uri: Uri = "file:///test/A.java".parse().unwrap();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": fixture }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, fixture),
     );
 
     // 3) request code actions at the `used` method declaration
@@ -95,19 +85,20 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": {
-                    "start": { "line": decl_pos.line, "character": decl_pos.character },
-                    "end": { "line": decl_pos.line, "character": decl_pos.character }
-                },
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range::new(
+                    Position::new(decl_pos.line, decl_pos.character),
+                    Position::new(decl_pos.line, decl_pos.character),
+                ),
+                context: CodeActionContext::default(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -151,15 +142,23 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     // 4) request preview via executeCommand (the code action is wired to this command)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": "nova.safeDelete",
-                "arguments": [{ "target": target_id, "mode": "safe" }]
-            }
-        }),
+        &jsonrpc_request(
+            ExecuteCommandParams {
+                command: "nova.safeDelete".to_string(),
+                arguments: vec![Value::Object({
+                    let mut args = serde_json::Map::new();
+                    args.insert(
+                        "target".to_string(),
+                        Value::Number(serde_json::Number::from(target_id)),
+                    );
+                    args.insert("mode".to_string(), Value::String("safe".to_string()));
+                    args
+                })],
+                work_done_progress_params: Default::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
     let preview_via_command = read_response_with_id(&mut stdout, 3);
     assert_eq!(
@@ -172,12 +171,19 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     // 5) request preview via custom method
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/refactor/safeDelete",
-            "params": { "target": target_id, "mode": "safe" }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "target".to_string(),
+                    Value::Number(serde_json::Number::from(target_id)),
+                );
+                params.insert("mode".to_string(), Value::String("safe".to_string()));
+                params
+            }),
+            4,
+            "nova/refactor/safeDelete",
+        ),
     );
     let preview_via_method = read_response_with_id(&mut stdout, 4);
     assert_eq!(
@@ -190,15 +196,26 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     // 6) apply via executeCommand
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": "nova.safeDelete",
-                "arguments": [{ "target": target_id, "mode": "deleteAnyway" }]
-            }
-        }),
+        &jsonrpc_request(
+            ExecuteCommandParams {
+                command: "nova.safeDelete".to_string(),
+                arguments: vec![Value::Object({
+                    let mut args = serde_json::Map::new();
+                    args.insert(
+                        "target".to_string(),
+                        Value::Number(serde_json::Number::from(target_id)),
+                    );
+                    args.insert(
+                        "mode".to_string(),
+                        Value::String("deleteAnyway".to_string()),
+                    );
+                    args
+                })],
+                work_done_progress_params: Default::default(),
+            },
+            5,
+            "workspace/executeCommand",
+        ),
     );
     let (notifications, apply_resp) = drain_notifications_until_id(&mut stdout, 5);
     let apply_edit_req = notifications
@@ -215,11 +232,14 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     let apply_edit_id = apply_edit_req.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": apply_edit_id,
-            "result": { "applied": true }
-        }),
+        &crate::support::jsonrpc_response_ok(
+            apply_edit_id,
+            ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+        ),
     );
     let edit: WorkspaceEdit =
         serde_json::from_value(apply_resp.get("result").cloned().expect("result"))
@@ -232,12 +252,9 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     assert!(!actual.contains("used()"), "usage should be removed");
 
     // 7) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -279,32 +296,15 @@ class A {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document (required for safe delete symbol IDs to be stable in the stdio server)
     let uri: Uri = "file:///test/A.java".parse().unwrap();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": fixture }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, fixture),
     );
 
     // 3) request code actions at the `inner` method declaration (inside a local class)
@@ -320,19 +320,20 @@ class A {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": {
-                    "start": { "line": decl_pos.line, "character": decl_pos.character },
-                    "end": { "line": decl_pos.line, "character": decl_pos.character }
-                },
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range::new(
+                    Position::new(decl_pos.line, decl_pos.character),
+                    Position::new(decl_pos.line, decl_pos.character),
+                ),
+                context: CodeActionContext::default(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
@@ -357,12 +358,9 @@ class A {
     );
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

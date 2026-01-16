@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
@@ -11,7 +11,11 @@ use nova_lsp::{
     INTERNAL_INTERRUPTIBLE_WORK_METHOD, INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
 };
 
-use crate::support::{stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_empty, initialized_notification, jsonrpc_notification,
+    jsonrpc_request, shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
+use lsp_types::{CancelParams, NumberOrString};
 
 fn try_write_jsonrpc_message(writer: &mut impl Write, message: &Value) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(message)?;
@@ -131,25 +135,14 @@ fn cancel_request_triggers_salsa_cancellation() {
     // Initialize + initialized.
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": { "capabilities": {} }
-            }),
-        );
+        write_jsonrpc_message(&mut *stdin, &initialize_request_empty(1));
     }
     let _initialize_resp = messages
         .recv_response_with_id(1, Duration::from_secs(5))
         .expect("initialize response");
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-        );
+        write_jsonrpc_message(&mut *stdin, &initialized_notification());
     }
 
     // Run a long-running Salsa query that only checks Salsa cancellation (not the per-request token).
@@ -157,15 +150,18 @@ fn cancel_request_triggers_salsa_cancellation() {
         let mut stdin = stdin.lock().expect("lock stdin");
         write_jsonrpc_message(
             &mut *stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": INTERNAL_INTERRUPTIBLE_WORK_METHOD,
-                // The query checks cancellation every 256 steps, so the exact step count is not
-                // important as long as it's large enough that the request wouldn't finish before we
-                // cancel it.
-                "params": { "steps": 1_000_000_000u32 }
-            }),
+            &jsonrpc_request(
+                Value::Object({
+                    let mut params = serde_json::Map::new();
+                    params.insert(
+                        "steps".to_string(),
+                        Value::Number(serde_json::Number::from(1_000_000_000u64)),
+                    );
+                    params
+                }),
+                2,
+                INTERNAL_INTERRUPTIBLE_WORK_METHOD,
+            ),
         );
     }
 
@@ -182,18 +178,19 @@ fn cancel_request_triggers_salsa_cancellation() {
     let cancel_done = Arc::new(AtomicBool::new(false));
     let cancel_done_thread = cancel_done.clone();
     let cancel_stdin = stdin.clone();
+    let cancel_message = jsonrpc_notification(
+        CancelParams {
+            id: NumberOrString::Number(2),
+        },
+        "$/cancelRequest",
+    );
     let cancel_thread = thread::spawn(move || {
         for _ in 0..400 {
             if cancel_done_thread.load(Ordering::SeqCst) {
                 break;
             }
             if let Ok(mut stdin) = cancel_stdin.lock() {
-                let cancel = json!({
-                    "jsonrpc": "2.0",
-                    "method": "$/cancelRequest",
-                    "params": { "id": 2 }
-                });
-                if try_write_jsonrpc_message(&mut *stdin, &cancel).is_err() {
+                if try_write_jsonrpc_message(&mut *stdin, &cancel_message).is_err() {
                     break;
                 }
             }
@@ -234,17 +231,14 @@ fn cancel_request_triggers_salsa_cancellation() {
     // Shutdown + exit.
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-        );
+        write_jsonrpc_message(&mut *stdin, &shutdown_request(3));
     }
     let _shutdown_resp = messages
         .recv_response_with_id(3, Duration::from_secs(5))
         .expect("shutdown response");
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(&mut *stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+        write_jsonrpc_message(&mut *stdin, &exit_notification());
     }
     drop(stdin);
 

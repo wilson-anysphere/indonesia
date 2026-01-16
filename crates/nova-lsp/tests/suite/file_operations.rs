@@ -1,11 +1,14 @@
 use lsp_types::Uri;
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_empty, initialized_notification, jsonrpc_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &std::path::Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -47,30 +50,24 @@ fn did_create_delete_files_updates_cached_analysis_state() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 1) Request diagnostics for a file that doesn't exist. The server should cache "missing".
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            2,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     assert!(diagnostic_messages(&resp).is_empty());
@@ -86,12 +83,17 @@ fn did_create_delete_files_updates_cached_analysis_state() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            3,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     assert!(
@@ -102,21 +104,29 @@ fn did_create_delete_files_updates_cached_analysis_state() {
     // 3) Notify about file creation; diagnostics should now see the unresolved reference.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didCreateFiles",
-            "params": { "files": [{ "uri": uri }] }
-        }),
+        &jsonrpc_notification(
+            lsp_types::CreateFilesParams {
+                files: vec![lsp_types::FileCreate {
+                    uri: uri.to_string(),
+                }],
+            },
+            "workspace/didCreateFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            4,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     assert!(
@@ -130,12 +140,17 @@ fn did_create_delete_files_updates_cached_analysis_state() {
     std::fs::remove_file(&file_path).expect("remove Main.java");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            5,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     assert!(
@@ -148,21 +163,29 @@ fn did_create_delete_files_updates_cached_analysis_state() {
     // 5) Notify about deletion; diagnostics should now treat the file as missing again.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/didDeleteFiles",
-            "params": { "files": [{ "uri": uri }] }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DeleteFilesParams {
+                files: vec![lsp_types::FileDelete {
+                    uri: uri.to_string(),
+                }],
+            },
+            "workspace/didDeleteFiles",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                partial_result_params: lsp_types::PartialResultParams::default(),
+            },
+            6,
+            "textDocument/diagnostic",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 6);
     assert!(
@@ -170,12 +193,9 @@ fn did_create_delete_files_updates_cached_analysis_state() {
         "expected didDeleteFiles to mark the file missing, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 7, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(7));
     let _shutdown_resp = read_response_with_id(&mut stdout, 7);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,11 +1,18 @@
-use lsp_types::{TextEdit, Uri, WorkspaceEdit};
+use lsp_types::{
+    ApplyWorkspaceEditResponse, CodeActionContext, CodeActionParams, PartialResultParams,
+    TextDocumentIdentifier, TextEdit, Uri, WorkDoneProgressParams, WorkspaceEdit,
+};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Map, Value};
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 
-use crate::support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_jsonrpc_message, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
 
 fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
     if edits.is_empty() {
@@ -42,20 +49,9 @@ fn stdio_server_supports_java_organize_imports_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let source = r#"package com.example;
@@ -69,23 +65,13 @@ public class Foo {
 }
 "#;
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, source));
 
+    let mut params = Map::new();
+    params.insert("uri".to_string(), Value::String(uri.to_string()));
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/organizeImports",
-            "params": { "uri": uri }
-        }),
+        &jsonrpc_request(Value::Object(params), 2, "nova/java/organizeImports"),
     );
 
     let mut apply_edit = None;
@@ -97,11 +83,14 @@ public class Foo {
             let id = msg.get("id").cloned().expect("applyEdit id");
             write_jsonrpc_message(
                 &mut stdin,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "applied": true }
-                }),
+                &crate::support::jsonrpc_response_ok(
+                    id,
+                    ApplyWorkspaceEditResponse {
+                        applied: true,
+                        failure_reason: None,
+                        failed_change: None,
+                    },
+                ),
             );
             continue;
         }
@@ -138,12 +127,9 @@ public class Foo {
 "#;
     assert_eq!(actual, expected);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -164,20 +150,9 @@ fn stdio_server_offers_source_organize_imports_code_action() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let source = r#"package com.example;
@@ -191,30 +166,30 @@ public class Foo {
 }
 "#;
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, source));
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 0 }
+        &jsonrpc_request(
+            CodeActionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str(uri).expect("uri"),
                 },
-                "context": { "diagnostics": [] }
-            }
-        }),
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 0),
+                ),
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let response = read_response_with_id(&mut stdout, 2);
@@ -258,12 +233,9 @@ public class Foo {
 "#;
     assert_eq!(actual, expected);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

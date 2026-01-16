@@ -1,8 +1,11 @@
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    decode_initialize_result, empty_object, exit_notification, initialize_request_empty,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
@@ -19,19 +22,21 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
 
-    let requests = initialize_resp
-        .pointer("/result/capabilities/experimental/nova/requests")
+    let init = decode_initialize_result(&initialize_resp);
+    let experimental = init
+        .capabilities
+        .experimental
+        .as_ref()
+        .expect("initializeResult.capabilities.experimental");
+    let nova = experimental
+        .get("nova")
+        .and_then(|v| v.as_object())
+        .expect("initializeResult.capabilities.experimental.nova");
+    let requests = nova
+        .get("requests")
         .and_then(|v| v.as_array())
         .expect("initializeResult.capabilities.experimental.nova.requests must be an array");
     assert!(
@@ -43,8 +48,8 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD
     );
 
-    let notifications = initialize_resp
-        .pointer("/result/capabilities/experimental/nova/notifications")
+    let notifications = nova
+        .get("notifications")
         .and_then(|v| v.as_array())
         .expect("initializeResult.capabilities.experimental.nova.notifications must be an array");
     assert!(
@@ -56,19 +61,15 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
         nova_lsp::WORKSPACE_RENAME_PATH_NOTIFICATION
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
-            "params": {}
-        }),
+        &jsonrpc_request(
+            empty_object(),
+            2,
+            nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
@@ -106,12 +107,9 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
         "expected result.indexedBytes to be a number; got {result:#}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,15 +1,20 @@
 use lsp_types::{
-    DocumentChangeOperation, DocumentChanges, OneOf, Range, ResourceOp, Uri, WorkspaceEdit,
+    CodeActionContext, CodeActionOrCommand, DocumentChangeOperation, DocumentChanges,
+    ExecuteCommandParams, OneOf, PartialResultParams, Range, RenameParams, ResourceOp,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams, WorkspaceEdit,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use tempfile::tempdir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, file_uri, initialize_request_empty,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
 
 fn lsp_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
     let index = nova_core::LineIndex::new(text);
@@ -66,50 +71,24 @@ fn stdio_server_rename_package_declaration_dispatches_to_move_package() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) prepareRename on package => full dotted range
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareRename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": pkg_pos,
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(TextDocumentIdentifier { uri: uri.clone() }, pkg_pos),
+            2,
+            "textDocument/prepareRename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("prepareRename result");
@@ -119,16 +98,18 @@ fn stdio_server_rename_package_declaration_dispatches_to_move_package() {
     // 4) rename package => move_package refactor (file rename + text updates)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": pkg_pos,
-                "newName": "com.foo"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: uri.clone() },
+                    pkg_pos,
+                ),
+                new_name: "com.foo".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/rename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("rename result");
@@ -163,12 +144,9 @@ fn stdio_server_rename_package_declaration_dispatches_to_move_package() {
     assert!(saw_updated_package, "expected package declaration rewrite");
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -203,52 +181,28 @@ fn stdio_server_rename_type_emits_file_rename_and_updates_references() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open documents (overlays only; no real files)
     for (uri, source) in [(foo_uri.clone(), foo_source), (use_uri.clone(), use_source)] {
-        write_jsonrpc_message(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "java",
-                        "version": 1,
-                        "text": source,
-                    }
-                }
-            }),
-        );
+        write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, source));
     }
 
     // 3) prepareRename on the type name => identifier range only.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareRename",
-            "params": {
-                "textDocument": { "uri": foo_uri },
-                "position": foo_position,
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: foo_uri.clone(),
+                },
+                foo_position,
+            ),
+            2,
+            "textDocument/prepareRename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("prepareRename result");
@@ -258,16 +212,20 @@ fn stdio_server_rename_type_emits_file_rename_and_updates_references() {
     // 4) rename Foo -> Bar => should include a file rename op + text edits for Bar.java and Use.java.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": foo_uri },
-                "position": foo_position,
-                "newName": "Bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: foo_uri.clone(),
+                    },
+                    foo_position,
+                ),
+                new_name: "Bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/rename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("rename result");
@@ -338,12 +296,9 @@ fn stdio_server_rename_type_emits_file_rename_and_updates_references() {
     assert_eq!(use_actual, use_expected);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -385,50 +340,27 @@ fn stdio_server_rename_is_utf16_correct_with_crlf() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document (CRLF + surrogate pair)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, &source),
     );
 
     // 3) prepareRename inside surrogate pair => null
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareRename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": inside_surrogate,
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier { uri: uri.clone() },
+                inside_surrogate,
+            ),
+            2,
+            "textDocument/prepareRename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
@@ -436,16 +368,18 @@ fn stdio_server_rename_is_utf16_correct_with_crlf() {
     // 4) rename on identifier after emoji
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": foo_position,
-                "newName": "bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: uri.clone() },
+                    foo_position,
+                ),
+                new_name: "bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/rename",
+        ),
     );
 
     let rename_resp = read_response_with_id(&mut stdout, 3);
@@ -462,12 +396,9 @@ fn stdio_server_rename_is_utf16_correct_with_crlf() {
     assert_eq!(actual.replace("\r\n", "\n"), expected.replace("\r\n", "\n"));
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -504,51 +435,31 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) rename local Foo -> Bar
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": foo_position,
-                "newName": "Bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: uri.clone() },
+                    foo_position,
+                ),
+                new_name: "Bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "textDocument/rename",
+        ),
     );
 
     let rename_resp = read_response_with_id(&mut stdout, 2);
@@ -571,12 +482,9 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
     assert_eq!(actual, expected);
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -613,50 +521,27 @@ fn stdio_server_supports_field_rename() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) prepareRename on field => range
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareRename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": foo_position,
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier { uri: uri.clone() },
+                foo_position,
+            ),
+            2,
+            "textDocument/prepareRename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("prepareRename result");
@@ -666,16 +551,18 @@ fn stdio_server_supports_field_rename() {
     // 4) rename on field updates declaration and usages
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": foo_position,
-                "newName": "bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: uri.clone() },
+                    foo_position,
+                ),
+                new_name: "bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/rename",
+        ),
     );
     let rename_resp = read_response_with_id(&mut stdout, 3);
     let result = rename_resp.get("result").cloned().expect("workspace edit");
@@ -694,12 +581,9 @@ fn stdio_server_supports_field_rename() {
     assert_eq!(actual, expected);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -728,50 +612,27 @@ fn stdio_server_prepare_rename_supports_type_parameter_rename() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     // 3) prepareRename on type parameter => identifier range
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/prepareRename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": t_param_position,
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier { uri: uri.clone() },
+                t_param_position,
+            ),
+            2,
+            "textDocument/prepareRename",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("prepareRename result");
@@ -781,16 +642,18 @@ fn stdio_server_prepare_rename_supports_type_parameter_rename() {
     // 4) rename type parameter T -> U updates all occurrences
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": t_param_position,
-                "newName": "U"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: uri.clone() },
+                    t_param_position,
+                ),
+                new_name: "U".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "textDocument/rename",
+        ),
     );
     let rename_resp = read_response_with_id(&mut stdout, 3);
     let result = rename_resp.get("result").cloned().expect("workspace edit");
@@ -803,12 +666,9 @@ fn stdio_server_prepare_rename_supports_type_parameter_rename() {
     assert_eq!(actual, expected);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -831,14 +691,8 @@ fn stdio_server_rename_type_updates_multiple_files() {
     std::fs::write(&foo_path, foo_src).expect("write Foo.java");
     std::fs::write(&use_path, use_src).expect("write Use.java");
 
-    fn uri_for_path(path: &std::path::Path) -> Uri {
-        let abs = nova_core::AbsPathBuf::new(path.to_path_buf()).expect("absolute path");
-        let uri = nova_core::path_to_file_uri(&abs).expect("path to uri");
-        Uri::from_str(&uri).expect("parse uri")
-    }
-
-    let foo_uri = uri_for_path(&foo_path);
-    let use_uri = uri_for_path(&use_path);
+    let foo_uri = file_uri(&foo_path);
+    let use_uri = file_uri(&use_path);
 
     let foo_offset = foo_src.find("class Foo").expect("class Foo") + "class ".len() + 1;
     let foo_position = lsp_position_utf16(foo_src, foo_offset);
@@ -855,51 +709,33 @@ fn stdio_server_rename_type_updates_multiple_files() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open Foo.java (Use.java stays on disk only)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": foo_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": foo_src,
-                }
-            }
-        }),
+        &did_open_notification(foo_uri.clone(), "java", 1, foo_src),
     );
 
     // 3) rename type Foo -> Bar (should update Foo.java and Use.java)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": foo_uri },
-                "position": foo_position,
-                "newName": "Bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier {
+                        uri: foo_uri.clone(),
+                    },
+                    foo_position,
+                ),
+                new_name: "Bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "textDocument/rename",
+        ),
     );
 
     let rename_resp = read_response_with_id(&mut stdout, 2);
@@ -922,12 +758,9 @@ fn stdio_server_rename_type_updates_multiple_files() {
     assert_eq!(use_actual, r#"class Use { void m(){ new Bar(); } }"#);
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -958,66 +791,35 @@ fn stdio_server_field_rename_across_files_returns_changes_for_multiple_uris() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open both documents (overlay-only; no disk IO).
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": a_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": a_source,
-                }
-            }
-        }),
+        &did_open_notification(a_uri.clone(), "java", 1, a_source),
     );
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": b_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": b_source,
-                }
-            }
-        }),
+        &did_open_notification(b_uri.clone(), "java", 1, b_source),
     );
 
     // 3) rename field `foo` declared in A.java and referenced in B.java.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": a_uri },
-                "position": foo_position,
-                "newName": "bar"
-            }
-        }),
+        &jsonrpc_request(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams::new(
+                    TextDocumentIdentifier { uri: a_uri.clone() },
+                    foo_position,
+                ),
+                new_name: "bar".to_string(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "textDocument/rename",
+        ),
     );
 
     let rename_resp = read_response_with_id(&mut stdout, 2);
@@ -1051,12 +853,9 @@ fn stdio_server_field_rename_across_files_returns_changes_for_multiple_uris() {
     assert!(!b_actual.contains("a.foo"));
 
     // 4) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1093,83 +892,63 @@ class C {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document (CRLF + surrogate pair)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, &source),
     );
 
     // 3) request code actions for selection (selection includes emoji)
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": range,
-                "context": { "diagnostics": [] }
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    ..CodeActionContext::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
-    let actions = code_action_resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("code actions array");
-    let extract = actions
+    let actions: Vec<CodeActionOrCommand> =
+        serde_json::from_value(code_action_resp.get("result").cloned().unwrap_or_default())
+            .expect("code actions array");
+    let args = actions
         .iter()
-        .find(|action| {
-            action.pointer("/command/command").and_then(|v| v.as_str())
-                == Some("nova.extractMethod")
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => action.command.as_ref(),
+            CodeActionOrCommand::Command(cmd) => Some(cmd),
         })
-        .expect("extract method action");
-
-    let args = extract
-        .pointer("/command/arguments/0")
+        .filter(|cmd| cmd.command == "nova.extractMethod")
+        .and_then(|cmd| cmd.arguments.as_ref())
+        .and_then(|args| args.first())
         .cloned()
-        .expect("command args");
+        .expect("extract method action args");
 
     // 4) execute the command
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": "nova.extractMethod",
-                "arguments": [args]
-            }
-        }),
+        &jsonrpc_request(
+            ExecuteCommandParams {
+                command: "nova.extractMethod".to_string(),
+                arguments: vec![args],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            3,
+            "workspace/executeCommand",
+        ),
     );
 
     let exec_resp = read_response_with_id(&mut stdout, 3);
@@ -1194,12 +973,9 @@ class C {
     assert_eq!(actual, expected);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

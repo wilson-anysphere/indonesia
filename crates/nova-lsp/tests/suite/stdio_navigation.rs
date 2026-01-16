@@ -1,15 +1,26 @@
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use lsp_types::{
+    GotoDefinitionParams, GotoDefinitionResponse, Location, PartialResultParams, Position,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
 
-fn uri_for_path(path: &Path) -> String {
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
+
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -18,9 +29,34 @@ fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
     index.position(text, offset)
 }
 
+fn goto_params(uri: Uri, pos: nova_core::Position) -> GotoDefinitionParams {
+    GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams::new(
+            TextDocumentIdentifier { uri },
+            Position::new(pos.line, pos.character),
+        ),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn decode_goto_locations(value: serde_json::Value) -> Vec<Location> {
+    let Some(response) =
+        serde_json::from_value::<Option<GotoDefinitionResponse>>(value).expect("goto response")
+    else {
+        return Vec::new();
+    };
+
+    match response {
+        GotoDefinitionResponse::Scalar(location) => vec![location],
+        GotoDefinitionResponse::Array(locations) => locations,
+        GotoDefinitionResponse::Link(links) => panic!("unexpected location links: {links:?}"),
+    }
+}
+
 #[test]
 fn stdio_server_handles_implementation_declaration_and_type_definition_requests() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 
@@ -57,20 +93,9 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     for (uri, text) in [
         (&iface_uri, iface_text),
@@ -80,18 +105,7 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
     ] {
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "java",
-                        "version": 1,
-                        "text": text,
-                    }
-                }
-            }),
+            &did_open_notification(uri.clone(), "java", 1, text),
         );
     }
 
@@ -100,69 +114,41 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
     let iface_foo_pos = utf16_position(iface_text, iface_foo_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/implementation",
-            "params": {
-                "textDocument": { "uri": iface_uri.as_str() },
-                "position": { "line": iface_foo_pos.line, "character": iface_foo_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            goto_params(iface_uri.clone(), iface_foo_pos),
+            2,
+            "textDocument/implementation",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let locations = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("implementation result array");
+    let locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
     assert_eq!(locations.len(), 1);
-    assert_eq!(
-        locations[0].get("uri").and_then(|v| v.as_str()),
-        Some(impl_uri.as_str())
-    );
+    assert_eq!(locations[0].uri, impl_uri);
 
     let impl_foo_offset = impl_text.find("foo").expect("foo in impl");
     let impl_foo_pos = utf16_position(impl_text, impl_foo_offset);
     assert_eq!(
-        locations[0]
-            .pointer("/range/start/line")
-            .and_then(|v| v.as_u64()),
-        Some(impl_foo_pos.line as u64)
-    );
-    assert_eq!(
-        locations[0]
-            .pointer("/range/start/character")
-            .and_then(|v| v.as_u64()),
-        Some(impl_foo_pos.character as u64)
+        locations[0].range.start,
+        Position::new(impl_foo_pos.line, impl_foo_pos.character)
     );
 
     // 2) declaration: override -> interface declaration.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/declaration",
-            "params": {
-                "textDocument": { "uri": impl_uri.as_str() },
-                "position": { "line": impl_foo_pos.line, "character": impl_foo_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            goto_params(impl_uri.clone(), impl_foo_pos),
+            3,
+            "textDocument/declaration",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let loc = resp.get("result").expect("declaration result");
+    let mut locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
+    assert_eq!(locations.len(), 1);
+    let loc = locations.pop().expect("location");
+    assert_eq!(loc.uri, iface_uri);
     assert_eq!(
-        loc.get("uri").and_then(|v| v.as_str()),
-        Some(iface_uri.as_str())
-    );
-    assert_eq!(
-        loc.pointer("/range/start/line").and_then(|v| v.as_u64()),
-        Some(iface_foo_pos.line as u64)
-    );
-    assert_eq!(
-        loc.pointer("/range/start/character")
-            .and_then(|v| v.as_u64()),
-        Some(iface_foo_pos.character as u64)
+        loc.range.start,
+        Position::new(iface_foo_pos.line, iface_foo_pos.character)
     );
 
     // 3) typeDefinition: variable usage -> class definition.
@@ -170,30 +156,21 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
     let usage_pos = utf16_position(main_text, usage_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/typeDefinition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": usage_pos.line, "character": usage_pos.character },
-            }
-        }),
+        &jsonrpc_request(
+            goto_params(main_uri.clone(), usage_pos),
+            4,
+            "textDocument/typeDefinition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let loc = resp.get("result").expect("typeDefinition result");
-    assert_eq!(
-        loc.get("uri").and_then(|v| v.as_str()),
-        Some(foo_uri.as_str())
-    );
+    let locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].uri, foo_uri);
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(5));
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

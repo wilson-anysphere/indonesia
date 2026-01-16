@@ -1,15 +1,19 @@
 use nova_db::{FileId, NovaSemantic, NovaSyntax, SalsaDatabase};
 use nova_memory::{MemoryBudget, MemoryManager};
 use nova_metrics::MetricsSnapshot;
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_exposes_metrics_snapshot() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -21,41 +25,18 @@ fn stdio_server_exposes_metrics_snapshot() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // Trigger a couple more methods so the snapshot isn't empty.
     let uri = "file:///test/Foo.java";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": "class Foo{}\n" } }
-        }),
+        &did_open_notification(uri, "java", 1, "class Foo{}\n"),
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/metrics",
-            "params": null
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &jsonrpc_request(Value::Null, 2, "nova/metrics"));
     let metrics_resp = read_response_with_id(&mut stdout, 2);
     let result = metrics_resp.get("result").cloned().expect("result");
     let snapshot: MetricsSnapshot = serde_json::from_value(result).expect("decode snapshot");
@@ -69,12 +50,9 @@ fn stdio_server_exposes_metrics_snapshot() {
         "expected initialize to be recorded"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

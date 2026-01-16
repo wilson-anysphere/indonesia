@@ -1,13 +1,17 @@
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    decode_initialize_result, exit_notification, initialize_request_empty,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    stdio_server_lock, write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_exposes_extensions_status_and_navigation_requests() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let tmp = TempDir::new().expect("tempdir");
     let file_path = tmp.path().join("Foo.java");
     std::fs::write(&file_path, "class Foo {}\n").expect("write temp Foo.java");
@@ -26,19 +30,21 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
 
-    let requests = initialize_resp
-        .pointer("/result/capabilities/experimental/nova/requests")
+    let init = decode_initialize_result(&initialize_resp);
+    let experimental = init
+        .capabilities
+        .experimental
+        .as_ref()
+        .expect("initializeResult.capabilities.experimental");
+    let nova = experimental
+        .get("nova")
+        .and_then(|v| v.as_object())
+        .expect("initializeResult.capabilities.experimental.nova");
+    let requests = nova
+        .get("requests")
         .and_then(|v| v.as_array())
         .expect("initializeResult.capabilities.experimental.nova.requests must be an array");
 
@@ -67,19 +73,11 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
         nova_lsp::BUILD_FILE_CLASSPATH_METHOD
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": nova_lsp::EXTENSIONS_STATUS_METHOD,
-            "params": null
-        }),
+        &jsonrpc_request(Value::Null, 2, nova_lsp::EXTENSIONS_STATUS_METHOD),
     );
     let status_resp = read_response_with_id(&mut stdout, 2);
     let status_result = status_resp.get("result").cloned().expect("result");
@@ -137,12 +135,22 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "textDocument".to_string(),
+                    Value::Object({
+                        let mut doc = serde_json::Map::new();
+                        doc.insert("uri".to_string(), Value::String(uri.clone()));
+                        doc
+                    }),
+                );
+                params
+            }),
+            3,
+            nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
+        ),
     );
     let navigation_resp = read_response_with_id(&mut stdout, 3);
     let navigation_result = navigation_resp.get("result").cloned().expect("result");
@@ -195,12 +203,26 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
-            "params": { "schemaVersion": 2, "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "schemaVersion".to_string(),
+                    Value::Number(serde_json::Number::from(2u64)),
+                );
+                params.insert(
+                    "textDocument".to_string(),
+                    Value::Object({
+                        let mut doc = serde_json::Map::new();
+                        doc.insert("uri".to_string(), Value::String(uri.clone()));
+                        doc
+                    }),
+                );
+                params
+            }),
+            4,
+            nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
+        ),
     );
     let navigation_bad_schema = read_response_with_id(&mut stdout, 4);
     let error = navigation_bad_schema.get("error").cloned().expect("error");
@@ -215,12 +237,18 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": nova_lsp::EXTENSIONS_STATUS_METHOD,
-            "params": { "schemaVersion": 2 }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "schemaVersion".to_string(),
+                    Value::Number(serde_json::Number::from(2u64)),
+                );
+                params
+            }),
+            5,
+            nova_lsp::EXTENSIONS_STATUS_METHOD,
+        ),
     );
     let status_bad_schema = read_response_with_id(&mut stdout, 5);
     let error = status_bad_schema.get("error").cloned().expect("error");
@@ -233,12 +261,9 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
         "expected schema version mismatch error message; got {error}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,15 +1,26 @@
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use lsp_types::{
+    PartialResultParams, SemanticTokensDeltaParams, SemanticTokensParams,
+    SemanticTokensServerCapabilities, TextDocumentIdentifier, Uri, WorkDoneProgressParams,
+};
 
-fn uri_for_path(path: &Path) -> String {
+use crate::support::{
+    decode_initialize_result, did_open_notification, exit_notification,
+    initialize_request_with_root_uri, initialized_notification, jsonrpc_request,
+    read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
+
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("lsp uri")
 }
 
 #[test]
@@ -50,61 +61,49 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
     // 1) initialize
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
     );
     let initialize_resp = read_response_with_id(&mut stdout, 1);
+    let init = decode_initialize_result(&initialize_resp);
 
+    let provider = init
+        .capabilities
+        .semantic_tokens_provider
+        .as_ref()
+        .expect("expected semanticTokensProvider capability");
+    let legend = match provider {
+        SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => &opts.legend,
+        SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+            &opts.semantic_tokens_options.legend
+        }
+    };
     assert!(
-        initialize_resp
-            .pointer("/result/capabilities/semanticTokensProvider")
-            .is_some(),
-        "expected semanticTokensProvider capability"
-    );
-    let token_types = initialize_resp
-        .pointer("/result/capabilities/semanticTokensProvider/legend/tokenTypes")
-        .and_then(|v| v.as_array())
-        .expect("legend tokenTypes array");
-    assert!(
-        !token_types.is_empty(),
+        !legend.token_types.is_empty(),
         "expected semanticTokens legend tokenTypes to be non-empty"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) open document
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(file_uri.clone(), "java", 1, text),
     );
 
     // 3) request full tokens
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/semanticTokens/full",
-            "params": { "textDocument": { "uri": file_uri } }
-        }),
+        &jsonrpc_request(
+            SemanticTokensParams {
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                text_document: TextDocumentIdentifier {
+                    uri: file_uri.clone(),
+                },
+            },
+            2,
+            "textDocument/semanticTokens/full",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let data = resp
@@ -125,15 +124,18 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
     // 4) request delta
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/semanticTokens/full/delta",
-            "params": {
-                "textDocument": { "uri": file_uri },
-                "previousResultId": result_id,
-            }
-        }),
+        &jsonrpc_request(
+            SemanticTokensDeltaParams {
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                text_document: TextDocumentIdentifier {
+                    uri: file_uri.clone(),
+                },
+                previous_result_id: result_id.clone(),
+            },
+            3,
+            "textDocument/semanticTokens/full/delta",
+        ),
     );
     let delta_resp = read_response_with_id(&mut stdout, 3);
     let delta_result = delta_resp
@@ -160,12 +162,9 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
     }
 
     // 5) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,6 +1,8 @@
-use lsp_types::{CompletionList, Position};
-use nova_lsp::MoreCompletionsResult;
-use serde_json::json;
+use lsp_types::{
+    CompletionItem, CompletionList, CompletionParams, PartialResultParams, Position,
+    TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams,
+};
+use serde_json::{Map, Value};
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
@@ -24,8 +26,14 @@ fn run_completion_request_with_env(env_key: &str, env_value: &str) {
       ]
     }
     "#;
-
-    let ai_server = support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = support::TestAiServer::start(Value::Object({
+        let mut resp = Map::new();
+        resp.insert(
+            "completion".to_string(),
+            Value::String(completion_payload.to_string()),
+        );
+        resp
+    }));
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let temp = TempDir::new().expect("tempdir");
@@ -90,43 +98,32 @@ model = "default"
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
-
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialize_request_empty(1));
     let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialized_notification());
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &support::did_open_notification(uri.clone(), "java", 1, source),
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
+
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &support::jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = support::read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -155,29 +152,33 @@ model = "default"
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
+        &support::jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert("context_id".to_string(), Value::String(context_id));
+                params
+            }),
+            3,
+            "nova/completion/more",
+        ),
     );
     let more_resp = support::read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult =
-        serde_json::from_value(more_result).expect("decode more completions");
-    assert!(!more.is_incomplete);
-    assert!(more.items.is_empty());
+    assert_eq!(
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let items: Vec<CompletionItem> =
+        serde_json::from_value(more_result.get("items").cloned().expect("items"))
+            .expect("decode items");
+    assert!(items.is_empty());
 
     // Best-effort: give any background tasks a chance to misbehave and hit the provider.
     std::thread::sleep(Duration::from_millis(100));
 
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::shutdown_request(4));
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 4);
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    support::write_jsonrpc_message(&mut stdin, &support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -201,7 +202,14 @@ fn run_completion_request_with_audit_logging_and_env_override(env_key: &str, env
       ]
     }
     "#;
-    let ai_server = support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let ai_server = support::TestAiServer::start(Value::Object({
+        let mut resp = Map::new();
+        resp.insert(
+            "completion".to_string(),
+            Value::String(completion_payload.to_string()),
+        );
+        resp
+    }));
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     // Start with AI disabled in the config file so that `NOVA_AI_AUDIT_LOGGING=1` is the only
@@ -271,43 +279,32 @@ model = "default"
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
-
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialize_request_empty(1));
     let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialized_notification());
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
-        }),
+        &support::did_open_notification(uri.clone(), "java", 1, source),
     );
 
     let cursor = Position::new(8, 15); // end of "stream."
+
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": cursor
-            }
-        }),
+        &support::jsonrpc_request(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: cursor,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
     let completion_resp = support::read_response_with_id(&mut stdout, 2);
     let completion_result = completion_resp
@@ -336,29 +333,33 @@ model = "default"
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
+        &support::jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert("context_id".to_string(), Value::String(context_id));
+                params
+            }),
+            3,
+            "nova/completion/more",
+        ),
     );
     let more_resp = support::read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult =
-        serde_json::from_value(more_result).expect("decode more completions");
-    assert!(!more.is_incomplete);
-    assert!(more.items.is_empty());
+    assert_eq!(
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(more_result.get("items").cloned().expect("items"))
+            .expect("decode items");
+    assert!(items.is_empty());
 
     // Best-effort: give any background tasks a chance to misbehave and hit the provider.
     std::thread::sleep(Duration::from_millis(100));
 
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::shutdown_request(4));
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 4);
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    support::write_jsonrpc_message(&mut stdin, &support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -369,7 +370,14 @@ model = "default"
 
 fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
     let _lock = support::stdio_server_lock();
-    let ai_server = support::TestAiServer::start(json!({ "completion": "mock explanation" }));
+    let ai_server = support::TestAiServer::start(Value::Object({
+        let mut resp = Map::new();
+        resp.insert(
+            "completion".to_string(),
+            Value::String("mock explanation".to_string()),
+        );
+        resp
+    }));
     let endpoint = format!("{}/complete", ai_server.base_url());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -388,42 +396,35 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
-
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialize_request_empty(1));
     let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(&mut stdin, &support::initialized_notification());
+
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &support::did_open_notification(
+            "file:///Test.java",
+            "java",
+            1,
+            "class Test { void run() { unknown(); } }",
+        ),
     );
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": "file:///Test.java", "languageId": "java", "version": 1, "text": "class Test { void run() { unknown(); } }" } }
-        }),
-    );
-
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/ai/explainError",
-            "params": {
-                "diagnostic_message": "cannot find symbol",
-                "code": "unknown()"
-            }
-        }),
+        &support::jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "diagnostic_message".to_string(),
+                    Value::String("cannot find symbol".to_string()),
+                );
+                params.insert("code".to_string(), Value::String("unknown()".to_string()));
+                params
+            }),
+            2,
+            "nova/ai/explainError",
+        ),
     );
     let explain_resp = support::read_response_with_id(&mut stdout, 2);
     let error = explain_resp
@@ -439,12 +440,9 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
         "expected AI request to fail with 'AI is not configured' when {env_key}={env_value}"
     );
 
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::shutdown_request(3));
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    support::write_jsonrpc_message(&mut stdin, &support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

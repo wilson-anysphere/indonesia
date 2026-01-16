@@ -1,18 +1,33 @@
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{
-    drain_notifications_until_id, read_response_with_id, stdio_server_lock, write_jsonrpc_message,
+use lsp_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DocumentDiagnosticParams,
+    PartialResultParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
 };
 
-fn find_publish_diagnostics<'a>(
-    notifications: &'a [serde_json::Value],
-    uri: &str,
-) -> Option<&'a serde_json::Value> {
-    notifications.iter().find(|msg| {
-        msg.get("method").and_then(|v| v.as_str()) == Some("textDocument/publishDiagnostics")
-            && msg.pointer("/params/uri").and_then(|v| v.as_str()) == Some(uri)
+use crate::support::{
+    did_open_notification, drain_notifications_until_id, exit_notification,
+    initialize_request_empty, initialized_notification, jsonrpc_notification, jsonrpc_request,
+    read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
+};
+
+fn find_publish_diagnostics(
+    notifications: &[serde_json::Value],
+    uri: &Uri,
+) -> Option<PublishDiagnosticsParams> {
+    notifications.iter().find_map(|msg| {
+        if msg.get("method").and_then(|v| v.as_str()) != Some("textDocument/publishDiagnostics") {
+            return None;
+        }
+        let params = msg.get("params")?;
+        let params: PublishDiagnosticsParams = serde_json::from_value(params.clone()).ok()?;
+        if &params.uri == uri {
+            Some(params)
+        } else {
+            None
+        }
     })
 }
 
@@ -31,145 +46,130 @@ fn stdio_publish_diagnostics_for_open_documents() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
-    let uri = "file:///test/Main.java";
+    let uri: Uri = "file:///test/Main.java".parse().expect("uri");
     let broken = "class Main {\n    void test() {\n        bar();\n    }\n}\n";
     let fixed = "class Main {\n    void test() {\n    }\n}\n";
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": broken,
-                }
-            }
-        }),
+        &did_open_notification(uri.clone(), "java", 1, broken),
     );
 
     // Drain messages until we see a response, collecting notifications along the way. The
     // `publishDiagnostics` notification should have been emitted after didOpen.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/diagnostic",
+        ),
     );
     let (notifications, _resp) = drain_notifications_until_id(&mut stdout, 2);
-    let publish = find_publish_diagnostics(&notifications, uri).unwrap_or_else(|| {
+    let publish = find_publish_diagnostics(&notifications, &uri).unwrap_or_else(|| {
         panic!(
-            "expected publishDiagnostics for {uri} after didOpen; got notifications: {notifications:#?}"
+            "expected publishDiagnostics for {} after didOpen; got notifications: {notifications:#?}",
+            uri.as_str()
         )
     });
-    let diagnostics = publish
-        .pointer("/params/diagnostics")
-        .and_then(|v| v.as_array())
-        .expect("publishDiagnostics.params.diagnostics should be an array");
     assert!(
-        !diagnostics.is_empty(),
-        "expected diagnostics to be non-empty for the broken file; got: {publish:#}"
+        !publish.diagnostics.is_empty(),
+        "expected diagnostics to be non-empty for the broken file; got: {publish:#?}"
     );
 
-    let messages = diagnostics
+    let messages = publish
+        .diagnostics
         .iter()
-        .filter_map(|d| d.get("message").and_then(|m| m.as_str()))
+        .map(|d| d.message.as_str())
         .collect::<Vec<_>>();
     assert!(
-        messages.iter().any(|m| m.contains("Cannot resolve symbol") && m.contains("bar")),
+        messages
+            .iter()
+            .any(|m| m.contains("Cannot resolve symbol") && m.contains("bar")),
         "expected a 'Cannot resolve symbol' diagnostic mentioning `bar`, got: {messages:?}"
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": { "uri": uri, "version": 2 },
-                "contentChanges": [{ "text": fixed }]
-            }
-        }),
+        &jsonrpc_notification(
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: fixed.to_string(),
+                }],
+            },
+            "textDocument/didChange",
+        ),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            DocumentDiagnosticParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                identifier: None,
+                previous_result_id: None,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "textDocument/diagnostic",
+        ),
     );
     let (notifications, _resp) = drain_notifications_until_id(&mut stdout, 3);
-    let publish = find_publish_diagnostics(&notifications, uri).unwrap_or_else(|| {
+    let publish = find_publish_diagnostics(&notifications, &uri).unwrap_or_else(|| {
         panic!(
-            "expected publishDiagnostics for {uri} after didChange; got notifications: {notifications:#?}"
+            "expected publishDiagnostics for {} after didChange; got notifications: {notifications:#?}",
+            uri.as_str()
         )
     });
-    let diagnostics = publish
-        .pointer("/params/diagnostics")
-        .and_then(|v| v.as_array())
-        .expect("publishDiagnostics.params.diagnostics should be an array");
     assert!(
-        diagnostics.is_empty(),
-        "expected diagnostics to be cleared after fixing the file; got: {publish:#}"
+        publish.diagnostics.is_empty(),
+        "expected diagnostics to be cleared after fixing the file; got: {publish:#?}"
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didClose",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_notification(
+            DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            },
+            "textDocument/didClose",
+        ),
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let (notifications, _shutdown_resp) = drain_notifications_until_id(&mut stdout, 4);
-    let publish = find_publish_diagnostics(&notifications, uri).unwrap_or_else(|| {
+    let publish = find_publish_diagnostics(&notifications, &uri).unwrap_or_else(|| {
         panic!(
-            "expected publishDiagnostics for {uri} after didClose; got notifications: {notifications:#?}"
+            "expected publishDiagnostics for {} after didClose; got notifications: {notifications:#?}",
+            uri.as_str()
         )
     });
-    let diagnostics = publish
-        .pointer("/params/diagnostics")
-        .and_then(|v| v.as_array())
-        .expect("publishDiagnostics.params.diagnostics should be an array");
     assert!(
-        diagnostics.is_empty(),
-        "expected diagnostics to be cleared on didClose; got: {publish:#}"
+        publish.diagnostics.is_empty(),
+        "expected diagnostics to be cleared on didClose; got: {publish:#?}"
     );
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

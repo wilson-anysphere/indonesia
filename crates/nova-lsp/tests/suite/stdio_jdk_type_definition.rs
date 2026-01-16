@@ -1,15 +1,24 @@
+use lsp_types::{
+    DocumentSymbolParams, PartialResultParams, Position, TextDocumentIdentifier,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, write_jsonrpc_message,
+};
 
-fn uri_for_path(path: &Path) -> String {
+fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+    path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("lsp uri")
 }
 
 fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
@@ -53,49 +62,28 @@ fn run_type_definition_test(text: &str, offset: usize, expected_suffix: &str) {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": main_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(main_uri.clone(), "java", 1, text),
     );
 
     let position = utf16_position(text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/typeDefinition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            2,
+            "textDocument/typeDefinition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location = resp.get("result").expect("typeDefinition result");
@@ -112,12 +100,9 @@ fn run_type_definition_test(text: &str, offset: usize, expected_suffix: &str) {
         "expected uri to end with {expected_suffix}, got: {uri}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -171,35 +156,13 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": main_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(main_uri.clone(), "java", 1, text),
     );
 
     // 1) Trigger the "cursor is on a type token" branch (String).
@@ -207,15 +170,16 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
     let position = utf16_position(text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/typeDefinition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            2,
+            "textDocument/typeDefinition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location = resp.get("result").expect("typeDefinition result");
@@ -233,15 +197,16 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
     let position = utf16_position(text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/typeDefinition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            3,
+            "textDocument/typeDefinition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let location = resp.get("result").expect("typeDefinition result");
@@ -255,14 +220,20 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
     );
 
     // Confirm the virtual documents are readable inside the same server session.
+    let string_uri: Uri = string_uri.parse().expect("string uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": string_uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: string_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            4,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     let symbols = resp
@@ -274,14 +245,20 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
         "expected decompiled document to return symbols, got: {resp:?}"
     );
 
+    let custom_uri: Uri = custom_uri.parse().expect("custom uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": custom_uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: custom_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            5,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     let symbols = resp
@@ -293,12 +270,9 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
         "expected decompiled document to return symbols, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -319,29 +293,23 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": string_uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: string_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let symbols = resp
@@ -355,12 +323,17 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": custom_uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier {
+                    uri: custom_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let symbols = resp
@@ -372,12 +345,9 @@ fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart(
         "expected persisted decompiled document to return symbols, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

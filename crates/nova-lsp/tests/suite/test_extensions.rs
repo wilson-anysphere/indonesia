@@ -1,5 +1,6 @@
 use nova_testing::schema::{BuildTool, TestDebugResponse, TestDiscoverResponse};
 use pretty_assertions::assert_eq;
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -7,9 +8,13 @@ use tempfile::TempDir;
 fn lsp_test_discover_extension_returns_tests() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/maven-junit5");
-
-    let params = serde_json::json!({
-        "projectRoot": fixture.to_string_lossy(),
+    let params = Value::Object({
+        let mut params = Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            Value::String(fixture.to_string_lossy().to_string()),
+        );
+        params
     });
 
     let value = nova_lsp::handle_custom_request(nova_lsp::TEST_DISCOVER_METHOD, params).unwrap();
@@ -26,11 +31,18 @@ fn lsp_test_discover_extension_returns_tests() {
 fn lsp_test_debug_configuration_returns_command() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/maven-junit5");
-
-    let params = serde_json::json!({
-        "projectRoot": fixture.to_string_lossy(),
-        "buildTool": "auto",
-        "test": "com.example.CalculatorTest#adds",
+    let params = Value::Object({
+        let mut params = Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            Value::String(fixture.to_string_lossy().to_string()),
+        );
+        params.insert("buildTool".to_string(), Value::String("auto".to_string()));
+        params.insert(
+            "test".to_string(),
+            Value::String("com.example.CalculatorTest#adds".to_string()),
+        );
+        params
     });
 
     let value =
@@ -86,8 +98,13 @@ fn lsp_debug_configurations_extension_discovers_main_and_tests() {
     )
     .unwrap();
 
-    let params = serde_json::json!({
-        "projectRoot": root.to_string_lossy(),
+    let params = Value::Object({
+        let mut params = Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            Value::String(root.to_string_lossy().to_string()),
+        );
+        params
     });
 
     let value =
@@ -106,9 +123,13 @@ fn lsp_debug_configurations_extension_discovers_main_and_tests() {
 fn lsp_generated_sources_extension_lists_roots() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
-
-    let params = serde_json::json!({
-        "projectRoot": fixture.to_string_lossy(),
+    let params = Value::Object({
+        let mut params = Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            Value::String(fixture.to_string_lossy().to_string()),
+        );
+        params
     });
 
     let value =
@@ -142,9 +163,13 @@ fn lsp_generated_sources_extension_lists_roots() {
 fn lsp_run_annotation_processing_extension_reports_progress() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
-
-    let params = serde_json::json!({
-        "projectRoot": fixture.to_string_lossy(),
+    let params = Value::Object({
+        let mut params = Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            Value::String(fixture.to_string_lossy().to_string()),
+        );
+        params
     });
 
     let value = nova_lsp::handle_custom_request(nova_lsp::RUN_ANNOTATION_PROCESSING_METHOD, params)

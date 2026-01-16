@@ -1,11 +1,15 @@
+use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -35,7 +39,7 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     let root = temp.path();
 
     let main_path = root.join("Main.java");
-    let main_uri = uri_for_path(&main_path);
+    let main_uri: Uri = uri_for_path(&main_path).parse().expect("main uri");
     let text = "class Main { java.util.List l; }";
     std::fs::write(&main_path, text).expect("write Main.java");
 
@@ -43,7 +47,7 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     // incorrectly resolve `java.util.List` to the workspace type.
     let list_path = root.join("p/List.java");
     std::fs::create_dir_all(list_path.parent().expect("parent dir")).expect("create p/");
-    let list_uri = uri_for_path(&list_path);
+    let list_uri: Uri = uri_for_path(&list_path).parse().expect("list uri");
     let list_text = "package p; public class List {}";
     std::fs::write(&list_path, list_text).expect("write p/List.java");
 
@@ -59,66 +63,34 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &did_open_notification(list_uri.clone(), "java", 1, list_text),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": list_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": list_text,
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": main_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(main_uri.clone(), "java", 1, text),
     );
 
     let offset = text.find("List").expect("List token exists");
     let position = utf16_position(text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            2,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location = resp.get("result").expect("definition result");
@@ -135,12 +107,9 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
         "expected decompiled List uri, got: {uri}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

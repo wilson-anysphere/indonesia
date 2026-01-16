@@ -11,7 +11,7 @@ use nova_ai::{
     MultiTokenCompletionRequest, MultiTokenInsertTextFormat,
 };
 use nova_ide::{CompletionConfig, CompletionEngine};
-use nova_lsp::{MoreCompletionsParams, NovaCompletionService};
+use nova_lsp::NovaCompletionService;
 
 struct Gate {
     ready: AtomicBool,
@@ -142,35 +142,28 @@ async fn completion_more_returns_multi_token_items_async() {
         .iter()
         .any(|item| item.label == "filter"));
 
-    let first_poll = service.completion_more(MoreCompletionsParams {
-        context_id: completion.context_id.to_string(),
-    });
-    assert!(first_poll.items.is_empty());
-    assert!(first_poll.is_incomplete);
+    let context_id = completion.context_id.to_string();
+    let (first_items, first_incomplete) = service.completion_more(&context_id);
+    assert!(first_items.is_empty());
+    assert!(first_incomplete);
 
     provider.release();
 
-    let mut resolved = None;
+    let mut resolved: Option<Vec<lsp_types::CompletionItem>> = None;
     for _ in 0..50 {
-        let poll = service.completion_more(MoreCompletionsParams {
-            context_id: completion.context_id.to_string(),
-        });
-        if !poll.is_incomplete {
-            resolved = Some(poll);
+        let (items, incomplete) = service.completion_more(&context_id);
+        if !incomplete {
+            resolved = Some(items);
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let poll = resolved.expect("AI completions should resolve");
-    assert_eq!(poll.items.len(), 1);
-    assert!(poll.items[0]
-        .insert_text
-        .as_deref()
-        .unwrap()
-        .contains("filter("));
+    let items = resolved.expect("AI completions should resolve");
+    assert_eq!(items.len(), 1);
+    assert!(items[0].insert_text.as_deref().unwrap().contains("filter("));
     assert_eq!(
-        poll.items[0].insert_text_format,
+        items[0].insert_text_format,
         Some(lsp_types::InsertTextFormat::SNIPPET)
     );
 
@@ -206,6 +199,7 @@ async fn completion_more_injects_document_uri_into_items() {
     let uri = "file:///test/Completion.java".to_string();
     let completion =
         service.completion_with_document_uri(ctx(), CancellationToken::new(), Some(uri.clone()));
+    let context_id = completion.context_id.to_string();
 
     for item in &completion.list.items {
         assert_eq!(
@@ -219,22 +213,20 @@ async fn completion_more_injects_document_uri_into_items() {
         );
     }
 
-    let mut resolved = None;
+    let mut resolved: Option<Vec<lsp_types::CompletionItem>> = None;
     for _ in 0..50 {
-        let poll = service.completion_more(MoreCompletionsParams {
-            context_id: completion.context_id.to_string(),
-        });
-        if !poll.is_incomplete {
-            resolved = Some(poll);
+        let (items, incomplete) = service.completion_more(&context_id);
+        if !incomplete {
+            resolved = Some(items);
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let poll = resolved.expect("AI completions should resolve");
-    assert_eq!(poll.items.len(), 1);
+    let items = resolved.expect("AI completions should resolve");
+    assert_eq!(items.len(), 1);
     assert_eq!(
-        poll.items[0]
+        items[0]
             .data
             .as_ref()
             .and_then(|data| data.get("nova"))
@@ -305,6 +297,7 @@ async fn completion_can_be_cancelled() {
     let service = NovaCompletionService::new(engine);
 
     let completion = service.completion(ctx(), CancellationToken::new());
+    let context_id = completion.context_id.to_string();
 
     tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
         .await
@@ -316,11 +309,9 @@ async fn completion_can_be_cancelled() {
         .await
         .expect("provider should stop after cancellation");
 
-    let poll = service.completion_more(MoreCompletionsParams {
-        context_id: completion.context_id.to_string(),
-    });
-    assert!(poll.items.is_empty());
-    assert!(!poll.is_incomplete);
+    let (items, incomplete) = service.completion_more(&context_id);
+    assert!(items.is_empty());
+    assert!(!incomplete);
 }
 
 struct SlowProvider {
@@ -365,24 +356,22 @@ async fn completion_times_out_and_returns_no_items() {
     let service = NovaCompletionService::new(engine);
 
     let completion = service.completion(ctx(), CancellationToken::new());
+    let context_id = completion.context_id.to_string();
 
     tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
         .await
         .expect("provider should start");
 
-    let mut resolved = None;
+    let mut resolved: Option<Vec<lsp_types::CompletionItem>> = None;
     for _ in 0..50 {
-        let poll = service.completion_more(MoreCompletionsParams {
-            context_id: completion.context_id.to_string(),
-        });
-        if !poll.is_incomplete {
-            resolved = Some(poll);
+        let (items, incomplete) = service.completion_more(&context_id);
+        if !incomplete {
+            resolved = Some(items);
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let poll = resolved.expect("AI completions should resolve (via timeout)");
-    assert!(poll.items.is_empty());
-    assert!(!poll.is_incomplete);
+    let items = resolved.expect("AI completions should resolve (via timeout)");
+    assert!(items.is_empty());
 }

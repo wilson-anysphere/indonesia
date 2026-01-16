@@ -1,5 +1,5 @@
 use crate::support;
-use serde_json::json;
+use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
@@ -23,25 +23,14 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialize_request_empty(1));
     let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::initialized_notification());
 
     // Allowlisted endpoints should still succeed.
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 2, "method": "nova/safeModeStatus", "params": null }),
+        &support::jsonrpc_request(Value::Null, 2, "nova/safeModeStatus"),
     );
     let safe_mode_resp = support::read_response_with_id(&mut stdout, 2);
     assert!(
@@ -58,7 +47,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "nova/metrics", "params": null }),
+        &support::jsonrpc_request(Value::Null, 3, "nova/metrics"),
     );
     let metrics_resp = support::read_response_with_id(&mut stdout, 3);
     assert!(
@@ -68,7 +57,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "nova/resetMetrics", "params": null }),
+        &support::jsonrpc_request(Value::Null, 4, "nova/resetMetrics"),
     );
     let reset_metrics_resp = support::read_response_with_id(&mut stdout, 4);
     assert!(
@@ -78,7 +67,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "nova/bugReport", "params": null }),
+        &support::jsonrpc_request(Value::Null, 5, "nova/bugReport"),
     );
     let bug_report_resp = support::read_response_with_id(&mut stdout, 5);
     assert!(
@@ -97,7 +86,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
     // Non-allowlisted endpoints should be blocked, even if their params are invalid.
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "nova/memoryStatus", "params": null }),
+        &support::jsonrpc_request(Value::Null, 6, "nova/memoryStatus"),
     );
     let memory_status_resp = support::read_response_with_id(&mut stdout, 6);
     assert_eq!(
@@ -118,7 +107,11 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 7, "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD, "params": null }),
+        &support::jsonrpc_request(
+            Value::Null,
+            7,
+            nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
+        ),
     );
     let index_status_resp = support::read_response_with_id(&mut stdout, 7);
     assert_eq!(
@@ -139,7 +132,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 8, "method": "nova/extensions/status", "params": null }),
+        &support::jsonrpc_request(Value::Null, 8, "nova/extensions/status"),
     );
     let extensions_status_resp = support::read_response_with_id(&mut stdout, 8);
     assert_eq!(
@@ -160,7 +153,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 9, "method": "nova/extensions/navigation", "params": null }),
+        &support::jsonrpc_request(Value::Null, 9, "nova/extensions/navigation"),
     );
     let extensions_navigation_resp = support::read_response_with_id(&mut stdout, 9);
     assert_eq!(
@@ -181,7 +174,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 10, "method": "nova/java/organizeImports", "params": null }),
+        &support::jsonrpc_request(Value::Null, 10, "nova/java/organizeImports"),
     );
     let organize_imports_resp = support::read_response_with_id(&mut stdout, 10);
     assert_eq!(
@@ -202,7 +195,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 11, "method": "nova/ai/explainError", "params": null }),
+        &support::jsonrpc_request(Value::Null, 11, "nova/ai/explainError"),
     );
     let explain_error_resp = support::read_response_with_id(&mut stdout, 11);
     assert_eq!(
@@ -223,7 +216,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 12, "method": "nova/completion/more", "params": null }),
+        &support::jsonrpc_request(Value::Null, 12, "nova/completion/more"),
     );
     let completion_more_resp = support::read_response_with_id(&mut stdout, 12);
     assert_eq!(
@@ -242,12 +235,9 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
         Some(SAFE_MODE_MESSAGE)
     );
 
-    support::write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 13, "method": "shutdown" }),
-    );
+    support::write_jsonrpc_message(&mut stdin, &support::shutdown_request(13));
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 13);
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    support::write_jsonrpc_message(&mut stdin, &support::exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

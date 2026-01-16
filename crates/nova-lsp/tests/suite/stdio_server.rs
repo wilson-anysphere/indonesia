@@ -1,8 +1,6 @@
 use nova_index::Index;
 use nova_testing::schema::TestDiscoverResponse;
 use pretty_assertions::assert_eq;
-use serde::Deserialize;
-use serde_json::json;
 use std::fs;
 use std::io::{BufReader, Write};
 #[cfg(unix)]
@@ -13,50 +11,13 @@ use std::process::{Command, Stdio};
 use std::thread;
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
 
-#[derive(Debug, Clone, Deserialize)]
-struct LspPosition {
-    line: u32,
-    character: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LspRange {
-    start: LspPosition,
-    end: LspPosition,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LspTextEdit {
-    range: LspRange,
-    #[serde(rename = "newText")]
-    new_text: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LspWorkspaceEdit {
-    #[serde(default)]
-    changes: std::collections::HashMap<String, Vec<LspTextEdit>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SafeModeStatusResponse {
-    schema_version: u32,
-    enabled: bool,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum SafeModeStatusResult {
-    Bool(bool),
-    Object(SafeModeStatusResponse),
-}
-
-fn apply_lsp_text_edits(original: &str, edits: &[LspTextEdit]) -> String {
+fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String {
     if edits.is_empty() {
         return original.to_string();
     }
@@ -98,30 +59,14 @@ fn stdio_server_handles_metrics_request() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // metrics snapshot
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/metrics",
-            "params": null
-        }),
+        &jsonrpc_request(serde_json::Value::Null, 2, "nova/metrics"),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -139,12 +84,9 @@ fn stdio_server_handles_metrics_request() {
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -166,56 +108,39 @@ fn stdio_server_handles_safe_mode_status_request() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // safeModeStatus
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/safeModeStatus",
-            "params": null
-        }),
+        &jsonrpc_request(serde_json::Value::Null, 2, "nova/safeModeStatus"),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
-    let status: SafeModeStatusResult = serde_json::from_value(result).expect("decode response");
-    match status {
-        SafeModeStatusResult::Object(status) => {
-            assert_eq!(status.schema_version, 1);
+    match result {
+        serde_json::Value::Bool(enabled) => {
+            panic!("expected safeModeStatus response object, got bool {enabled}")
+        }
+        other => {
             assert!(
-                !status.enabled,
+                other.get("enabled").and_then(|v| v.as_bool()) == Some(false),
                 "safe-mode should not be enabled at startup"
             );
-            assert_eq!(status.reason, None);
-        }
-        SafeModeStatusResult::Bool(enabled) => {
-            panic!("expected safeModeStatus response object, got bool {enabled}")
+            assert_eq!(other.get("schemaVersion").and_then(|v| v.as_u64()), Some(1));
+            assert!(
+                other.get("reason").is_none(),
+                "expected no `reason` field at startup, got: {other:#}"
+            );
         }
     }
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -237,30 +162,25 @@ fn stdio_server_handles_extensions_status_request() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // extensions/status
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": nova_lsp::EXTENSIONS_STATUS_METHOD,
-            "params": { "schemaVersion": 1 }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "schemaVersion".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(1u64)),
+                );
+                params
+            }),
+            2,
+            nova_lsp::EXTENSIONS_STATUS_METHOD,
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -290,12 +210,9 @@ fn stdio_server_handles_extensions_status_request() {
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -317,51 +234,40 @@ fn stdio_server_handles_extensions_navigation_request() {
     let mut stdout = BufReader::new(stdout);
 
     // initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo {}\n";
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
 
     // extensions/navigation
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
-            "params": {
-                "schemaVersion": 1,
-                "textDocument": { "uri": uri }
-            }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "schemaVersion".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(1u64)),
+                );
+                params.insert(
+                    "textDocument".to_string(),
+                    serde_json::Value::Object({
+                        let mut doc = serde_json::Map::new();
+                        doc.insert(
+                            "uri".to_string(),
+                            serde_json::Value::String(uri.to_string()),
+                        );
+                        doc
+                    }),
+                );
+                params
+            }),
+            2,
+            nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -376,12 +282,9 @@ fn stdio_server_handles_extensions_navigation_request() {
     );
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -406,34 +309,26 @@ fn stdio_server_handles_test_discover_request() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "capabilities": {}
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) discover tests
+    let project_root = fixture.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/test/discover",
-            "params": {
-                "projectRoot": fixture.to_string_lossy(),
-            }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/test/discover",
+        ),
     );
 
     let discover_resp = read_response_with_id(&mut stdout, 2);
@@ -446,13 +341,10 @@ fn stdio_server_handles_test_discover_request() {
         .any(|t| t.id == "com.example.CalculatorTest"));
 
     // 3) shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -473,56 +365,37 @@ fn stdio_server_handles_document_formatting_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){int x=1;}}\n";
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
 
+    let uri_parsed: lsp_types::Uri = uri.parse().expect("uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": { "uri": uri },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentFormattingParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri_parsed },
+                options: lsp_types::FormattingOptions {
+                    tab_size: 4,
+                    insert_spaces: true,
+                    ..Default::default()
+                },
+                work_done_progress_params: Default::default(),
+            },
+            2,
+            "textDocument/formatting",
+        ),
     );
 
     let formatting_resp = read_response_with_id(&mut stdout, 2);
     let result = formatting_resp.get("result").cloned().expect("result");
-    let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(result).expect("decode text edits");
     let formatted = apply_lsp_text_edits(text, &edits);
 
     assert_eq!(
@@ -530,12 +403,9 @@ fn stdio_server_handles_document_formatting_request() {
         "class Foo {\n    void m() {\n        int x = 1;\n    }\n}\n"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -557,20 +427,9 @@ fn stdio_server_handles_change_signature_request() {
     let mut stdout = BufReader::new(stdout);
 
     // 1) initialize
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // 2) didOpen
     let uri = "file:///A.java";
@@ -585,21 +444,7 @@ fn stdio_server_handles_change_signature_request() {
         "    }\n",
         "}\n",
     );
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, source));
 
     // Compute the target id the same way the server will (from an Index snapshot).
     let mut files = std::collections::BTreeMap::new();
@@ -608,30 +453,40 @@ fn stdio_server_handles_change_signature_request() {
     let target = index.find_method("A", "sum").expect("method exists").id.0;
 
     // 3) changeSignature request
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/refactor/changeSignature",
-            "params": {
-                "target": target,
-                "new_name": null,
-                "parameters": [
-                    { "Existing": { "old_index": 1, "new_name": null, "new_type": null } },
-                    { "Existing": { "old_index": 0, "new_name": null, "new_type": null } }
+        &jsonrpc_request(
+            nova_refactor::ChangeSignature {
+                target: nova_types::MethodId(target),
+                new_name: None,
+                parameters: vec![
+                    nova_refactor::ParameterOperation::Existing {
+                        old_index: 1,
+                        new_name: None,
+                        new_type: None,
+                    },
+                    nova_refactor::ParameterOperation::Existing {
+                        old_index: 0,
+                        new_name: None,
+                        new_type: None,
+                    },
                 ],
-                "new_return_type": null,
-                "new_throws": null,
-                "propagate_hierarchy": "None"
-            }
-        }),
+                new_return_type: None,
+                new_throws: None,
+                propagate_hierarchy: nova_refactor::HierarchyPropagation::None,
+            },
+            2,
+            "nova/refactor/changeSignature",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
-    let edit: LspWorkspaceEdit = serde_json::from_value(result).expect("decode edit");
-    let edits = edit.changes.get(uri).expect("edits for uri");
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(result).expect("decode edit");
+    let changes = edit.changes.as_ref().expect("changes");
+    let uri: lsp_types::Uri = uri.parse().expect("uri");
+    let edits = changes.get(&uri).expect("edits for uri");
 
     let call_offset = source.find("sum(1, 2)").expect("call exists");
     let call_end = call_offset + "sum(1, 2)".len();
@@ -652,12 +507,9 @@ fn stdio_server_handles_change_signature_request() {
     assert!(updated.contains("sum(2, 1)"));
 
     // shutdown + exit
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -678,39 +530,14 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){String s=\"😀\";int x=1;}}\n";
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
 
     let start_offset = text.find("int x=1;").expect("int x=1 statement");
     let digit_offset = start_offset + "int x=".len();
@@ -722,41 +549,50 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": { "uri": uri, "version": 2 },
-                "contentChanges": [{
-                    "range": {
-                        "start": { "line": start_pos.line, "character": start_pos.character },
-                        "end": { "line": end_pos.line, "character": end_pos.character }
-                    },
-                    "text": "2"
-                }]
-            }
-        }),
+        &jsonrpc_notification(
+            lsp_types::DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier {
+                    uri: uri.parse().expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                    range: Some(lsp_types::Range::new(
+                        lsp_types::Position::new(start_pos.line, start_pos.character),
+                        lsp_types::Position::new(end_pos.line, end_pos.character),
+                    )),
+                    range_length: None,
+                    text: "2".to_string(),
+                }],
+            },
+            "textDocument/didChange",
+        ),
     );
 
     let mut updated_text = text.to_string();
     updated_text.replace_range(digit_offset..digit_end, "2");
 
+    let uri_parsed: lsp_types::Uri = uri.parse().expect("uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": { "uri": uri },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::DocumentFormattingParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri_parsed },
+                options: lsp_types::FormattingOptions {
+                    tab_size: 4,
+                    insert_spaces: true,
+                    ..Default::default()
+                },
+                work_done_progress_params: Default::default(),
+            },
+            2,
+            "textDocument/formatting",
+        ),
     );
 
     let formatting_resp = read_response_with_id(&mut stdout, 2);
     let result = formatting_resp.get("result").cloned().expect("result");
-    let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(result).expect("decode text edits");
     let formatted = apply_lsp_text_edits(&updated_text, &edits);
 
     assert!(
@@ -766,12 +602,9 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
     assert!(!formatted.contains("int x = 1;"));
     assert!(formatted.contains("😀"), "emoji should be preserved");
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -792,58 +625,42 @@ fn stdio_server_resolves_completion_item_imports() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Foo.java";
     let text = "package com.example;\n\nclass Foo {}\n";
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
 
     // Directly resolve an item with import requests stashed in `data.nova.imports`.
+    let mut nova = serde_json::Map::new();
+    nova.insert(
+        "imports".to_string(),
+        serde_json::Value::Array(vec![serde_json::Value::String(
+            "java.util.stream.Collectors".to_string(),
+        )]),
+    );
+    nova.insert(
+        "uri".to_string(),
+        serde_json::Value::String(uri.to_string()),
+    );
+    let mut data = serde_json::Map::new();
+    data.insert("nova".to_string(), serde_json::Value::Object(nova));
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "completionItem/resolve",
-            "params": {
-                "label": "collect",
-                "insertText": "collect(Collectors.toList())",
-                "data": {
-                    "nova": {
-                        "imports": ["java.util.stream.Collectors"],
-                        "uri": uri
-                    }
-                }
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::CompletionItem {
+                label: "collect".to_string(),
+                insert_text: Some("collect(Collectors.toList())".to_string()),
+                data: Some(serde_json::Value::Object(data)),
+                ..Default::default()
+            },
+            2,
+            "completionItem/resolve",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -852,7 +669,8 @@ fn stdio_server_resolves_completion_item_imports() {
         .get("additionalTextEdits")
         .cloned()
         .expect("additionalTextEdits");
-    let edits: Vec<LspTextEdit> = serde_json::from_value(edits_value).expect("decode text edits");
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(edits_value).expect("decode text edits");
 
     assert!(!edits.is_empty(), "expected additional text edits");
     let updated = apply_lsp_text_edits(text, &edits);
@@ -861,12 +679,9 @@ fn stdio_server_resolves_completion_item_imports() {
         "expected Collectors import to be inserted, got:\n{updated}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -887,51 +702,31 @@ fn stdio_server_handles_completion_and_more_completions_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Completion.java";
     let text = "class A {\n  void m() {\n    String s = \"\";\n    s.\n  }\n}\n";
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
 
+    let uri_parsed: lsp_types::Uri = uri.parse().expect("uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 3, "character": 6 }
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::CompletionParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri_parsed },
+                    position: lsp_types::Position::new(3, 6),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+            2,
+            "textDocument/completion",
+        ),
     );
 
     let completion_resp = read_response_with_id(&mut stdout, 2);
@@ -956,12 +751,18 @@ fn stdio_server_handles_completion_and_more_completions_request() {
     if let Some(context_id) = context_id {
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "nova/completion/more",
-                "params": { "context_id": context_id }
-            }),
+            &jsonrpc_request(
+                serde_json::Value::Object({
+                    let mut params = serde_json::Map::new();
+                    params.insert(
+                        "context_id".to_string(),
+                        serde_json::Value::String(context_id.to_string()),
+                    );
+                    params
+                }),
+                3,
+                "nova/completion/more",
+            ),
         );
 
         let more_resp = read_response_with_id(&mut stdout, 3);
@@ -980,12 +781,9 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         );
     }
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1009,29 +807,25 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = fixture.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/test/discover",
-            "params": { "projectRoot": fixture.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/test/discover",
+        ),
     );
 
     let discover_resp = read_response_with_id(&mut stdout, 2);
@@ -1039,13 +833,10 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
     let resp: TestDiscoverResponse = serde_json::from_value(result).expect("decode response");
     assert!(resp.tests.iter().any(|t| t.id == "com.example.SimpleTest"));
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1101,29 +892,25 @@ fn stdio_server_handles_debug_configurations_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/debug/configurations",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/debug/configurations",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
@@ -1136,13 +923,10 @@ fn stdio_server_handles_debug_configurations_request() {
     names.sort();
     assert_eq!(names, vec!["Debug Tests: MainTest", "Run Main"]);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1163,20 +947,9 @@ fn stdio_server_provides_inline_method_code_action() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///A.java";
     let source = r#"class A {
@@ -1189,38 +962,28 @@ fn stdio_server_provides_inline_method_code_action() {
 "#;
 
     // Open the document so code actions can use in-memory contents.
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, source));
 
     // Cursor on `addOne(41)` (line 4, character 11).
+    let uri_parsed: lsp_types::Uri = uri.parse().expect("uri");
+    let pos = lsp_types::Position::new(4, 11);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": {
-                    "start": { "line": 4, "character": 11 },
-                    "end": { "line": 4, "character": 11 }
+        &jsonrpc_request(
+            lsp_types::CodeActionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri_parsed },
+                range: lsp_types::Range::new(pos, pos),
+                context: lsp_types::CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
                 },
-                "context": { "diagnostics": [] }
-            }
-        }),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            2,
+            "textDocument/codeAction",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -1258,12 +1021,9 @@ fn stdio_server_provides_inline_method_code_action() {
     }
     assert!(has_temp_arg, "expected inline method to introduce arg temp");
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1287,29 +1047,25 @@ fn stdio_server_handles_generated_sources_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = fixture.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/generatedSources",
-            "params": { "projectRoot": fixture.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/java/generatedSources",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -1330,12 +1086,9 @@ fn stdio_server_handles_generated_sources_request() {
         })
     }));
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1359,29 +1112,25 @@ fn stdio_server_handles_run_annotation_processing_request() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = fixture.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/runAnnotationProcessing",
-            "params": { "projectRoot": fixture.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/java/runAnnotationProcessing",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -1394,12 +1143,9 @@ fn stdio_server_handles_run_annotation_processing_request() {
         .iter()
         .any(|p| p.as_str() == Some("Running annotation processing")));
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1477,20 +1223,9 @@ esac
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let expected = vec![
         root.join("target/classes").to_string_lossy().to_string(),
@@ -1499,14 +1234,21 @@ esac
     ];
 
     // 1) initial request should invoke our fake Maven and populate the cache.
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/java/classpath",
+        ),
     );
     let classpath_resp = read_response_with_id(&mut stdout, 2);
     let result = classpath_resp.get("result").cloned().expect("result");
@@ -1523,14 +1265,21 @@ esac
     //    thanks to the fingerprinted cache.
     fs::remove_file(&mvn_path).expect("remove fake mvn");
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            3,
+            "nova/java/classpath",
+        ),
     );
     let cached_resp = read_response_with_id(&mut stdout, 3);
     let result = match cached_resp.get("result").cloned() {
@@ -1546,12 +1295,9 @@ esac
         .collect::<Vec<_>>();
     assert_eq!(classpath, expected);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1615,29 +1361,25 @@ exit 1
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/buildProject",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            2,
+            "nova/buildProject",
+        ),
     );
 
     let build_resp = read_response_with_id(&mut stdout, 2);
@@ -1651,16 +1393,23 @@ exit 1
     let mut next_id = 3;
     let mut final_status = None::<String>;
     for _ in 0..200 {
+        let project_root = root.to_string_lossy().to_string();
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": next_id,
-                "method": "nova/build/status",
-                "params": { "projectRoot": root.to_string_lossy() }
-            }),
+            &jsonrpc_request(
+                serde_json::Value::Object({
+                    let mut params = serde_json::Map::new();
+                    params.insert(
+                        "projectRoot".to_string(),
+                        serde_json::Value::String(project_root),
+                    );
+                    params
+                }),
+                i64::from(next_id),
+                "nova/build/status",
+            ),
         );
-        let status_resp = read_response_with_id(&mut stdout, next_id);
+        let status_resp = read_response_with_id(&mut stdout, i64::from(next_id));
         next_id += 1;
 
         let status_obj = status_resp.get("result").cloned().expect("result");
@@ -1685,16 +1434,23 @@ exit 1
         "expected gradle build to fail"
     );
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": next_id,
-            "method": "nova/build/diagnostics",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            i64::from(next_id),
+            "nova/build/diagnostics",
+        ),
     );
-    let diagnostics_resp = read_response_with_id(&mut stdout, next_id);
+    let diagnostics_resp = read_response_with_id(&mut stdout, i64::from(next_id));
     next_id += 1;
 
     let result = diagnostics_resp.get("result").cloned().expect("result");
@@ -1729,12 +1485,9 @@ exit 1
         .unwrap_or_default()
         .contains("cannot find symbol"));
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
-    );
-    let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &shutdown_request(i64::from(next_id)));
+    let _shutdown_resp = read_response_with_id(&mut stdout, i64::from(next_id));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1796,20 +1549,9 @@ esac
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let expected = vec![
         root.join("build/classes/java/main")
@@ -1819,14 +1561,25 @@ esac
         dep2.to_string_lossy().to_string(),
     ];
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/java/classpath",
+        ),
     );
     let classpath_resp = read_response_with_id(&mut stdout, 2);
     let result = classpath_resp.get("result").cloned().expect("result");
@@ -1847,14 +1600,25 @@ esac
     perms.set_mode(0o644);
     fs::set_permissions(&gradlew_path, perms).expect("chmod gradlew (disable exec)");
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            3,
+            "nova/java/classpath",
+        ),
     );
     let cached_resp = read_response_with_id(&mut stdout, 3);
     let result = match cached_resp.get("result").cloned() {
@@ -1870,12 +1634,9 @@ esac
         .collect::<Vec<_>>();
     assert_eq!(classpath, expected);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -1942,29 +1703,29 @@ exit 0
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/buildProject",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/buildProject",
+        ),
     );
 
     let build_resp = read_response_with_id(&mut stdout, 2);
@@ -1978,16 +1739,23 @@ exit 0
     let mut next_id = 3;
     let mut final_status = None::<String>;
     for _ in 0..200 {
+        let project_root = root.to_string_lossy().to_string();
         write_jsonrpc_message(
             &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": next_id,
-                "method": "nova/build/status",
-                "params": { "projectRoot": root.to_string_lossy() }
-            }),
+            &jsonrpc_request(
+                serde_json::Value::Object({
+                    let mut params = serde_json::Map::new();
+                    params.insert(
+                        "projectRoot".to_string(),
+                        serde_json::Value::String(project_root),
+                    );
+                    params
+                }),
+                i64::from(next_id),
+                "nova/build/status",
+            ),
         );
-        let status_resp = read_response_with_id(&mut stdout, next_id);
+        let status_resp = read_response_with_id(&mut stdout, i64::from(next_id));
         next_id += 1;
 
         let status_obj = status_resp.get("result").cloned().expect("result");
@@ -2012,16 +1780,23 @@ exit 0
         "expected gradle build to fail"
     );
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": next_id,
-            "method": "nova/build/diagnostics",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params
+            }),
+            i64::from(next_id),
+            "nova/build/diagnostics",
+        ),
     );
-    let diagnostics_resp = read_response_with_id(&mut stdout, next_id);
+    let diagnostics_resp = read_response_with_id(&mut stdout, i64::from(next_id));
     next_id += 1;
 
     let result = diagnostics_resp.get("result").cloned().expect("result");
@@ -2052,12 +1827,9 @@ exit 0
         Some(12)
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
-    );
-    let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &shutdown_request(i64::from(next_id)));
+    let _shutdown_resp = read_response_with_id(&mut stdout, i64::from(next_id));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2197,34 +1969,43 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = root.to_string_lossy().to_string();
+    let changed_files = vec![java_file.to_string_lossy().to_string()];
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/debug/hotSwap",
-            "params": {
-                "projectRoot": root.to_string_lossy(),
-                "changedFiles": [java_file.to_string_lossy()],
-                "host": "localhost",
-                "port": port
-            }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root),
+                );
+                params.insert(
+                    "changedFiles".to_string(),
+                    serde_json::Value::Array(
+                        changed_files
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+                params.insert(
+                    "host".to_string(),
+                    serde_json::Value::String("localhost".to_string()),
+                );
+                params.insert(
+                    "port".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(port)),
+                );
+                params
+            }),
+            2,
+            "nova/debug/hotSwap",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -2239,12 +2020,9 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
         Some("success")
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2333,30 +2111,29 @@ esac
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
-    // 1) Prime the cache.
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("maven".to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
@@ -2385,12 +2162,22 @@ esac
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("maven".to_string()),
+                );
+                params
+            }),
+            3,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
@@ -2412,23 +2199,43 @@ esac
     // 3) reloadProject should clear the cache; the next request should see dep2.
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/reloadProject",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("maven".to_string()),
+                );
+                params
+            }),
+            4,
+            "nova/reloadProject",
+        ),
     );
     let _reload_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("maven".to_string()),
+                );
+                params
+            }),
+            5,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
@@ -2447,12 +2254,9 @@ esac
         ]
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -2517,29 +2321,29 @@ case "$last" in
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
+    let project_root = root.to_string_lossy().to_string();
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
@@ -2571,12 +2375,22 @@ case "$last" in
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            3,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
@@ -2599,23 +2413,43 @@ case "$last" in
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/reloadProject",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            4,
+            "nova/reloadProject",
+        ),
     );
     let _reload_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "nova/java/classpath",
-            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
-        }),
+        &jsonrpc_request(
+            serde_json::Value::Object({
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    serde_json::Value::String(project_root.clone()),
+                );
+                params.insert(
+                    "buildTool".to_string(),
+                    serde_json::Value::String("gradle".to_string()),
+                );
+                params
+            }),
+            5,
+            "nova/java/classpath",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
@@ -2636,12 +2470,9 @@ case "$last" in
         ]
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

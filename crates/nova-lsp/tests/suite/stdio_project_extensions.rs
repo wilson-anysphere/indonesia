@@ -1,17 +1,15 @@
-use nova_lsp::extensions::java::{JavaSourcePathsResponse, ResolveMainClassResponse};
-use nova_lsp::extensions::project::{
-    BuildSystemKind, ClasspathEntryKind, OutputDirKind, ProjectConfigurationResponse,
-    SourceRootKind, SourceRootOrigin,
-};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    exit_notification, initialize_request_empty, initialized_notification, jsonrpc_request,
+    read_response_with_id, shutdown_request, write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_handles_project_metadata_and_main_class_requests() {
@@ -106,48 +104,62 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     // ---------------------------------------------------------------------
     // nova/projectConfiguration
     // ---------------------------------------------------------------------
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/projectConfiguration",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    Value::String(root.to_string_lossy().to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/projectConfiguration",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
-    let config: ProjectConfigurationResponse =
-        serde_json::from_value(result).expect("decode project configuration");
-
-    assert_eq!(config.schema_version, 1);
-    assert_eq!(config.build_system, BuildSystemKind::Maven);
-    assert_eq!(config.java.source, 11);
-    assert_eq!(config.java.target, 11);
-
-    assert_eq!(config.modules.len(), 1);
-    assert_eq!(config.modules[0].name, "demo");
     assert_eq!(
-        config.modules[0].root,
-        canonical_root.to_string_lossy().to_string()
+        result
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(1)
+    );
+    assert_eq!(
+        result.get("buildSystem").and_then(|v| v.as_str()),
+        Some("maven")
+    );
+    assert_eq!(
+        result.pointer("/java/source").and_then(|v| v.as_u64()),
+        Some(11)
+    );
+    assert_eq!(
+        result.pointer("/java/target").and_then(|v| v.as_u64()),
+        Some(11)
+    );
+
+    let modules = result
+        .get("modules")
+        .and_then(|v| v.as_array())
+        .expect("modules array");
+    assert_eq!(modules.len(), 1);
+    assert_eq!(
+        modules[0].get("name").and_then(|v| v.as_str()),
+        Some("demo")
+    );
+    assert_eq!(
+        modules[0].get("root").and_then(|v| v.as_str()),
+        Some(canonical_root.to_string_lossy().as_ref())
     );
 
     let expected_main_root = canonical_root
@@ -159,22 +171,24 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         .to_string_lossy()
         .to_string();
 
+    let source_roots = result
+        .get("sourceRoots")
+        .and_then(|v| v.as_array())
+        .expect("sourceRoots array");
     assert!(
-        config
-            .source_roots
-            .iter()
-            .any(|r| r.kind == SourceRootKind::Main
-                && r.origin == SourceRootOrigin::Source
-                && r.path == expected_main_root),
+        source_roots.iter().any(|r| {
+            r.get("kind").and_then(|v| v.as_str()) == Some("main")
+                && r.get("origin").and_then(|v| v.as_str()) == Some("source")
+                && r.get("path").and_then(|v| v.as_str()) == Some(expected_main_root.as_str())
+        }),
         "expected main source root entry"
     );
     assert!(
-        config
-            .source_roots
-            .iter()
-            .any(|r| r.kind == SourceRootKind::Test
-                && r.origin == SourceRootOrigin::Source
-                && r.path == expected_test_root),
+        source_roots.iter().any(|r| {
+            r.get("kind").and_then(|v| v.as_str()) == Some("test")
+                && r.get("origin").and_then(|v| v.as_str()) == Some("source")
+                && r.get("path").and_then(|v| v.as_str()) == Some(expected_test_root.as_str())
+        }),
         "expected test source root entry"
     );
 
@@ -186,34 +200,40 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         .join("target/test-classes")
         .to_string_lossy()
         .to_string();
+    let classpath = result
+        .get("classpath")
+        .and_then(|v| v.as_array())
+        .expect("classpath array");
     assert!(
-        config
-            .classpath
-            .iter()
-            .any(|entry| entry.kind == ClasspathEntryKind::Directory
-                && entry.path == expected_main_out),
+        classpath.iter().any(|entry| {
+            entry.get("kind").and_then(|v| v.as_str()) == Some("directory")
+                && entry.get("path").and_then(|v| v.as_str()) == Some(expected_main_out.as_str())
+        }),
         "expected main output on classpath"
     );
     assert!(
-        config
-            .classpath
-            .iter()
-            .any(|entry| entry.kind == ClasspathEntryKind::Directory
-                && entry.path == expected_test_out),
+        classpath.iter().any(|entry| {
+            entry.get("kind").and_then(|v| v.as_str()) == Some("directory")
+                && entry.get("path").and_then(|v| v.as_str()) == Some(expected_test_out.as_str())
+        }),
         "expected test output on classpath"
     );
+    let output_dirs = result
+        .get("outputDirs")
+        .and_then(|v| v.as_array())
+        .expect("outputDirs array");
     assert!(
-        config
-            .output_dirs
-            .iter()
-            .any(|dir| dir.kind == OutputDirKind::Main && dir.path == expected_main_out),
+        output_dirs.iter().any(|dir| {
+            dir.get("kind").and_then(|v| v.as_str()) == Some("main")
+                && dir.get("path").and_then(|v| v.as_str()) == Some(expected_main_out.as_str())
+        }),
         "expected main output dir entry"
     );
     assert!(
-        config
-            .output_dirs
-            .iter()
-            .any(|dir| dir.kind == OutputDirKind::Test && dir.path == expected_test_out),
+        output_dirs.iter().any(|dir| {
+            dir.get("kind").and_then(|v| v.as_str()) == Some("test")
+                && dir.get("path").and_then(|v| v.as_str()) == Some(expected_test_out.as_str())
+        }),
         "expected test output dir entry"
     );
 
@@ -222,31 +242,44 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
     // ---------------------------------------------------------------------
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/java/sourcePaths",
-            "params": { "root": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "root".to_string(),
+                    Value::String(root.to_string_lossy().to_string()),
+                );
+                params
+            }),
+            3,
+            "nova/java/sourcePaths",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
-    let sources: JavaSourcePathsResponse =
-        serde_json::from_value(result).expect("decode source paths");
-
-    assert_eq!(sources.schema_version, 1);
+    assert_eq!(
+        result
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(1)
+    );
+    let roots = result
+        .get("roots")
+        .and_then(|v| v.as_array())
+        .expect("roots array");
     assert!(
-        sources
-            .roots
-            .iter()
-            .any(|r| r.kind == SourceRootKind::Main && r.path == expected_main_root),
+        roots.iter().any(|r| {
+            r.get("kind").and_then(|v| v.as_str()) == Some("main")
+                && r.get("path").and_then(|v| v.as_str()) == Some(expected_main_root.as_str())
+        }),
         "expected main source root"
     );
     assert!(
-        sources
-            .roots
-            .iter()
-            .any(|r| r.kind == SourceRootKind::Test && r.path == expected_test_root),
+        roots.iter().any(|r| {
+            r.get("kind").and_then(|v| v.as_str()) == Some("test")
+                && r.get("path").and_then(|v| v.as_str()) == Some(expected_test_root.as_str())
+        }),
         "expected test source root"
     );
 
@@ -255,23 +288,36 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
     // ---------------------------------------------------------------------
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "nova/java/resolveMainClass",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    Value::String(root.to_string_lossy().to_string()),
+                );
+                params
+            }),
+            4,
+            "nova/java/resolveMainClass",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
     let result = resp.get("result").cloned().expect("result");
-    let mains: ResolveMainClassResponse = serde_json::from_value(result).expect("decode mains");
+    assert_eq!(
+        result
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(1)
+    );
 
-    assert_eq!(mains.schema_version, 1);
-
-    let mut names: Vec<_> = mains
-        .classes
+    let classes = result
+        .get("classes")
+        .and_then(|v| v.as_array())
+        .expect("classes array");
+    let mut names: Vec<_> = classes
         .iter()
-        .map(|c| c.qualified_name.as_str())
+        .filter_map(|c| c.get("qualifiedName").and_then(|v| v.as_str()))
         .collect();
     names.sort();
     assert_eq!(
@@ -283,45 +329,59 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         ]
     );
 
-    let app = mains
-        .classes
+    let app = classes
         .iter()
-        .find(|c| c.qualified_name == "com.example.Application")
+        .find(|c| {
+            c.get("qualifiedName").and_then(|v| v.as_str()) == Some("com.example.Application")
+        })
         .expect("spring boot app");
-    assert!(app.has_main);
-    assert!(app.is_spring_boot_app);
-    assert!(!app.is_test);
+    assert_eq!(app.get("hasMain").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        app.get("isSpringBootApp").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(app.get("isTest").and_then(|v| v.as_bool()), Some(false));
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "nova/java/resolveMainClass",
-            "params": { "projectRoot": root.to_string_lossy(), "includeTests": true }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    Value::String(root.to_string_lossy().to_string()),
+                );
+                params.insert("includeTests".to_string(), Value::Bool(true));
+                params
+            }),
+            5,
+            "nova/java/resolveMainClass",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
-    let mains_with_tests: ResolveMainClassResponse =
-        serde_json::from_value(result).expect("decode mains");
-
-    assert_eq!(mains_with_tests.schema_version, 1);
-
+    assert_eq!(
+        result
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(1)
+    );
+    let classes = result
+        .get("classes")
+        .and_then(|v| v.as_array())
+        .expect("classes array");
     assert!(
-        mains_with_tests
-            .classes
-            .iter()
-            .any(|c| c.qualified_name == "com.example.MainTest" && c.is_test),
+        classes.iter().any(|c| {
+            c.get("qualifiedName").and_then(|v| v.as_str()) == Some("com.example.MainTest")
+                && c.get("isTest").and_then(|v| v.as_bool()) == Some(true)
+        }),
         "expected JUnit test class when includeTests is true"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(6));
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -396,53 +456,78 @@ dependencies {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "nova/projectConfiguration",
-            "params": { "projectRoot": root.to_string_lossy() }
-        }),
+        &jsonrpc_request(
+            Value::Object({
+                let mut params = Map::new();
+                params.insert(
+                    "projectRoot".to_string(),
+                    Value::String(root.to_string_lossy().to_string()),
+                );
+                params
+            }),
+            2,
+            "nova/projectConfiguration",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
-    let config: ProjectConfigurationResponse =
-        serde_json::from_value(result).expect("decode project configuration");
-
-    assert_eq!(config.schema_version, 1);
-    assert_eq!(config.build_system, BuildSystemKind::Gradle);
-    assert_eq!(config.java.source, 11);
-    assert_eq!(config.java.target, 11);
     assert_eq!(
-        config.workspace_root,
-        canonical_root.to_string_lossy().to_string()
+        result
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(1)
+    );
+    assert_eq!(
+        result.get("buildSystem").and_then(|v| v.as_str()),
+        Some("gradle")
+    );
+    assert_eq!(
+        result.pointer("/java/source").and_then(|v| v.as_u64()),
+        Some(11)
+    );
+    assert_eq!(
+        result.pointer("/java/target").and_then(|v| v.as_u64()),
+        Some(11)
+    );
+    assert_eq!(
+        result.get("workspaceRoot").and_then(|v| v.as_str()),
+        Some(canonical_root.to_string_lossy().as_ref())
     );
 
     // Assert scopes are populated for Gradle dependencies.
-    let scopes: BTreeMap<(String, String, Option<String>), Option<String>> = config
-        .dependencies
+    let deps = result
+        .get("dependencies")
+        .and_then(|v| v.as_array())
+        .expect("dependencies array");
+    let scopes: BTreeMap<(String, String, Option<String>), Option<String>> = deps
         .iter()
         .map(|d| {
-            (
-                (d.group_id.clone(), d.artifact_id.clone(), d.version.clone()),
-                d.scope.clone(),
-            )
+            let group_id = d
+                .get("groupId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let artifact_id = d
+                .get("artifactId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let version = d
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let scope = d
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            ((group_id, artifact_id, version), scope)
         })
         .collect();
 
@@ -464,12 +549,9 @@ dependencies {
     assert_scope("org.projectlombok", "lombok", "1.18.30", "provided");
     assert_scope("org.junit.jupiter", "junit-jupiter", "5.10.0", "test");
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

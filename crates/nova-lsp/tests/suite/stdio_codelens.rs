@@ -1,5 +1,5 @@
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::Value;
 use std::fs;
 use std::io::BufReader;
 #[cfg(unix)]
@@ -7,7 +7,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{file_uri_string, read_response_with_id, write_jsonrpc_message};
+use lsp_types::{
+    CodeLens, CodeLensParams, ExecuteCommandParams, PartialResultParams, TextDocumentIdentifier,
+    WorkDoneProgressParams,
+};
+
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_with_root_uri,
+    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
+    write_jsonrpc_message,
+};
 
 #[test]
 fn stdio_server_provides_run_test_codelens_for_junit_method() {
@@ -29,8 +38,8 @@ public class CalculatorTest {
 "#;
     fs::write(&file_path, source).expect("write test file");
 
-    let uri = file_uri_string(&file_path);
-    let root_uri = file_uri_string(root);
+    let uri = crate::support::file_uri(&file_path);
+    let root_uri = crate::support::file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -43,67 +52,42 @@ public class CalculatorTest {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "rootUri": root_uri,
-                "capabilities": {}
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeLens",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            CodeLensParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeLens",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let lenses = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("codeLens result array");
+    let lenses: Vec<CodeLens> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("codeLens result array");
     assert!(
-        lenses.iter().any(|lens| {
-            lens.pointer("/command/title").and_then(|v| v.as_str()) == Some("Run Test")
-        }),
+        lenses.iter().any(|lens| lens
+            .command
+            .as_ref()
+            .is_some_and(|cmd| cmd.title == "Run Test")),
         "expected a Run Test code lens, got: {lenses:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -127,8 +111,8 @@ public class Main {
 "#;
     fs::write(&file_path, source).expect("write main file");
 
-    let uri = file_uri_string(&file_path);
-    let root_uri = file_uri_string(root);
+    let uri = crate::support::file_uri(&file_path);
+    let root_uri = crate::support::file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -141,67 +125,42 @@ public class Main {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "rootUri": root_uri,
-                "capabilities": {}
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
+
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        &did_open_notification(uri.clone(), "java", 1, source),
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/codeLens",
-            "params": { "textDocument": { "uri": uri } }
-        }),
+        &jsonrpc_request(
+            CodeLensParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/codeLens",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let lenses = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("codeLens result array");
+    let lenses: Vec<CodeLens> =
+        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
+            .expect("codeLens result array");
     assert!(
-        lenses.iter().any(|lens| {
-            lens.pointer("/command/title").and_then(|v| v.as_str()) == Some("Run Main")
-        }),
+        lenses.iter().any(|lens| lens
+            .command
+            .as_ref()
+            .is_some_and(|cmd| cmd.title == "Run Main")),
         "expected a Run Main code lens, got: {lenses:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -257,7 +216,7 @@ public class CalculatorTest {
     )
     .expect("write test file");
 
-    let root_uri = file_uri_string(root);
+    let root_uri = crate::support::file_uri_string(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -270,35 +229,28 @@ public class CalculatorTest {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "rootUri": root_uri,
-                "capabilities": {}
-            }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_with_root_uri(1, root_uri));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": "nova.runTest",
-                "arguments": [{ "testId": "com.example.CalculatorTest#adds" }]
-            }
-        }),
+        &jsonrpc_request(
+            ExecuteCommandParams {
+                command: "nova.runTest".to_string(),
+                arguments: vec![Value::Object({
+                    let mut args = serde_json::Map::new();
+                    args.insert(
+                        "testId".to_string(),
+                        Value::String("com.example.CalculatorTest#adds".to_string()),
+                    );
+                    args
+                })],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            2,
+            "workspace/executeCommand",
+        ),
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
@@ -309,12 +261,9 @@ public class CalculatorTest {
         Some(true)
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

@@ -1,8 +1,11 @@
-use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    write_jsonrpc_message,
+};
 
 fn lsp_position(text: &str, offset: usize) -> lsp_types::Position {
     let index = nova_core::LineIndex::new(text);
@@ -13,7 +16,7 @@ fn lsp_position(text: &str, offset: usize) -> lsp_types::Position {
 
 #[test]
 fn stdio_server_supports_hover_and_signature_help() {
-    let _lock = crate::support::stdio_server_lock();
+    let _lock = stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -25,15 +28,7 @@ fn stdio_server_supports_hover_and_signature_help() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let initialize_resp = read_response_with_id(&mut stdout, 1);
     let caps = initialize_resp
         .get("result")
@@ -48,10 +43,7 @@ fn stdio_server_supports_hover_and_signature_help() {
         "expected signatureHelpProvider to be advertised"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     let uri = "file:///test/Main.java";
     let text = concat!(
@@ -65,29 +57,24 @@ fn stdio_server_supports_hover_and_signature_help() {
         "}\n",
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": text } }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &did_open_notification(uri, "java", 1, text));
+    let uri_parsed: lsp_types::Uri = uri.parse().expect("uri");
 
     // Hover on `foo` in `foo.toString()`.
     let hover_offset = text.find("foo.toString").expect("hover target");
     let hover_pos = lsp_position(text, hover_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/hover",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": hover_pos,
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier {
+                    uri: uri_parsed.clone(),
+                },
+                position: hover_pos,
+            },
+            2,
+            "textDocument/hover",
+        ),
     );
     let hover_resp = read_response_with_id(&mut stdout, 2);
     let hover_val = hover_resp.get("result").cloned().expect("hover result");
@@ -126,15 +113,14 @@ fn stdio_server_supports_hover_and_signature_help() {
     let sig_pos = lsp_position(text, sig_call_offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/signatureHelp",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": sig_pos,
-            }
-        }),
+        &jsonrpc_request(
+            lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri_parsed },
+                position: sig_pos,
+            },
+            3,
+            "textDocument/signatureHelp",
+        ),
     );
     let sig_resp = read_response_with_id(&mut stdout, 3);
     let sig_val = sig_resp
@@ -149,12 +135,9 @@ fn stdio_server_supports_hover_and_signature_help() {
         "expected at least one signature"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

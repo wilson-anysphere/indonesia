@@ -1,8 +1,18 @@
-use nova_lsp::extensions::micronaut::{
-    MicronautBeansResponse, MicronautEndpointsResponse, SCHEMA_VERSION,
-};
+use nova_lsp::extensions::micronaut::SCHEMA_VERSION;
 use pretty_assertions::assert_eq;
+use std::path::Path;
 use tempfile::TempDir;
+
+fn project_root_params(project_root: &Path) -> serde_json::Value {
+    serde_json::Value::Object({
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "projectRoot".to_string(),
+            serde_json::Value::String(project_root.to_string_lossy().to_string()),
+        );
+        params
+    })
+}
 
 #[test]
 fn lsp_micronaut_endpoints_extension_discovers_controller_methods() {
@@ -33,24 +43,32 @@ fn lsp_micronaut_endpoints_extension_discovers_controller_methods() {
     )
     .unwrap();
 
-    let params = serde_json::json!({
-        "projectRoot": root.to_string_lossy(),
-    });
+    let params = project_root_params(root);
 
     let value =
         nova_lsp::handle_custom_request(nova_lsp::MICRONAUT_ENDPOINTS_METHOD, params).unwrap();
-    let resp: MicronautEndpointsResponse = serde_json::from_value(value).unwrap();
 
-    assert_eq!(resp.schema_version, SCHEMA_VERSION);
-    assert_eq!(resp.endpoints.len(), 2);
-    assert!(resp
-        .endpoints
-        .iter()
-        .any(|e| e.method == "GET" && e.path == "/hello/world"));
-    assert!(resp
-        .endpoints
-        .iter()
-        .any(|e| e.method == "POST" && e.path == "/hello"));
+    assert_eq!(
+        value
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(SCHEMA_VERSION)
+    );
+
+    let endpoints = value
+        .get("endpoints")
+        .and_then(|v| v.as_array())
+        .expect("endpoints array");
+    assert_eq!(endpoints.len(), 2);
+    assert!(endpoints.iter().any(|e| {
+        e.get("method").and_then(|v| v.as_str()) == Some("GET")
+            && e.get("path").and_then(|v| v.as_str()) == Some("/hello/world")
+    }));
+    assert!(endpoints.iter().any(|e| {
+        e.get("method").and_then(|v| v.as_str()) == Some("POST")
+            && e.get("path").and_then(|v| v.as_str()) == Some("/hello")
+    }));
 }
 
 #[test]
@@ -90,14 +108,26 @@ fn lsp_micronaut_beans_extension_lists_singletons() {
     )
     .unwrap();
 
-    let params = serde_json::json!({
-        "projectRoot": root.to_string_lossy(),
-    });
+    let params = project_root_params(root);
 
     let value = nova_lsp::handle_custom_request(nova_lsp::MICRONAUT_BEANS_METHOD, params).unwrap();
-    let resp: MicronautBeansResponse = serde_json::from_value(value).unwrap();
 
-    assert_eq!(resp.schema_version, SCHEMA_VERSION);
-    assert!(resp.beans.iter().any(|b| b.ty == "Foo"));
-    assert!(resp.beans.iter().any(|b| b.ty == "Bar"));
+    assert_eq!(
+        value
+            .get("schemaVersion")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        Some(SCHEMA_VERSION)
+    );
+
+    let beans = value
+        .get("beans")
+        .and_then(|v| v.as_array())
+        .expect("beans array");
+    assert!(beans
+        .iter()
+        .any(|b| b.get("ty").and_then(|v| v.as_str()) == Some("Foo")));
+    assert!(beans
+        .iter()
+        .any(|b| b.get("ty").and_then(|v| v.as_str()) == Some("Bar")));
 }

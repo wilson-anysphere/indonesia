@@ -1,11 +1,17 @@
+use lsp_types::{
+    DocumentSymbolParams, PartialResultParams, Position, TextDocumentIdentifier,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
-use serde_json::json;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
+    jsonrpc_request, read_response_with_id, shutdown_request, write_jsonrpc_message,
+};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -36,7 +42,7 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let cache_dir = TempDir::new().expect("cache dir");
 
     let main_path = root.join("Main.java");
-    let main_uri = uri_for_path(&main_path);
+    let main_uri: Uri = uri_for_path(&main_path).parse().expect("main uri");
     let text = "class Main { void m() { String s = \"\"; } }";
     std::fs::write(&main_path, text).expect("write Main.java");
 
@@ -53,50 +59,29 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": main_uri.as_str(),
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text,
-                }
-            }
-        }),
+        &did_open_notification(main_uri.clone(), "java", 1, text),
     );
 
     let offset = text.find("String").expect("String token exists");
     let position = utf16_position(text, offset);
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": main_uri.as_str() },
-                "position": { "line": position.line, "character": position.character }
-            }
-        }),
+        &jsonrpc_request(
+            TextDocumentPositionParams::new(
+                TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                Position::new(position.line, position.character),
+            ),
+            2,
+            "textDocument/definition",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let location = resp.get("result").expect("definition result");
@@ -116,14 +101,18 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
 
     // Ask the server to parse the decompiled buffer via documentSymbol. This exercises that the
     // VFS can load the virtual document returned from definition.
+    let uri: Uri = uri.parse().expect("decompiled uri");
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            3,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
     let symbols = resp
@@ -135,12 +124,9 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
         "expected decompiled document to return symbols, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -161,29 +147,21 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "capabilities": {} }
-        }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialize_request_empty(1));
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentSymbol",
-            "params": { "textDocument": { "uri": uri.as_str() } }
-        }),
+        &jsonrpc_request(
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+            2,
+            "textDocument/documentSymbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
     let symbols = resp
@@ -195,12 +173,9 @@ fn stdio_definition_into_jdk_returns_decompiled_uri_and_is_readable() {
         "expected persisted decompiled document to return symbols, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");

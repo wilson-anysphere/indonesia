@@ -1,18 +1,45 @@
-use nova_core::{path_to_file_uri, AbsPathBuf};
-use serde_json::json;
+use lsp_types::{
+    CancelParams, Location, NumberOrString, OneOf, PartialResultParams, SymbolInformation, Uri,
+    WorkDoneProgressParams, WorkspaceLocation, WorkspaceSymbol, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
+};
 use std::io::BufReader;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{
+    decode_initialize_result, exit_notification, file_uri, initialize_request_with_root_uri,
+    initialized_notification, jsonrpc_notification, jsonrpc_request, read_response_with_id,
+    shutdown_request, write_jsonrpc_message,
+};
 
-fn uri_for_path(path: &Path) -> String {
-    let abs = AbsPathBuf::canonicalize(path).expect("abs path");
-    path_to_file_uri(&abs).expect("file uri")
+fn symbol_uri(sym: &SymbolInformation) -> &Uri {
+    &sym.location.uri
+}
+
+fn workspace_symbol_uri(sym: &WorkspaceSymbol) -> &Uri {
+    match &sym.location {
+        OneOf::Left(Location { uri, .. }) => uri,
+        OneOf::Right(WorkspaceLocation { uri }) => uri,
+    }
+}
+
+fn has_symbol_named_at_uri(
+    result: WorkspaceSymbolResponse,
+    name: &str,
+    expected_uri: &Uri,
+) -> bool {
+    match result {
+        WorkspaceSymbolResponse::Flat(items) => items
+            .into_iter()
+            .any(|sym| sym.name == name && symbol_uri(&sym) == expected_uri),
+        WorkspaceSymbolResponse::Nested(items) => items
+            .into_iter()
+            .any(|sym| sym.name == name && workspace_symbol_uri(&sym) == expected_uri),
+    }
 }
 
 #[test]
@@ -36,8 +63,8 @@ fn stdio_server_supports_workspace_symbol_requests() {
     )
     .expect("write java file");
 
-    let root_uri = uri_for_path(root);
-    let file_uri = uri_for_path(&file_path);
+    let root_uri = file_uri(root);
+    let file_uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -53,81 +80,64 @@ fn stdio_server_supports_workspace_symbol_requests() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
     );
     let initialize_resp = read_response_with_id(&mut stdout, 1);
+    let init = decode_initialize_result(&initialize_resp);
     assert!(
-        initialize_resp
-            .pointer("/result/capabilities/workspaceSymbolProvider")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "expected workspaceSymbolProvider capability"
+        init.capabilities.workspace_symbol_provider.is_some(),
+        "expected workspaceSymbolProvider capability: {initialize_resp:#}"
     );
+
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/symbol",
-            "params": { "query": "" }
-        }),
+        &jsonrpc_request(
+            WorkspaceSymbolParams {
+                partial_result_params: PartialResultParams::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                query: "".to_string(),
+            },
+            2,
+            "workspace/symbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let results = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("workspace/symbol result array");
+    let results: WorkspaceSymbolResponse =
+        serde_json::from_value(resp.get("result").cloned().expect("result"))
+            .expect("decode workspace/symbol response");
 
     assert!(
-        results.iter().any(|value| {
-            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
-                && value.pointer("/location/uri").and_then(|v| v.as_str())
-                    == Some(file_uri.as_str())
-        }),
+        has_symbol_named_at_uri(results, "Foo", &file_uri),
         "expected to find Foo symbol pointing at Foo.java when query is empty"
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/symbol",
-            "params": { "query": "Foo" }
-        }),
+        &jsonrpc_request(
+            WorkspaceSymbolParams {
+                partial_result_params: PartialResultParams::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                query: "Foo".to_string(),
+            },
+            3,
+            "workspace/symbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let results = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("workspace/symbol result array");
+    let results: WorkspaceSymbolResponse =
+        serde_json::from_value(resp.get("result").cloned().expect("result"))
+            .expect("decode workspace/symbol response");
 
     assert!(
-        results.iter().any(|value| {
-            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
-                && value.pointer("/location/uri").and_then(|v| v.as_str())
-                    == Some(file_uri.as_str())
-        }),
+        has_symbol_named_at_uri(results, "Foo", &file_uri),
         "expected to find Foo symbol pointing at Foo.java when query is Foo"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(4));
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -155,8 +165,8 @@ fn stdio_workspace_symbol_reports_utf16_definition_positions() {
         "expected UTF-16 column to count the emoji as a surrogate pair"
     );
 
-    let root_uri = uri_for_path(root);
-    let file_uri = uri_for_path(&file_path);
+    let root_uri = file_uri(root);
+    let file_uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -172,61 +182,63 @@ fn stdio_workspace_symbol_reports_utf16_definition_positions() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/symbol",
-            "params": { "query": "Foo" }
-        }),
+        &jsonrpc_request(
+            WorkspaceSymbolParams {
+                partial_result_params: PartialResultParams::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                query: "Foo".to_string(),
+            },
+            2,
+            "workspace/symbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let results = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("workspace/symbol result array");
+    let results: WorkspaceSymbolResponse =
+        serde_json::from_value(resp.get("result").cloned().expect("result"))
+            .expect("decode workspace/symbol response");
 
-    let foo = results
-        .iter()
-        .find(|value| {
-            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
-                && value.pointer("/location/uri").and_then(|v| v.as_str())
-                    == Some(file_uri.as_str())
-        })
-        .unwrap_or_else(|| panic!("expected Foo symbol pointing at Foo.java, got: {resp:?}"));
+    let (line, character) = match results {
+        WorkspaceSymbolResponse::Flat(items) => {
+            let sym = items
+                .into_iter()
+                .find(|sym| sym.name == "Foo" && sym.location.uri == file_uri)
+                .unwrap_or_else(|| {
+                    panic!("expected Foo symbol pointing at Foo.java, got: {resp:?}")
+                });
+            (
+                sym.location.range.start.line,
+                sym.location.range.start.character,
+            )
+        }
+        WorkspaceSymbolResponse::Nested(items) => {
+            let sym = items
+                .into_iter()
+                .find(|sym| sym.name == "Foo" && workspace_symbol_uri(sym) == &file_uri)
+                .unwrap_or_else(|| {
+                    panic!("expected Foo symbol pointing at Foo.java, got: {resp:?}")
+                });
+            match sym.location {
+                OneOf::Left(loc) => (loc.range.start.line, loc.range.start.character),
+                OneOf::Right(_) => {
+                    panic!("expected WorkspaceSymbol location to include a range: {resp:?}")
+                }
+            }
+        }
+    };
 
-    let line = foo
-        .pointer("/location/range/start/line")
-        .and_then(|v| v.as_u64())
-        .expect("location.range.start.line");
-    let character = foo
-        .pointer("/location/range/start/character")
-        .and_then(|v| v.as_u64())
-        .expect("location.range.start.character");
+    assert_eq!(line, expected.line);
+    assert_eq!(character, expected.character);
 
-    assert_eq!(line as u32, expected.line);
-    assert_eq!(character as u32, expected.character);
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -257,8 +269,8 @@ fn stdio_workspace_symbol_supports_root_uri_with_percent_encoding() {
 
     // `path_to_file_uri` percent-encodes spaces. This ensures the server decodes
     // the initialize.rootUri back into a usable on-disk path.
-    let root_uri = uri_for_path(&root);
-    let file_uri = uri_for_path(&file_path);
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file_path);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -274,48 +286,37 @@ fn stdio_workspace_symbol_supports_root_uri_with_percent_encoding() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "rootUri": root_uri, "capabilities": {} }
-        }),
+        &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
+    write_jsonrpc_message(&mut stdin, &initialized_notification());
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/symbol",
-            "params": { "query": "Foo" }
-        }),
+        &jsonrpc_request(
+            WorkspaceSymbolParams {
+                partial_result_params: PartialResultParams::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                query: "Foo".to_string(),
+            },
+            2,
+            "workspace/symbol",
+        ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let results = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("workspace/symbol result array");
     assert!(
-        results.iter().any(|value| {
-            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
-                && value.pointer("/location/uri").and_then(|v| v.as_str())
-                    == Some(file_uri.as_str())
-        }),
+        has_symbol_named_at_uri(
+            serde_json::from_value(resp.get("result").cloned().expect("result"))
+                .expect("decode workspace/symbol response"),
+            "Foo",
+            &file_uri,
+        ),
         "expected Foo symbol in percent-encoded workspace root, got: {resp:?}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-    );
+    write_jsonrpc_message(&mut stdin, &shutdown_request(3));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    write_jsonrpc_message(&mut stdin, &exit_notification());
     drop(stdin);
 
     let status = child.wait().expect("wait");
@@ -349,7 +350,7 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
         .expect("write java file");
     }
 
-    let root_uri = uri_for_path(root);
+    let root_uri = file_uri(root);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -368,33 +369,28 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
         let mut stdin = stdin.lock().expect("lock stdin");
         write_jsonrpc_message(
             &mut *stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": { "rootUri": root_uri, "capabilities": {} }
-            }),
+            &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
         );
     }
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-        );
+        write_jsonrpc_message(&mut *stdin, &initialized_notification());
     }
 
     {
         let mut stdin = stdin.lock().expect("lock stdin");
         write_jsonrpc_message(
             &mut *stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "workspace/symbol",
-                "params": { "query": "Foo" }
-            }),
+            &jsonrpc_request(
+                WorkspaceSymbolParams {
+                    partial_result_params: PartialResultParams::default(),
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    query: "Foo".to_string(),
+                },
+                2,
+                "workspace/symbol",
+            ),
         );
     }
 
@@ -413,7 +409,12 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
                 let mut stdin = cancel_stdin.lock().expect("lock stdin");
                 write_jsonrpc_message(
                     &mut *stdin,
-                    &json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 2 } }),
+                    &jsonrpc_notification(
+                        CancelParams {
+                            id: NumberOrString::Number(2),
+                        },
+                        "$/cancelRequest",
+                    ),
                 );
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -436,15 +437,12 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
 
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
-        );
+        write_jsonrpc_message(&mut *stdin, &shutdown_request(3));
     }
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     {
         let mut stdin = stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(&mut *stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+        write_jsonrpc_message(&mut *stdin, &exit_notification());
     }
     drop(stdin);
 

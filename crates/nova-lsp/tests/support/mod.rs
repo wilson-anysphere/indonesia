@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use lsp_types::Uri;
+use lsp_types::{InitializeResult, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -222,6 +222,11 @@ pub fn read_response_with_id(reader: &mut impl BufRead, id: i64) -> Value {
     }
 }
 
+pub fn decode_initialize_result(response: &Value) -> InitializeResult {
+    serde_json::from_value(response.get("result").cloned().expect("initialize result"))
+        .expect("decode InitializeResult")
+}
+
 pub fn drain_notifications_until_id(reader: &mut impl BufRead, id: i64) -> (Vec<Value>, Value) {
     let mut notifications = Vec::new();
     loop {
@@ -234,4 +239,132 @@ pub fn drain_notifications_until_id(reader: &mut impl BufRead, id: i64) -> (Vec<
         // (including server->client requests) for debugging/optional assertions.
         notifications.push(msg);
     }
+}
+
+pub fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+fn to_json_value(value: impl serde::Serialize) -> Value {
+    serde_json::to_value(value).expect("serialize json value")
+}
+
+pub fn json_value(value: impl serde::Serialize) -> Value {
+    to_json_value(value)
+}
+
+pub fn jsonrpc_request(params: impl serde::Serialize, id: i64, method: &str) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        value.insert("id".to_string(), Value::from(id));
+        value.insert("method".to_string(), Value::String(method.to_string()));
+        value.insert("params".to_string(), to_json_value(params));
+        value
+    })
+}
+
+pub fn jsonrpc_request_no_params(id: i64, method: &str) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        value.insert("id".to_string(), Value::from(id));
+        value.insert("method".to_string(), Value::String(method.to_string()));
+        value
+    })
+}
+
+pub fn jsonrpc_notification(params: impl serde::Serialize, method: &str) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        value.insert("method".to_string(), Value::String(method.to_string()));
+        value.insert("params".to_string(), to_json_value(params));
+        value
+    })
+}
+
+pub fn jsonrpc_notification_no_params(method: &str) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        value.insert("method".to_string(), Value::String(method.to_string()));
+        value
+    })
+}
+
+pub fn jsonrpc_response_ok(id: Value, result: impl serde::Serialize) -> Value {
+    Value::Object({
+        let mut value = serde_json::Map::new();
+        value.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        value.insert("id".to_string(), id);
+        value.insert("result".to_string(), to_json_value(result));
+        value
+    })
+}
+
+pub fn initialize_request_empty(id: i64) -> Value {
+    jsonrpc_request(
+        Value::Object({
+            let mut value = serde_json::Map::new();
+            value.insert("capabilities".to_string(), empty_object());
+            value
+        }),
+        id,
+        "initialize",
+    )
+}
+
+pub fn initialize_request_with_root_uri(id: i64, root_uri: String) -> Value {
+    jsonrpc_request(
+        Value::Object({
+            let mut value = serde_json::Map::new();
+            value.insert("rootUri".to_string(), Value::String(root_uri));
+            value.insert("capabilities".to_string(), empty_object());
+            value
+        }),
+        id,
+        "initialize",
+    )
+}
+
+pub fn initialized_notification() -> Value {
+    jsonrpc_notification(empty_object(), "initialized")
+}
+
+pub fn shutdown_request(id: i64) -> Value {
+    jsonrpc_request_no_params(id, "shutdown")
+}
+
+pub fn exit_notification() -> Value {
+    jsonrpc_notification_no_params("exit")
+}
+
+pub fn did_open_notification(
+    uri: impl serde::Serialize,
+    language_id: &'static str,
+    version: i64,
+    text: &str,
+) -> Value {
+    jsonrpc_notification(
+        Value::Object({
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "textDocument".to_string(),
+                Value::Object({
+                    let mut doc = serde_json::Map::new();
+                    doc.insert("uri".to_string(), to_json_value(uri));
+                    doc.insert(
+                        "languageId".to_string(),
+                        Value::String(language_id.to_string()),
+                    );
+                    doc.insert("version".to_string(), Value::from(version));
+                    doc.insert("text".to_string(), Value::String(text.to_string()));
+                    doc
+                }),
+            );
+            params
+        }),
+        "textDocument/didOpen",
+    )
 }
