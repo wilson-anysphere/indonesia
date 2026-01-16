@@ -2882,7 +2882,7 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*\(\s*)*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^:'"@]+)(?::(?P<classifier>[^:'"@]+))?)?(?:@(?P<type>[^'"]+))?['"]"#,
         ))
         .expect("valid regex")
     });
@@ -3915,6 +3915,48 @@ dependencies {
         assert_eq!(bar.classifier.as_deref(), None);
         assert_eq!(bar.type_.as_deref(), Some("jar"));
         assert_eq!(bar.scope.as_deref(), Some("runtime"));
+
+        let baz = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "baz")
+            .expect("baz dep");
+        assert_eq!(baz.version.as_deref(), Some("7.8.9"));
+        assert_eq!(baz.classifier.as_deref(), Some("all"));
+        assert_eq!(baz.type_.as_deref(), None);
+        assert_eq!(baz.scope.as_deref(), Some("provided"));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_gav_wrappers_and_nested_calls() {
+        let script = r#"
+dependencies {
+  implementation platform("org.example:foo:1.2.3")
+  testImplementation(platform("org.example:bar:4.5.6@jar"))
+  compileOnly enforcedPlatform("org.example:baz:7.8.9:all")
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let mut deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        sort_dedup_dependencies(&mut deps);
+
+        let foo = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "foo")
+            .expect("foo dep");
+        assert_eq!(foo.version.as_deref(), Some("1.2.3"));
+        assert_eq!(foo.classifier.as_deref(), None);
+        assert_eq!(foo.type_.as_deref(), None);
+        assert_eq!(foo.scope.as_deref(), Some("compile"));
+
+        let bar = deps
+            .iter()
+            .find(|d| d.group_id == "org.example" && d.artifact_id == "bar")
+            .expect("bar dep");
+        assert_eq!(bar.version.as_deref(), Some("4.5.6"));
+        assert_eq!(bar.classifier.as_deref(), None);
+        assert_eq!(bar.type_.as_deref(), Some("jar"));
+        assert_eq!(bar.scope.as_deref(), Some("test"));
 
         let baz = deps
             .iter()
