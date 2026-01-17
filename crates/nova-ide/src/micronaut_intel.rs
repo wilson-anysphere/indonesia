@@ -70,10 +70,10 @@ pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
     let root = project_root_for_path(path);
 
     let config = framework_cache::project_config(&root);
-    let config_signature = config
-        .as_deref()
-        .map(project_config_signature)
-        .unwrap_or_default();
+    let config_signature = match config.as_deref() {
+        Some(config) => project_config_signature(config),
+        None => 0,
+    };
 
     // Computing the full `JavaSource`/`ConfigFile` inputs requires cloning the
     // entire workspace's file text. Use a lightweight signature first so cache

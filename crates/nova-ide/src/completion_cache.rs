@@ -277,7 +277,10 @@ impl WorkspaceTypeIndexBuilder {
     }
 
     fn add_java_file(&mut self, text: &str) {
-        let package = parse_package_name(text).unwrap_or_default();
+        let package = match parse_package_name(text) {
+            Some(package) => package,
+            None => String::new(),
+        };
         let type_names = parse_type_names(text);
 
         for simple in type_names {

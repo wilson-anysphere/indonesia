@@ -1099,7 +1099,11 @@ fn parse_type_body(
             && prev_symbol != Some('=')
             && prev_symbol != Some('.')
         {
-            let name = tokens[i].ident().unwrap().to_string();
+            let Some(name) = tokens[i].ident() else {
+                i += 1;
+                continue;
+            };
+            let name = name.to_string();
             let name_span = tokens[i].span;
 
             let close_paren = find_matching(tokens, i + 1, '(', ')');

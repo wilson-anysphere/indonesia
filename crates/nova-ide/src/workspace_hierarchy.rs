@@ -312,19 +312,17 @@ impl WorkspaceHierarchyIndex {
     }
 
     pub(crate) fn resolve_super_types(&self, type_name: &str) -> Vec<String> {
-        self.inheritance
-            .supertypes
-            .get(type_name)
-            .cloned()
-            .unwrap_or_default()
+        match self.inheritance.supertypes.get(type_name) {
+            Some(types) => types.clone(),
+            None => Vec::new(),
+        }
     }
 
     pub(crate) fn resolve_sub_types(&self, type_name: &str) -> Vec<String> {
-        self.inheritance
-            .subtypes
-            .get(type_name)
-            .cloned()
-            .unwrap_or_default()
+        match self.inheritance.subtypes.get(type_name) {
+            Some(types) => types.clone(),
+            None => Vec::new(),
+        }
     }
 }
 

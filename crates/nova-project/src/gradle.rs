@@ -2838,9 +2838,8 @@ fn parse_gradle_local_classpath_entries_from_text(
         }
     }
 
-    let scan_add_calls = |contents: &str,
-                          allow_unqualified_add: bool,
-                          out: &mut Vec<ClasspathEntry>| {
+    let scan_add_calls =
+        |contents: &str, allow_unqualified_add: bool, out: &mut Vec<ClasspathEntry>| {
             let string_ranges = gradle_string_literal_ranges(contents);
             let bytes = contents.as_bytes();
 
@@ -4017,8 +4016,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        append_included_build_module_refs, default_gradle_user_home, extract_named_brace_blocks,
-        extract_java_config_from_build_script,
+        append_included_build_module_refs, default_gradle_user_home,
+        extract_java_config_from_build_script, extract_named_brace_blocks,
         gradle_dependency_jar_paths, parse_gradle_dependencies_from_text,
         parse_gradle_local_classpath_entries_from_text,
         parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,

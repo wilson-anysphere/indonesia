@@ -222,7 +222,9 @@ fn create_symbol_quick_fixes(
         return Vec::new();
     };
 
-    let snippet = source.get(span.start..span.end).unwrap_or_default();
+    let Some(snippet) = source.get(span.start..span.end) else {
+        return Vec::new();
+    };
     if !crate::quick_fixes::looks_like_enclosing_member_access(snippet) {
         return Vec::new();
     }
@@ -1007,10 +1009,10 @@ fn type_mismatch_quick_fixes(
     };
     let (start_offset, end_offset) = (start_offset.min(end_offset), start_offset.max(end_offset));
 
-    let expr = source
-        .get(start_offset..end_offset)
-        .unwrap_or_default()
-        .trim();
+    let Some(expr) = source.get(start_offset..end_offset) else {
+        return Vec::new();
+    };
+    let expr = expr.trim();
     if expr.is_empty() {
         return Vec::new();
     }
@@ -1120,10 +1122,10 @@ fn return_mismatch_quick_fixes(
     };
     let (start_offset, end_offset) = (start_offset.min(end_offset), start_offset.max(end_offset));
 
-    let expr = source
-        .get(start_offset..end_offset)
-        .unwrap_or_default()
-        .trim();
+    let Some(expr) = source.get(start_offset..end_offset) else {
+        return Vec::new();
+    };
+    let expr = expr.trim();
     if expr.is_empty() {
         return Vec::new();
     }

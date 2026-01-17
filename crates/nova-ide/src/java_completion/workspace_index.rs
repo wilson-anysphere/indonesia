@@ -35,7 +35,10 @@ impl WorkspaceJavaIndex {
 
         for (_path, file_id) in java_files {
             let text = db.file_content(*file_id);
-            let package = parse_package_name(text).unwrap_or_default();
+            let package = match parse_package_name(text) {
+                Some(package) => package,
+                None => String::new(),
+            };
             index.add_package_hierarchy(&package);
 
             for type_name in parse_importable_type_names(text) {

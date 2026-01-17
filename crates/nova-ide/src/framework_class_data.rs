@@ -68,10 +68,10 @@ pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
 
 fn parse_class_declaration(node: syntax_ast::ClassDeclaration, source: &str) -> Option<ClassData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let class_name = node.name_token()?.text().to_string();
 
@@ -92,10 +92,10 @@ fn parse_interface_declaration(
     source: &str,
 ) -> Option<ClassData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let name = node.name_token()?.text().to_string();
     let body = node.body()?;
@@ -112,10 +112,10 @@ fn parse_interface_declaration(
 
 fn parse_enum_declaration(node: syntax_ast::EnumDeclaration, source: &str) -> Option<ClassData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let name = node.name_token()?.text().to_string();
     let body = node.body()?;
@@ -135,10 +135,10 @@ fn parse_record_declaration(
     source: &str,
 ) -> Option<ClassData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let name = node.name_token()?.text().to_string();
     let body = node.body()?;
@@ -158,10 +158,10 @@ fn parse_annotation_type_declaration(
     source: &str,
 ) -> Option<ClassData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let name = node.name_token()?.text().to_string();
     let body = node.body()?;
@@ -209,10 +209,10 @@ fn parse_class_members(
 
 fn parse_field_declaration(node: syntax_ast::FieldDeclaration, source: &str) -> Vec<FieldData> {
     let modifiers = node.modifiers();
-    let annotations = modifiers
-        .as_ref()
-        .map(collect_annotations)
-        .unwrap_or_default();
+    let annotations = match modifiers.as_ref() {
+        Some(modifiers) => collect_annotations(modifiers),
+        None => Vec::new(),
+    };
 
     let (is_static, is_final) = modifiers
         .as_ref()

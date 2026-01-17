@@ -776,7 +776,9 @@ impl ResolveCtx {
             // as a type unless we have some evidence it is a type. Otherwise we can incorrectly
             // rewrite a fully-qualified package name like `z.I` into a nested binary name like
             // `current.z$I`.
-            let (first, rest) = segments.split_first().unwrap();
+            let Some((first, rest)) = segments.split_first() else {
+                return Type::Named(name.to_string());
+            };
             // Heuristic: avoid treating very short all-caps prefixes like `Y.C` as nested types in
             // the current package (`a.Y$C`). Those names are ambiguous in pure source syntax, but
             // in practice single-letter package names are more common than single-letter outer type

@@ -1107,9 +1107,12 @@ where
         );
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
-        let offset = text_index
-            .position_to_offset(position)
-            .unwrap_or(text.len());
+        // Some clients use out-of-bounds positions as a sentinel for "end of file".
+        // Treat invalid positions as best-effort EOF.
+        let offset = match text_index.position_to_offset(position) {
+            Some(offset) => offset,
+            None => text.len(),
+        };
 
         let extension_items = self
             .completions(cancel, file, offset)
@@ -1418,10 +1421,19 @@ where
     ) -> Vec<lsp_types::InlayHint> {
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
-        let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
-        let end_offset = text_index
-            .position_to_offset(range.end)
-            .unwrap_or(text.len());
+        // Some clients use `(u32::MAX, u32::MAX)` as a sentinel for "end of file".
+        // Treat invalid positions as best-effort whole-file ranges.
+        let start_offset = match text_index.position_to_offset(range.start) {
+            Some(start) => start,
+            None => 0,
+        };
+        let end_offset = match text_index.position_to_offset(range.end) {
+            Some(end) => end,
+            None => text.len(),
+        };
+        if start_offset > end_offset {
+            return Vec::new();
+        }
 
         let mut hints =
             crate::code_intelligence::inlay_hints(self.db.as_ref().as_dyn_nova_db(), file, range);
@@ -1580,10 +1592,10 @@ fn type_mismatch_quick_fixes(
             continue;
         };
 
-        let expr = source
-            .get(diag_span.start..diag_span.end)
-            .unwrap_or_default()
-            .trim();
+        let Some(expr) = source.get(diag_span.start..diag_span.end) else {
+            continue;
+        };
+        let expr = expr.trim();
         if expr.is_empty() {
             continue;
         }
@@ -1683,10 +1695,10 @@ fn type_mismatch_quick_fixes_from_context(
             continue;
         };
 
-        let expr = source
-            .get(diag_span.start..diag_span.end)
-            .unwrap_or_default()
-            .trim();
+        let Some(expr) = source.get(diag_span.start..diag_span.end) else {
+            continue;
+        };
+        let expr = expr.trim();
         if expr.is_empty() {
             continue;
         }

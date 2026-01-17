@@ -63,9 +63,9 @@ pub fn quick_fixes_for_diagnostics(
 
                     // For simple identifiers, also offer creating the missing class (mirrors the
                     // `unresolved-type` quick fix).
-                    let span_text = source
-                        .get(diag_span.start..diag_span.end)
-                        .unwrap_or_default();
+                    let Some(span_text) = source.get(diag_span.start..diag_span.end) else {
+                        continue;
+                    };
                     if !span_text.contains('.') && is_simple_type_identifier(&name) {
                         if let Some(action) = create_class_action(uri, source, &name) {
                             actions.push(CodeActionOrCommand::CodeAction(action));
@@ -465,9 +465,9 @@ fn import_and_qualify_type_actions(
     diag_span: Span,
     name: &str,
 ) -> Vec<CodeActionOrCommand> {
-    let span_text = source
-        .get(diag_span.start..diag_span.end)
-        .unwrap_or_default();
+    let Some(span_text) = source.get(diag_span.start..diag_span.end) else {
+        return Vec::new();
+    };
     if span_text.contains('.') {
         return Vec::new();
     }

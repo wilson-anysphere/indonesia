@@ -979,7 +979,10 @@ impl WorkspaceTypeIndex {
             }
 
             let text = db.file_content(file_id);
-            let package = parse_java_package_name(text).unwrap_or_default();
+            let package = match parse_java_package_name(text) {
+                Some(package) => package,
+                None => String::new(),
+            };
             for ty in parse_top_level_type_names(text) {
                 let fqn = if package.is_empty() {
                     ty.clone()
@@ -1583,7 +1586,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         }
 
         let path = segments.join(".");
-        let simple = segments.last().cloned().unwrap_or_default();
+        let simple = segments[segments.len() - 1].clone();
 
         imports.push(ImportLine {
             span: Span::new(import_start, stmt_end),
@@ -2891,7 +2894,9 @@ fn module_info_completion_items(
                 // Extend across dotted module names, including `java . base` with whitespace.
                 match tok.kind {
                     TokKind::Ident(_) | TokKind::Symbol('.') => {
-                        let span = module_span.expect("span must exist");
+                        let Some(span) = module_span else {
+                            break;
+                        };
                         module_span = Some(Span::new(span.start, tok.span.end));
                     }
                     _ => break,
@@ -2974,7 +2979,9 @@ fn module_info_completion_items(
                 match tok.kind {
                     TokKind::Ident("to") => break,
                     TokKind::Ident(_) | TokKind::Symbol('.') => {
-                        let span = package_span.expect("span must exist");
+                        let Some(span) = package_span else {
+                            break;
+                        };
                         package_span = Some(Span::new(span.start, tok.span.end));
                     }
                     _ => break,
@@ -3031,7 +3038,9 @@ fn module_info_completion_items(
                 // Extend across dotted type names, including whitespace around dots.
                 match tok.kind {
                     TokKind::Ident(_) | TokKind::Symbol('.') => {
-                        let span = service_span.expect("span must exist");
+                        let Some(span) = service_span else {
+                            break;
+                        };
                         service_span = Some(Span::new(span.start, tok.span.end));
                     }
                     _ => break,
@@ -3090,7 +3099,9 @@ fn module_info_completion_items(
                 match tok.kind {
                     TokKind::Ident("with") => break,
                     TokKind::Ident(_) | TokKind::Symbol('.') => {
-                        let span = service_span.expect("span must exist");
+                        let Some(span) = service_span else {
+                            break;
+                        };
                         service_span = Some(Span::new(span.start, tok.span.end));
                     }
                     _ => break,
@@ -3154,7 +3165,10 @@ struct JavaImportInfo {
 
 fn parse_java_imports(text: &str) -> JavaImportInfo {
     let mut out = JavaImportInfo::default();
-    out.current_package = parse_package_name(text).unwrap_or_default();
+    out.current_package = match parse_package_name(text) {
+        Some(package) => package,
+        None => String::new(),
+    };
 
     // Best-effort parse of `import ...;` declarations.
     //
@@ -5320,20 +5334,25 @@ fn javadoc_tag_snippet_completions(
                 // field doc comments by rejecting braces/semicolons between the comment and method name.
                 let gap = next_method.name_span.start.saturating_sub(comment_end);
                 if gap <= 200 {
-                    let between = text
-                        .get(comment_end..next_method.name_span.start)
-                        .unwrap_or_default();
-                    if !between.contains('{') && !between.contains('}') && !between.contains(';') {
-                        for param in &next_method.params {
-                            let name = &param.name;
-                            let escaped = escape_snippet_placeholder_text(name);
-                            items.push(CompletionItem {
-                                label: format!("@param {name}"),
-                                kind: Some(CompletionItemKind::SNIPPET),
-                                insert_text: Some(format!("@param ${{1:{}}} $0", escaped.as_ref())),
-                                insert_text_format: Some(InsertTextFormat::SNIPPET),
-                                ..Default::default()
-                            });
+                    if let Some(between) = text.get(comment_end..next_method.name_span.start) {
+                        if !between.contains('{')
+                            && !between.contains('}')
+                            && !between.contains(';')
+                        {
+                            for param in &next_method.params {
+                                let name = &param.name;
+                                let escaped = escape_snippet_placeholder_text(name);
+                                items.push(CompletionItem {
+                                    label: format!("@param {name}"),
+                                    kind: Some(CompletionItemKind::SNIPPET),
+                                    insert_text: Some(format!(
+                                        "@param ${{1:{}}} $0",
+                                        escaped.as_ref()
+                                    )),
+                                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                 }
@@ -6116,7 +6135,10 @@ fn enum_case_label_completions(
 
     let analysis = analyze(text);
     let env = completion_cache::completion_env_for_file(db, file)?;
-    let package = parse_java_package_name(text).unwrap_or_default();
+    let package = match parse_java_package_name(text) {
+        Some(package) => package,
+        None => String::new(),
+    };
     let imports = parse_java_imports(text);
 
     let selector = switch_selector_expr(&analysis.tokens, prefix_start)?;
@@ -6389,9 +6411,10 @@ pub(crate) fn core_completions(
             if cancel.is_cancelled() {
                 return Vec::new();
             }
-            infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
-                .unwrap_or_default()
+            match infer_receiver_type_before_dot(db, file, ctx.dot_offset) {
+                Some(ty) => member_completions_for_receiver_type(db, file, &ty, &prefix),
+                None => Vec::new(),
+            }
         } else {
             if cancel.is_cancelled() {
                 return Vec::new();
@@ -7315,9 +7338,10 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     }
                 }
                 items.extend(if receiver.is_empty() {
-                    infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                        .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
-                        .unwrap_or_default()
+                    match infer_receiver_type_before_dot(db, file, ctx.dot_offset) {
+                        Some(ty) => member_completions_for_receiver_type(db, file, &ty, &prefix),
+                        None => Vec::new(),
+                    }
                 } else {
                     member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
                 });
@@ -7425,9 +7449,10 @@ fn static_import_completions(
     let jdk = jdk_index();
     let owner = resolve_static_import_owner(jdk.as_ref(), &owner_source)?;
 
-    let names = jdk
-        .static_member_names_with_prefix(&owner, member_prefix)
-        .unwrap_or_default();
+    let names = match jdk.static_member_names_with_prefix(&owner, member_prefix) {
+        Ok(names) => names,
+        Err(_) => Vec::new(),
+    };
 
     // Nested types are also importable in `import static` statements because static member types
     // (e.g. `java.util.Map.Entry`) are static members.
@@ -7974,7 +7999,10 @@ fn workspace_type_candidates(
         }
 
         let text = db.file_content(file_id);
-        let package = parse_java_package_name(text).unwrap_or_default();
+        let package = match parse_java_package_name(text) {
+            Some(package) => package,
+            None => String::new(),
+        };
         for ty in parse_top_level_type_names(text) {
             if out.len() >= limit {
                 break;
@@ -8899,10 +8927,13 @@ fn annotation_type_completions(
             }
             let query_prefix = format!("{pkg}.{prefix}");
 
-            let jdk_names = jdk
+            let jdk_names = match jdk
                 .class_names_with_prefix(&query_prefix)
                 .or_else(|_| JdkIndex::new().class_names_with_prefix(&query_prefix))
-                .unwrap_or_default();
+            {
+                Ok(names) => names,
+                Err(_) => Vec::new(),
+            };
             for binary in jdk_names.into_iter().take(MAX_TYPES_PER_STAR_PKG) {
                 if items.len() >= TOTAL_LIMIT {
                     break;
@@ -9843,8 +9874,10 @@ fn method_reference_completions(
     let (mut receiver_ty, mut call_kind) = if receiver.is_empty() {
         // Best-effort: handle receivers like `new Foo()::bar` / `foo()::bar` / `(foo)::bar` by
         // inferring the type of the expression immediately before the `::`.
-        let receiver_type =
-            infer_receiver_type_before_dot(db, file, double_colon_offset).unwrap_or_default();
+        let Some(receiver_type) = infer_receiver_type_before_dot(db, file, double_colon_offset)
+        else {
+            return Vec::new();
+        };
         if receiver_type.is_empty() {
             return Vec::new();
         }
@@ -12502,10 +12535,13 @@ fn expression_type_name_completions(
             }
         } else {
             // Symbol-backed JDK: query only the relevant prefix window.
-            let jdk_candidates = jdk
+            let jdk_candidates = match jdk
                 .class_names_with_prefix(query.as_str())
                 .or_else(|_| EMPTY_JDK_INDEX.class_names_with_prefix(query.as_str()))
-                .unwrap_or_default();
+            {
+                Ok(candidates) => candidates,
+                Err(_) => Vec::new(),
+            };
             for binary in jdk_candidates {
                 if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_JDK_PER_PACKAGE {
                     break;
@@ -13167,10 +13203,10 @@ fn maybe_add_smart_constructor_completions(
 
     let expected_detail = nova_types::format_type(types, &expected);
     let expected_name = match &expected {
-        Type::Class(nova_types::ClassType { def, .. }) => types
-            .class(*def)
-            .map(|c| c.name.clone())
-            .unwrap_or_default(),
+        Type::Class(nova_types::ClassType { def, .. }) => match types.class(*def) {
+            Some(class) => class.name.clone(),
+            None => String::new(),
+        },
         Type::Named(name) => name.clone(),
         Type::VirtualInner { owner, name } => types
             .class(*owner)
@@ -13942,7 +13978,7 @@ fn sam_param_count(types: &mut TypeStore, ty: &Type) -> Option<usize> {
         return None;
     }
 
-    Some(abstract_sigs.pop().unwrap().1)
+    abstract_sigs.pop().map(|sig| sig.1)
 }
 
 fn is_object_method(method: &MethodDef) -> bool {
@@ -17111,10 +17147,14 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
     let text_index = TextIndex::new(text);
     // Some clients use `(u32::MAX, u32::MAX)` as a sentinel for "end of file".
     // Treat invalid positions as best-effort whole-file ranges.
-    let start = text_index.position_to_offset(range.start).unwrap_or(0);
-    let end = text_index
-        .position_to_offset(range.end)
-        .unwrap_or(text.len());
+    let start = match text_index.position_to_offset(range.start) {
+        Some(start) => start,
+        None => 0,
+    };
+    let end = match text_index.position_to_offset(range.end) {
+        Some(end) => end,
+        None => text.len(),
+    };
     if start > end {
         return Vec::new();
     }
@@ -17238,7 +17278,10 @@ fn jdk_discovery_enabled() -> bool {
     }
 
     // Mirror `nova_jdk::PersistenceMode::from_env` and its default behavior.
-    let mode = std::env::var("NOVA_PERSISTENCE").unwrap_or_default();
+    let mode = match std::env::var("NOVA_PERSISTENCE") {
+        Ok(mode) => mode,
+        Err(_) => String::new(),
+    };
     let mode = mode.trim().to_ascii_lowercase();
     match mode.as_str() {
         "" => {

@@ -79,7 +79,9 @@ pub(crate) fn create_symbol_quick_fixes_from_diagnostics(
                     continue;
                 };
 
-                let snippet = source.get(span.start..span.end).unwrap_or_default();
+                let Some(snippet) = source.get(span.start..span.end) else {
+                    continue;
+                };
                 if !looks_like_enclosing_member_access(snippet) {
                     continue;
                 }
@@ -105,7 +107,9 @@ pub(crate) fn create_symbol_quick_fixes_from_diagnostics(
                     continue;
                 };
 
-                let snippet = source.get(span.start..span.end).unwrap_or_default();
+                let Some(snippet) = source.get(span.start..span.end) else {
+                    continue;
+                };
                 if !looks_like_enclosing_member_access(snippet) {
                     continue;
                 }
