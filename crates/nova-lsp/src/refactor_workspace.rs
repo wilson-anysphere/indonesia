@@ -84,10 +84,19 @@ impl RefactorWorkspaceSnapshot {
         // open Java documents, so we pull those from the overlay map instead of the disk.
         let focus_parent = focus_path.parent();
         for (overlay_uri, _) in overlays {
-            let Ok(overlay_path) =
-                nova_core::file_uri_to_path(overlay_uri).map(|p| p.into_path_buf())
-            else {
-                continue;
+            let overlay_path = match nova_core::file_uri_to_path(overlay_uri) {
+                Ok(path) => path.into_path_buf(),
+                Err(err) => {
+                    if overlay_uri.ends_with(".java") {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = overlay_uri.as_str(),
+                            error = ?err,
+                            "refactor workspace snapshot received non-file overlay uri; skipping"
+                        );
+                    }
+                    continue;
+                }
             };
 
             if !is_java_file(&overlay_path) {
@@ -127,7 +136,15 @@ impl RefactorWorkspaceSnapshot {
             } else {
                 match uri_string_for_path(&path) {
                     Ok(uri) => uri,
-                    Err(_) => continue,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %path.display(),
+                            error = ?err,
+                            "failed to convert refactor workspace path to URI; skipping file"
+                        );
+                        continue;
+                    }
                 }
             };
 
@@ -150,7 +167,20 @@ impl RefactorWorkspaceSnapshot {
                 (Arc::<str>::from(content), false)
             };
 
-            let disk_mtime = fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+            let disk_mtime = match fs::metadata(&path).and_then(|m| m.modified()) {
+                Ok(mtime) => Some(mtime),
+                Err(err) => {
+                    if path == focus_path {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %path.display(),
+                            err = %err,
+                            "failed to read focus file metadata; skipping mtime tracking"
+                        );
+                    }
+                    None
+                }
+            };
             let file_id = FileId::new(uri_string);
 
             files.insert(
@@ -195,8 +225,20 @@ impl RefactorWorkspaceSnapshot {
                 continue;
             };
 
-            let Ok(current) = fs::metadata(&meta.path).and_then(|m| m.modified()) else {
-                return false;
+            let current = match fs::metadata(&meta.path).and_then(|m| m.modified()) {
+                Ok(current) => current,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return false;
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        path = %meta.path.display(),
+                        err = %err,
+                        "failed to stat workspace file; treating snapshot as out-of-date"
+                    );
+                    return false;
+                }
             };
             if current != expected {
                 return false;
@@ -262,10 +304,21 @@ fn project_java_files(project_root: &Path) -> Vec<PathBuf> {
             files
         }
         Err(ProjectError::UnknownProjectType { .. }) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %project_root.display(),
+                "unknown project type; falling back to scanning project root for java files"
+            );
             // Fall back to scanning the project root.
             java_files_in(project_root)
         }
-        Err(_err) => {
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %project_root.display(),
+                error = ?err,
+                "failed to load project; falling back to scanning project root for java files"
+            );
             // Best-effort: fall back to scanning rather than failing the refactor.
             java_files_in(project_root)
         }
@@ -277,10 +330,25 @@ fn project_java_files(project_root: &Path) -> Vec<PathBuf> {
 
 fn java_files_in(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
+    let mut walk_errors = 0u64;
+    let mut error_samples = 0u8;
     for entry in WalkDir::new(root).follow_links(true) {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                walk_errors += 1;
+                if error_samples < 3 {
+                    error_samples += 1;
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        root = %root.display(),
+                        path = ?err.path(),
+                        error = ?err,
+                        "failed to walk filesystem while scanning java files; skipping entry"
+                    );
+                }
+                continue;
+            }
         };
         if !entry.file_type().is_file() {
             continue;
@@ -289,6 +357,14 @@ fn java_files_in(root: &Path) -> Vec<PathBuf> {
         if is_java_file(path) {
             files.push(path.to_path_buf());
         }
+    }
+    if walk_errors > 0 {
+        tracing::debug!(
+            target = "nova.lsp",
+            root = %root.display(),
+            walk_errors,
+            "java file scan skipped some entries due to walk errors"
+        );
     }
     files.sort();
     files

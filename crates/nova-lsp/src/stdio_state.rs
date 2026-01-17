@@ -22,7 +22,7 @@ use nova_memory::{
 };
 use nova_workspace::Workspace;
 use std::collections::{HashMap, HashSet};
-use std::env;
+use std::env::{self, VarError};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
@@ -84,16 +84,26 @@ impl ServerState {
                 // keeps `nova-lsp` integration tests stable when multiple server processes run
                 // in parallel.
                 let worker_threads = ai_config.provider.effective_concurrency().clamp(1, 4);
-                let runtime = tokio::runtime::Builder::new_multi_thread()
+                let runtime = match tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(worker_threads)
                     .max_blocking_threads(worker_threads)
                     .enable_all()
                     .build()
-                    .expect("tokio runtime");
+                {
+                    Ok(runtime) => runtime,
+                    Err(err) => {
+                        tracing::warn!(
+                            target = "nova.lsp",
+                            error = %err,
+                            "failed to build tokio runtime for AI; disabling AI"
+                        );
+                        return (None, None);
+                    }
+                };
                 (Some(ai), Some(runtime))
             }
             Err(err) => {
-                eprintln!("failed to configure AI: {err}");
+                tracing::warn!(target = "nova.lsp", error = %err, "failed to configure AI");
                 (None, None)
             }
         }
@@ -105,16 +115,29 @@ impl ServerState {
         privacy: &PrivacyMode,
     ) -> nova_lsp::NovaCompletionService {
         fn max_items_override_from_env() -> Option<usize> {
-            let value = env::var("NOVA_AI_COMPLETIONS_MAX_ITEMS").ok()?;
+            let value = match env::var("NOVA_AI_COMPLETIONS_MAX_ITEMS") {
+                Ok(value) => value,
+                Err(VarError::NotPresent) => return None,
+                Err(VarError::NotUnicode(_)) => {
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        "NOVA_AI_COMPLETIONS_MAX_ITEMS is not valid unicode; ignoring"
+                    );
+                    return None;
+                }
+            };
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 return None;
             }
             match trimmed.parse::<usize>() {
                 Ok(max_items) => Some(max_items.min(32)),
-                Err(_) => {
-                    eprintln!(
-                        "invalid NOVA_AI_COMPLETIONS_MAX_ITEMS={value:?}; expected a non-negative integer"
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        value = %value,
+                        error = %err,
+                        "invalid NOVA_AI_COMPLETIONS_MAX_ITEMS; expected a non-negative integer"
                     );
                     None
                 }
@@ -138,7 +161,11 @@ impl ServerState {
                     Some(provider)
                 }
                 Err(err) => {
-                    eprintln!("failed to configure AI completions: {err}");
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "failed to configure AI completions"
+                    );
                     None
                 }
             }
@@ -234,7 +261,7 @@ impl ServerState {
         memory.subscribe({
             let memory_events = memory_events.clone();
             Arc::new(move |event: MemoryEvent| {
-                memory_events.lock().unwrap().push(event);
+                crate::poison::lock(&memory_events, "memory_event_subscriber").push(event);
             })
         });
         // Overlay document texts are *inputs* (not caches) and are effectively
@@ -325,10 +352,10 @@ impl ServerState {
             Arc::new(ExcludedPathMatcher::from_config(&self.ai_config.privacy));
 
         {
-            let mut search = self
-                .semantic_search
-                .write()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut search = crate::poison::rwlock_write(
+                &self.semantic_search,
+                "replace_config/semantic_search",
+            );
             *search = nova_ai::semantic_search_from_config(&self.ai_config);
         }
 
@@ -375,7 +402,7 @@ mod tests {
 
     #[test]
     fn audit_logging_env_does_not_enable_ai_without_env_provider_config() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
 
         let _provider = EnvVarGuard::remove("NOVA_AI_PROVIDER");
         let _audit = EnvVarGuard::set("NOVA_AI_AUDIT_LOGGING", "1");

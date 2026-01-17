@@ -84,11 +84,24 @@ impl AnalysisState {
                 self.file_contents.insert(*file_id, Arc::clone(&text));
                 self.salsa.set_file_exists(*file_id, true);
                 self.salsa.set_file_text_arc(*file_id, text);
-            } else if let Ok(text) = self.vfs.read_to_string(path) {
-                let text = Arc::new(text);
-                self.file_contents.insert(*file_id, Arc::clone(&text));
-                self.salsa.set_file_exists(*file_id, true);
-                self.salsa.set_file_text_arc(*file_id, text);
+            } else {
+                match self.vfs.read_to_string(path) {
+                    Ok(text) => {
+                        let text = Arc::new(text);
+                        self.file_contents.insert(*file_id, Arc::clone(&text));
+                        self.salsa.set_file_exists(*file_id, true);
+                        self.salsa.set_file_text_arc(*file_id, text);
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            file_id = ?file_id,
+                            path = ?path,
+                            error = ?err,
+                            "didChange produced no open-document text; failed to read from VFS"
+                        );
+                    }
+                }
             }
         }
         Ok(evt)
@@ -108,6 +121,9 @@ impl AnalysisState {
     }
 
     pub(super) fn refresh_from_disk(&mut self, uri: &Uri) {
+        static DISK_READ_ERROR_LOGS: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
         let (file_id, path) = self.file_id_for_uri(uri);
         match self.vfs.read_to_string(&path) {
             Ok(text) => {
@@ -123,7 +139,17 @@ impl AnalysisState {
                 self.salsa.set_file_text(file_id, String::new());
                 self.salsa.set_file_exists(file_id, false);
             }
-            Err(_) => {
+            Err(err) => {
+                if DISK_READ_ERROR_LOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 10 {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        file_id = file_id.to_raw(),
+                        path = ?path,
+                        error = %err,
+                        "failed to refresh file from disk; keeping previous analysis state"
+                    );
+                }
                 // Treat other IO errors as a cache miss; keep previous state.
             }
         }
@@ -223,10 +249,17 @@ impl Default for AnalysisState {
 
 impl nova_db::Database for AnalysisState {
     fn file_content(&self, file_id: nova_db::FileId) -> &str {
-        self.file_contents
-            .get(&file_id)
-            .map(|text| text.as_str())
-            .unwrap_or("")
+        match self.file_contents.get(&file_id) {
+            Some(text) => text.as_str(),
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    file_id = ?file_id,
+                    "missing file contents for file_id; returning empty string"
+                );
+                ""
+            }
+        }
     }
 
     fn file_path(&self, file_id: nova_db::FileId) -> Option<&std::path::Path> {
@@ -394,11 +427,10 @@ mod tests {
         let cancel = CancellationToken::new();
         let _ = nova_ide::core_file_diagnostics(&analysis, file_id, &cancel);
         let after_first = analysis.salsa.query_stats();
-        let first = after_first
+        let first = *after_first
             .by_query
             .get("type_diagnostics")
-            .copied()
-            .unwrap_or_default();
+            .expect("expected type_diagnostics stats entry");
         assert!(
             first.executions > 0,
             "expected type_diagnostics to execute at least once"
@@ -410,11 +442,10 @@ mod tests {
 
         let _ = nova_ide::core_file_diagnostics(&analysis, file_id, &cancel);
         let after_second = analysis.salsa.query_stats();
-        let second = after_second
+        let second = *after_second
             .by_query
             .get("type_diagnostics")
-            .copied()
-            .unwrap_or_default();
+            .expect("expected type_diagnostics stats entry");
 
         assert_eq!(
             second.executions, first.executions,

@@ -47,6 +47,8 @@ pub mod handlers;
 pub mod hardening;
 pub mod ide_state;
 pub mod imports;
+#[cfg(feature = "ai")]
+mod json_mut;
 pub mod patch_paths;
 pub mod refactor;
 pub mod refactor_workspace;
@@ -57,6 +59,7 @@ mod cancellation;
 mod completion_more;
 mod diagnostics;
 mod distributed;
+mod poison;
 mod project_root;
 #[cfg(test)]
 mod rename_lsp;
@@ -708,10 +711,26 @@ fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
     let mut clamped = offset.min(text.len());
+    if clamped > (u32::MAX as usize) {
+        clamped = u32::MAX as usize;
+    }
     while clamped > 0 && !text.is_char_boundary(clamped) {
         clamped -= 1;
     }
-    text_pos::lsp_position(text, clamped).unwrap_or_else(|| lsp_types::Position::new(0, 0))
+    match text_pos::lsp_position(text, clamped) {
+        Some(pos) => pos,
+        None => {
+            // This should be unreachable: `clamped` is within bounds, on a UTF-8 boundary,
+            // and <= u32::MAX so `TextPos::lsp_position` should succeed.
+            tracing::debug!(
+                target = "nova.lsp",
+                text_len = text.len(),
+                clamped,
+                "offset_to_position produced non-convertible offset; returning (0,0)"
+            );
+            lsp_types::Position::new(0, 0)
+        }
+    }
 }
 
 fn span_to_lsp_range(text: &str, start: usize, end: usize) -> lsp_types::Range {

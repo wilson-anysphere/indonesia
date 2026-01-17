@@ -36,11 +36,15 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
         ));
     }
 
-    let port = obj
+    let port_value = obj
         .get("port")
-        .and_then(Value::as_u64)
-        .and_then(|n| u16::try_from(n).ok())
         .ok_or_else(|| NovaLspError::InvalidParams("missing required `port`".to_string()))?;
+    let port_u64 = port_value.as_u64().ok_or_else(|| {
+        NovaLspError::InvalidParams("`port` must be a non-negative integer".to_string())
+    })?;
+    let port = u16::try_from(port_u64).map_err(|_| {
+        NovaLspError::InvalidParams(format!("`port` out of range (0-65535): {port_u64}"))
+    })?;
     let host = obj.get("host").and_then(Value::as_str);
     let changed_files_raw = obj
         .get("changedFiles")
@@ -110,7 +114,17 @@ impl BuildSystem for ProjectHotSwapBuild {
                     .diagnostics
                     .iter()
                     .any(|diag| diag.severity == nova_core::BuildDiagnosticSeverity::Error);
-                let exit_code = result.exit_code.unwrap_or(0);
+                let exit_code = match result.exit_code {
+                    Some(exit_code) => exit_code,
+                    None => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            project_root = %self.project_root.display(),
+                            "hot-swap build result missing exit code; defaulting to 0"
+                        );
+                        0
+                    }
+                };
                 let failed = exit_code != 0 || has_errors;
                 if failed {
                     let first_error = result
@@ -166,20 +180,14 @@ mod tests {
             _program: &Path,
             _args: &[String],
         ) -> std::io::Result<nova_build::CommandOutput> {
-            if let Some(tx) = self
-                .started_tx
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .take()
+            if let Some(tx) =
+                crate::poison::lock(&self.started_tx, "BlockingErrorRunner::run/started_tx").take()
             {
                 let _ = tx.send(());
             }
 
-            if let Some(rx) = self
-                .release_rx
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .take()
+            if let Some(rx) =
+                crate::poison::lock(&self.release_rx, "BlockingErrorRunner::run/release_rx").take()
             {
                 let _ = rx.recv_timeout(Duration::from_secs(2));
             }
@@ -282,12 +290,12 @@ mod tests {
             status.get("status").and_then(|v| v.as_str()),
             Some("failed")
         );
+        let last_error = status
+            .get("lastError")
+            .and_then(|v| v.as_str())
+            .expect("expected lastError to be a string");
         assert!(
-            status
-                .get("lastError")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .contains("boom"),
+            last_error.contains("boom"),
             "expected lastError to include the runner error: {status:?}"
         );
     }
@@ -450,5 +458,16 @@ impl ProjectHotSwapBuild {
 }
 
 fn canonicalize_fallback(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                path = %path.display(),
+                err = %err,
+                "failed to canonicalize path; using raw path"
+            );
+            path.to_path_buf()
+        }
+    }
 }

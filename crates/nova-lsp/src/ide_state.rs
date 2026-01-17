@@ -64,6 +64,20 @@ impl NovaLspIdeState {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let file = self.file_id_for_uri(&uri)?;
+        let text = self.db.file_content(file);
+        let position = match crate::position_to_offset(text, position) {
+            Some(_) => position,
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri.as_str(),
+                    line = position.line,
+                    character = position.character,
+                    "completion received invalid position; clamping to end of document"
+                );
+                crate::offset_to_position(text, text.len())
+            }
+        };
         let items = self.ide_extensions.completions_lsp(cancel, file, position);
         Some(CompletionResponse::Array(items))
     }
@@ -76,9 +90,27 @@ impl NovaLspIdeState {
     ) -> Option<Vec<CodeActionOrCommand>> {
         let file = self.file_id_for_uri(uri)?;
         let text = self.db.file_content(file);
-        let start = crate::position_to_offset(text, range.start).unwrap_or(0);
-        let end = crate::position_to_offset(text, range.end).unwrap_or(start);
-        let span = Some(Span::new(start, end));
+        let Some(start) = crate::position_to_offset(text, range.start) else {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                start_line = range.start.line,
+                start_character = range.start.character,
+                "codeAction received invalid start position"
+            );
+            return Some(Vec::new());
+        };
+        let end = crate::position_to_offset(text, range.end).unwrap_or_else(|| {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                end_line = range.end.line,
+                end_character = range.end.character,
+                "codeAction received invalid end position; clamping to start"
+            );
+            start
+        });
+        let span = Some(Span::new(start.min(end), start.max(end)));
         Some(self.ide_extensions.code_actions_lsp(cancel, file, span))
     }
 
@@ -89,26 +121,92 @@ impl NovaLspIdeState {
     ) -> Option<Vec<lsp_types::InlayHint>> {
         let uri = &params.text_document.uri;
         let file = self.file_id_for_uri(uri)?;
-        Some(
-            self.ide_extensions
-                .inlay_hints_lsp(cancel, file, params.range),
-        )
+        let text = self.db.file_content(file);
+        let coerced = match crate::text_pos::coerce_range_end_to_eof(text, params.range) {
+            Some(coerced) => coerced,
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri.as_str(),
+                    start_line = params.range.start.line,
+                    start_character = params.range.start.character,
+                    "inlayHints received invalid range start"
+                );
+                return Some(Vec::new());
+            }
+        };
+        if coerced.end_was_clamped_to_eof {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                end_line = params.range.end.line,
+                end_character = params.range.end.character,
+                "inlayHints received invalid range end; clamping to end of document"
+            );
+        }
+        if coerced.was_reversed {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                "inlayHints received reversed range; normalizing"
+            );
+        }
+
+        let range = lsp_types::Range::new(
+            crate::offset_to_position(text, coerced.start),
+            crate::offset_to_position(text, coerced.end),
+        );
+
+        Some(self.ide_extensions.inlay_hints_lsp(cancel, file, range))
     }
 
     pub fn implementation(&self, uri: &Uri, position: Position) -> Vec<Location> {
         let Some(file) = self.file_id_for_uri(uri) else {
             return Vec::new();
         };
+        let text = self.db.file_content(file);
+        if crate::position_to_offset(text, position).is_none() {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                line = position.line,
+                character = position.character,
+                "implementation received invalid position"
+            );
+            return Vec::new();
+        }
         nova_ide::implementation(self.db.as_ref(), file, position)
     }
 
     pub fn declaration(&self, uri: &Uri, position: Position) -> Option<Location> {
         let file = self.file_id_for_uri(uri)?;
+        let text = self.db.file_content(file);
+        if crate::position_to_offset(text, position).is_none() {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                line = position.line,
+                character = position.character,
+                "declaration received invalid position"
+            );
+            return None;
+        }
         nova_ide::declaration(self.db.as_ref(), file, position)
     }
 
     pub fn type_definition(&self, uri: &Uri, position: Position) -> Option<Location> {
         let file = self.file_id_for_uri(uri)?;
+        let text = self.db.file_content(file);
+        if crate::position_to_offset(text, position).is_none() {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                line = position.line,
+                character = position.character,
+                "typeDefinition received invalid position"
+            );
+            return None;
+        }
         nova_ide::type_definition(self.db.as_ref(), file, position)
     }
 
@@ -118,20 +216,45 @@ impl NovaLspIdeState {
         };
 
         let text = self.db.file_content(file);
+        let uri = uri.as_str();
         self.ide_extensions
             .all_diagnostics(cancel, file)
             .into_iter()
-            .map(|diag| diagnostic_to_lsp(text, diag))
+            .map(|diag| diagnostic_to_lsp(uri, text, diag))
             .collect()
     }
 
     fn file_id_for_uri(&self, uri: &Uri) -> Option<FileId> {
-        let path = nova_core::file_uri_to_path(uri.as_str()).ok()?;
+        let uri_str = uri.as_str();
+        if !uri_str.starts_with("file:") {
+            return None;
+        }
+        let path = match nova_core::file_uri_to_path(uri_str) {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri_str,
+                    err = %err,
+                    "failed to decode file uri to path"
+                );
+                return None;
+            }
+        };
         TextDatabase::file_id(self.db.as_ref(), path.as_path())
     }
 }
 
-fn diagnostic_to_lsp(text: &str, diag: Diagnostic) -> lsp_types::Diagnostic {
+fn diagnostic_to_lsp(uri: &str, text: &str, diag: Diagnostic) -> lsp_types::Diagnostic {
+    if diag.span.is_none() {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri,
+            code = %diag.code,
+            severity = ?diag.severity,
+            "diagnostic missing span; defaulting to (0,0)"
+        );
+    }
     lsp_types::Diagnostic {
         range: diag
             .span
@@ -156,7 +279,13 @@ fn diagnostic_to_lsp(text: &str, diag: Diagnostic) -> lsp_types::Diagnostic {
 
 fn register_default_providers(ide: &mut IdeExtensions<DynDb>) {
     let registry = ide.registry_mut();
-    let _ = registry.register_diagnostic_provider(Arc::new(FixmeDiagnosticProvider));
+    if let Err(err) = registry.register_diagnostic_provider(Arc::new(FixmeDiagnosticProvider)) {
+        tracing::debug!(
+            target = "nova.lsp",
+            error = ?err,
+            "failed to register FIXME diagnostic provider"
+        );
+    }
 }
 
 struct FixmeDiagnosticProvider;

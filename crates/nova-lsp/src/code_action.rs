@@ -299,6 +299,10 @@ fn workspace_edit_from_virtual_workspace<'a>(
         if before_text == after_text {
             continue;
         }
+        if before_text.is_none() && after_text.is_some() {
+            has_new_file = true;
+            create_ops.push(file.clone());
+        }
         changed.push((file.clone(), before_text, after_text));
     }
 
@@ -341,9 +345,13 @@ fn workspace_edit_from_virtual_workspace<'a>(
         };
     }
 
+    create_ops.sort();
+    create_ops.dedup();
+    let create_ops_set: HashSet<&str> = create_ops.iter().map(String::as_str).collect();
+
     let mut ops: Vec<DocumentChangeOperation> = Vec::new();
-    for file in create_ops {
-        let uri = crate::workspace_edit::join_uri(root_uri, Path::new(&file));
+    for file in &create_ops {
+        let uri = crate::workspace_edit::join_uri(root_uri, Path::new(file));
         ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
             CreateFile {
                 uri,
@@ -361,7 +369,22 @@ fn workspace_edit_from_virtual_workspace<'a>(
             // Deletions are not surfaced in `WorkspaceEdit` via this helper today.
             continue;
         };
-        let before_text = before_text.unwrap_or_default();
+        let before_text = match before_text {
+            Some(before_text) => before_text,
+            None => {
+                if create_ops_set.contains(file.as_str()) {
+                    String::new()
+                } else {
+                    tracing::error!(
+                        target = "nova.lsp",
+                        root_uri = root_uri.as_str(),
+                        file,
+                        "AI patch touched a file missing from the workspace snapshot"
+                    );
+                    continue;
+                }
+            }
+        };
         let uri = crate::workspace_edit::join_uri(root_uri, Path::new(&file));
         ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
             text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
@@ -387,11 +410,35 @@ fn build_insert_prompt(
     root_uri: &Uri,
     privacy: &AiPrivacyConfig,
 ) -> String {
-    let contents = workspace.get(file).unwrap_or("");
+    let contents = match workspace.get(file) {
+        Some(contents) => contents,
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                root_uri = root_uri.as_str(),
+                file,
+                "AI prompt references a file missing from the workspace snapshot; using empty contents"
+            );
+            ""
+        }
+    };
     let annotated = annotate_file_with_range_markers(contents, insert_range);
-    let context = build_prompt_context(root_uri, file, contents, insert_range, privacy)
-        .map(|ctx| format!("\nExtracted context:\n{ctx}\n"))
-        .unwrap_or_default();
+    let context = match build_prompt_context(root_uri, file, contents, insert_range, privacy) {
+        Some(ctx) => format!("\nExtracted context:\n{ctx}\n"),
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                root_uri = root_uri.as_str(),
+                file,
+                start_line = insert_range.start.line,
+                start_character = insert_range.start.character,
+                end_line = insert_range.end.line,
+                end_character = insert_range.end.character,
+                "failed to build AI prompt context; omitting extracted context"
+            );
+            String::new()
+        }
+    };
 
     format!(
         "{header}\n\n\
@@ -471,8 +518,17 @@ fn enrich_context_request(
     range: Range,
     mut req: ContextRequest,
 ) -> ContextRequest {
-    let Some(root_path) = nova_core::file_uri_to_path(root_uri.as_str()).ok() else {
-        return req;
+    let root_path = match nova_core::file_uri_to_path(root_uri.as_str()) {
+        Ok(root_path) => root_path,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                root_uri = root_uri.as_str(),
+                err = %err,
+                "failed to resolve rootUri as a file path; omitting file paths from AI context"
+            );
+            return req;
+        }
     };
 
     let file_path = root_path.as_path().join(Path::new(file));
@@ -725,13 +781,14 @@ mod tests {
             _cancel: &CancellationToken,
         ) -> Result<String, PromptCompletionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Some(tx) = self.started_tx.lock().expect("lock started").take() {
+            if let Some(tx) =
+                crate::poison::lock(&self.started_tx, "BlockingProvider::complete/started_tx")
+                    .take()
+            {
                 let _ = tx.send(());
             }
-            let rx = {
-                let mut guard = self.resume_rx.lock().expect("lock resume");
-                guard.take()
-            };
+            let rx =
+                crate::poison::lock(&self.resume_rx, "BlockingProvider::complete/resume_rx").take();
             if let Some(rx) = rx {
                 let _ = rx.await;
             }

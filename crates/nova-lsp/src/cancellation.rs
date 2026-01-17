@@ -21,9 +21,7 @@ impl RequestCancellation {
     pub fn register(&self, id: NumberOrString) -> CancellationToken {
         let request_id = request_id_from_lsp(id);
         let token = CancellationToken::new();
-        self.tokens
-            .lock()
-            .expect("request cancellation mutex poisoned")
+        crate::poison::lock(&self.tokens, "RequestCancellation::register")
             .insert(request_id, token.clone());
         token
     }
@@ -31,19 +29,14 @@ impl RequestCancellation {
     pub fn register_context(&self, id: NumberOrString) -> RequestContext {
         let request_id = request_id_from_lsp(id);
         let token = CancellationToken::new();
-        self.tokens
-            .lock()
-            .expect("request cancellation mutex poisoned")
+        crate::poison::lock(&self.tokens, "RequestCancellation::register_context")
             .insert(request_id.clone(), token.clone());
         RequestContext::new(request_id, token, None, self.progress.clone())
     }
 
     pub fn cancel(&self, id: NumberOrString) -> bool {
         let request_id = request_id_from_lsp(id);
-        let guard = self
-            .tokens
-            .lock()
-            .expect("request cancellation mutex poisoned");
+        let guard = crate::poison::lock(&self.tokens, "RequestCancellation::cancel");
         let Some(token) = guard.get(&request_id) else {
             return false;
         };
@@ -53,10 +46,7 @@ impl RequestCancellation {
 
     pub fn finish(&self, id: NumberOrString) {
         let request_id = request_id_from_lsp(id);
-        self.tokens
-            .lock()
-            .expect("request cancellation mutex poisoned")
-            .remove(&request_id);
+        crate::poison::lock(&self.tokens, "RequestCancellation::finish").remove(&request_id);
     }
 }
 

@@ -107,8 +107,8 @@ fn handle_request_value(
     match method {
         "initialize" => {
             // Capture workspace root to power CodeLens execute commands.
-            stdio_init::apply_initialize_params(params, state);
-            Ok(stdio_init::initialize_result_json())
+            stdio_init::apply_initialize_params(params, state).map_err(invalid_params_err)?;
+            stdio_init::initialize_result_json().map_err(internal_err)
         }
         "shutdown" => {
             state.shutdown_requested = true;
@@ -135,11 +135,21 @@ fn handle_request_value(
         #[cfg(debug_assertions)]
         nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_METHOD => {
             let params: Map<String, Value> = parse_params(params)?;
-            let steps = params
-                .get("steps")
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(|| response_error(-32602, "missing or invalid `steps`"))?;
+            let steps = match params.get("steps").and_then(|v| v.as_u64()) {
+                None => return Err(response_error(-32602, "missing or invalid `steps`")),
+                Some(raw) => match u32::try_from(raw) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            steps = raw,
+                            error = %err,
+                            "interruptibleWork steps out of range; rejecting"
+                        );
+                        return Err(response_error(-32602, "missing or invalid `steps`"));
+                    }
+                },
+            };
 
             // NOTE: This request is intentionally only available in debug builds. It is used by
             // integration tests to validate that `$/cancelRequest` triggers Salsa cancellation and
@@ -149,10 +159,16 @@ fn handle_request_value(
             let mut started_params = serde_json::Map::new();
             started_params.insert("id".to_string(), id_json);
             let started_params = serde_json::Value::Object(started_params);
-            let _ = client.send_notification(
+            if let Err(err) = client.send_notification(
                 nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
                 started_params,
-            );
+            ) {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "failed to send interruptibleWork started notification"
+                );
+            }
             let value = state
                 .analysis
                 .salsa
@@ -170,11 +186,25 @@ fn handle_request_value(
 
             // Allow `params` to be `null` or omitted.
             let params: Option<Map<String, Value>> = parse_params(params)?;
-            let schema_version = params
+            let schema_version = match params
                 .as_ref()
                 .and_then(|p| p.get("schemaVersion"))
                 .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok());
+            {
+                None => None,
+                Some(raw) => match u32::try_from(raw) {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            schema_version = raw,
+                            error = %err,
+                            "extensions/status schemaVersion is out of range; ignoring"
+                        );
+                        None
+                    }
+                },
+            };
             if let Some(version) = schema_version {
                 if version != nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION {
                     return Err(response_error(

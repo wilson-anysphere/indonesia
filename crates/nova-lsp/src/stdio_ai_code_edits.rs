@@ -283,8 +283,20 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
                             ),
                         )
                     })?;
-                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
-                    workspace.insert(test_file.clone(), existing);
+                let test_file_path = root_path.join(&test_file);
+                match std::fs::read_to_string(&test_file_path) {
+                    Ok(existing) => {
+                        workspace.insert(test_file.clone(), existing);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %test_file_path.display(),
+                            error = %err,
+                            "failed to read existing derived test file; proceeding without it"
+                        );
+                    }
                 }
 
                 (
@@ -465,7 +477,8 @@ fn resolve_ai_patch_target(
     let (root_uri, file_rel) = nova_lsp::patch_paths::patch_root_uri_and_file_rel(
         state.project_root.as_deref(),
         &abs_path,
-    );
+    )
+    .map_err(|err| (-32603, err))?;
 
     Ok((root_uri, file_rel, abs_path))
 }
@@ -494,16 +507,16 @@ fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String
     let test_class = format!("{class_name}Test");
 
     let pkg = crate::stdio_code_lens::parse_java_package(source_text);
-    let pkg_path = pkg
-        .as_deref()
-        .map(|pkg| {
+    let pkg_path = match pkg.as_deref() {
+        None => String::new(),
+        Some(pkg) => {
             let segments: Vec<_> = pkg.split('.').collect();
             if segments.is_empty() || segments.iter().any(|s| !is_java_identifier(s)) {
                 return None;
             }
-            Some(segments.join("/"))
-        })
-        .unwrap_or(Some(String::new()))?;
+            segments.join("/")
+        }
+    };
 
     let mut out = String::from("src/test/java/");
     if !pkg_path.is_empty() {

@@ -63,12 +63,24 @@ pub(super) fn flush_publish_diagnostics(
                     diagnostics_for_file(state, file_id, cancel)
                 })) {
                     Ok(value) => value,
-                    Err(_) => {
-                        tracing::error!(
-                            target = "nova.lsp",
-                            uri = uri.as_str(),
-                            "panic while computing publishDiagnostics"
-                        );
+                    Err(panic) => {
+                        match crate::panic_util::panic_payload_to_string(panic.as_ref()) {
+                            Some(message) => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    uri = uri.as_str(),
+                                    panic = %message,
+                                    "panic while computing publishDiagnostics"
+                                );
+                            }
+                            None => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    uri = uri.as_str(),
+                                    "panic while computing publishDiagnostics"
+                                );
+                            }
+                        }
                         Vec::new()
                     }
                 }
@@ -80,7 +92,17 @@ pub(super) fn flush_publish_diagnostics(
             diagnostics,
             version: None,
         };
-        let params = serde_json::to_value(params).unwrap_or(serde_json::Value::Null);
+        let params = match serde_json::to_value(params) {
+            Ok(params) => params,
+            Err(err) => {
+                tracing::error!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "failed to serialize publishDiagnostics params"
+                );
+                continue;
+            }
+        };
         out.send_notification("textDocument/publishDiagnostics", params)?;
     }
 
@@ -108,8 +130,15 @@ fn diagnostics_for_file(
     let mut diagnostics = nova_lsp::diagnostics(&state.analysis, file_id);
 
     let text = state.analysis.file_content(file_id).to_string();
-    let path = state.analysis.file_path(file_id).map(|p| p.to_path_buf());
-    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
+    let Some(path) = state.analysis.file_path(file_id).map(|p| p.to_path_buf()) else {
+        tracing::debug!(
+            target = "nova.lsp",
+            file_id = file_id.to_raw(),
+            "skipping extension diagnostics for virtual/non-file document"
+        );
+        return diagnostics;
+    };
+    let ext_db = Arc::new(SingleFileDb::new(file_id, Some(path), text.clone()));
     let ide_extensions = IdeExtensions::with_registry(
         ext_db,
         Arc::clone(&state.config),
@@ -118,19 +147,27 @@ fn diagnostics_for_file(
     );
     let ext_diags = ide_extensions.diagnostics(cancel, file_id);
     diagnostics.extend(ext_diags.into_iter().map(|d| {
+        let range = match d.span {
+            Some(span) => lsp_types::Range {
+                start: offset_to_position_utf16(&text, span.start),
+                end: offset_to_position_utf16(&text, span.end),
+            },
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    file_id = file_id.to_raw(),
+                    code = %d.code,
+                    severity = ?d.severity,
+                    "extension diagnostic missing span; defaulting to (0,0)"
+                );
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 0),
+                )
+            }
+        };
         lsp_types::Diagnostic {
-            range: d
-                .span
-                .map(|span| lsp_types::Range {
-                    start: offset_to_position_utf16(&text, span.start),
-                    end: offset_to_position_utf16(&text, span.end),
-                })
-                .unwrap_or_else(|| {
-                    lsp_types::Range::new(
-                        lsp_types::Position::new(0, 0),
-                        lsp_types::Position::new(0, 0),
-                    )
-                }),
+            range,
             severity: Some(match d.severity {
                 nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
                 nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,

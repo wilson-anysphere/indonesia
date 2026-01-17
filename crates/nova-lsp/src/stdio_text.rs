@@ -9,7 +9,19 @@ pub(super) fn offset_to_position_utf16(text: &str, offset: usize) -> LspPosition
     while clamped > 0 && !text.is_char_boundary(clamped) {
         clamped -= 1;
     }
-    nova_lsp::text_pos::lsp_position(text, clamped).unwrap_or_else(|| LspPosition::new(0, 0))
+    match nova_lsp::text_pos::lsp_position(text, clamped) {
+        Some(pos) => pos,
+        None => {
+            // This should be unreachable: `clamped` is within bounds and on a UTF-8 boundary.
+            tracing::debug!(
+                target = "nova.lsp",
+                text_len = text.len(),
+                clamped,
+                "offset_to_position_utf16 produced non-convertible offset; returning (0,0)"
+            );
+            LspPosition::new(0, 0)
+        }
+    }
 }
 
 pub(super) fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)> {

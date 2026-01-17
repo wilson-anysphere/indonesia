@@ -27,7 +27,6 @@ mod tests {
     use super::*;
 
     use crate::rpc_out::WriteRpcOut;
-    use serde_json::Value;
 
     #[test]
     fn send_workspace_apply_edit_emits_apply_edit_request() {
@@ -48,9 +47,12 @@ mod tests {
             msg.get("method").and_then(|m| m.as_str()),
             Some("workspace/applyEdit")
         );
+        let params_value = msg
+            .get("params")
+            .cloned()
+            .expect("missing applyEdit params");
         let params: ApplyWorkspaceEditParams =
-            serde_json::from_value(msg.get("params").cloned().unwrap_or(Value::Null))
-                .expect("applyEdit params");
+            serde_json::from_value(params_value).expect("applyEdit params");
         assert_eq!(params.label.as_deref(), Some("Test label"));
     }
 }

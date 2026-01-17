@@ -59,16 +59,13 @@ pub(super) fn extensions_status_json(state: &ServerState) -> serde_json::Value {
                     );
                     out.insert(
                         "lastError".to_string(),
-                        last_error
-                            .map(|s| Value::String(s.to_string()))
-                            .unwrap_or(Value::Null),
+                        last_error.map_or(Value::Null, |s| Value::String(s.to_string())),
                     );
                     out.insert(
                         "lastDurationMs".to_string(),
                         stats
                             .last_duration
-                            .map(|d| Value::from(d.as_millis() as u64))
-                            .unwrap_or(Value::Null),
+                            .map_or(Value::Null, |d| Value::from(d.as_millis() as u64)),
                     );
 
                     (id.clone(), Value::Object(out))
@@ -107,8 +104,9 @@ pub(super) fn extensions_status_json(state: &ServerState) -> serde_json::Value {
             .extensions
             .allow
             .as_ref()
-            .map(|allow| Value::Array(allow.iter().cloned().map(Value::String).collect()))
-            .unwrap_or(Value::Null),
+            .map_or(Value::Null, |allow| {
+                Value::Array(allow.iter().cloned().map(Value::String).collect())
+            }),
     );
     status.insert(
         "deny".to_string(),
@@ -142,14 +140,11 @@ pub(super) fn extensions_status_json(state: &ServerState) -> serde_json::Value {
                     );
                     obj.insert(
                         "name".to_string(),
-                        ext.name.clone().map(Value::String).unwrap_or(Value::Null),
+                        ext.name.clone().map_or(Value::Null, Value::String),
                     );
                     obj.insert(
                         "description".to_string(),
-                        ext.description
-                            .clone()
-                            .map(Value::String)
-                            .unwrap_or(Value::Null),
+                        ext.description.clone().map_or(Value::Null, Value::String),
                     );
                     obj.insert(
                         "authors".to_string(),
@@ -157,17 +152,11 @@ pub(super) fn extensions_status_json(state: &ServerState) -> serde_json::Value {
                     );
                     obj.insert(
                         "homepage".to_string(),
-                        ext.homepage
-                            .clone()
-                            .map(Value::String)
-                            .unwrap_or(Value::Null),
+                        ext.homepage.clone().map_or(Value::Null, Value::String),
                     );
                     obj.insert(
                         "license".to_string(),
-                        ext.license
-                            .clone()
-                            .map(Value::String)
-                            .unwrap_or(Value::Null),
+                        ext.license.clone().map_or(Value::Null, Value::String),
                     );
                     obj.insert("abiVersion".to_string(), Value::from(ext.abi_version));
                     obj.insert(
@@ -243,10 +232,21 @@ pub(super) fn handle_extensions_navigation(
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
     let params: Map<String, Value> = crate::stdio_jsonrpc::decode_params(params)?;
-    let schema_version = params
-        .get("schemaVersion")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u32::try_from(v).ok());
+    let schema_version = match params.get("schemaVersion").and_then(|v| v.as_u64()) {
+        None => None,
+        Some(raw) => match u32::try_from(raw) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    schema_version = raw,
+                    error = %err,
+                    "extensions/navigation schemaVersion is out of range; ignoring"
+                );
+                None
+            }
+        },
+    };
     if let Some(version) = schema_version {
         if version != nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION {
             return Err(format!(
@@ -280,7 +280,21 @@ pub(super) fn handle_extensions_navigation(
         .file_path(file_id)
         .map(|p| p.to_path_buf())
         .or_else(|| path_from_uri(uri.as_str()));
-    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
+    let Some(path) = path else {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            "skipping extensions navigation for non-file uri"
+        );
+        let mut response = serde_json::Map::new();
+        response.insert(
+            "schemaVersion".to_string(),
+            Value::from(nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION),
+        );
+        response.insert("targets".to_string(), Value::Array(Vec::new()));
+        return Ok(Value::Object(response));
+    };
+    let ext_db = Arc::new(SingleFileDb::new(file_id, Some(path), text.clone()));
     let ide_extensions = IdeExtensions::with_registry(
         ext_db,
         Arc::clone(&state.config),
@@ -299,17 +313,26 @@ pub(super) fn handle_extensions_navigation(
 
         let (range, span) = match target.span {
             Some(span) => {
-                let range = lsp_types::Range {
-                    start: offset_to_position_utf16(&text, span.start),
-                    end: offset_to_position_utf16(&text, span.end),
-                };
+                let start = offset_to_position_utf16(&text, span.start);
+                let end = offset_to_position_utf16(&text, span.end);
+
+                let mut start_obj = serde_json::Map::new();
+                start_obj.insert("line".to_string(), Value::from(start.line));
+                start_obj.insert("character".to_string(), Value::from(start.character));
+
+                let mut end_obj = serde_json::Map::new();
+                end_obj.insert("line".to_string(), Value::from(end.line));
+                end_obj.insert("character".to_string(), Value::from(end.character));
+
+                let mut range_obj = serde_json::Map::new();
+                range_obj.insert("start".to_string(), Value::Object(start_obj));
+                range_obj.insert("end".to_string(), Value::Object(end_obj));
+
                 let mut span_obj = serde_json::Map::new();
                 span_obj.insert("start".to_string(), Value::from(span.start as u64));
                 span_obj.insert("end".to_string(), Value::from(span.end as u64));
-                (
-                    serde_json::to_value(range).unwrap_or(Value::Null),
-                    Value::Object(span_obj),
-                )
+
+                (Value::Object(range_obj), Value::Object(span_obj))
             }
             None => (Value::Null, Value::Null),
         };
@@ -352,10 +375,20 @@ impl ServerState {
             return;
         }
 
-        let base_dir = self
-            .project_root
-            .clone()
-            .or_else(|| env::current_dir().ok());
+        let base_dir = match self.project_root.clone() {
+            Some(root) => Some(root),
+            None => match env::current_dir() {
+                Ok(dir) => Some(dir),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "failed to determine current directory for extension search paths"
+                    );
+                    None
+                }
+            },
+        };
         let search_paths: Vec<PathBuf> = self
             .config
             .extensions

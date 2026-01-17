@@ -183,7 +183,10 @@ pub(super) fn parse_java_package(text: &str) -> Option<String> {
         if rest.is_empty() {
             continue;
         }
-        let pkg = rest.split(';').next().unwrap_or("").trim();
+        let pkg = match rest.split_once(';') {
+            Some((pkg, _)) => pkg.trim(),
+            None => rest.trim(),
+        };
         if !pkg.is_empty() {
             return Some(pkg.to_string());
         }
@@ -284,9 +287,10 @@ fn looks_like_test_annotation_line(line: &str) -> bool {
             let end = idx + needle.len();
             let after = line.as_bytes().get(end).copied();
             // Must be a word boundary (or end of line).
-            if after.is_none()
-                || !((after.unwrap() as char).is_ascii_alphanumeric() || after.unwrap() == b'_')
-            {
+            if match after {
+                None => true,
+                Some(b) => !((b as char).is_ascii_alphanumeric() || b == b'_'),
+            } {
                 return true;
             }
         }

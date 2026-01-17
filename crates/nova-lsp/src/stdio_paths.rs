@@ -24,12 +24,23 @@ pub(super) fn open_document_files(state: &ServerState) -> BTreeMap<String, Strin
 
 pub(super) fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
     let path = VfsPath::uri(uri.to_string());
-    state
-        .analysis
-        .vfs
-        .overlay()
-        .document_text(&path)
-        .or_else(|| state.analysis.vfs.read_to_string(&path).ok())
+    let overlay = state.analysis.vfs.overlay().document_text(&path);
+    if overlay.is_some() {
+        return overlay;
+    }
+
+    match state.analysis.vfs.read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri,
+                error = ?err,
+                "failed to load document text via VFS"
+            );
+            None
+        }
+    }
 }
 
 pub(super) fn path_from_uri(uri: &str) -> Option<PathBuf> {

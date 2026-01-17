@@ -1,5 +1,6 @@
 use nova_decompile::DecompiledDocumentStore;
 use nova_vfs::{FileSystem, LocalFs, VfsPath};
+use std::env::VarError;
 use std::io;
 use std::sync::Arc;
 
@@ -19,14 +20,80 @@ pub(super) fn gc_decompiled_document_store_best_effort() {
     const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * nova_memory::MB;
     const DEFAULT_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-    let max_total_bytes = std::env::var(ENV_DECOMPILED_STORE_MAX_TOTAL_BYTES)
-        .ok()
-        .and_then(|value| nova_memory::parse_byte_size(value.trim()).ok())
-        .unwrap_or(DEFAULT_MAX_TOTAL_BYTES);
+    fn byte_size_env_or_default(key: &str, default: u64) -> u64 {
+        match std::env::var(key) {
+            Ok(value) => match nova_memory::parse_byte_size(value.trim()) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        key,
+                        value = %value,
+                        error = %err,
+                        "invalid byte size env var; using default"
+                    );
+                    default
+                }
+            },
+            Err(VarError::NotPresent) => default,
+            Err(VarError::NotUnicode(_)) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    key,
+                    "env var is not valid unicode; using default"
+                );
+                default
+            }
+        }
+    }
+
+    fn parse_u64_or_default(key: &str, raw: &str, default: u64) -> u64 {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return default;
+        }
+        match trimmed.parse::<u64>() {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    key,
+                    value = %raw,
+                    error = %err,
+                    "invalid integer env var; using default"
+                );
+                default
+            }
+        }
+    }
+
+    let max_total_bytes = byte_size_env_or_default(
+        ENV_DECOMPILED_STORE_MAX_TOTAL_BYTES,
+        DEFAULT_MAX_TOTAL_BYTES,
+    );
 
     let max_age_ms = match std::env::var(ENV_DECOMPILED_STORE_MAX_AGE_MS) {
-        Ok(value) => value.trim().parse::<u64>().ok(),
-        Err(_) => Some(DEFAULT_MAX_AGE_MS),
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(parse_u64_or_default(
+                    ENV_DECOMPILED_STORE_MAX_AGE_MS,
+                    &value,
+                    DEFAULT_MAX_AGE_MS,
+                ))
+            }
+        }
+        Err(VarError::NotPresent) => Some(DEFAULT_MAX_AGE_MS),
+        Err(VarError::NotUnicode(_)) => {
+            tracing::warn!(
+                target = "nova.lsp",
+                key = ENV_DECOMPILED_STORE_MAX_AGE_MS,
+                "env var is not valid unicode; using default"
+            );
+            Some(DEFAULT_MAX_AGE_MS)
+        }
     };
 
     let policy = nova_decompile::DecompiledStoreGcPolicy {
@@ -36,28 +103,44 @@ pub(super) fn gc_decompiled_document_store_best_effort() {
 
     // Run GC asynchronously so we don't delay LSP initialization. This is best-effort: failures
     // should never prevent the server from starting.
-    let _ = std::thread::Builder::new()
+    if let Err(err) = std::thread::Builder::new()
         .name("nova-decompiled-doc-gc".to_string())
         .spawn(move || {
             let store = match DecompiledDocumentStore::from_env() {
                 Ok(store) => store,
                 Err(err) => {
-                    tracing::debug!("failed to open decompiled document store for GC: {err}");
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "failed to open decompiled document store for GC"
+                    );
                     return;
                 }
             };
 
             match store.gc(&policy) {
                 Ok(report) => tracing::debug!(
+                    target = "nova.lsp",
                     before_bytes = report.before_bytes,
                     after_bytes = report.after_bytes,
                     deleted_files = report.deleted_files,
                     deleted_bytes = report.deleted_bytes,
                     "decompiled document store GC complete"
                 ),
-                Err(err) => tracing::debug!("decompiled document store GC failed: {err}"),
+                Err(err) => tracing::debug!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "decompiled document store GC failed"
+                ),
             }
-        });
+        })
+    {
+        tracing::debug!(
+            target = "nova.lsp",
+            error = %err,
+            "failed to spawn decompiled document store GC thread"
+        );
+    }
 }
 
 pub(super) fn decompiled_store_from_env_best_effort() -> Arc<DecompiledDocumentStore> {
@@ -68,7 +151,14 @@ pub(super) fn decompiled_store_from_env_best_effort() -> Arc<DecompiledDocumentS
             // (e.g. missing HOME in a sandbox), fall back to a per-process temp dir.
             let fallback_root =
                 std::env::temp_dir().join(format!("nova-decompiled-docs-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&fallback_root);
+            if let Err(create_err) = std::fs::create_dir_all(&fallback_root) {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    root = %fallback_root.display(),
+                    err = %create_err,
+                    "failed to create fallback decompiled document store directory"
+                );
+            }
             tracing::warn!(
                 target = "nova.lsp",
                 error = %err,

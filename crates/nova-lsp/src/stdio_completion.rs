@@ -13,28 +13,17 @@ use nova_ide::extensions::IdeExtensions;
 #[cfg(feature = "ai")]
 use nova_ide::multi_token_completion_context;
 use serde_json::{Map, Value};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-fn value_object_mut(value: &mut Value) -> &mut Map<String, Value> {
-    if !matches!(value, Value::Object(_)) {
-        *value = Value::Object(Map::new());
-    }
-    match value {
-        Value::Object(map) => map,
-        _ => unreachable!("value was just replaced with an object"),
-    }
-}
-
-fn ensure_object_field<'a>(
-    obj: &'a mut Map<String, Value>,
-    key: &str,
-) -> &'a mut Map<String, Value> {
-    let entry = obj
-        .entry(key.to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    value_object_mut(entry)
+fn synthetic_path_for_uri(uri: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    uri.hash(&mut hasher);
+    let hash = hasher.finish();
+    PathBuf::from(format!("__uri__/u{hash:016x}"))
 }
 
 #[cfg(feature = "ai")]
@@ -73,11 +62,18 @@ pub(super) fn handle_completion(
     };
 
     let doc_path = path_from_uri(uri.as_str());
-    let path = doc_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(uri.as_str()));
+    let db_path = doc_path.clone().unwrap_or_else(|| {
+        let path = synthetic_path_for_uri(uri.as_str());
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            synthetic_path = %path.display(),
+            "completion requested for non-file uri; using synthetic path key"
+        );
+        path
+    });
     let mut db = InMemoryFileStore::new();
-    let file: DbFileId = db.file_id_for_path(&path);
+    let file: DbFileId = db.file_id_for_path(&db_path);
     db.set_file_text(file, text.clone());
 
     #[cfg(feature = "ai")]
@@ -134,23 +130,40 @@ pub(super) fn handle_completion(
     let mut items = nova_lsp::completion(&db, file, position);
 
     // Merge extension-provided completions (WASM providers) after Nova's built-in list.
-    let offset = position_to_offset_utf16(&text, position).unwrap_or(text.len());
-    let ext_db = Arc::new(SingleFileDb::new(file, Some(path), text));
-    let ide_extensions = IdeExtensions::with_registry(
-        ext_db,
-        Arc::clone(&state.config),
-        nova_ext::ProjectId::new(0),
-        state.extensions_registry.clone(),
-    );
-    let extension_items = ide_extensions
-        .completions(cancel.clone(), file, offset)
-        .into_iter()
-        .map(|item| CompletionItem {
-            label: item.label,
-            detail: item.detail,
-            ..CompletionItem::default()
-        });
-    items.extend(extension_items);
+    let offset = position_to_offset_utf16(&text, position).unwrap_or_else(|| {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            line = position.line,
+            character = position.character,
+            "completion received invalid position; falling back to end of document"
+        );
+        text.len()
+    });
+    if let Some(path) = doc_path.clone() {
+        let ext_db = Arc::new(SingleFileDb::new(file, Some(path), text));
+        let ide_extensions = IdeExtensions::with_registry(
+            ext_db,
+            Arc::clone(&state.config),
+            nova_ext::ProjectId::new(0),
+            state.extensions_registry.clone(),
+        );
+        let extension_items = ide_extensions
+            .completions(cancel.clone(), file, offset)
+            .into_iter()
+            .map(|item| CompletionItem {
+                label: item.label,
+                detail: item.detail,
+                ..CompletionItem::default()
+            });
+        items.extend(extension_items);
+    } else {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            "skipping extension completions for non-file uri"
+        );
+    }
 
     if items.is_empty() && has_more {
         items.push(CompletionItem {
@@ -165,9 +178,15 @@ pub(super) fn handle_completion(
         });
     }
     for item in &mut items {
+        use crate::json_mut::{ensure_object_field_mut, ensure_object_mut};
+
         let data = item.data.get_or_insert_with(|| Value::Object(Map::new()));
-        let data = value_object_mut(data);
-        let nova = ensure_object_field(data, "nova");
+        let Some(data) = ensure_object_mut(data) else {
+            continue;
+        };
+        let Some(nova) = ensure_object_field_mut(data, "nova") else {
+            continue;
+        };
 
         nova.insert("uri".to_string(), Value::String(uri.as_str().to_string()));
         if let Some(id) = completion_context_id.as_deref() {

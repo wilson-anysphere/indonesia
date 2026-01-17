@@ -49,21 +49,19 @@ impl<W> WriteRpcOut<W> {
     }
 
     pub fn into_inner(self) -> W {
-        self.writer
-            .into_inner()
-            .unwrap_or_else(|err| err.into_inner())
+        crate::poison::into_inner(self.writer, "WriteRpcOut::into_inner")
     }
 }
 
 #[cfg(test)]
 impl<W: io::Write> RpcOut for WriteRpcOut<W> {
     fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = crate::poison::lock(&self.writer, "WriteRpcOut::send_notification");
         crate::codec::write_json_message(&mut *writer, &jsonrpc_notification(method, params))
     }
 
     fn send_request(&self, id: RequestId, method: &str, params: Value) -> io::Result<()> {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = crate::poison::lock(&self.writer, "WriteRpcOut::send_request");
         let id = serde_json::to_value(&id)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?;
         crate::codec::write_json_message(&mut *writer, &jsonrpc_request(id, method, params))

@@ -127,10 +127,7 @@ impl NovaCompletionService {
     fn lock_sessions(
         &self,
     ) -> std::sync::MutexGuard<'_, HashMap<CompletionContextId, CompletionSession>> {
-        match self.sessions.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        crate::poison::lock(&self.sessions, "NovaCompletionService::lock_sessions")
     }
 
     fn prune_sessions_locked(
@@ -227,7 +224,15 @@ impl NovaCompletionService {
                     _ = cancel_task.cancelled() => return,
                     permit = permit_fut => match permit {
                         Ok(permit) => permit,
-                        Err(_) => return,
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.lsp",
+                                context_id = %context_id_clone,
+                                error = ?err,
+                                "AI completion semaphore closed; skipping multi-token completions"
+                            );
+                            return;
+                        }
                     },
                 };
 
@@ -272,7 +277,13 @@ impl NovaCompletionService {
     pub fn completion_more(&self, context_id: &str) -> (Vec<lsp_types::CompletionItem>, bool) {
         let context_id: CompletionContextId = match context_id.parse() {
             Ok(id) => id,
-            Err(_) => {
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    context_id,
+                    error = %err,
+                    "invalid completion context id"
+                );
                 return (Vec::new(), false);
             }
         };
@@ -325,22 +336,16 @@ impl NovaCompletionService {
 
 fn inject_uri_into_completion_items(items: &mut [lsp_types::CompletionItem], uri: &str) {
     for item in items {
-        let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) else {
+        use crate::json_mut::{ensure_object_field_mut, ensure_object_mut};
+
+        let data = item.data.get_or_insert_with(|| Value::Object(Map::new()));
+        let Some(data) = ensure_object_mut(data) else {
             continue;
         };
 
-        let nova = match data.get_mut("nova") {
-            Some(value) if value.is_object() => value,
-            _ => {
-                data.insert("nova".to_string(), Value::Object(Map::new()));
-                data.get_mut("nova")
-                    .expect("nova key should exist after insert")
-            }
+        let Some(nova) = ensure_object_field_mut(data, "nova") else {
+            continue;
         };
-
-        let nova = nova
-            .as_object_mut()
-            .expect("nova value should be an object");
         nova.insert("uri".to_string(), Value::String(uri.to_string()));
     }
 }

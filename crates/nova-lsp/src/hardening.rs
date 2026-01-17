@@ -11,7 +11,7 @@ use nova_bugreport::{
     global_crash_store, install_panic_hook, BugReportBuilder, BugReportOptions, PanicHookConfig,
     PerfStats,
 };
-use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
+use nova_config::{global_log_buffer, init_tracing_with_config, LogBuffer, NovaConfig};
 use nova_scheduler::{CancellationToken, Watchdog, WatchdogError};
 use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 static PERF: OnceLock<PerfStats> = OnceLock::new();
 static CONFIG: OnceLock<NovaConfig> = OnceLock::new();
+static LOG_BUFFER: OnceLock<Arc<LogBuffer>> = OnceLock::new();
 static SAFE_MODE: OnceLock<SafeModeState> = OnceLock::new();
 static WATCHDOG: OnceLock<Watchdog> = OnceLock::new();
 
@@ -63,14 +64,9 @@ fn safe_mode() -> &'static SafeModeState {
     #[cfg(debug_assertions)]
     if force_safe_mode_from_env() {
         safe_mode.enabled.store(true, Ordering::Relaxed);
-        *safe_mode
-            .until
-            .lock()
-            .expect("SafeModeState mutex poisoned") = None;
-        *safe_mode
-            .reason
-            .lock()
-            .expect("SafeModeState mutex poisoned") = Some(SafeModeReason::Panic);
+        *crate::poison::lock(&safe_mode.until, "hardening/force_safe_mode/until") = None;
+        *crate::poison::lock(&safe_mode.reason, "hardening/force_safe_mode/reason") =
+            Some(SafeModeReason::Panic);
     }
 
     safe_mode
@@ -81,7 +77,16 @@ fn watchdog() -> &'static Watchdog {
 }
 
 fn config_snapshot() -> NovaConfig {
-    CONFIG.get().cloned().unwrap_or_default()
+    match CONFIG.get() {
+        Some(cfg) => cfg.clone(),
+        None => {
+            debug_assert!(
+                false,
+                "hardening config snapshot missing; hardening::init should be called early"
+            );
+            NovaConfig::default()
+        }
+    }
 }
 
 pub fn record_request() {
@@ -94,8 +99,19 @@ pub fn record_request() {
 /// This is safe to call multiple times; only the first call installs the global
 /// subscriber and stores the config snapshot.
 pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'static>) {
-    let _ = init_tracing_with_config(config);
-    let _ = CONFIG.set(config.clone());
+    let log_buffer = init_tracing_with_config(config);
+    if LOG_BUFFER.set(log_buffer).is_err() {
+        tracing::debug!(
+            target = "nova.lsp",
+            "tracing log buffer already initialized; keeping existing buffer"
+        );
+    }
+    if CONFIG.set(config.clone()).is_err() {
+        tracing::debug!(
+            target = "nova.lsp",
+            "hardening config already initialized; keeping existing snapshot"
+        );
+    }
     install_panic_hook(
         PanicHookConfig {
             include_backtrace: config.logging.include_backtrace,
@@ -115,23 +131,15 @@ pub fn guard_method(method: &str) -> Result<()> {
 
     let safe_mode = safe_mode();
     if safe_mode.enabled.load(Ordering::Relaxed) {
-        if let Some(until) = safe_mode
-            .until
-            .lock()
-            .expect("SafeModeState mutex poisoned")
+        if let Some(until) = crate::poison::lock(&safe_mode.until, "hardening/guard_method/until")
             .as_ref()
             .copied()
         {
             if Instant::now() >= until {
                 safe_mode.enabled.store(false, Ordering::Relaxed);
-                *safe_mode
-                    .until
-                    .lock()
-                    .expect("SafeModeState mutex poisoned") = None;
-                *safe_mode
-                    .reason
-                    .lock()
-                    .expect("SafeModeState mutex poisoned") = None;
+                *crate::poison::lock(&safe_mode.until, "hardening/guard_method/clear_until") = None;
+                *crate::poison::lock(&safe_mode.reason, "hardening/guard_method/clear_reason") =
+                    None;
                 return Ok(());
             }
         }
@@ -149,19 +157,13 @@ fn enter_safe_mode(reason: SafeModeReason) {
     perf().record_safe_mode_entry();
     let safe_mode = safe_mode();
     safe_mode.enabled.store(true, Ordering::Relaxed);
-    let mut until = safe_mode
-        .until
-        .lock()
-        .expect("SafeModeState mutex poisoned");
+    let mut until = crate::poison::lock(&safe_mode.until, "hardening/enter_safe_mode/until");
     let duration = match reason {
         SafeModeReason::Panic => Duration::from_secs(60),
         SafeModeReason::WatchdogTimeout => Duration::from_secs(30),
     };
     *until = Some(Instant::now() + duration);
-    *safe_mode
-        .reason
-        .lock()
-        .expect("SafeModeState mutex poisoned") = Some(reason);
+    *crate::poison::lock(&safe_mode.reason, "hardening/enter_safe_mode/reason") = Some(reason);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,31 +181,23 @@ pub fn safe_mode_snapshot() -> (bool, Option<&'static str>) {
         return (false, None);
     }
 
-    if let Some(until) = safe_mode
-        .until
-        .lock()
-        .expect("SafeModeState mutex poisoned")
+    if let Some(until) = crate::poison::lock(&safe_mode.until, "hardening/safe_mode_snapshot/until")
         .as_ref()
         .copied()
     {
         if Instant::now() >= until {
             safe_mode.enabled.store(false, Ordering::Relaxed);
-            *safe_mode
-                .until
-                .lock()
-                .expect("SafeModeState mutex poisoned") = None;
-            *safe_mode
-                .reason
-                .lock()
-                .expect("SafeModeState mutex poisoned") = None;
+            *crate::poison::lock(&safe_mode.until, "hardening/safe_mode_snapshot/clear_until") =
+                None;
+            *crate::poison::lock(
+                &safe_mode.reason,
+                "hardening/safe_mode_snapshot/clear_reason",
+            ) = None;
             return (false, None);
         }
     }
 
-    let reason = safe_mode
-        .reason
-        .lock()
-        .expect("SafeModeState mutex poisoned")
+    let reason = crate::poison::lock(&safe_mode.reason, "hardening/safe_mode_snapshot/reason")
         .as_ref()
         .map(|reason| match reason {
             SafeModeReason::Panic => "panic",
@@ -364,10 +358,21 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
     let (max_log_lines, reproduction) = match params {
         Value::Null => (None, None),
         Value::Object(obj) => {
-            let max_log_lines = obj
-                .get("maxLogLines")
-                .and_then(|v| v.as_u64())
-                .and_then(|n| usize::try_from(n).ok());
+            let max_log_lines = match obj.get("maxLogLines").and_then(|v| v.as_u64()) {
+                None => None,
+                Some(value) => match usize::try_from(value) {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        tracing::warn!(
+                            target = "nova.lsp",
+                            max_log_lines = value,
+                            error = %err,
+                            "bugReport maxLogLines is too large; using default"
+                        );
+                        None
+                    }
+                },
+            };
             let reproduction = obj
                 .get("reproduction")
                 .and_then(|v| v.as_str())
@@ -396,10 +401,27 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
                 // Best-effort: attach the runtime request metrics snapshot. This is useful when
                 // diagnosing hangs/timeouts/panics because it captures per-method latencies and
                 // error rates.
-                if let Ok(metrics_json) = serde_json::to_string_pretty(
+                let metrics_path = dir.join("metrics.json");
+                match serde_json::to_string_pretty(
                     &nova_metrics::MetricsRegistry::global().snapshot(),
                 ) {
-                    let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                    Ok(metrics_json) => {
+                        if let Err(err) = std::fs::write(&metrics_path, metrics_json) {
+                            tracing::debug!(
+                                target = "nova.lsp",
+                                path = %metrics_path.display(),
+                                err = %err,
+                                "failed to write metrics attachment"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            err = %err,
+                            "failed to serialize metrics attachment"
+                        );
+                    }
                 }
                 Ok(())
             })
@@ -429,19 +451,13 @@ mod tests {
     fn panic_is_isolated_and_bug_report_is_generated() {
         global_crash_store().clear();
         safe_mode().enabled.store(false, Ordering::Relaxed);
-        *safe_mode()
-            .until
-            .lock()
-            .expect("SafeModeState mutex poisoned") = None;
+        *crate::poison::lock(&safe_mode().until, "hardening/test/clear_safe_mode_until") = None;
 
         let notifications: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let notify = {
             let notifications = notifications.clone();
             Arc::new(move |msg: &str| {
-                notifications
-                    .lock()
-                    .expect("notifications mutex poisoned")
-                    .push(msg.to_owned());
+                crate::poison::lock(&notifications, "hardening/test/notify").push(msg.to_owned());
             })
         };
 
@@ -458,10 +474,8 @@ mod tests {
             .expect("crashes.json should exist");
         assert!(crashes.contains("boom"));
 
-        let notifications = notifications
-            .lock()
-            .expect("notifications mutex poisoned")
-            .clone();
+        let notifications =
+            crate::poison::lock(&notifications, "hardening/test/notifications").clone();
         assert!(
             notifications
                 .iter()

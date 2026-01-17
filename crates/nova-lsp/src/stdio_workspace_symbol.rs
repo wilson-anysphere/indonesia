@@ -22,10 +22,20 @@ fn json_opt_string(value: &JsonValue, keys: &[&str]) -> Option<String> {
 }
 
 fn json_u32(value: &JsonValue, key: &str) -> Option<u32> {
-    value
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u32::try_from(v).ok())
+    let raw = value.get(key)?.as_u64()?;
+    match u32::try_from(raw) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                key,
+                value = raw,
+                error = %err,
+                "workspaceSymbol numeric field is out of range"
+            );
+            None
+        }
+    }
 }
 
 fn json_location(value: &JsonValue) -> Option<(String, u32, u32)> {
@@ -36,8 +46,22 @@ fn json_location(value: &JsonValue) -> Option<(String, u32, u32)> {
         .or_else(|| value.get("locations").and_then(|v| v.get(0)))?;
 
     let file = json_string(loc, "file")?.to_string();
-    let line = json_u32(loc, "line").unwrap_or(0);
-    let column = json_u32(loc, "column").unwrap_or(0);
+    let Some(line) = json_u32(loc, "line") else {
+        tracing::debug!(
+            target = "nova.lsp",
+            file,
+            "workspaceSymbol missing numeric `location.line`"
+        );
+        return None;
+    };
+    let Some(column) = json_u32(loc, "column") else {
+        tracing::debug!(
+            target = "nova.lsp",
+            file,
+            "workspaceSymbol missing numeric `location.column`"
+        );
+        return None;
+    };
     Some((file, line, column))
 }
 
@@ -127,10 +151,9 @@ pub(super) fn handle_workspace_symbol(
         if dist.initial_index.is_some() {
             let cancel = cancel.clone();
             let join_result = {
-                let handle = dist
-                    .initial_index
-                    .as_mut()
-                    .expect("checked initial_index.is_some");
+                let Some(handle) = dist.initial_index.as_mut() else {
+                    return Err((-32603, "missing initial index handle".to_string()));
+                };
                 dist.runtime.block_on(async {
                     tokio::select! {
                         _ = cancel.cancelled() => None,
@@ -215,7 +238,9 @@ pub(super) fn handle_workspace_symbol(
         state.workspace = Some(workspace);
     }
 
-    let workspace = state.workspace.as_ref().expect("workspace initialized");
+    let Some(workspace) = state.workspace.as_ref() else {
+        return Err((-32603, "workspace not initialized".to_string()));
+    };
     let symbols = workspace
         .workspace_symbols_cancelable(query, cancel)
         .map_err(|e| (-32603, e.to_string()))?;

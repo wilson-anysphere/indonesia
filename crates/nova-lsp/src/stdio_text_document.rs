@@ -144,11 +144,55 @@ pub(super) fn handle_inlay_hints(
     }
 
     let text = state.analysis.file_content(file_id).to_string();
+    let range = match nova_lsp::text_pos::coerce_range_end_to_eof(&text, params.range) {
+        Some(coerced) => {
+            if coerced.end_was_clamped_to_eof {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri.as_str(),
+                    end_line = params.range.end.line,
+                    end_character = params.range.end.character,
+                    "inlayHints received invalid range end; clamping to end of document"
+                );
+            }
+            if coerced.was_reversed {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri.as_str(),
+                    "inlayHints received reversed range; normalizing"
+                );
+            }
+            LspRange::new(
+                offset_to_position_utf16(&text, coerced.start),
+                offset_to_position_utf16(&text, coerced.end),
+            )
+        }
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                start_line = params.range.start.line,
+                start_character = params.range.start.character,
+                "inlayHints received invalid range start"
+            );
+            return Ok(serde_json::Value::Array(Vec::new()));
+        }
+    };
+
     let path = state
         .analysis
         .file_path(file_id)
         .map(|p| p.to_path_buf())
         .or_else(|| path_from_uri(uri.as_str()));
+    if path.is_none() {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            "skipping extension inlay hints for non-file uri"
+        );
+        let hints = nova_ide::code_intelligence::inlay_hints(&state.analysis, file_id, range);
+        return serde_json::to_value(hints).map_err(|e| e.to_string());
+    }
     let ext_db = Arc::new(SingleFileDb::new(file_id, path, text));
     let ide_extensions = IdeExtensions::with_registry(
         ext_db,
@@ -157,7 +201,7 @@ pub(super) fn handle_inlay_hints(
         state.extensions_registry.clone(),
     );
 
-    let hints = ide_extensions.inlay_hints_lsp(cancel, file_id, params.range);
+    let hints = ide_extensions.inlay_hints_lsp(cancel, file_id, range);
     serde_json::to_value(hints).map_err(|e| e.to_string())
 }
 
@@ -195,7 +239,16 @@ pub(super) fn handle_document_highlight(
     }
 
     let source = state.analysis.file_content(file_id);
-    let offset = position_to_offset_utf16(source, position).unwrap_or(0);
+    let Some(offset) = position_to_offset_utf16(source, position) else {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            line = position.line,
+            character = position.character,
+            "documentHighlight received invalid position"
+        );
+        return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
+    };
     let Some((start, end)) = ident_range_at(source, offset) else {
         return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
     };
@@ -334,10 +387,34 @@ pub(super) fn handle_selection_range(
     let text = state.analysis.file_content(file_id);
     let document_end = offset_to_position_utf16(text, text.len());
     let document_range = LspRange::new(LspPosition::new(0, 0), document_end);
+    let invalid_position_range = || {
+        let document = SelectionRange {
+            range: document_range,
+            parent: None,
+        };
+        let line = SelectionRange {
+            range: document_range,
+            parent: Some(Box::new(document)),
+        };
+        SelectionRange {
+            range: document_range,
+            parent: Some(Box::new(line)),
+        }
+    };
 
     let mut out = Vec::new();
     for position in params.positions {
-        let offset = position_to_offset_utf16(text, position).unwrap_or(0);
+        let Some(offset) = position_to_offset_utf16(text, position) else {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                line = position.line,
+                character = position.character,
+                "selectionRange received invalid position"
+            );
+            out.push(invalid_position_range());
+            continue;
+        };
 
         let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
         let line_end = text[offset..]
@@ -374,4 +451,91 @@ pub(super) fn handle_selection_range(
     }
 
     serde_json::to_value(out).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_memory::MemoryBudgetOverrides;
+    use tempfile::TempDir;
+
+    #[test]
+    fn document_highlight_invalid_position_returns_empty_list() {
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
+
+        let dir = TempDir::new().expect("tempdir");
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).expect("abs path");
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs)
+            .expect("path to URI")
+            .parse()
+            .expect("valid URI");
+        state
+            .analysis
+            .open_document(uri.clone(), "class Foo {}\n".to_string(), 1);
+
+        let params = DocumentHighlightParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                position: LspPosition::new(9_999, 0),
+            },
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let value = serde_json::to_value(params).expect("params");
+        let resp = handle_document_highlight(value, &mut state).expect("handle highlight");
+        let highlights: Vec<DocumentHighlight> =
+            serde_json::from_value(resp).expect("decode highlights");
+        assert!(highlights.is_empty());
+    }
+
+    #[test]
+    fn selection_range_invalid_position_returns_document_range_chain() {
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
+
+        let dir = TempDir::new().expect("tempdir");
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).expect("abs path");
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs)
+            .expect("path to URI")
+            .parse()
+            .expect("valid URI");
+        state
+            .analysis
+            .open_document(uri.clone(), "class Foo {}\n".to_string(), 1);
+
+        let params = SelectionRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            positions: vec![LspPosition::new(9_999, 0)],
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let value = serde_json::to_value(params).expect("params");
+        let resp = handle_selection_range(value, &mut state).expect("handle selection range");
+        let ranges: Vec<SelectionRange> = serde_json::from_value(resp).expect("decode ranges");
+        assert_eq!(ranges.len(), 1);
+
+        let range = &ranges[0];
+        assert_eq!(range.range.start, LspPosition::new(0, 0));
+        assert_eq!(range.range.end, LspPosition::new(1, 0));
+
+        let parent = range.parent.as_ref().expect("parent");
+        assert_eq!(parent.range.start, LspPosition::new(0, 0));
+        assert_eq!(parent.range.end, LspPosition::new(1, 0));
+
+        let grandparent = parent.parent.as_ref().expect("grandparent");
+        assert_eq!(grandparent.range.start, LspPosition::new(0, 0));
+        assert_eq!(grandparent.range.end, LspPosition::new(1, 0));
+        assert!(
+            grandparent.parent.is_none(),
+            "expected document node as root"
+        );
+    }
 }

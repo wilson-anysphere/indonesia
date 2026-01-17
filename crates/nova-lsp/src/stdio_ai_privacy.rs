@@ -2,6 +2,7 @@ use crate::ServerState;
 
 use nova_ai::{AiError, ExcludedPathMatcher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn is_ai_excluded_path(state: &ServerState, path: &Path) -> bool {
     if !state.ai_config.enabled {
@@ -19,7 +20,17 @@ pub(super) fn is_excluded_by_matcher(
         Ok(matcher) => matcher.is_match(path),
         // Best-effort fail-closed: if privacy configuration is invalid, avoid starting any AI work
         // based on potentially sensitive files.
-        Err(_) => true,
+        Err(err) => {
+            static INVALID_MATCHER_LOGGED: AtomicBool = AtomicBool::new(false);
+            if !INVALID_MATCHER_LOGGED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "AI excluded-path matcher is invalid; treating all paths as excluded"
+                );
+            }
+            true
+        }
     }
 }
 

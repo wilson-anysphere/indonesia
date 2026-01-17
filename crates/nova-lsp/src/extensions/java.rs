@@ -91,7 +91,7 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
         ));
     };
 
-    let mut classes = classes
+    let mut classes: Vec<_> = classes
         .into_iter()
         .filter(|class| {
             if !include_tests && class.is_test {
@@ -99,6 +99,16 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
             }
             class.has_main || class.is_spring_boot_app || (include_tests && class.is_test)
         })
+        .collect();
+
+    classes.sort_by(|a, b| {
+        a.qualified_name
+            .cmp(&b.qualified_name)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    let classes = classes
+        .into_iter()
         .map(|class| {
             Value::Object({
                 let mut value = serde_json::Map::new();
@@ -121,22 +131,6 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
             })
         })
         .collect::<Vec<_>>();
-
-    classes.sort_by(|a, b| {
-        let a_name = a
-            .get("qualifiedName")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let b_name = b
-            .get("qualifiedName")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        a_name.cmp(b_name).then_with(|| {
-            let a_path = a.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-            let b_path = b.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-            a_path.cmp(b_path)
-        })
-    });
 
     Ok(Value::Object({
         let mut resp = serde_json::Map::new();

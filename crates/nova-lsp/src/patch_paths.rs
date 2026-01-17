@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use lsp_types::Uri;
 
@@ -19,43 +19,89 @@ use lsp_types::Uri;
 ///   document's basename.
 ///
 /// The returned `file_rel` always uses forward slashes.
-pub fn patch_root_uri_and_file_rel(project_root: Option<&Path>, doc_path: &Path) -> (Uri, String) {
+pub fn patch_root_uri_and_file_rel(
+    project_root: Option<&Path>,
+    doc_path: &Path,
+) -> Result<(Uri, String), String> {
     if let Some(root) = project_root {
-        if let Ok(rel) = doc_path.strip_prefix(root) {
-            if let Some(file_rel) = path_to_forward_slash_rel(rel) {
-                return (uri_for_path(root), file_rel);
+        match doc_path.strip_prefix(root) {
+            Ok(rel) => match path_to_forward_slash_rel(rel) {
+                Some(file_rel) => return Ok((uri_for_path(root)?, file_rel)),
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        root = %root.display(),
+                        path = %doc_path.display(),
+                        rel = %rel.display(),
+                        "patch root rejected non-normal relative path; falling back to basename mode"
+                    );
+                }
+            },
+            Err(err) => {
+                static STRIP_PREFIX_MISMATCH_LOGS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                if root.is_absolute()
+                    && doc_path.is_absolute()
+                    && STRIP_PREFIX_MISMATCH_LOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        < 10
+                {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        root = %root.display(),
+                        path = %doc_path.display(),
+                        error = ?err,
+                        "patch root mismatch; falling back to basename mode"
+                    );
+                }
             }
         }
     }
 
-    let parent = doc_path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = doc_path
-        .file_name()
-        .unwrap_or_else(|| doc_path.as_os_str())
-        .to_string_lossy()
-        .to_string();
-
-    (uri_for_path(parent), file_name)
-}
-
-fn uri_for_path(path: &Path) -> Uri {
-    // Prefer Nova's own file URI encoding so we round-trip with
-    // `nova_core::file_uri_to_path` (and match `workspace_edit::join_uri`).
-    let abs = match nova_core::AbsPathBuf::new(path.to_path_buf()) {
-        Ok(abs) => abs,
-        Err(_) => {
-            // Best-effort: make relative paths absolute to avoid panicking in
-            // downstream `.parse::<Uri>()`.
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            nova_core::AbsPathBuf::new(cwd.join(path))
-                .expect("failed to create an absolute path for URI conversion")
+    let parent = match doc_path.parent() {
+        Some(parent) => parent,
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                path = %doc_path.display(),
+                "patch root fallback received path without parent; using current directory"
+            );
+            Path::new(".")
         }
     };
+    let file_name = match doc_path.file_name() {
+        Some(name) => name,
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                path = %doc_path.display(),
+                "patch root fallback received path without filename; using full path as key"
+            );
+            doc_path.as_os_str()
+        }
+    }
+    .to_string_lossy()
+    .to_string();
 
-    nova_core::path_to_file_uri(&abs)
-        .expect("failed to convert path to file URI")
-        .parse()
-        .expect("file URI should parse as lsp_types::Uri")
+    Ok((uri_for_path(parent)?, file_name))
+}
+
+fn uri_for_path(path: &Path) -> Result<Uri, String> {
+    // Prefer Nova's own file URI encoding so we round-trip with
+    // `nova_core::file_uri_to_path` (and match `workspace_edit::join_uri`).
+    let abs = if path.is_absolute() {
+        nova_core::AbsPathBuf::new(path.to_path_buf())
+            .map_err(|err| format!("failed to use patch root as absolute path: {err}"))?
+    } else {
+        // Best-effort: make relative paths absolute to avoid panicking in
+        // downstream `.parse::<Uri>()`.
+        let cwd = std::env::current_dir()
+            .map_err(|err| format!("failed to determine current directory: {err}"))?;
+        nova_core::AbsPathBuf::new(cwd.join(path))
+            .map_err(|err| format!("failed to make patch root absolute: {err}"))?
+    };
+
+    let uri = nova_core::path_to_file_uri(&abs).map_err(|err| err.to_string())?;
+    uri.parse::<Uri>().map_err(|err| err.to_string())
 }
 
 fn path_to_forward_slash_rel(path: &Path) -> Option<String> {
@@ -100,7 +146,8 @@ mod tests {
         let root = temp.path().join("workspace");
         let doc_path = root.join("src").join("Main.java");
 
-        let (root_uri, file_rel) = patch_root_uri_and_file_rel(Some(&root), &doc_path);
+        let (root_uri, file_rel) =
+            patch_root_uri_and_file_rel(Some(&root), &doc_path).expect("patch root");
 
         assert_eq!(file_rel, "src/Main.java");
         assert_eq!(root_uri, uri_for_abs_path(&root));
@@ -116,7 +163,8 @@ mod tests {
         let external_dir = temp.path().join("other");
         let doc_path = external_dir.join("Main.java");
 
-        let (root_uri, file_rel) = patch_root_uri_and_file_rel(Some(&root), &doc_path);
+        let (root_uri, file_rel) =
+            patch_root_uri_and_file_rel(Some(&root), &doc_path).expect("patch root");
 
         assert_eq!(file_rel, "Main.java");
         assert_eq!(root_uri, uri_for_abs_path(&external_dir));
@@ -143,7 +191,8 @@ mod tests {
             .expect("decode doc URI")
             .into_path_buf();
 
-        let (root_uri, file_rel) = patch_root_uri_and_file_rel(Some(&root), &decoded_doc_path);
+        let (root_uri, file_rel) =
+            patch_root_uri_and_file_rel(Some(&root), &decoded_doc_path).expect("patch root");
 
         assert_eq!(file_rel, "src/My File.java");
         assert!(

@@ -1,5 +1,8 @@
 #[cfg(test)]
 mod codec;
+mod json_mut;
+mod panic_util;
+mod poison;
 mod project_root;
 mod rename_lsp;
 mod rpc_out;
@@ -77,21 +80,77 @@ fn main() -> std::io::Result<()> {
 
     // Load AI config early so audit logging can be wired up before we install
     // the global tracing subscriber.
-    let ai_env = match stdio_ai_env::load_ai_config_from_env() {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("failed to configure AI: {err}");
-            None
-        }
-    };
+    let ai_env_loaded = stdio_ai_env::load_ai_config_from_env();
+    let ai_env = ai_env_loaded.config;
 
     // Install panic hook + structured logging early. The stdio transport does
     // not currently emit `window/showMessage` notifications on panic, but
     // `nova/bugReport` can be used to generate a diagnostic bundle.
-    let mut config = stdio_config::load_config_from_args(&args);
+    let loaded = stdio_config::load_config_from_args(&args);
+    let mut config = loaded.config;
     let privacy_override = ServerState::apply_ai_overrides_from_env(&mut config, ai_env.as_ref());
-    nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
+    nova_lsp::hardening::init(
+        &config,
+        Arc::new(|message| {
+            tracing::error!(
+                target = "nova.lsp",
+                message = %message,
+                "nova-lsp notification"
+            );
+        }),
+    );
     stdio_fs::gc_decompiled_document_store_best_effort();
+
+    stdio_ai_env::log_ai_env_warnings(&ai_env_loaded.warnings);
+
+    for warning in loaded.warnings {
+        match warning {
+            stdio_config::ConfigLoadWarning::ConfigPathCanonicalizeFailed {
+                source,
+                path,
+                error,
+            } => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    source,
+                    path = %path.display(),
+                    error = %error,
+                    "failed to canonicalize config path; using raw path"
+                );
+            }
+            stdio_config::ConfigLoadWarning::ExplicitConfigFailed { path, error } => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    path = %path.display(),
+                    error = %error,
+                    "failed to load config from --config path; continuing with defaults"
+                );
+            }
+            stdio_config::ConfigLoadWarning::EnvConfigFailed { path, error } => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    path = %path.display(),
+                    error = %error,
+                    "failed to load config from NOVA_CONFIG; continuing with defaults"
+                );
+            }
+            stdio_config::ConfigLoadWarning::CwdFailed { error } => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = %error,
+                    "failed to determine current directory; continuing with defaults"
+                );
+            }
+            stdio_config::ConfigLoadWarning::WorkspaceConfigFailed { root, error } => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    root = %root.display(),
+                    error = %error,
+                    "failed to load workspace config; continuing with defaults"
+                );
+            }
+        }
+    }
 
     // Accept `--stdio` for compatibility with editor templates. For now we only
     // support stdio transport, and ignore any other args.
@@ -172,13 +231,25 @@ fn main() -> std::io::Result<()> {
                     Ok(Err(_cancelled)) => {
                         stdio_jsonrpc::response_error(request_id, -32800, "Request cancelled")
                     }
-                    Err(_) => {
+                    Err(panic) => {
                         did_panic = true;
-                        tracing::error!(
-                            target = "nova.lsp",
-                            method,
-                            "panic while handling request"
-                        );
+                        match panic_util::panic_payload_to_string(panic.as_ref()) {
+                            Some(message) => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    method,
+                                    panic = %message,
+                                    "panic while handling request"
+                                );
+                            }
+                            None => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    method,
+                                    "panic while handling request"
+                                );
+                            }
+                        }
                         stdio_jsonrpc::response_error(request_id, -32603, "Internal error (panic)")
                     }
                 };
@@ -233,13 +304,25 @@ fn main() -> std::io::Result<()> {
                         metrics.record_error(&method);
                         return Err(err);
                     }
-                    Err(_) => {
+                    Err(panic) => {
                         did_panic = true;
-                        tracing::error!(
-                            target = "nova.lsp",
-                            method,
-                            "panic while handling notification"
-                        );
+                        match panic_util::panic_payload_to_string(panic.as_ref()) {
+                            Some(message) => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    method,
+                                    panic = %message,
+                                    "panic while handling notification"
+                                );
+                            }
+                            None => {
+                                tracing::error!(
+                                    target = "nova.lsp",
+                                    method,
+                                    "panic while handling notification"
+                                );
+                            }
+                        }
                     }
                 }
 

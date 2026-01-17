@@ -77,6 +77,27 @@ enum CodeActionData {
     },
 }
 
+fn extract_variable_action_data_value(
+    start: usize,
+    end: usize,
+    use_var: bool,
+    name: Option<String>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String("ExtractVariable".to_string()),
+    );
+    obj.insert("start".to_string(), serde_json::Value::from(start as u64));
+    obj.insert("end".to_string(), serde_json::Value::from(end as u64));
+    obj.insert("use_var".to_string(), serde_json::Value::Bool(use_var));
+    obj.insert(
+        "name".to_string(),
+        name.map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    serde_json::Value::Object(obj)
+}
+
 /// Build a `Refactor` code action for Safe Delete.
 ///
 /// If the delete is unsafe this returns a code action whose `data` contains a
@@ -91,26 +112,70 @@ pub fn safe_delete_code_action(
         .map(|sym| format!("Safe delete `{}`", sym.name))
         .unwrap_or_else(|| "Safe delete".to_string());
 
-    let outcome = safe_delete(
+    let outcome = match safe_delete(
         index,
         SafeDeleteTarget::Symbol(target_id),
         SafeDeleteMode::Safe,
-    )
-    .ok()?;
+    ) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                target_id = ?target_id,
+                error = %err,
+                "safe delete failed"
+            );
+            return None;
+        }
+    };
     match outcome {
-        SafeDeleteOutcome::Applied { edit } => Some(CodeActionOrCommand::CodeAction(CodeAction {
-            title: title_base,
-            kind: Some(CodeActionKind::REFACTOR),
-            edit: Some(workspace_edit_to_lsp(index, &edit).ok()?),
-            ..CodeAction::default()
-        })),
+        SafeDeleteOutcome::Applied { edit } => {
+            let edit = match workspace_edit_to_lsp(index, &edit) {
+                Ok(edit) => edit,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        err = %err,
+                        "safe delete produced a non-convertible workspace edit"
+                    );
+                    return None;
+                }
+            };
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: title_base,
+                kind: Some(CodeActionKind::REFACTOR),
+                edit: Some(edit),
+                ..CodeAction::default()
+            }))
+        }
         SafeDeleteOutcome::Preview { report } => {
             let safe_delete_args = {
                 let mut obj = serde_json::Map::new();
-                obj.insert("target".to_string(), serde_json::to_value(target_id).ok()?);
+                let target = match serde_json::to_value(target_id) {
+                    Ok(target) => target,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            err = %err,
+                            "failed to serialize safe delete target"
+                        );
+                        return None;
+                    }
+                };
+                obj.insert("target".to_string(), target);
                 obj.insert(
                     "mode".to_string(),
-                    serde_json::to_value(SafeDeleteMode::Safe).ok()?,
+                    match serde_json::to_value(SafeDeleteMode::Safe) {
+                        Ok(mode) => mode,
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.lsp",
+                                err = %err,
+                                "failed to serialize safe delete mode"
+                            );
+                            return None;
+                        }
+                    },
                 );
                 serde_json::Value::Object(obj)
             };
@@ -119,11 +184,22 @@ pub fn safe_delete_code_action(
                 command: SAFE_DELETE_COMMAND.to_string(),
                 arguments: Some(vec![safe_delete_args]),
             };
+            let preview = match safe_delete_preview_value(report) {
+                Ok(preview) => preview,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        err = %err,
+                        "failed to build safe delete preview payload"
+                    );
+                    return None;
+                }
+            };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("{title_base}…"),
                 kind: Some(CodeActionKind::REFACTOR),
                 // Attach a command so the code action is actionable even without `codeAction/resolve`.
-                data: Some(safe_delete_preview_value(report).ok()?),
+                data: Some(preview),
                 command: Some(command),
                 ..CodeAction::default()
             }))
@@ -192,10 +268,18 @@ pub fn extract_variable_code_actions(
     }
     let expr_range = WorkspaceTextRange::new(expr_range.start, expr_range.end);
 
-    let selected = source
-        .get(expr_range.start..expr_range.end)
-        .unwrap_or_default()
-        .trim();
+    let Some(selected) = source.get(expr_range.start..expr_range.end) else {
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            start = expr_range.start,
+            end = expr_range.end,
+            source_len = source.len(),
+            "extractVariable selection range out of bounds"
+        );
+        return Vec::new();
+    };
+    let selected = selected.trim();
     if selected.is_empty() {
         return Vec::new();
     }
@@ -208,6 +292,7 @@ pub fn extract_variable_code_actions(
     let db = TextDatabase::new([(file.clone(), source.to_string())]);
 
     fn probe_extract_variable_placeholder_name(
+        uri: &Uri,
         db: &TextDatabase,
         file: &FileId,
         expr_range: WorkspaceTextRange,
@@ -266,7 +351,21 @@ pub fn extract_variable_code_actions(
                 {
                     continue;
                 }
-                Err(_) => return None,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        start = expr_range.start,
+                        end = expr_range.end,
+                        use_var,
+                        allow_object_explicit,
+                        attempt,
+                        name,
+                        error = ?err,
+                        "extractVariable probe failed unexpectedly; suppressing code action"
+                    );
+                    return None;
+                }
             };
         }
 
@@ -276,21 +375,23 @@ pub fn extract_variable_code_actions(
     let mut actions = Vec::new();
 
     // Offer the original `var` extraction variant when applicable.
-    if let Some(placeholder_name) =
-        probe_extract_variable_placeholder_name(&db, &file, expr_range, true, allow_object_explicit)
-    {
+    if let Some(placeholder_name) = probe_extract_variable_placeholder_name(
+        uri,
+        &db,
+        &file,
+        expr_range,
+        true,
+        allow_object_explicit,
+    ) {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable…".to_string(),
             kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-            data: Some(
-                serde_json::to_value(CodeActionData::ExtractVariable {
-                    start: expr_range.start,
-                    end: expr_range.end,
-                    use_var: true,
-                    name: Some(placeholder_name),
-                })
-                .expect("serializable"),
-            ),
+            data: Some(extract_variable_action_data_value(
+                expr_range.start,
+                expr_range.end,
+                true,
+                Some(placeholder_name),
+            )),
             ..CodeAction::default()
         }));
     }
@@ -299,6 +400,7 @@ pub fn extract_variable_code_actions(
     // concrete type for the extracted expression (and/or otherwise accepts the selection even when
     // the `var` variant does not).
     if let Some(placeholder_name) = probe_extract_variable_placeholder_name(
+        uri,
         &db,
         &file,
         expr_range,
@@ -308,15 +410,12 @@ pub fn extract_variable_code_actions(
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable… (explicit type)".to_string(),
             kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-            data: Some(
-                serde_json::to_value(CodeActionData::ExtractVariable {
-                    start: expr_range.start,
-                    end: expr_range.end,
-                    use_var: false,
-                    name: Some(placeholder_name),
-                })
-                .expect("serializable"),
-            ),
+            data: Some(extract_variable_action_data_value(
+                expr_range.start,
+                expr_range.end,
+                false,
+                Some(placeholder_name),
+            )),
             ..CodeAction::default()
         }));
     }
@@ -338,9 +437,18 @@ pub fn resolve_extract_variable_code_action(
         return Ok(());
     };
 
-    let Ok(parsed) = serde_json::from_value::<CodeActionData>(data) else {
-        // Not our code action; leave it unresolved.
-        return Ok(());
+    let parsed = match serde_json::from_value::<CodeActionData>(data.clone()) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                error = %err,
+                "failed to decode extract-variable code action data; leaving action unresolved"
+            );
+            action.data = Some(data);
+            return Ok(());
+        }
     };
 
     let CodeActionData::ExtractVariable {
@@ -354,6 +462,7 @@ pub fn resolve_extract_variable_code_action(
         action.disabled = Some(CodeActionDisabled {
             reason: "invalid extraction range".to_string(),
         });
+        action.data = Some(data);
         return Ok(());
     }
 
@@ -379,6 +488,7 @@ pub fn resolve_extract_variable_code_action(
             action.disabled = Some(CodeActionDisabled {
                 reason: err.to_string(),
             });
+            action.data = Some(data);
             return Ok(());
         }
     };
@@ -392,6 +502,7 @@ pub fn resolve_extract_variable_code_action(
         }
     }
 
+    action.data = Some(data);
     Ok(())
 }
 
@@ -515,7 +626,18 @@ pub fn convert_to_record_code_action(
         Ok(edit) => {
             let file_id = FileId::new(file.clone());
             let db = TextDatabase::new([(file_id, source.to_string())]);
-            let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
+            let lsp_edit = match workspace_edit_to_lsp(&db, &edit) {
+                Ok(edit) => edit,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        err = %err,
+                        "convert-to-record produced a non-convertible workspace edit"
+                    );
+                    return None;
+                }
+            };
 
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Convert to record".to_string(),
@@ -553,20 +675,73 @@ fn move_refactor_workspace(
     let mut uri_by_id = HashMap::new();
 
     for (uri_string, text) in open_files {
-        let Ok(path) = nova_core::file_uri_to_path(uri_string) else {
-            continue;
+        let abs_path = match nova_core::file_uri_to_path(uri_string) {
+            Ok(abs_path) => abs_path,
+            Err(err) => {
+                if is_java_uri_str(uri_string) {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri_string.as_str(),
+                        error = ?err,
+                        "move refactor workspace received non-file URI key; skipping"
+                    );
+                }
+                continue;
+            }
         };
-        let path = path.into_path_buf();
+        let path = abs_path.as_path().to_path_buf();
         let file_id = FileId::new(path.to_string_lossy().into_owned());
-        files.insert(path, text.clone());
+        files.insert(path.clone(), text.clone());
         db_files.push((file_id.clone(), text.clone()));
 
-        if let Ok(uri) = Uri::from_str(uri_string) {
+        let uri = match Uri::from_str(uri_string) {
+            Ok(uri) => Some(uri),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri_string.as_str(),
+                    err = %err,
+                    "move refactor workspace received invalid uri key; attempting file-uri fallback"
+                );
+                None
+            }
+        };
+        let uri = uri.or_else(|| {
+            let uri_string = match nova_core::path_to_file_uri(&abs_path) {
+                Ok(uri) => uri,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        path = %abs_path.as_path().display(),
+                        err = %err,
+                        "failed to encode file path as uri for move refactor workspace"
+                    );
+                    return None;
+                }
+            };
+            match Uri::from_str(&uri_string) {
+                Ok(uri) => Some(uri),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri_string.as_str(),
+                        err = %err,
+                        "encoded file uri was not parseable for move refactor workspace"
+                    );
+                    None
+                }
+            }
+        });
+        if let Some(uri) = uri {
             uri_by_id.insert(file_id, uri);
         }
     }
 
     (files, TextDatabase::new(db_files), uri_by_id)
+}
+
+fn is_java_uri_str(uri: &str) -> bool {
+    uri.ends_with(".java")
 }
 
 pub fn handle_move_method(
@@ -587,12 +762,12 @@ pub fn handle_move_method(
     .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
 
     workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
-        Ok(uri_by_id
+        uri_by_id
             .get(file)
             .cloned()
-            .expect("move refactor edit only touches known open files"))
+            .ok_or_else(|| nova_refactor::LspConversionError::UnknownFile(file.clone()))
     })
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+    .map_err(|err| crate::NovaLspError::Internal(err.to_string()))
 }
 
 pub fn handle_move_static_member(
@@ -613,12 +788,12 @@ pub fn handle_move_static_member(
     .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
 
     workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
-        Ok(uri_by_id
+        uri_by_id
             .get(file)
             .cloned()
-            .expect("move refactor edit only touches known open files"))
+            .ok_or_else(|| nova_refactor::LspConversionError::UnknownFile(file.clone()))
     })
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+    .map_err(|err| crate::NovaLspError::Internal(err.to_string()))
 }
 
 pub fn decode_safe_delete_params(
@@ -708,7 +883,17 @@ mod tests {
         };
 
         for (uri, edits) in changes {
-            let text = out.get(uri).cloned().unwrap_or_default();
+            let text = match out.get(uri) {
+                Some(text) => text.clone(),
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        "workspace edit references missing file; treating contents as empty"
+                    );
+                    String::new()
+                }
+            };
             let updated = apply_lsp_edits(&text, edits);
             out.insert(uri.clone(), updated);
         }

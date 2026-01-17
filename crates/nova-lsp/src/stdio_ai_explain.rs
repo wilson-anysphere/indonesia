@@ -49,11 +49,22 @@ pub(super) fn run_ai_explain_error(
             None,
         )
     } else {
+        let code = match args.code {
+            Some(code) => code,
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = args.uri.as_deref(),
+                    "explainError missing code; using empty context"
+                );
+                String::new()
+            }
+        };
         build_context_request_from_args(
             state,
             args.uri.as_deref(),
             args.range,
-            args.code.unwrap_or_default(),
+            code,
             /*fallback_enclosing=*/ None,
             /*include_doc_comments=*/ true,
         )

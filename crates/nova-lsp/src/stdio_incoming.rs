@@ -12,30 +12,106 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn decode_did_open(params: serde_json::Value) -> Option<(LspUri, String, i32)> {
-    if let Ok(params) =
-        serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(params.clone())
-    {
-        return Some((
-            params.text_document.uri,
-            params.text_document.text,
-            params.text_document.version,
-        ));
+    match serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(params.clone()) {
+        Ok(params) => {
+            return Some((
+                params.text_document.uri,
+                params.text_document.text,
+                params.text_document.version,
+            ));
+        }
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                error = %err,
+                "didOpen failed to decode as standard params; attempting legacy fallback"
+            );
+        }
     }
 
     let text_document = params.get("textDocument")?;
-    let uri: LspUri = text_document.get("uri")?.as_str()?.parse().ok()?;
+    let uri_str = text_document.get("uri")?.as_str()?;
+    let uri: LspUri = match uri_str.parse() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri_str,
+                err = %err,
+                "didOpen legacy fallback received invalid uri"
+            );
+            return None;
+        }
+    };
     let text = text_document.get("text")?.as_str()?.to_string();
-    let version = text_document
-        .get("version")
-        .and_then(|v| v.as_i64())
-        .and_then(|v| i32::try_from(v).ok())
-        .unwrap_or(0);
+    let version = match text_document.get("version") {
+        Some(value) => match value.as_i64() {
+            Some(raw) => match i32::try_from(raw) {
+                Ok(version) => version,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        version = raw,
+                        error = %err,
+                        "didOpen received out-of-range version; defaulting to 0"
+                    );
+                    0
+                }
+            },
+            None => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    uri = uri.as_str(),
+                    "didOpen received invalid version; defaulting to 0"
+                );
+                0
+            }
+        },
+        None => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                "didOpen missing version; defaulting to 0"
+            );
+            0
+        }
+    };
+    tracing::debug!(
+        target = "nova.lsp",
+        uri = uri.as_str(),
+        "didOpen decoded via legacy fallback"
+    );
     Some((uri, text, version))
 }
 
 fn decode_workspace_rename_path(params: serde_json::Value) -> Option<(LspUri, LspUri)> {
-    let from: LspUri = params.get("from")?.as_str()?.parse().ok()?;
-    let to: LspUri = params.get("to")?.as_str()?.parse().ok()?;
+    let from_str = params.get("from")?.as_str()?;
+    let to_str = params.get("to")?.as_str()?;
+    let from: LspUri = match from_str.parse() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = from_str,
+                err = %err,
+                "workspace rename received invalid `from` uri"
+            );
+            return None;
+        }
+    };
+    let to: LspUri = match to_str.parse() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = to_str,
+                err = %err,
+                "workspace rename received invalid `to` uri"
+            );
+            return None;
+        }
+    };
     Some((from, to))
 }
 
@@ -82,38 +158,58 @@ pub(super) fn handle_notification(
             let file_id = state.analysis.open_document(uri.clone(), text, version);
             state.semantic_search_mark_file_open(file_id);
             state.semantic_search_index_open_document(file_id);
-            let canonical_uri = state
+            let canonical_uri = match state
                 .analysis
                 .vfs
                 .path_for_id(file_id)
                 .and_then(|p| p.to_uri())
-                .unwrap_or(uri_string);
+            {
+                Some(uri) => uri,
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        file_id = ?file_id,
+                        uri = %uri_string,
+                        "failed to canonicalize didOpen document URI; using raw URI string"
+                    );
+                    uri_string
+                }
+            };
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
             state.queue_publish_diagnostics(uri);
         }
         "textDocument/didChange" => {
-            let Ok(params) =
-                serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(params)
-            else {
-                return Ok(());
-            };
+            let params =
+                match serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(params) {
+                    Ok(params) => params,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = %err,
+                            "didChange received invalid params; ignoring notification"
+                        );
+                        return Ok(());
+                    }
+                };
             let uri_string = params.text_document.uri.to_string();
-            let evt = state.analysis.apply_document_changes(
+            let evt = match state.analysis.apply_document_changes(
                 &params.text_document.uri,
                 params.text_document.version,
                 &params.content_changes,
-            );
-            if let Err(err) = evt {
-                tracing::warn!(
-                    target = "nova.lsp",
-                    uri = uri_string,
-                    "failed to apply document changes: {err}"
-                );
-                return Ok(());
-            }
-            if let Ok(ChangeEvent::DocumentChanged { file_id, .. }) = &evt {
-                state.semantic_search_index_open_document(*file_id);
+            ) {
+                Ok(evt) => evt,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        uri = uri_string,
+                        "failed to apply document changes: {err}"
+                    );
+                    return Ok(());
+                }
+            };
+            if let ChangeEvent::DocumentChanged { file_id, .. } = evt {
+                state.semantic_search_index_open_document(file_id);
                 if let (Some(dist), Some(path)) = (
                     state.distributed.as_ref(),
                     path_from_uri(params.text_document.uri.as_str()),
@@ -122,7 +218,7 @@ pub(super) fn handle_notification(
                         if let Some(text) = state
                             .analysis
                             .file_contents
-                            .get(file_id)
+                            .get(&file_id)
                             .map(|text| text.as_str().to_owned())
                         {
                             let frontend = Arc::clone(&dist.frontend);
@@ -139,28 +235,49 @@ pub(super) fn handle_notification(
                     }
                 }
             }
-            let canonical_uri = VfsPath::from(&params.text_document.uri)
-                .to_uri()
-                .unwrap_or_else(|| uri_string);
+            let canonical_uri = match VfsPath::from(&params.text_document.uri).to_uri() {
+                Some(uri) => uri,
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = %uri_string,
+                        "failed to canonicalize didChange document URI; using raw URI string"
+                    );
+                    uri_string
+                }
+            };
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
             state.queue_publish_diagnostics(params.text_document.uri);
         }
         "textDocument/willSave" => {
-            let Ok(_params) =
+            if let Err(err) =
                 serde_json::from_value::<lsp_types::WillSaveTextDocumentParams>(params)
-            else {
+            {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "willSave received invalid params; ignoring notification"
+                );
                 return Ok(());
-            };
+            }
 
             // Best-effort support: today we don't need to do anything on will-save, but parsing the
             // message keeps the server compatible with clients that send it.
         }
         "textDocument/didSave" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::DidSaveTextDocumentParams>(params)
-            else {
-                return Ok(());
-            };
+            let params =
+                match serde_json::from_value::<lsp_types::DidSaveTextDocumentParams>(params) {
+                    Ok(params) => params,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = %err,
+                            "didSave received invalid params; ignoring notification"
+                        );
+                        return Ok(());
+                    }
+                };
 
             let uri = params.text_document.uri;
             let uri_string = uri.to_string();
@@ -198,7 +315,17 @@ pub(super) fn handle_notification(
                 }
             }
 
-            let canonical_uri = path.to_uri().unwrap_or(uri_string);
+            let canonical_uri = match path.to_uri() {
+                Some(uri) => uri,
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = %uri_string,
+                        "failed to canonicalize didSave document URI; using raw URI string"
+                    );
+                    uri_string
+                }
+            };
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
             if is_open {
@@ -206,16 +333,32 @@ pub(super) fn handle_notification(
             }
         }
         "textDocument/didClose" => {
-            let Ok(params) =
-                serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(params)
-            else {
-                return Ok(());
-            };
+            let params =
+                match serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(params) {
+                    Ok(params) => params,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = %err,
+                            "didClose received invalid params; ignoring notification"
+                        );
+                        return Ok(());
+                    }
+                };
             let (file_id, _) = state.analysis.file_id_for_uri(&params.text_document.uri);
             state.semantic_search_mark_uri_closed(&params.text_document.uri);
-            let canonical_uri = VfsPath::from(&params.text_document.uri)
-                .to_uri()
-                .unwrap_or_else(|| params.text_document.uri.to_string());
+            let uri_string = params.text_document.uri.to_string();
+            let canonical_uri = match VfsPath::from(&params.text_document.uri).to_uri() {
+                Some(uri) => uri,
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = %uri_string,
+                        "failed to canonicalize didClose document URI; using raw URI string"
+                    );
+                    uri_string
+                }
+            };
             state.analysis.close_document(&params.text_document.uri);
             state.semantic_search_sync_file_id(file_id);
             state.note_refactor_overlay_change(&canonical_uri);
@@ -223,9 +366,16 @@ pub(super) fn handle_notification(
             state.queue_clear_diagnostics(params.text_document.uri);
         }
         "workspace/didChangeWatchedFiles" => {
-            let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(params)
-            else {
-                return Ok(());
+            let params = match serde_json::from_value::<LspDidChangeWatchedFilesParams>(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "didChangeWatchedFiles received invalid params; ignoring notification"
+                    );
+                    return Ok(());
+                }
             };
 
             // `workspace/didChangeWatchedFiles` is the only reliable signal some clients provide
@@ -237,7 +387,18 @@ pub(super) fn handle_notification(
             // takes effect without requiring a server restart.
             let configured_config_path = env::var_os("NOVA_CONFIG_PATH")
                 .map(PathBuf::from)
-                .map(|path| path.canonicalize().unwrap_or(path));
+                .map(|path| match path.canonicalize() {
+                    Ok(canonical) => canonical,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %path.display(),
+                            err = %err,
+                            "failed to canonicalize NOVA_CONFIG_PATH; using raw path for change detection"
+                        );
+                        path
+                    }
+                });
             let mut config_changed = false;
             let legacy_config_suffix = Path::new(".nova").join("config.toml");
             let mut changed_local_paths: Vec<PathBuf> = Vec::new();
@@ -264,10 +425,23 @@ pub(super) fn handle_notification(
 
                     let matches_configured_path = match (&configured_config_path, &local_path) {
                         (Some(configured), Some(path)) => {
-                            path == configured
-                                || path.canonicalize().ok().is_some_and(|resolved| {
-                                    resolved.as_path() == configured.as_path()
-                                })
+                            if path == configured {
+                                true
+                            } else {
+                                match path.canonicalize() {
+                                    Ok(resolved) => resolved.as_path() == configured.as_path(),
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            target = "nova.lsp",
+                                            configured = %configured.display(),
+                                            path = %path.display(),
+                                            err = %err,
+                                            "failed to canonicalize watched file path while matching configured config path"
+                                        );
+                                        false
+                                    }
+                                }
+                            }
                         }
                         _ => false,
                     };
@@ -353,16 +527,9 @@ pub(super) fn handle_notification(
                 {
                     Ok(config) => {
                         let mut config = config;
-                        let ai_env = match crate::stdio_ai_env::load_ai_config_from_env() {
-                            Ok(value) => value,
-                            Err(err) => {
-                                tracing::warn!(
-                                    target = "nova.lsp",
-                                    "failed to reload AI env config: {err}"
-                                );
-                                None
-                            }
-                        };
+                        let ai_env_loaded = crate::stdio_ai_env::load_ai_config_from_env();
+                        crate::stdio_ai_env::log_ai_env_warnings(&ai_env_loaded.warnings);
+                        let ai_env = ai_env_loaded.config;
                         let privacy_override =
                             crate::stdio_state::ServerState::apply_ai_overrides_from_env(
                                 &mut config,
@@ -386,10 +553,18 @@ pub(super) fn handle_notification(
             }
         }
         "workspace/didChangeWorkspaceFolders" => {
-            let Ok(params) =
-                serde_json::from_value::<lsp_types::DidChangeWorkspaceFoldersParams>(params)
-            else {
-                return Ok(());
+            let params = match serde_json::from_value::<lsp_types::DidChangeWorkspaceFoldersParams>(
+                params,
+            ) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "didChangeWorkspaceFolders received invalid params; ignoring notification"
+                    );
+                    return Ok(());
+                }
             };
 
             // LSP sends a delta. Today we treat the first added workspace folder as the new
@@ -425,25 +600,23 @@ pub(super) fn handle_notification(
             }
         }
         "workspace/didChangeConfiguration" => {
-            let Ok(_params) =
+            if let Err(err) =
                 serde_json::from_value::<lsp_types::DidChangeConfigurationParams>(params)
-            else {
+            {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    error = %err,
+                    "didChangeConfiguration received invalid params; ignoring notification"
+                );
                 return Ok(());
-            };
+            }
 
             match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                 Ok(config) => {
                     let mut config = config;
-                    let ai_env = match crate::stdio_ai_env::load_ai_config_from_env() {
-                        Ok(value) => value,
-                        Err(err) => {
-                            tracing::warn!(
-                                target = "nova.lsp",
-                                "failed to reload AI env config: {err}"
-                            );
-                            None
-                        }
-                    };
+                    let ai_env_loaded = crate::stdio_ai_env::load_ai_config_from_env();
+                    crate::stdio_ai_env::log_ai_env_warnings(&ai_env_loaded.warnings);
+                    let ai_env = ai_env_loaded.config;
                     let privacy_override =
                         crate::stdio_state::ServerState::apply_ai_overrides_from_env(
                             &mut config,
@@ -462,13 +635,30 @@ pub(super) fn handle_notification(
             }
         }
         "workspace/didCreateFiles" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::CreateFilesParams>(params) else {
-                return Ok(());
+            let params = match serde_json::from_value::<lsp_types::CreateFilesParams>(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "didCreateFiles received invalid params; ignoring notification"
+                    );
+                    return Ok(());
+                }
             };
 
             for file in params.files {
-                let Ok(uri) = file.uri.parse::<LspUri>() else {
-                    continue;
+                let uri = match file.uri.parse::<LspUri>() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = file.uri,
+                            error = %err,
+                            "didCreateFiles received invalid file uri; skipping"
+                        );
+                        continue;
+                    }
                 };
                 let path = VfsPath::from(&uri);
                 if state.analysis.vfs.overlay().is_open(&path) {
@@ -478,13 +668,30 @@ pub(super) fn handle_notification(
             }
         }
         "workspace/didDeleteFiles" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::DeleteFilesParams>(params) else {
-                return Ok(());
+            let params = match serde_json::from_value::<lsp_types::DeleteFilesParams>(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "didDeleteFiles received invalid params; ignoring notification"
+                    );
+                    return Ok(());
+                }
             };
 
             for file in params.files {
-                let Ok(uri) = file.uri.parse::<LspUri>() else {
-                    continue;
+                let uri = match file.uri.parse::<LspUri>() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = file.uri,
+                            error = %err,
+                            "didDeleteFiles received invalid file uri; skipping"
+                        );
+                        continue;
+                    }
                 };
                 state.semantic_search_remove_uri(&uri);
 
@@ -497,16 +704,42 @@ pub(super) fn handle_notification(
             }
         }
         "workspace/didRenameFiles" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::RenameFilesParams>(params) else {
-                return Ok(());
+            let params = match serde_json::from_value::<lsp_types::RenameFilesParams>(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = %err,
+                        "didRenameFiles received invalid params; ignoring notification"
+                    );
+                    return Ok(());
+                }
             };
 
             for file in params.files {
-                let (Ok(old_uri), Ok(new_uri)) = (
-                    file.old_uri.parse::<LspUri>(),
-                    file.new_uri.parse::<LspUri>(),
-                ) else {
-                    continue;
+                let old_uri = match file.old_uri.parse::<LspUri>() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = file.old_uri,
+                            error = %err,
+                            "didRenameFiles received invalid old uri; skipping"
+                        );
+                        continue;
+                    }
+                };
+                let new_uri = match file.new_uri.parse::<LspUri>() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = file.new_uri,
+                            error = %err,
+                            "didRenameFiles received invalid new uri; skipping"
+                        );
+                        continue;
+                    }
                 };
                 state.semantic_search_remove_uri(&old_uri);
                 state.semantic_search_mark_uri_closed(&old_uri);

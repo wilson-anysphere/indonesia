@@ -18,18 +18,50 @@ pub(super) fn organize_imports_workspace_edit(
         return None;
     }
 
-    let snapshot = state.refactor_snapshot(uri).ok()?;
+    let snapshot = match state.refactor_snapshot(uri) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                err = ?err,
+                "organize imports failed to build refactor snapshot"
+            );
+            return None;
+        }
+    };
     let file = RefactorFileId::new(uri.to_string());
-    let edit = organize_imports(
+    let edit = match organize_imports(
         snapshot.refactor_db(),
         OrganizeImportsParams { file: file.clone() },
-    )
-    .ok()?;
+    ) {
+        Ok(edit) => edit,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                err = ?err,
+                "organize imports failed"
+            );
+            return None;
+        }
+    };
     if edit.is_empty() {
         return None;
     }
 
-    workspace_edit_to_lsp(snapshot.refactor_db(), &edit).ok()
+    match workspace_edit_to_lsp(snapshot.refactor_db(), &edit) {
+        Ok(edit) => Some(edit),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                err = ?err,
+                "organize imports produced a non-convertible workspace edit"
+            );
+            None
+        }
+    }
 }
 
 pub(super) fn organize_imports_code_action(

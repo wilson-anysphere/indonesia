@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use walkdir::WalkDir;
 
 /// Best-effort heuristic for deciding whether `root` is a *safe* Java project root.
@@ -50,11 +51,27 @@ pub(crate) fn looks_like_project_root(root: &Path) -> bool {
 
     // "Simple" projects: accept a `src/` tree that actually contains Java source files
     // near the top-level. Cap the walk to keep this check cheap even for large trees.
+    static WALK_ERROR_LOGS: AtomicU64 = AtomicU64::new(0);
     let mut inspected = 0usize;
+    let mut walk_errors = 0u64;
+    let mut error_samples = 0u8;
     for entry in WalkDir::new(&src).max_depth(4) {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                walk_errors += 1;
+                if error_samples < 2 {
+                    error_samples += 1;
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        root = %root.display(),
+                        path = ?err.path(),
+                        error = ?err,
+                        "failed to walk src directory while checking project root; skipping entry"
+                    );
+                }
+                continue;
+            }
         };
         inspected += 1;
         if inspected > 2_000 {
@@ -73,6 +90,14 @@ pub(crate) fn looks_like_project_root(root: &Path) -> bool {
         }
     }
 
+    if walk_errors > 0 && WALK_ERROR_LOGS.fetch_add(1, Ordering::Relaxed) < 10 {
+        tracing::debug!(
+            target = "nova.lsp",
+            root = %root.display(),
+            walk_errors,
+            "project-root heuristic saw walk errors while inspecting src/"
+        );
+    }
     false
 }
 

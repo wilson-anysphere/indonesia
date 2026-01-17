@@ -13,10 +13,7 @@ pub(super) fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -
     }
 
     // Keep this conservative: extra context is useful, but should not drown the prompt.
-    let search = state
-        .semantic_search
-        .read()
-        .unwrap_or_else(|err| err.into_inner());
+    let search = crate::poison::rwlock_read(&state.semantic_search, "maybe_add_related_code");
     let mut req = req.with_related_code_from_focal(search.as_ref(), 3);
     req.related_code
         .retain(|item| !is_ai_excluded_path(state, &item.path));

@@ -21,10 +21,15 @@ use nova_ide::{
     CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
     COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
+use serde::Serialize;
 use serde_json::Value;
 use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
+
+fn to_value(value: impl Serialize) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|err| err.to_string())
+}
 
 pub(super) fn perform_initialize_handshake(
     connection: &Connection,
@@ -36,9 +41,11 @@ pub(super) fn perform_initialize_handshake(
         .initialize_start()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-    apply_initialize_params(init_params, state);
+    apply_initialize_params(init_params, state)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
-    let init_result = initialize_result_json();
+    let init_result =
+        initialize_result_json().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     connection
         .initialize_finish(init_id, init_result)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
@@ -49,8 +56,12 @@ pub(super) fn perform_initialize_handshake(
     Ok(())
 }
 
-pub(super) fn apply_initialize_params(params: serde_json::Value, state: &mut ServerState) {
-    let init_params: InitializeParams = serde_json::from_value(params).unwrap_or_default();
+pub(super) fn apply_initialize_params(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<(), String> {
+    let init_params: InitializeParams = serde_json::from_value(params)
+        .map_err(|err| format!("invalid initialize params: {err}"))?;
 
     fn root_uri(init: &InitializeParams) -> Option<&str> {
         #[allow(deprecated)]
@@ -76,9 +87,10 @@ pub(super) fn apply_initialize_params(params: serde_json::Value, state: &mut Ser
     state.workspace = None;
     state.load_extensions();
     state.start_semantic_search_workspace_indexing();
+    Ok(())
 }
 
-pub(super) fn initialize_result_json() -> serde_json::Value {
+pub(super) fn initialize_result_json() -> Result<Value, String> {
     let nova_requests = vec![
         // Testing
         nova_lsp::TEST_DISCOVER_METHOD,
@@ -292,7 +304,7 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
         ..Default::default()
     };
 
-    let mut value = serde_json::to_value(init).unwrap_or(Value::Null);
+    let mut value = to_value(init)?;
 
     // Preserve the historical capability shape: some clients/tests accept either `true` or an
     // object, but we keep the more specific object form for stability.
@@ -302,13 +314,12 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
     {
         capabilities.insert(
             "foldingRangeProvider".to_string(),
-            serde_json::to_value(FoldingRangeClientCapabilities {
+            to_value(FoldingRangeClientCapabilities {
                 line_folding_only: Some(true),
                 ..Default::default()
-            })
-            .unwrap_or(Value::Null),
+            })?,
         );
     }
 
-    value
+    Ok(value)
 }

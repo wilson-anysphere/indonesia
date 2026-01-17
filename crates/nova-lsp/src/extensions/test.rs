@@ -157,12 +157,12 @@ exit 1
             Some("failed"),
             "expected build status to be failed after test run failure: {status:?}"
         );
+        let last_error = status
+            .get("lastError")
+            .and_then(|v| v.as_str())
+            .expect("expected lastError to be a string");
         assert!(
-            status
-                .get("lastError")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .contains("exit code 1"),
+            last_error.contains("exit code 1"),
             "expected lastError to include exit code: {status:?}"
         );
     }

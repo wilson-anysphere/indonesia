@@ -20,7 +20,17 @@ pub(super) fn handle_prepare_call_hierarchy(
         file_id,
         params.text_document_position_params.position,
     )
-    .unwrap_or_default();
+    .unwrap_or_else(|| {
+        let position = params.text_document_position_params.position;
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            line = position.line,
+            character = position.character,
+            "callHierarchy/prepare received invalid position"
+        );
+        Vec::new()
+    });
     serde_json::to_value(items).map_err(|e| e.to_string())
 }
 
@@ -82,7 +92,17 @@ pub(super) fn handle_prepare_type_hierarchy(
         file_id,
         params.text_document_position_params.position,
     )
-    .unwrap_or_default();
+    .unwrap_or_else(|| {
+        let position = params.text_document_position_params.position;
+        tracing::debug!(
+            target = "nova.lsp",
+            uri = uri.as_str(),
+            line = position.line,
+            character = position.character,
+            "typeHierarchy/prepare received invalid position"
+        );
+        Vec::new()
+    });
     serde_json::to_value(items).map_err(|e| e.to_string())
 }
 

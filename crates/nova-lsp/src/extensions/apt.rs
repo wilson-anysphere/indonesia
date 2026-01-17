@@ -307,7 +307,18 @@ fn parse_params(value: serde_json::Value) -> Result<AptParams> {
 fn load_project_with_workspace_config(
     root: &Path,
 ) -> Result<(nova_project::ProjectConfig, NovaConfig)> {
-    let workspace_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let workspace_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                root = %root.display(),
+                err = %err,
+                "failed to canonicalize project root; using raw path"
+            );
+            root.to_path_buf()
+        }
+    };
     let (config, config_path) = load_workspace_config_with_path(&workspace_root);
     let mut options = LoadOptions::default();
     options.nova_config = config.clone();

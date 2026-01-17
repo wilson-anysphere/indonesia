@@ -148,7 +148,18 @@ fn lookup_jdk_type_best_effort(
     jdk: &nova_jdk::JdkIndex,
     name: &str,
 ) -> Option<Arc<nova_jdk::JdkClassStub>> {
-    let mut stub = jdk.lookup_type(name).ok().flatten();
+    let mut stub = match jdk.lookup_type(name) {
+        Ok(stub) => stub,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                name,
+                err = ?err,
+                "jdk type lookup failed"
+            );
+            None
+        }
+    };
     if stub.is_some() {
         return stub;
     }
@@ -160,7 +171,19 @@ fn lookup_jdk_type_best_effort(
         let mut candidate = name.to_owned();
         while let Some(dot) = candidate.rfind('.') {
             candidate.replace_range(dot..dot + 1, "$");
-            stub = jdk.lookup_type(&candidate).ok().flatten();
+            stub = match jdk.lookup_type(&candidate) {
+                Ok(stub) => stub,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        name,
+                        candidate = %candidate,
+                        err = ?err,
+                        "jdk type lookup failed for nested-type candidate"
+                    );
+                    None
+                }
+            };
             if stub.is_some() {
                 break;
             }
@@ -182,12 +205,44 @@ fn goto_definition_jdk(
         let configured = state.project_root.as_deref().and_then(|root| {
             let workspace_root =
                 nova_project::workspace_root(root).unwrap_or_else(|| root.to_path_buf());
-            let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
+            let (config, _path) = match nova_config::load_for_workspace(&workspace_root) {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        workspace_root = %workspace_root.display(),
+                        err = %err,
+                        "failed to load workspace config; falling back to environment JDK discovery"
+                    );
+                    return None;
+                }
+            };
             let jdk_config = config.jdk_config();
-            nova_jdk::JdkIndex::discover(Some(&jdk_config)).ok()
+            match nova_jdk::JdkIndex::discover(Some(&jdk_config)) {
+                Ok(index) => Some(index),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        workspace_root = %workspace_root.display(),
+                        err = ?err,
+                        "failed to discover configured JDK index; falling back to environment discovery"
+                    );
+                    None
+                }
+            }
         });
 
-        state.jdk_index = configured.or_else(|| nova_jdk::JdkIndex::discover(None).ok());
+        state.jdk_index = configured.or_else(|| match nova_jdk::JdkIndex::discover(None) {
+            Ok(index) => Some(index),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    err = ?err,
+                    "failed to discover JDK index from environment"
+                );
+                None
+            }
+        });
     }
     let jdk = state.jdk_index.as_ref()?;
     let text = state.analysis.file_content(file);
@@ -301,21 +356,30 @@ fn goto_definition_jdk(
 
             if stub.is_none() {
                 let suffix = format!(".{name}");
-                if let Ok(names) = jdk.iter_binary_class_names() {
-                    let mut found: Option<&str> = None;
-                    for candidate in names {
-                        if candidate.ends_with(&suffix) {
-                            if found.is_some() {
-                                // Ambiguous; stop early.
-                                found = None;
-                                break;
+                match jdk.iter_binary_class_names() {
+                    Ok(names) => {
+                        let mut found: Option<&str> = None;
+                        for candidate in names {
+                            if candidate.ends_with(&suffix) {
+                                if found.is_some() {
+                                    // Ambiguous; stop early.
+                                    found = None;
+                                    break;
+                                }
+                                found = Some(candidate);
                             }
-                            found = Some(candidate);
+                        }
+
+                        if let Some(binary_name) = found {
+                            stub = lookup_jdk_type_best_effort(jdk, binary_name);
                         }
                     }
-
-                    if let Some(binary_name) = found {
-                        stub = lookup_jdk_type_best_effort(jdk, binary_name);
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = ?err,
+                            "failed to iterate JDK binary class names"
+                        );
                     }
                 }
             }
@@ -458,7 +522,19 @@ fn goto_definition_jdk(
 
     // Existing behavior: resolve identifier as a type name.
     let stub = stub.or_else(|| resolve_jdk_type(jdk, text, ident))?;
-    let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
+    let bytes = match jdk.read_class_bytes(&stub.internal_name) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                internal_name = %stub.internal_name,
+                err = ?err,
+                "failed to read classfile bytes"
+            );
+            return None;
+        }
+    };
 
     let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
 
@@ -467,7 +543,18 @@ fn goto_definition_jdk(
     };
 
     // Store the virtual document so follow-up requests can read it via `Vfs::read_to_string`.
-    let uri: lsp_types::Uri = uri_string.parse().ok()?;
+    let uri: lsp_types::Uri = match uri_string.parse() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = %uri_string,
+                err = %err,
+                "failed to parse decompiled class uri"
+            );
+            return None;
+        }
+    };
     let vfs_path = VfsPath::from(&uri);
 
     // Best-effort: try to use the persisted decompiled-document store so we can compute a precise
@@ -477,10 +564,19 @@ fn goto_definition_jdk(
         vfs_path
             .as_decompiled()
             .and_then(|(content_hash, binary_name)| {
-                store
-                    .load_document(content_hash, binary_name)
-                    .ok()
-                    .flatten()
+                match store.load_document(content_hash, binary_name) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            content_hash,
+                            binary_name,
+                            err = ?err,
+                            "failed to load decompiled document from store"
+                        );
+                        None
+                    }
+                }
             })
     {
         let cached_range = member_symbol
@@ -515,7 +611,18 @@ fn goto_definition_jdk(
         }
     }
 
-    let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
+    let decompiled = match nova_decompile::decompile_classfile(&bytes) {
+        Ok(decompiled) => decompiled,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                internal_name = %stub.internal_name,
+                err = %err,
+                "failed to decompile classfile bytes"
+            );
+            return None;
+        }
+    };
 
     // Persist the decompiled output (text + mappings) for future requests.
     // Ignore errors and fall back to the in-memory virtual document store.
@@ -569,7 +676,7 @@ mod tests {
 
     #[test]
     fn go_to_definition_into_jdk_returns_canonical_virtual_uri_and_is_readable() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
 
         // Point JDK discovery at the tiny fake JDK shipped in this repository.
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -780,7 +887,20 @@ fn type_definition_jdk(
                 continue;
             }
 
-            let raw_type = text.get(type_start..type_end).unwrap_or("").trim();
+            let raw_type = match text.get(type_start..type_end) {
+                Some(slice) => slice.trim(),
+                None => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        text_len = text.len(),
+                        type_start,
+                        type_end,
+                        "failed to slice inferred variable type token"
+                    );
+                    search = name_end;
+                    continue;
+                }
+            };
             let Some(mut ty) = normalize_type_token(raw_type) else {
                 search = name_end;
                 continue;
@@ -831,21 +951,30 @@ fn type_definition_jdk(
 
             if stub.is_none() {
                 let suffix = format!(".{name}");
-                if let Ok(names) = jdk.iter_binary_names() {
-                    let mut found: Option<&str> = None;
-                    for candidate in names {
-                        if candidate.ends_with(&suffix) {
-                            if found.is_some() {
-                                // Ambiguous; stop early.
-                                found = None;
-                                break;
+                match jdk.iter_binary_names() {
+                    Ok(names) => {
+                        let mut found: Option<&str> = None;
+                        for candidate in names {
+                            if candidate.ends_with(&suffix) {
+                                if found.is_some() {
+                                    // Ambiguous; stop early.
+                                    found = None;
+                                    break;
+                                }
+                                found = Some(candidate);
                             }
-                            found = Some(candidate);
+                        }
+
+                        if let Some(binary_name) = found {
+                            stub = lookup_jdk_type_best_effort(jdk, binary_name);
                         }
                     }
-
-                    if let Some(binary_name) = found {
-                        stub = lookup_jdk_type_best_effort(jdk, binary_name);
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = ?err,
+                            "failed to iterate JDK binary names"
+                        );
                     }
                 }
             }
@@ -860,12 +989,44 @@ fn type_definition_jdk(
         let configured = state.project_root.as_deref().and_then(|root| {
             let workspace_root =
                 nova_project::workspace_root(root).unwrap_or_else(|| root.to_path_buf());
-            let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
+            let (config, _path) = match nova_config::load_for_workspace(&workspace_root) {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        workspace_root = %workspace_root.display(),
+                        err = %err,
+                        "failed to load workspace config; falling back to environment JDK discovery"
+                    );
+                    return None;
+                }
+            };
             let jdk_config = config.jdk_config();
-            nova_jdk::JdkIndex::discover(Some(&jdk_config)).ok()
+            match nova_jdk::JdkIndex::discover(Some(&jdk_config)) {
+                Ok(index) => Some(index),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        workspace_root = %workspace_root.display(),
+                        err = ?err,
+                        "failed to discover configured JDK index; falling back to environment discovery"
+                    );
+                    None
+                }
+            }
         });
 
-        state.jdk_index = configured.or_else(|| nova_jdk::JdkIndex::discover(None).ok());
+        state.jdk_index = configured.or_else(|| match nova_jdk::JdkIndex::discover(None) {
+            Ok(index) => Some(index),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    err = ?err,
+                    "failed to discover JDK index from environment"
+                );
+                None
+            }
+        });
     }
     let jdk = state.jdk_index.as_ref()?;
 
@@ -878,16 +1039,50 @@ fn type_definition_jdk(
     if let Some((dotted_start, dotted_end)) = dotted_ident_range(text, start, end) {
         if let Some(type_token) = text.get(dotted_start..dotted_end) {
             if let Some(stub) = resolve_jdk_type(jdk, text, type_token) {
-                let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
+                let bytes = match jdk.read_class_bytes(&stub.internal_name) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return None,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            internal_name = %stub.internal_name,
+                            err = ?err,
+                            "failed to read classfile bytes"
+                        );
+                        return None;
+                    }
+                };
                 let uri_string =
                     nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
-                let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
+                let decompiled = match nova_decompile::decompile_classfile(&bytes) {
+                    Ok(decompiled) => decompiled,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            internal_name = %stub.internal_name,
+                            err = %err,
+                            "failed to decompile classfile bytes"
+                        );
+                        return None;
+                    }
+                };
                 let class_symbol = nova_decompile::SymbolKey::Class {
                     internal_name: stub.internal_name.clone(),
                 };
                 let range = decompiled.range_for(&class_symbol)?;
 
-                let uri: lsp_types::Uri = uri_string.parse().ok()?;
+                let uri: lsp_types::Uri = match uri_string.parse() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            uri = %uri_string,
+                            err = %err,
+                            "failed to parse decompiled class uri"
+                        );
+                        return None;
+                    }
+                };
                 let vfs_path = VfsPath::from(&uri);
 
                 if let VfsPath::Decompiled {
@@ -928,17 +1123,51 @@ fn type_definition_jdk(
     // 2) Cursor is on a variable identifier; try to infer its declared type (`Type name`).
     let type_name = declared_type_for_variable(text, ident, offset)?;
     let stub = resolve_jdk_type(jdk, text, &type_name)?;
-    let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
+    let bytes = match jdk.read_class_bytes(&stub.internal_name) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                internal_name = %stub.internal_name,
+                err = ?err,
+                "failed to read classfile bytes"
+            );
+            return None;
+        }
+    };
 
     let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
-    let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
+    let decompiled = match nova_decompile::decompile_classfile(&bytes) {
+        Ok(decompiled) => decompiled,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                internal_name = %stub.internal_name,
+                err = %err,
+                "failed to decompile classfile bytes"
+            );
+            return None;
+        }
+    };
 
     let class_symbol = nova_decompile::SymbolKey::Class {
         internal_name: stub.internal_name.clone(),
     };
     let range = decompiled.range_for(&class_symbol)?;
 
-    let uri: lsp_types::Uri = uri_string.parse().ok()?;
+    let uri: lsp_types::Uri = match uri_string.parse() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = %uri_string,
+                err = %err,
+                "failed to parse decompiled class uri"
+            );
+            return None;
+        }
+    };
     let vfs_path = VfsPath::from(&uri);
 
     if let VfsPath::Decompiled {

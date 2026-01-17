@@ -5,20 +5,28 @@ pub(super) fn flush_memory_status_notifications(
     out: &impl RpcOut,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
-    let mut events = state.memory_events.lock().unwrap();
-    if events.is_empty() {
+    let mut events = crate::poison::lock(&state.memory_events, "flush_memory_status_notifications");
+    let Some(last) = events.pop() else {
         return Ok(());
-    }
+    };
 
     // Avoid spamming: publish only the latest state.
-    let last = events.pop().expect("checked non-empty");
     events.clear();
     drop(events);
 
     let mut top_components = state.memory.report_detailed().1;
     top_components.truncate(10);
-    let params = nova_lsp::memory_status_response_value(last.report, top_components)
-        .unwrap_or(serde_json::Value::Null);
+    let params = match nova_lsp::memory_status_response_value(last.report, top_components) {
+        Ok(params) => params,
+        Err(err) => {
+            tracing::error!(
+                target = "nova.lsp",
+                error = %err,
+                "failed to build memory status notification payload"
+            );
+            return Ok(());
+        }
+    };
     out.send_notification(nova_lsp::MEMORY_STATUS_NOTIFICATION, params)?;
     Ok(())
 }

@@ -92,7 +92,18 @@ pub(super) fn handle_code_action(
                             }
                             let index = Index::new(files);
 
-                            let canonical_uri = path.to_uri().unwrap_or_else(|| uri.to_string());
+                            let canonical_uri = match path.to_uri() {
+                                Some(uri) => uri,
+                                None => {
+                                    let fallback = uri.to_string();
+                                    tracing::debug!(
+                                        target = "nova.lsp",
+                                        uri = %fallback,
+                                        "failed to canonicalize safe delete URI; using request URI string"
+                                    );
+                                    fallback
+                                }
+                            };
                             let target = index
                                 .symbol_at_offset(
                                     &canonical_uri,
@@ -249,7 +260,7 @@ pub(super) fn handle_code_action(
                 uri,
                 range,
             });
-            actions.push(code_action_to_lsp(action));
+            actions.push(code_action_to_lsp(action)?);
         }
 
         // Patch-based AI code actions are only offered when (a) privacy policy allows code edits
@@ -275,7 +286,7 @@ pub(super) fn handle_code_action(
                             uri: Some(params.text_document.uri.to_string()),
                             range: Some(to_ide_range(&params.range)),
                         });
-                        actions.push(code_action_to_lsp(action));
+                        actions.push(code_action_to_lsp(action)?);
                     }
 
                     // Generate tests (best-effort: offer when there is a non-empty selection).
@@ -297,7 +308,7 @@ pub(super) fn handle_code_action(
                             uri: Some(params.text_document.uri.to_string()),
                             range: Some(to_ide_range(&params.range)),
                         });
-                        actions.push(code_action_to_lsp(action));
+                        actions.push(code_action_to_lsp(action)?);
                     }
                 }
             }
@@ -313,12 +324,32 @@ pub(super) fn handle_code_action(
                 let start_pos =
                     Position::new(params.range.start.line, params.range.start.character);
                 let end_pos = Position::new(params.range.end.line, params.range.end.character);
-                let start = position_to_offset_utf16(text, start_pos).unwrap_or(0);
-                let end = position_to_offset_utf16(text, end_pos).unwrap_or(start);
+                let Some(start) = position_to_offset_utf16(text, start_pos) else {
+                    return Ok(serde_json::Value::Array(actions));
+                };
+                let end = position_to_offset_utf16(text, end_pos).unwrap_or_else(|| {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        start_line = start_pos.line,
+                        start_character = start_pos.character,
+                        end_line = end_pos.line,
+                        end_character = end_pos.character,
+                        "codeAction received invalid end position; clamping span to start"
+                    );
+                    start
+                });
                 let span = Some(nova_ext::Span::new(start.min(end), start.max(end)));
 
-                let path = path_from_uri(uri.as_str());
-                let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.to_string()));
+                let Some(path) = path_from_uri(uri.as_str()) else {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        uri = uri.as_str(),
+                        "skipping extension code actions for non-file uri"
+                    );
+                    return Ok(serde_json::Value::Array(actions));
+                };
+                let ext_db = Arc::new(SingleFileDb::new(file_id, Some(path), text.to_string()));
                 let ide_extensions = IdeExtensions::with_registry(
                     ext_db,
                     Arc::clone(&state.config),
@@ -359,8 +390,17 @@ pub(super) fn handle_code_action_resolve(
     let Some(uri) = data.get("uri").and_then(|v| v.as_str()) else {
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
-    let Ok(uri) = uri.parse::<LspUri>() else {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+    let uri = match uri.parse::<LspUri>() {
+        Ok(uri) => uri,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri,
+                error = %err,
+                "codeAction/resolve received invalid uri in action data; returning unresolved action"
+            );
+            return serde_json::to_value(action).map_err(|e| e.to_string());
+        }
     };
     let Some(source) = load_document_text(state, uri.as_str()) else {
         return serde_json::to_value(action).map_err(|e| e.to_string());
@@ -397,7 +437,7 @@ pub(super) fn handle_code_action_resolve(
     serde_json::to_value(action).map_err(|e| e.to_string())
 }
 
-fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
+fn code_action_to_lsp(action: NovaCodeAction) -> Result<Value, String> {
     let action = CodeAction {
         title: action.title.clone(),
         kind: Some(CodeActionKind::from(action.kind.to_string())),
@@ -409,8 +449,8 @@ fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
         ..CodeAction::default()
     };
 
-    serde_json::to_value(action).unwrap_or_else(|err| {
+    serde_json::to_value(action).map_err(|err| {
         tracing::error!(target = "nova.lsp", error = %err, "failed to serialize code action");
-        Value::Null
+        err.to_string()
     })
 }

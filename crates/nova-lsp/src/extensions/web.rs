@@ -29,8 +29,7 @@ pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> 
                     ep.handler
                         .file
                         .and_then(|p| p.to_str().map(|s| s.to_string()))
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
+                        .map_or(Value::Null, Value::String),
                 );
                 obj.insert("line".to_string(), Value::from(ep.handler.line));
                 Value::Object(obj)

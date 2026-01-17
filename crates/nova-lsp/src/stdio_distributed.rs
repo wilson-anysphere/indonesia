@@ -43,12 +43,21 @@ fn default_distributed_worker_command() -> PathBuf {
         "nova-worker"
     };
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(exe_name);
-            if candidate.is_file() {
-                return candidate;
+    match std::env::current_exe() {
+        Ok(exe) => {
+            if let Some(dir) = exe.parent() {
+                let candidate = dir.join(exe_name);
+                if candidate.is_file() {
+                    return candidate;
+                }
             }
+        }
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                error = %err,
+                "failed to resolve current executable path; falling back to PATH lookup"
+            );
         }
     }
 
@@ -59,11 +68,22 @@ fn distributed_run_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let ts = unix_epoch_millis_fallback_zero();
     base.join(format!("nova-lsp-distributed-{}-{ts}", std::process::id()))
+}
+
+fn unix_epoch_millis_fallback_zero() -> u128 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                error = ?err,
+                "system time is before UNIX_EPOCH; using ts=0 for distributed run dir"
+            );
+            0
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -73,10 +93,7 @@ fn distributed_listen_addr(run_dir: &Path) -> nova_router::ListenAddr {
 
 #[cfg(windows)]
 fn distributed_listen_addr(_run_dir: &Path) -> nova_router::ListenAddr {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let ts = unix_epoch_millis_fallback_zero();
     nova_router::ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
 }
 
@@ -136,10 +153,32 @@ impl ServerState {
             }
         };
 
-        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+        let workspace_root = match workspace_root.canonicalize() {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    path = %workspace_root.display(),
+                    "failed to canonicalize workspace root for distributed mode; using provided path"
+                );
+                workspace_root
+            }
+        };
         let source_roots = source_roots
             .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
+            .map(|root| match root.canonicalize() {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        error = ?err,
+                        path = %root.display(),
+                        "failed to canonicalize source root for distributed mode; using provided path"
+                    );
+                    root
+                }
+            })
             .collect::<Vec<_>>();
 
         let cache_dir = match nova_cache::CacheDir::new(
@@ -239,7 +278,18 @@ impl ServerState {
                     error = ?err,
                     "failed to start distributed router; falling back to in-process workspace indexing"
                 );
-                let _ = std::fs::remove_dir_all(&run_dir);
+                match std::fs::remove_dir_all(&run_dir) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            dir = %run_dir.display(),
+                            error = %err,
+                            "failed to remove distributed router run directory after startup failure"
+                        );
+                    }
+                }
                 return;
             }
         };
@@ -276,16 +326,28 @@ impl ServerState {
                     "failed to shut down distributed router"
                 );
             }
-            Err(_) => {
+            Err(err) => {
                 tracing::warn!(
                     target = "nova.lsp",
                     timeout = ?timeout,
+                    error = ?err,
                     "timed out shutting down distributed router"
                 );
             }
         }
 
-        let _ = std::fs::remove_dir_all(&dist.run_dir);
+        match std::fs::remove_dir_all(&dist.run_dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    dir = %dist.run_dir.display(),
+                    error = %err,
+                    "failed to remove distributed router run directory"
+                );
+            }
+        }
         drop(dist);
     }
 }

@@ -63,10 +63,11 @@ impl ServerState {
         let Some(path) = self.analysis.file_paths.get(&file_id).cloned() else {
             return;
         };
-        self.semantic_search_open_files
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(path);
+        crate::poison::lock(
+            &self.semantic_search_open_files,
+            "semantic_search_mark_file_open",
+        )
+        .insert(path);
     }
 
     pub(super) fn semantic_search_mark_uri_closed(&mut self, uri: &LspUri) {
@@ -79,10 +80,11 @@ impl ServerState {
             return;
         };
 
-        self.semantic_search_open_files
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .remove(local);
+        crate::poison::lock(
+            &self.semantic_search_open_files,
+            "semantic_search_mark_uri_closed",
+        )
+        .remove(local);
     }
 
     pub(super) fn semantic_search_index_open_document(&mut self, file_id: DbFileId) {
@@ -94,10 +96,10 @@ impl ServerState {
             return;
         };
         if !self.semantic_search_should_index_path(&path) {
-            let mut search = self
-                .semantic_search
-                .write()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut search = crate::poison::rwlock_write(
+                &self.semantic_search,
+                "semantic_search_index_open_document/remove",
+            );
             search.remove_file(&path);
             return;
         }
@@ -105,10 +107,10 @@ impl ServerState {
             return;
         };
 
-        let mut search = self
-            .semantic_search
-            .write()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut search = crate::poison::rwlock_write(
+            &self.semantic_search,
+            "semantic_search_index_open_document/index",
+        );
         search.index_file(path, text.as_str().to_owned());
     }
 
@@ -122,10 +124,10 @@ impl ServerState {
         };
 
         if !self.semantic_search_should_index_path(&path) || !self.analysis.exists(file_id) {
-            let mut search = self
-                .semantic_search
-                .write()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut search = crate::poison::rwlock_write(
+                &self.semantic_search,
+                "semantic_search_sync_file_id/remove",
+            );
             search.remove_file(&path);
             return;
         }
@@ -134,10 +136,10 @@ impl ServerState {
             return;
         };
 
-        let mut search = self
-            .semantic_search
-            .write()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut search = crate::poison::rwlock_write(
+            &self.semantic_search,
+            "semantic_search_sync_file_id/index",
+        );
         search.index_file(path, text.as_str().to_owned());
     }
 
@@ -151,10 +153,8 @@ impl ServerState {
             return;
         };
 
-        let mut search = self
-            .semantic_search
-            .write()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut search =
+            crate::poison::rwlock_write(&self.semantic_search, "semantic_search_remove_uri");
         search.remove_file(local);
     }
 
@@ -228,10 +228,10 @@ impl ServerState {
             .store(0, Ordering::SeqCst);
 
         {
-            let mut open = self
-                .semantic_search_open_files
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut open = crate::poison::lock(
+                &self.semantic_search_open_files,
+                "semantic_search_workspace_index_open_files_snapshot",
+            );
             open.clear();
             for file_id in self.analysis.vfs.open_documents().snapshot() {
                 if let Some(path) = self.analysis.file_paths.get(&file_id) {
@@ -242,10 +242,10 @@ impl ServerState {
 
         // Clear the existing index so removed files do not linger across runs.
         {
-            let mut search = self
-                .semantic_search
-                .write()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut search = crate::poison::rwlock_write(
+                &self.semantic_search,
+                "semantic_search_workspace_index_clear",
+            );
             search.clear();
         }
 
@@ -263,10 +263,16 @@ impl ServerState {
         let excluded_matcher = Arc::clone(&self.ai_privacy_excluded_matcher);
         let status = Arc::clone(&self.semantic_search_workspace_index_status);
         let cancel = self.semantic_search_workspace_index_cancel.clone();
-        let runtime = self.runtime.as_ref().expect("checked runtime");
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
         runtime.spawn_blocking(move || {
             let mut indexed_files = 0u64;
             let mut indexed_bytes = 0u64;
+            let mut walk_errors = 0u64;
+            let mut walk_error_samples = 0u8;
+            let mut read_errors = 0u64;
+            let mut read_error_samples = 0u8;
 
             let mut walk = walkdir::WalkDir::new(&root).follow_links(false).into_iter();
             while let Some(entry) = walk.next() {
@@ -279,7 +285,19 @@ impl ServerState {
 
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(_) => continue,
+                    Err(err) => {
+                        walk_errors += 1;
+                        if walk_error_samples < 3 {
+                            walk_error_samples += 1;
+                            tracing::debug!(
+                                target = "nova.lsp",
+                                path = ?err.path(),
+                                error = ?err,
+                                "failed to walk filesystem during semantic search indexing; skipping entry"
+                            );
+                        }
+                        continue;
+                    }
                 };
 
                 // Skip common build/VCS output directories early.
@@ -310,15 +328,24 @@ impl ServerState {
                 }
 
                 // Avoid overwriting open-document overlays with on-disk content.
-                if open_files
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
+                if crate::poison::lock(&open_files, "semantic_search_workspace_index_open_overlay_check")
                     .contains(&path)
                 {
                     continue;
                 }
 
-                let meta_len = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                let meta_len = match entry.metadata() {
+                    Ok(meta) => meta.len(),
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %path.display(),
+                            error = ?err,
+                            "failed to read file metadata during semantic search indexing; skipping file"
+                        );
+                        continue;
+                    }
+                };
                 if meta_len > MAX_FILE_BYTES {
                     continue;
                 }
@@ -329,7 +356,22 @@ impl ServerState {
 
                 let text = match std::fs::read_to_string(&path) {
                     Ok(text) => text,
-                    Err(_) => continue,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        continue;
+                    }
+                    Err(err) => {
+                        read_errors += 1;
+                        if read_error_samples < 3 {
+                            read_error_samples += 1;
+                            tracing::debug!(
+                                target = "nova.lsp",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to read file during semantic search indexing; skipping file"
+                            );
+                        }
+                        continue;
+                    }
                 };
 
                 let len = text.len() as u64;
@@ -351,18 +393,17 @@ impl ServerState {
 
                 // Re-check open-document overlays: the file may have been opened after we started
                 // reading it. Skip indexing to avoid overwriting the in-memory version.
-                if open_files
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
+                if crate::poison::lock(&open_files, "semantic_search_workspace_index_open_overlay_recheck")
                     .contains(&path)
                 {
                     continue;
                 }
 
                 {
-                    let mut search = semantic_search
-                        .write()
-                        .unwrap_or_else(|err| err.into_inner());
+                    let mut search = crate::poison::rwlock_write(
+                        &semantic_search,
+                        "semantic_search_workspace_index_index_file",
+                    );
                     search.index_file(path, text);
                 }
 
@@ -372,6 +413,14 @@ impl ServerState {
                 status.indexed_bytes.store(indexed_bytes, Ordering::SeqCst);
             }
 
+            if walk_errors > 0 || read_errors > 0 {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    walk_errors,
+                    read_errors,
+                    "semantic search indexing skipped some entries due to I/O errors"
+                );
+            }
             status.completed_run_id.store(run_id, Ordering::SeqCst);
         });
     }

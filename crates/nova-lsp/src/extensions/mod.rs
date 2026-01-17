@@ -79,9 +79,18 @@ fn build_manager_for_root_with_cancel(
     timeout: Duration,
     cancellation: Option<CancellationToken>,
 ) -> BuildManager {
-    let cache_dir = CacheDir::new(project_root, CacheConfig::from_env())
-        .map(|dir| dir.root().join("build"))
-        .unwrap_or_else(|_| project_root.join(".nova").join("build-cache"));
+    let cache_dir = match CacheDir::new(project_root, CacheConfig::from_env()) {
+        Ok(dir) => dir.root().join("build"),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %project_root.display(),
+                error = %err,
+                "failed to determine cache dir; using .nova/build-cache"
+            );
+            project_root.join(".nova").join("build-cache")
+        }
+    };
     let deadline = Instant::now() + timeout;
     let runner: Arc<dyn CommandRunner> = Arc::new(DeadlineCommandRunner {
         deadline,

@@ -19,7 +19,15 @@ pub(super) fn handle_prepare_rename(
     let uri = params.text_document.uri;
     let snapshot = match state.refactor_snapshot(&uri) {
         Ok(snapshot) => snapshot,
-        Err(_) => return Ok(serde_json::Value::Null),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri.as_str(),
+                error = ?err,
+                "failed to build refactor snapshot for prepareRename; returning null"
+            );
+            return Ok(serde_json::Value::Null);
+        }
     };
 
     let file = RefactorFileId::new(uri.to_string());

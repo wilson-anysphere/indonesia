@@ -57,7 +57,19 @@ impl<'a> TextPos<'a> {
         if !self.text.is_char_boundary(offset) {
             return None;
         }
-        let offset_u32: u32 = offset.try_into().ok()?;
+        let offset_u32: u32 = match offset.try_into() {
+            Ok(offset) => offset,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    text_len = self.text.len(),
+                    offset,
+                    error = %err,
+                    "byte offset does not fit in u32; cannot convert to LSP position"
+                );
+                return None;
+            }
+        };
         let pos = self.index.position(self.text, TextSize::from(offset_u32));
         Some(LspPosition {
             line: pos.line,
@@ -97,4 +109,76 @@ pub fn lsp_position(text: &str, offset: usize) -> Option<LspPosition> {
 #[inline]
 pub fn byte_range(text: &str, range: LspRange) -> Option<ByteRange<usize>> {
     TextPos::new(text).byte_range(range)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CoercedRange {
+    pub start: usize,
+    pub end: usize,
+    pub end_was_clamped_to_eof: bool,
+    pub was_reversed: bool,
+}
+
+/// Convert an LSP UTF-16 range into a byte range, with a lossy policy for the end position.
+///
+/// Policy:
+/// - invalid start position => `None`
+/// - invalid end position => clamped to end-of-file
+/// - reversed ranges => normalized by swapping endpoints
+pub fn coerce_range_end_to_eof(text: &str, range: LspRange) -> Option<CoercedRange> {
+    let index = TextPos::new(text);
+    let start = index.byte_offset(range.start)?;
+
+    let (end, end_was_clamped_to_eof) = match index.byte_offset(range.end) {
+        Some(end) => (end, false),
+        None => (text.len(), true),
+    };
+
+    let (start, end, was_reversed) = if start <= end {
+        (start, end, false)
+    } else {
+        (end, start, true)
+    };
+
+    Some(CoercedRange {
+        start,
+        end,
+        end_was_clamped_to_eof,
+        was_reversed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coerce_range_end_to_eof_rejects_invalid_start() {
+        let text = "hello\nworld\n";
+        let range = LspRange::new(LspPosition::new(99, 0), LspPosition::new(99, 0));
+        assert!(coerce_range_end_to_eof(text, range).is_none());
+    }
+
+    #[test]
+    fn coerce_range_end_to_eof_clamps_invalid_end_to_eof() {
+        let text = "hello\nworld\n";
+        let range = LspRange::new(LspPosition::new(0, 0), LspPosition::new(99, 0));
+        let coerced = coerce_range_end_to_eof(text, range).expect("start should be valid");
+        assert_eq!(coerced.start, 0);
+        assert_eq!(coerced.end, text.len());
+        assert!(coerced.end_was_clamped_to_eof);
+        assert!(!coerced.was_reversed);
+    }
+
+    #[test]
+    fn coerce_range_end_to_eof_normalizes_reversed_ranges() {
+        let text = "hello\nworld\n";
+        let start = LspPosition::new(1, 0);
+        let end = LspPosition::new(0, 0);
+        let range = LspRange::new(start, end);
+        let coerced = coerce_range_end_to_eof(text, range).expect("positions should be valid");
+        assert!(coerced.was_reversed);
+        assert_eq!(coerced.start, 0);
+        assert_eq!(coerced.end, 6); // "hello\n"
+    }
 }

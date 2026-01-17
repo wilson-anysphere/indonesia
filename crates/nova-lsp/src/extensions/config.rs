@@ -2,7 +2,18 @@ use nova_config::NovaConfig;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn load_workspace_config_with_path(root: &Path) -> (NovaConfig, Option<PathBuf>) {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                root = %root.display(),
+                err = %err,
+                "failed to canonicalize workspace root; using raw path"
+            );
+            root.to_path_buf()
+        }
+    };
     let workspace_root = nova_project::workspace_root(&root).unwrap_or(root);
 
     match nova_config::load_for_workspace(&workspace_root) {

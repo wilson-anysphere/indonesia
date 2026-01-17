@@ -85,18 +85,46 @@ pub(super) fn message_router(
         match message {
             Message::Notification(notification) if notification.method == "$/cancelRequest" => {
                 let start = Instant::now();
-                if let Ok(params) =
-                    serde_json::from_value::<lsp_types::CancelParams>(notification.params)
-                {
-                    let cancelled = request_cancellation.cancel(params.id.clone());
-                    if cancelled {
-                        if let Some(salsa) = salsa.as_ref() {
-                            // Best-effort and non-panicking: cancellation is advisory and should
-                            // never crash the router thread.
-                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                salsa.request_cancellation();
-                            }));
+                match serde_json::from_value::<lsp_types::CancelParams>(notification.params) {
+                    Ok(params) => {
+                        let cancelled = request_cancellation.cancel(params.id.clone());
+                        if cancelled {
+                            if let Some(salsa) = salsa.as_ref() {
+                                // Best-effort and non-panicking: cancellation is advisory and should
+                                // never crash the router thread.
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        salsa.request_cancellation();
+                                    }));
+                                if let Err(panic) = result {
+                                    match crate::panic_util::panic_payload_to_string(panic.as_ref())
+                                    {
+                                        Some(message) => {
+                                            tracing::error!(
+                                                target = "nova.lsp",
+                                                cancel_id = ?params.id,
+                                                panic = %message,
+                                                "panic while forwarding $/cancelRequest to salsa; continuing"
+                                            );
+                                        }
+                                        None => {
+                                            tracing::error!(
+                                                target = "nova.lsp",
+                                                cancel_id = ?params.id,
+                                                "panic while forwarding $/cancelRequest to salsa; continuing"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            error = %err,
+                            "received malformed $/cancelRequest params; ignoring"
+                        );
                     }
                 }
                 metrics.record_request("$/cancelRequest", start.elapsed());
@@ -133,8 +161,26 @@ pub(super) fn message_router(
 }
 
 fn cancel_id_from_request_id(id: &RequestId) -> lsp_types::NumberOrString {
-    serde_json::to_value(id)
-        .ok()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_else(|| lsp_types::NumberOrString::String("<invalid-request-id>".to_string()))
+    let value = match serde_json::to_value(id) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                err = %err,
+                "failed to serialize request id for cancellation"
+            );
+            return lsp_types::NumberOrString::String("<invalid-request-id>".to_string());
+        }
+    };
+    match serde_json::from_value(value) {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                err = %err,
+                "failed to decode request id for cancellation"
+            );
+            lsp_types::NumberOrString::String("<invalid-request-id>".to_string())
+        }
+    }
 }

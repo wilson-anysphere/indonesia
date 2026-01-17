@@ -39,20 +39,32 @@ fn bazel_build_orchestrators() -> &'static Mutex<HashMap<PathBuf, BazelBuildOrch
 type CachedBazelWorkspace =
     Arc<Mutex<nova_build_bazel::BazelWorkspace<nova_build_bazel::DefaultCommandRunner>>>;
 
+fn canonicalize_best_effort(path: &Path, context: &'static str) -> PathBuf {
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                context,
+                path = %path.display(),
+                error = ?err,
+                "failed to canonicalize path; using provided path"
+            );
+            path.to_path_buf()
+        }
+    }
+}
+
 fn cached_bazel_workspaces() -> &'static Mutex<HashMap<PathBuf, CachedBazelWorkspace>> {
     static WORKSPACES: OnceLock<Mutex<HashMap<PathBuf, CachedBazelWorkspace>>> = OnceLock::new();
     WORKSPACES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelWorkspace> {
-    let canonical = workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canonical = canonicalize_best_effort(workspace_root, "cached_bazel_workspace_for_root");
 
     {
-        let map = cached_bazel_workspaces()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let map = crate::poison::lock(cached_bazel_workspaces(), "cached_bazel_workspace_for_root");
         if let Some(existing) = map.get(&canonical) {
             return Ok(Arc::clone(existing));
         }
@@ -67,9 +79,7 @@ fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelW
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
     let workspace = Arc::new(Mutex::new(workspace));
 
-    let mut map = cached_bazel_workspaces()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut map = crate::poison::lock(cached_bazel_workspaces(), "cached_bazel_workspace_for_root");
     let entry = map
         .entry(canonical)
         .or_insert_with(|| Arc::clone(&workspace));
@@ -77,12 +87,8 @@ fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelW
 }
 
 fn reset_cached_bazel_workspace(workspace_root: &Path) {
-    let canonical = workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
-    let mut map = cached_bazel_workspaces()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let canonical = canonicalize_best_effort(workspace_root, "reset_cached_bazel_workspace");
+    let mut map = crate::poison::lock(cached_bazel_workspaces(), "reset_cached_bazel_workspace");
     map.remove(&canonical);
 }
 
@@ -106,56 +112,65 @@ pub fn invalidate_bazel_workspaces(changed: &[PathBuf]) {
     }
 
     let workspaces: Vec<CachedBazelWorkspace> = {
-        let map = cached_bazel_workspaces()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let map = crate::poison::lock(cached_bazel_workspaces(), "invalidate_bazel_workspaces");
         map.values().cloned().collect()
     };
 
     for workspace in workspaces {
-        let mut guard = workspace.lock().unwrap_or_else(|err| err.into_inner());
+        let mut guard = crate::poison::lock(&workspace, "invalidate_bazel_workspaces/workspace");
         // Best-effort: cache invalidation should never crash the server.
-        let _ = guard.invalidate_changed_files(&changed_filtered);
+        if let Err(err) = guard.invalidate_changed_files(&changed_filtered) {
+            let sample = changed_filtered
+                .first()
+                .map(|path| path.display().to_string());
+            tracing::debug!(
+                target = "nova.lsp",
+                changed_files = changed_filtered.len(),
+                sample = ?sample,
+                error = %err,
+                "failed to invalidate bazel workspace caches"
+            );
+        }
     }
 }
 
 fn build_orchestrator_if_present(project_root: &Path) -> Option<BuildOrchestrator> {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let map = build_orchestrators()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let canonical = canonicalize_best_effort(project_root, "build_orchestrator_if_present");
+    let map = crate::poison::lock(build_orchestrators(), "build_orchestrator_if_present");
     map.get(&canonical).cloned()
 }
 
 fn bazel_build_orchestrator_if_present(workspace_root: &Path) -> Option<BazelBuildOrchestrator> {
-    let canonical = workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
-    let map = bazel_build_orchestrators()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let canonical = canonicalize_best_effort(workspace_root, "bazel_build_orchestrator_if_present");
+    let map = crate::poison::lock(
+        bazel_build_orchestrators(),
+        "bazel_build_orchestrator_if_present",
+    );
     map.get(&canonical).cloned()
 }
 
 fn build_orchestrator_for_root(project_root: &Path) -> BuildOrchestrator {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    let canonical = canonicalize_best_effort(project_root, "build_orchestrator_for_root");
 
     {
-        let map = build_orchestrators()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let map = crate::poison::lock(build_orchestrators(), "build_orchestrator_for_root/read");
         if let Some(existing) = map.get(&canonical) {
             return existing.clone();
         }
     }
 
-    let cache_dir = CacheDir::new(&canonical, CacheConfig::from_env())
-        .map(|dir| dir.root().join("build"))
-        .unwrap_or_else(|_| canonical.join(".nova").join("build-cache"));
+    let cache_dir = match CacheDir::new(&canonical, CacheConfig::from_env()) {
+        Ok(dir) => dir.root().join("build"),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %canonical.display(),
+                error = %err,
+                "failed to determine cache dir; using .nova/build-cache"
+            );
+            canonical.join(".nova").join("build-cache")
+        }
+    };
     let runner_factory = Arc::new(BuildStatusCommandRunnerFactory {
         project_root: canonical.clone(),
         timeout: Some(Duration::from_secs(15 * 60)),
@@ -163,22 +178,19 @@ fn build_orchestrator_for_root(project_root: &Path) -> BuildOrchestrator {
     let orchestrator =
         BuildOrchestrator::with_runner_factory(canonical.clone(), cache_dir, runner_factory);
 
-    let mut map = build_orchestrators()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut map = crate::poison::lock(build_orchestrators(), "build_orchestrator_for_root/write");
     map.entry(canonical).or_insert_with(|| orchestrator.clone());
     orchestrator
 }
 
 fn bazel_build_orchestrator_for_root(workspace_root: &Path) -> BazelBuildOrchestrator {
-    let canonical = workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canonical = canonicalize_best_effort(workspace_root, "bazel_build_orchestrator_for_root");
 
     {
-        let map = bazel_build_orchestrators()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let map = crate::poison::lock(
+            bazel_build_orchestrators(),
+            "bazel_build_orchestrator_for_root/read",
+        );
         if let Some(existing) = map.get(&canonical) {
             return existing.clone();
         }
@@ -190,9 +202,10 @@ fn bazel_build_orchestrator_for_root(workspace_root: &Path) -> BazelBuildOrchest
     });
     let orchestrator = BazelBuildOrchestrator::with_executor(canonical.clone(), executor);
 
-    let mut map = bazel_build_orchestrators()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut map = crate::poison::lock(
+        bazel_build_orchestrators(),
+        "bazel_build_orchestrator_for_root/write",
+    );
     map.entry(canonical).or_insert_with(|| orchestrator.clone());
     orchestrator
 }
@@ -392,9 +405,7 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
     }
 
     let requested_root = PathBuf::from(&params.project_root);
-    let project_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let project_root = canonicalize_best_effort(requested_root.as_path(), "handle_build_project");
 
     let allow_bazel = matches!(params.build_tool, None | Some(BuildTool::Auto));
     let bazel_workspace_root = allow_bazel
@@ -465,6 +476,9 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
 }
 
 pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
+    static COMPILE_CONFIG_FALLBACK_LOGS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     let params = parse_params(params)?;
     let project_root = PathBuf::from(&params.project_root);
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
@@ -530,7 +544,18 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
                     output_dirs,
                 )
             }
-            Err(_) => {
+            Err(err) => {
+                if COMPILE_CONFIG_FALLBACK_LOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    < 10
+                {
+                    tracing::debug!(
+                        target = "nova.lsp",
+                        project_root = %project_root.display(),
+                        build_kind = ?kind,
+                        error = %err,
+                        "failed to extract java compile config; falling back to legacy classpath"
+                    );
+                }
                 // If the richer compile-config extraction fails, fall back to the legacy
                 // classpath computation so existing clients keep working.
                 let cp = run_classpath(&manager, &params)?;
@@ -575,18 +600,37 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
     }
 
     let requested_root = PathBuf::from(&params.project_root);
-    let project_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let project_root = canonicalize_best_effort(requested_root.as_path(), "handle_reload_project");
 
     reset_build_orchestrator(&project_root);
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&project_root) {
         reset_bazel_build_orchestrator(&workspace_root);
         reset_cached_bazel_workspace(&workspace_root);
 
-        if let Ok(cache_dir) = CacheDir::new(&workspace_root, CacheConfig::from_env()) {
-            let cache_path = cache_dir.queries_dir().join("bazel.json");
-            let _ = std::fs::remove_file(cache_path);
+        match CacheDir::new(&workspace_root, CacheConfig::from_env()) {
+            Ok(cache_dir) => {
+                let cache_path = cache_dir.queries_dir().join("bazel.json");
+                match std::fs::remove_file(&cache_path) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.lsp",
+                            path = %cache_path.display(),
+                            error = %err,
+                            "failed to evict bazel cache file"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.lsp",
+                    workspace_root = %workspace_root.display(),
+                    error = %err,
+                    "failed to open cache dir; skipping bazel cache eviction"
+                );
+            }
         }
     }
 
@@ -666,6 +710,7 @@ fn normalize_maven_module_relative(module: Option<&str>) -> Option<&Path> {
     }
 }
 
+#[derive(Debug)]
 enum BuildKind {
     Maven,
     Gradle,
@@ -728,7 +773,19 @@ fn parse_java_major(text: &str) -> Option<u16> {
     }
     let trimmed = trimmed.strip_prefix("1.").unwrap_or(trimmed);
     let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
+    match digits.parse::<u16>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                input = %trimmed,
+                digits_len = digits.len(),
+                error = %err,
+                "failed to parse java major version"
+            );
+            None
+        }
+    }
 }
 
 fn language_level_from_java_compile_config(cfg: &JavaCompileConfig) -> Option<LanguageLevel> {
@@ -802,15 +859,32 @@ fn load_build_metadata(params: &ProjectParams) -> BuildMetadata {
     let root = PathBuf::from(&params.project_root);
     let kind = match detect_kind(&root, params.build_tool) {
         Ok(kind) => kind,
-        Err(_) => return BuildMetadata::default(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %root.display(),
+                error = %err,
+                "failed to detect build kind; returning default build metadata"
+            );
+            return BuildMetadata::default();
+        }
     };
 
     let (nova_config, nova_config_path) = load_workspace_config_with_path(&root);
     let mut options = LoadOptions::default();
     options.nova_config = nova_config;
     options.nova_config_path = nova_config_path;
-    let Ok(project) = load_project_with_options(&root, &options) else {
-        return BuildMetadata::default();
+    let project = match load_project_with_options(&root, &options) {
+        Ok(project) => project,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                project_root = %root.display(),
+                error = %err,
+                "failed to load project for build metadata; returning defaults"
+            );
+            return BuildMetadata::default();
+        }
     };
 
     let module_roots = match kind {
@@ -948,9 +1022,8 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
     }
 
     let requested_root = PathBuf::from(&req.project_root);
-    let requested_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let requested_root =
+        canonicalize_best_effort(requested_root.as_path(), "handle_target_classpath");
 
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
         let Some(target) = req.target.clone() else {
@@ -961,7 +1034,8 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
             let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-            let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
+            let mut workspace =
+                crate::poison::lock(&workspace, "handle_target_classpath/bazel_workspace");
 
             let info = workspace
                 .target_compile_info(&target)
@@ -1218,9 +1292,8 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
     }
 
     let requested_root = PathBuf::from(&req.project_root);
-    let requested_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let requested_root =
+        canonicalize_best_effort(requested_root.as_path(), "handle_file_classpath");
 
     let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) else {
         return Err(NovaLspError::InvalidParams(
@@ -1237,7 +1310,8 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let mut status_guard = BuildStatusGuard::new(&workspace_root);
     let value_result: Result<serde_json::Value> = (|| {
         let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-        let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
+        let mut workspace =
+            crate::poison::lock(&workspace, "handle_file_classpath/bazel_workspace");
 
         let run_target = super::get_str(obj, &["runTarget", "run_target"])
             .map(str::trim)
@@ -1345,15 +1419,14 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
     }
 
     let requested_root = PathBuf::from(&req.project_root);
-    let requested_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let requested_root = canonicalize_best_effort(requested_root.as_path(), "handle_project_model");
 
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
             let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-            let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
+            let mut workspace =
+                crate::poison::lock(&workspace, "handle_project_model/bazel_workspace");
 
             let targets = workspace
                 .java_targets()
@@ -1500,20 +1573,37 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                         let mut gradle_configs_by_path =
                             HashMap::<String, JavaCompileConfig>::new();
                         if config.modules.len() > 1 {
-                            if let Ok(configs) =
-                                manager.java_compile_configs_all_gradle(&project_root)
-                            {
-                                gradle_configs_by_path = configs.into_iter().collect();
+                            match manager.java_compile_configs_all_gradle(&project_root) {
+                                Ok(configs) => {
+                                    gradle_configs_by_path = configs.into_iter().collect();
+                                }
+                                Err(err) => {
+                                    tracing::debug!(
+                                        target = "nova.lsp",
+                                        project_root = %project_root.display(),
+                                        error = %err,
+                                        "failed to load Gradle compile configs via batch task; falling back to per-module queries"
+                                    );
+                                }
                             }
                         }
 
                         let mut units = Vec::with_capacity(config.modules.len());
                         for module in config.modules.iter() {
-                            let module_root = module.root.canonicalize().unwrap_or_else(|_| {
-                                // Use the module root as a best-effort key if canonicalization
-                                // fails (e.g. missing directory).
-                                module.root.clone()
-                            });
+                            let module_root = match module.root.canonicalize() {
+                                Ok(root) => root,
+                                Err(err) => {
+                                    tracing::debug!(
+                                        target = "nova.lsp",
+                                        root = %module.root.display(),
+                                        err = %err,
+                                        "failed to canonicalize Gradle module root; using raw path"
+                                    );
+                                    // Use the module root as a best-effort key if canonicalization
+                                    // fails (e.g. missing directory).
+                                    module.root.clone()
+                                }
+                            };
                             let project_path = gradle_project_paths_by_root
                                 .get(&module_root)
                                 .cloned()
@@ -1540,9 +1630,16 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             } else if let Some(root_project_path) = composite_root_project_path {
                                 match gradle_roots_by_project_path.get(root_project_path) {
                                     Some(build_root) => {
-                                        let inner = project_path
+                                        let inner = match project_path
                                             .strip_prefix(root_project_path)
-                                            .unwrap_or_default();
+                                        {
+                                            Some(inner) => inner,
+                                            None => {
+                                                return Err(NovaLspError::Internal(format!(
+                                                    "composite Gradle project path {project_path:?} is missing expected root prefix {root_project_path:?}",
+                                                )));
+                                            }
+                                        };
                                         let inner =
                                             if inner.is_empty() { None } else { Some(inner) };
                                         (build_root.as_path(), inner)
@@ -1625,8 +1722,17 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
                         units
                     }
-                    nova_project::BuildSystem::Simple | nova_project::BuildSystem::Bazel => {
-                        unreachable!("handled by outer match")
+                    nova_project::BuildSystem::Simple => {
+                        return Err(NovaLspError::Internal(
+                            "unexpected BuildSystem::Simple while building Gradle project model"
+                                .to_string(),
+                        ));
+                    }
+                    nova_project::BuildSystem::Bazel => {
+                        return Err(NovaLspError::Internal(
+                            "unexpected BuildSystem::Bazel while building Gradle project model"
+                                .to_string(),
+                        ));
                     }
                 };
 
@@ -1695,16 +1801,15 @@ fn build_status_registry() -> &'static Mutex<BTreeMap<PathBuf, BuildStatusEntry>
 }
 
 fn canonicalize_project_root(project_root: &Path) -> PathBuf {
-    project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf())
+    canonicalize_best_effort(project_root, "canonicalize_project_root")
 }
 
 fn build_status_snapshot_for_project_root(project_root: &Path) -> (BuildStatus, Option<String>) {
     let key = canonicalize_project_root(project_root);
-    let registry = build_status_registry()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let registry = crate::poison::lock(
+        build_status_registry(),
+        "build_status_snapshot_for_project_root",
+    );
     match registry.get(&key) {
         Some(entry) if entry.in_flight_count > 0 => (BuildStatus::Building, None),
         Some(entry) if entry.last_failed => (BuildStatus::Failed, entry.last_error.clone()),
@@ -1732,9 +1837,7 @@ pub(super) struct BuildStatusGuard {
 impl BuildStatusGuard {
     pub(super) fn new(project_root: &Path) -> Self {
         let project_root = canonicalize_project_root(project_root);
-        let mut registry = build_status_registry()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut registry = crate::poison::lock(build_status_registry(), "BuildStatusGuard::new");
         let entry = registry.entry(project_root.clone()).or_default();
         entry.in_flight_count = entry.in_flight_count.saturating_add(1);
         drop(registry);
@@ -1763,9 +1866,7 @@ impl BuildStatusGuard {
 
 impl Drop for BuildStatusGuard {
     fn drop(&mut self) {
-        let mut registry = build_status_registry()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut registry = crate::poison::lock(build_status_registry(), "BuildStatusGuard::drop");
         let mut should_remove = false;
 
         if let Some(entry) = registry.get_mut(&self.project_root) {
@@ -1814,10 +1915,8 @@ impl CommandRunner for BuildStatusCommandRunner {
             Ok(output) => {
                 if !output.status.success() {
                     self.failed.store(true, Ordering::Relaxed);
-                    let mut last_error = self
-                        .last_error
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner());
+                    let mut last_error =
+                        crate::poison::lock(&self.last_error, "BuildStatusCommandRunner::run");
                     if last_error.is_none() {
                         *last_error = output
                             .status
@@ -1835,10 +1934,8 @@ impl CommandRunner for BuildStatusCommandRunner {
             }
             Err(err) => {
                 self.failed.store(true, Ordering::Relaxed);
-                let mut last_error = self
-                    .last_error
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner());
+                let mut last_error =
+                    crate::poison::lock(&self.last_error, "BuildStatusCommandRunner::run");
                 if last_error.is_none() {
                     *last_error = Some(err.to_string());
                 }
@@ -1852,11 +1949,9 @@ impl CommandRunner for BuildStatusCommandRunner {
 impl Drop for BuildStatusCommandRunner {
     fn drop(&mut self) {
         if self.failed.load(Ordering::Relaxed) {
-            let last_error = self
-                .last_error
-                .get_mut()
-                .unwrap_or_else(|err| err.into_inner())
-                .take();
+            let last_error =
+                crate::poison::get_mut(&mut self.last_error, "BuildStatusCommandRunner::drop")
+                    .take();
             self.guard.mark_failure(last_error);
         } else {
             self.guard.mark_success();
@@ -2075,9 +2170,8 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
     }
 
     let requested_root = PathBuf::from(&project_root);
-    let requested_root = requested_root
-        .canonicalize()
-        .unwrap_or_else(|_| requested_root.clone());
+    let requested_root =
+        canonicalize_best_effort(requested_root.as_path(), "handle_build_diagnostics");
 
     let snapshot = build_orchestrator_if_present(&requested_root).map(|o| o.diagnostics());
     if let Some(BuildDiagnosticsSnapshot {
@@ -2176,9 +2270,9 @@ mod tests {
             let mut obj = serde_json::Map::new();
             obj.insert(
                 "compileClasspath".to_string(),
-                compile_classpath
-                    .map(|v| serde_json::Value::Array(v.into_iter().map(Value::String).collect()))
-                    .unwrap_or(Value::Null),
+                compile_classpath.map_or(Value::Null, |v| {
+                    serde_json::Value::Array(v.into_iter().map(Value::String).collect())
+                }),
             );
             obj
         })
@@ -2522,9 +2616,10 @@ mod tests {
             Arc::new(FailingRunnerFactory),
         );
         {
-            let mut map = build_orchestrators()
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut map = crate::poison::lock(
+                build_orchestrators(),
+                "build_status_test/insert_orchestrator",
+            );
             map.insert(root.clone(), orchestrator.clone());
         }
 
@@ -2555,11 +2650,12 @@ mod tests {
             handle_build_status(project_root_params(root.to_string_lossy().to_string())).unwrap();
 
         assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("failed"));
+        let last_error = resp
+            .get("lastError")
+            .and_then(|v| v.as_str())
+            .expect("expected lastError to be a string");
         assert!(
-            resp.get("lastError")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .contains("boom"),
+            last_error.contains("boom"),
             "expected lastError to include the runner error: {resp:?}"
         );
     }
@@ -2678,6 +2774,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn path_env_or_empty() -> String {
+        match std::env::var("PATH") {
+            Ok(path) => path,
+            Err(_) => String::new(),
+        }
+    }
+
     #[cfg(unix)]
     fn write_executable(path: &Path, contents: &str) {
         fs::write(path, contents).unwrap();
@@ -2690,7 +2793,7 @@ mod tests {
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_maven() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -2761,7 +2864,7 @@ echo \"null\"\n",
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_gradle() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -2806,7 +2909,7 @@ echo \"null\"\n",
     #[cfg(unix)]
     fn project_model_uses_batch_gradle_task_for_multi_module_workspaces() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -2937,7 +3040,7 @@ esac\n",
         );
 
         let count = fs::read_to_string(&counter)
-            .unwrap_or_default()
+            .expect("read gradle invocation counter")
             .lines()
             .count();
         assert_eq!(count, 1, "expected 1 gradle invocation, got {count}");
@@ -2947,7 +3050,7 @@ esac\n",
     #[cfg(unix)]
     fn project_model_uses_batch_gradle_task_with_settings_project_dir_overrides() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -3072,7 +3175,7 @@ esac\n",
         assert_eq!(paths, vec![":app", ":lib"]);
 
         let count = fs::read_to_string(&counter)
-            .unwrap_or_default()
+            .expect("read gradle invocation counter")
             .lines()
             .count();
         assert_eq!(count, 1, "expected 1 gradle invocation, got {count}");
@@ -3082,7 +3185,7 @@ esac\n",
     #[cfg(unix)]
     fn project_model_resolves_buildsrc_via_gradle_wrapper_project_dir() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -3258,7 +3361,7 @@ fi\n",
         );
 
         let count = fs::read_to_string(&counter)
-            .unwrap_or_default()
+            .expect("read gradle invocation counter")
             .lines()
             .count();
         assert_eq!(count, 2, "expected 2 gradle invocations, got {count}");
@@ -3268,7 +3371,7 @@ fi\n",
     #[cfg(unix)]
     fn project_model_uses_gradle_project_path_from_settings_project_dir_override() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -3362,7 +3465,7 @@ esac\n",
     #[cfg(unix)]
     fn project_model_uses_gradle_project_path_for_include_flat_modules() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        let original_path = std::env::var("PATH").unwrap_or_default();
+        let original_path = path_env_or_empty();
 
         // `includeFlat` references a sibling directory of the Gradle workspace root.
         let tmp = TempDir::new().unwrap();

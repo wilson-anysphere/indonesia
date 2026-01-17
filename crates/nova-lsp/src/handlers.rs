@@ -141,7 +141,32 @@ pub fn type_hierarchy_subtypes(
 }
 
 fn file_id_from_uri(db: &dyn FileIdDatabase, uri: &lsp_types::Uri) -> Option<FileId> {
-    let url = url::Url::parse(uri.as_str()).ok()?;
-    let path = url.to_file_path().ok()?;
+    let uri_str = uri.as_str();
+    let url = match url::Url::parse(uri_str) {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri_str,
+                err = %err,
+                "failed to parse uri as url"
+            );
+            return None;
+        }
+    };
+    if url.scheme() != "file" {
+        return None;
+    }
+    let path = match url.to_file_path() {
+        Ok(path) => path,
+        Err(()) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                uri = uri_str,
+                "failed to decode file uri to path"
+            );
+            return None;
+        }
+    };
     db.file_id(&path)
 }

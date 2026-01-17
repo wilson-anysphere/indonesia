@@ -39,7 +39,7 @@ pub fn to_lsp_completion_item(
         );
         nova.insert(
             "confidence".to_string(),
-            confidence.map(Value::from).unwrap_or(Value::Null),
+            confidence.map_or(Value::Null, Value::from),
         );
         if !imports.is_empty() {
             nova.insert(

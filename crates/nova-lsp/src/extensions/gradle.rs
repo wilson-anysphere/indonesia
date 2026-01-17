@@ -16,7 +16,18 @@ pub(super) fn resolve_gradle_module_root(
     options.nova_config = nova_config;
     options.nova_config_path = nova_config_path;
 
-    let model = load_workspace_model_with_options(workspace_root, &options).ok()?;
+    let model = match load_workspace_model_with_options(workspace_root, &options) {
+        Ok(model) => model,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.lsp",
+                workspace_root = %workspace_root.display(),
+                err = ?err,
+                "failed to load workspace model while resolving gradle module root"
+            );
+            return None;
+        }
+    };
     model
         .modules
         .iter()
