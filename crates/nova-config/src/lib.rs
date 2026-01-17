@@ -1587,7 +1587,17 @@ impl LogBuffer {
     }
 
     pub fn push_line(&self, line: String) {
-        let mut inner = self.inner.lock().expect("LogBuffer mutex poisoned");
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.config",
+                    error = %poisoned,
+                    "LogBuffer mutex poisoned; recovering"
+                );
+                poisoned.into_inner()
+            }
+        };
         if inner.len() == self.capacity {
             inner.pop_front();
         }
@@ -1595,7 +1605,17 @@ impl LogBuffer {
     }
 
     pub fn last_lines(&self, n: usize) -> Vec<String> {
-        let inner = self.inner.lock().expect("LogBuffer mutex poisoned");
+        let inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.config",
+                    error = %poisoned,
+                    "LogBuffer mutex poisoned; recovering"
+                );
+                poisoned.into_inner()
+            }
+        };
         inner.iter().rev().take(n).cloned().rev().collect()
     }
 }
@@ -1656,7 +1676,17 @@ impl<'a> MakeWriter<'a> for MutexFileMakeWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         MutexFileWriter {
-            guard: self.file.lock().expect("audit log file mutex poisoned"),
+            guard: match self.file.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    tracing::error!(
+                        target = "nova.config",
+                        error = %poisoned,
+                        "audit log file mutex poisoned; recovering"
+                    );
+                    poisoned.into_inner()
+                }
+            },
         }
     }
 }
