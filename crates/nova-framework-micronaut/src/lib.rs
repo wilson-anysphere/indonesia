@@ -23,6 +23,7 @@ mod beans;
 mod config;
 mod endpoints;
 mod parse;
+mod poison;
 mod validation;
 
 pub use applicability::{is_micronaut_applicable, is_micronaut_applicable_with_classpath};
@@ -191,10 +192,7 @@ impl MicronautAnalyzer {
 
         let fingerprint = project_fingerprint(db, &file_ids);
         {
-            let cache = self
-                .cache
-                .lock()
-                .expect("MicronautAnalyzer cache mutex poisoned");
+            let cache = poison::lock(&self.cache, "MicronautAnalyzer.cache");
             if let Some(entry) = cache.get(&project) {
                 if entry.fingerprint == fingerprint {
                     return entry.analysis.clone();
@@ -206,10 +204,7 @@ impl MicronautAnalyzer {
         sources.sort_by(|a, b| a.path.cmp(&b.path));
 
         let analysis = Arc::new(analyze_sources_with_config(&sources, &config_files));
-        let mut cache = self
-            .cache
-            .lock()
-            .expect("MicronautAnalyzer cache mutex poisoned");
+        let mut cache = poison::lock(&self.cache, "MicronautAnalyzer.cache");
         cache.insert(
             project,
             CachedProjectAnalysis {
@@ -246,10 +241,7 @@ impl MicronautAnalyzer {
             hasher.finish()
         };
         {
-            let cache = self
-                .cache
-                .lock()
-                .expect("MicronautAnalyzer cache mutex poisoned");
+            let cache = poison::lock(&self.cache, "MicronautAnalyzer.cache");
             if let Some(entry) = cache.get(&project) {
                 if entry.fingerprint == fingerprint {
                     return entry.analysis.clone();
@@ -267,10 +259,7 @@ impl MicronautAnalyzer {
         let sources = vec![JavaSource::new(path, text.to_string())];
 
         let analysis = Arc::new(analyze_sources_with_config(&sources, &config_files));
-        let mut cache = self
-            .cache
-            .lock()
-            .expect("MicronautAnalyzer cache mutex poisoned");
+        let mut cache = poison::lock(&self.cache, "MicronautAnalyzer.cache");
         cache.insert(
             project,
             CachedProjectAnalysis {
