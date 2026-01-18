@@ -813,30 +813,21 @@ struct MemoryEnforceObserver {
 #[cfg(test)]
 impl MemoryEnforceObserver {
     fn record(&self) {
-        let mut guard = self
-            .inner
-            .lock()
-            .expect("memory enforce observer mutex poisoned");
+        let mut guard = self.inner.lock().recover_poisoned();
         *guard += 1;
         self.cv.notify_all();
     }
 
     fn wait_for_at_least(&self, expected: usize, timeout: Duration) -> bool {
         let started = Instant::now();
-        let mut guard = self
-            .inner
-            .lock()
-            .expect("memory enforce observer mutex poisoned");
+        let mut guard = self.inner.lock().recover_poisoned();
         while *guard < expected {
             let elapsed = started.elapsed();
             if elapsed >= timeout {
                 return false;
             }
             let remaining = timeout - elapsed;
-            let (next_guard, wait_res) = self
-                .cv
-                .wait_timeout(guard, remaining)
-                .expect("memory enforce observer mutex poisoned");
+            let (next_guard, wait_res) = self.cv.wait_timeout(guard, remaining).recover_poisoned();
             guard = next_guard;
             if wait_res.timed_out() {
                 break;
@@ -846,10 +837,7 @@ impl MemoryEnforceObserver {
     }
 
     fn count(&self) -> usize {
-        *self
-            .inner
-            .lock()
-            .expect("memory enforce observer mutex poisoned")
+        *self.inner.lock().recover_poisoned()
     }
 }
 
@@ -9968,7 +9956,7 @@ public class Bar {}"#;
             fn watch_path(&mut self, path: &Path, mode: WatchMode) -> std::io::Result<()> {
                 self.calls
                     .lock()
-                    .expect("recording watcher calls mutex poisoned")
+                    .recover_poisoned()
                     .push((path.to_path_buf(), mode));
                 self.inner.watch_path(path, mode)
             }
@@ -9999,9 +9987,7 @@ public class Bar {}"#;
         let config_path_for_wait = config_path.clone();
         timeout(Duration::from_secs(5), async move {
             loop {
-                let calls = watch_calls_for_wait
-                    .lock()
-                    .expect("recording watcher calls mutex poisoned");
+                let calls = watch_calls_for_wait.lock().recover_poisoned();
                 let parent = config_path_for_wait.parent();
                 if calls.iter().any(|(path, mode)| {
                     *mode == WatchMode::NonRecursive
