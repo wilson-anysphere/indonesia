@@ -1,6 +1,6 @@
 use crate::{
-    BuildError, BuildManager, BuildResult, CommandRunner, DefaultCommandRunner, GradleBuildTask,
-    GradleConfig, MavenBuildGoal, MavenConfig,
+    poison, BuildError, BuildManager, BuildResult, CommandRunner, DefaultCommandRunner,
+    GradleBuildTask, GradleConfig, MavenBuildGoal, MavenConfig,
 };
 use nova_process::CancellationToken;
 use std::collections::VecDeque;
@@ -202,11 +202,7 @@ impl BuildOrchestrator {
     /// newly queued request. This keeps the build queue bounded and ensures
     /// clients can "rebuild" after edits without waiting for stale builds.
     pub fn enqueue(&self, request: BuildRequest) -> BuildTaskId {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let mut state = poison::lock(&self.inner.state, "build_orchestrator.state");
         state.next_id = state.next_id.wrapping_add(1);
         let id = state.next_id;
 
@@ -224,11 +220,7 @@ impl BuildOrchestrator {
 
     /// Cancel any running build and drop queued builds.
     pub fn cancel(&self) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let mut state = poison::lock(&self.inner.state, "build_orchestrator.state");
         if let Some(running) = state.running.as_ref() {
             running.cancel.cancel();
         }
@@ -238,11 +230,7 @@ impl BuildOrchestrator {
 
     /// Cancel any in-flight build and clear all recorded state.
     pub fn reset(&self) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let mut state = poison::lock(&self.inner.state, "build_orchestrator.state");
         if let Some(running) = state.running.as_ref() {
             running.cancel.cancel();
         }
@@ -252,11 +240,7 @@ impl BuildOrchestrator {
     }
 
     pub fn status(&self) -> BuildStatusSnapshot {
-        let state = self
-            .inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let state = poison::lock(&self.inner.state, "build_orchestrator.state");
         let (status, active_id, message) = if let Some(running) = state.running.as_ref() {
             (
                 BuildTaskState::Running,
@@ -286,11 +270,7 @@ impl BuildOrchestrator {
     }
 
     pub fn diagnostics(&self) -> BuildDiagnosticsSnapshot {
-        let state = self
-            .inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let state = poison::lock(&self.inner.state, "build_orchestrator.state");
         let status = if state.running.is_some() {
             BuildTaskState::Running
         } else if !state.queue.is_empty() {
@@ -324,15 +304,9 @@ impl BuildOrchestrator {
 fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
     loop {
         let (id, request) = {
-            let mut state = inner
-                .state
-                .lock()
-                .expect("build orchestrator lock poisoned");
+            let mut state = poison::lock(&inner.state, "build_orchestrator.state");
             while state.queue.is_empty() {
-                state = inner
-                    .wake
-                    .wait(state)
-                    .expect("build orchestrator lock poisoned");
+                state = poison::wait(&inner.wake, state, "build_orchestrator.state");
             }
             let Some(queued) = state.queue.pop_front() else {
                 continue;
@@ -349,10 +323,7 @@ fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
         };
 
         let cancel = {
-            let state = inner
-                .state
-                .lock()
-                .expect("build orchestrator lock poisoned");
+            let state = poison::lock(&inner.state, "build_orchestrator.state");
             let running = state
                 .running
                 .as_ref()
@@ -362,10 +333,7 @@ fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
 
         let (state, result, error) = run_build(&inner, &request, cancel.clone());
 
-        let mut shared = inner
-            .state
-            .lock()
-            .expect("build orchestrator lock poisoned");
+        let mut shared = poison::lock(&inner.state, "build_orchestrator.state");
         shared.running = None;
         shared.last = Some(CompletedBuild {
             id,

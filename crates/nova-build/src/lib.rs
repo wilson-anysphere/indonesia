@@ -13,6 +13,7 @@ mod jpms;
 mod maven;
 mod module_graph;
 mod orchestrator;
+mod poison;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use command::{CommandOutput, CommandRunner, DefaultCommandRunner};
