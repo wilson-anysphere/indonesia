@@ -56,7 +56,7 @@ impl MockProvider {
     }
 
     fn set_response(&self, completions: Vec<MultiTokenCompletion>) {
-        *self.response.lock().expect("response mutex poisoned") = completions;
+        *self.response.lock().unwrap_or_else(|err| err.into_inner()) = completions;
     }
 
     fn release(&self) {
@@ -64,7 +64,10 @@ impl MockProvider {
     }
 
     fn prompts(&self) -> Vec<String> {
-        self.prompts.lock().expect("prompts mutex poisoned").clone()
+        self.prompts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 }
 
@@ -76,13 +79,13 @@ impl MultiTokenCompletionProvider for MockProvider {
         let MultiTokenCompletionRequest { prompt, cancel, .. } = request;
         self.prompts
             .lock()
-            .expect("prompts mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(prompt);
         let gate = Arc::clone(&self.gate);
         let response = self
             .response
             .lock()
-            .expect("response mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .clone();
 
         Box::pin(async move {

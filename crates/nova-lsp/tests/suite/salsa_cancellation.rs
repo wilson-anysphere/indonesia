@@ -144,20 +144,20 @@ fn cancel_request_triggers_salsa_cancellation() {
 
     // Initialize + initialized.
     {
-        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
+        let mut stdin = stdin.lock().unwrap_or_else(|err| err.into_inner());
         write_jsonrpc_message(&mut *stdin, &initialize_request_empty(1));
     }
     let _initialize_resp = messages
         .recv_response_with_id(1, Duration::from_secs(5))
         .expect("initialize response");
     {
-        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
+        let mut stdin = stdin.lock().unwrap_or_else(|err| err.into_inner());
         write_jsonrpc_message(&mut *stdin, &initialized_notification());
     }
 
     // Run a long-running Salsa query that only checks Salsa cancellation (not the per-request token).
     {
-        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
+        let mut stdin = stdin.lock().unwrap_or_else(|err| err.into_inner());
         write_jsonrpc_message(
             &mut *stdin,
             &jsonrpc_request(
@@ -240,14 +240,14 @@ fn cancel_request_triggers_salsa_cancellation() {
 
     // Shutdown + exit.
     {
-        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
+        let mut stdin = stdin.lock().unwrap_or_else(|err| err.into_inner());
         write_jsonrpc_message(&mut *stdin, &shutdown_request(3));
     }
     let _shutdown_resp = messages
         .recv_response_with_id(3, Duration::from_secs(5))
         .expect("shutdown response");
     {
-        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
+        let mut stdin = stdin.lock().unwrap_or_else(|err| err.into_inner());
         write_jsonrpc_message(&mut *stdin, &exit_notification());
     }
     drop(stdin);
