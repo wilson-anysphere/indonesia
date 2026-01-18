@@ -142,9 +142,7 @@ fn project_for_file(db: &dyn Database, file: FileId) -> Option<Arc<CachedQuarkus
 
     let fingerprint = fingerprint_sources(db, &java_files);
 
-    if let Some(hit) = QUARKUS_ANALYSIS_CACHE
-        .lock()
-        .expect("quarkus analysis cache mutex poisoned")
+    if let Some(hit) = crate::poison::lock(&*QUARKUS_ANALYSIS_CACHE, "quarkus_intel.analysis_cache")
         .get_cloned(&root_key)
         .filter(|entry| entry.fingerprint == fingerprint)
     {
@@ -183,9 +181,7 @@ fn project_for_file(db: &dyn Database, file: FileId) -> Option<Arc<CachedQuarkus
         fingerprint,
     });
 
-    QUARKUS_ANALYSIS_CACHE
-        .lock()
-        .expect("quarkus analysis cache mutex poisoned")
+    crate::poison::lock(&*QUARKUS_ANALYSIS_CACHE, "quarkus_intel.analysis_cache")
         .insert(root_key, entry.clone());
 
     Some(entry)

@@ -236,9 +236,8 @@ fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavi
     let fingerprints = Arc::new(workspace_fingerprints(db, &file_ids));
 
     {
-        let mut cache = FILE_NAVIGATION_INDEX_CACHE
-            .lock()
-            .expect("file navigation cache lock poisoned");
+        let mut cache =
+            crate::poison::lock(&*FILE_NAVIGATION_INDEX_CACHE, "file_navigation.index_cache");
         if let Some(entry) = cache
             .get_cloned(&root_key)
             .filter(|entry| entry.fingerprints == fingerprints)
@@ -249,9 +248,8 @@ fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavi
 
     let built = Arc::new(FileNavigationIndex::new_for_file_ids(db, file_ids));
 
-    let mut cache = FILE_NAVIGATION_INDEX_CACHE
-        .lock()
-        .expect("file navigation cache lock poisoned");
+    let mut cache =
+        crate::poison::lock(&*FILE_NAVIGATION_INDEX_CACHE, "file_navigation.index_cache");
     if let Some(entry) = cache
         .get_cloned(&root_key)
         .filter(|entry| entry.fingerprints == fingerprints)

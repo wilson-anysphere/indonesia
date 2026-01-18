@@ -81,9 +81,7 @@ pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
     let base_signature = match workspace_signature(db, &root, cancel) {
         Some(sig) => sig,
         None => {
-            return ANALYSIS_CACHE
-                .lock()
-                .expect("micronaut analysis cache poisoned")
+            return crate::poison::lock(&*ANALYSIS_CACHE, "micronaut_intel.analysis_cache")
                 .get(&root)
                 .and_then(|entry| entry.analysis.clone());
         }
@@ -92,18 +90,14 @@ pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
 
     // Fast path: cache hit.
     {
-        let cache = ANALYSIS_CACHE
-            .lock()
-            .expect("micronaut analysis cache poisoned");
+        let cache = crate::poison::lock(&*ANALYSIS_CACHE, "micronaut_intel.analysis_cache");
         if let Some(entry) = cache.get(&root).filter(|e| e.signature == signature) {
             return entry.analysis.clone();
         }
     }
 
     if cancel.is_cancelled() {
-        return ANALYSIS_CACHE
-            .lock()
-            .expect("micronaut analysis cache poisoned")
+        return crate::poison::lock(&*ANALYSIS_CACHE, "micronaut_intel.analysis_cache")
             .get(&root)
             .and_then(|entry| entry.analysis.clone());
     }
@@ -111,9 +105,7 @@ pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
     let (sources, config_files) = match gather_workspace_inputs(db, &root, cancel) {
         Some(inputs) => inputs,
         None => {
-            return ANALYSIS_CACHE
-                .lock()
-                .expect("micronaut analysis cache poisoned")
+            return crate::poison::lock(&*ANALYSIS_CACHE, "micronaut_intel.analysis_cache")
                 .get(&root)
                 .and_then(|entry| entry.analysis.clone());
         }
@@ -128,9 +120,7 @@ pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
     };
 
     if !cancel.is_cancelled() {
-        let mut cache = ANALYSIS_CACHE
-            .lock()
-            .expect("micronaut analysis cache poisoned");
+        let mut cache = crate::poison::lock(&*ANALYSIS_CACHE, "micronaut_intel.analysis_cache");
         cache.insert(
             root.clone(),
             CachedAnalysis {

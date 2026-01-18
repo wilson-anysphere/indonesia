@@ -127,9 +127,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
         Some(files) => files,
         None => {
             let root_key = root_key_for_cache(config.as_ref(), &root);
-            return JPA_ANALYSIS_CACHE
-                .lock()
-                .expect("jpa cache mutex poisoned")
+            return crate::poison::lock(&*JPA_ANALYSIS_CACHE, "jpa_intel.analysis_cache")
                 .get_cloned(&root_key);
         }
     };
@@ -141,18 +139,14 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
         Some(fingerprint) => fingerprint,
         None => {
             let root_key = root_key_for_cache(config.as_ref(), &root);
-            return JPA_ANALYSIS_CACHE
-                .lock()
-                .expect("jpa cache mutex poisoned")
+            return crate::poison::lock(&*JPA_ANALYSIS_CACHE, "jpa_intel.analysis_cache")
                 .get_cloned(&root_key);
         }
     };
 
     let root_key = root_key_for_cache(config.as_ref(), &root);
 
-    if let Some(hit) = JPA_ANALYSIS_CACHE
-        .lock()
-        .expect("jpa cache mutex poisoned")
+    if let Some(hit) = crate::poison::lock(&*JPA_ANALYSIS_CACHE, "jpa_intel.analysis_cache")
         .get_cloned(&root_key)
         .filter(|entry| entry.fingerprint == fingerprint)
     {
@@ -160,9 +154,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
     }
 
     if cancel.is_cancelled() {
-        return JPA_ANALYSIS_CACHE
-            .lock()
-            .expect("jpa cache mutex poisoned")
+        return crate::poison::lock(&*JPA_ANALYSIS_CACHE, "jpa_intel.analysis_cache")
             .get_cloned(&root_key);
     }
 
@@ -196,9 +188,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
         fingerprint,
     });
 
-    JPA_ANALYSIS_CACHE
-        .lock()
-        .expect("jpa cache mutex poisoned")
+    crate::poison::lock(&*JPA_ANALYSIS_CACHE, "jpa_intel.analysis_cache")
         .insert(root_key, entry.clone());
 
     Some(entry)

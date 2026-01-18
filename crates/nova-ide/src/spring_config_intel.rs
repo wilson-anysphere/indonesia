@@ -91,9 +91,10 @@ fn workspace_index_for_root(db: &dyn Database, root: PathBuf) -> Arc<SpringWorks
     let fingerprint = workspace_fingerprint(db, &files, &metadata);
 
     {
-        let mut cache = SPRING_CONFIG_INDEX_CACHE
-            .lock()
-            .expect("spring config workspace cache lock poisoned");
+        let mut cache = crate::poison::lock(
+            &*SPRING_CONFIG_INDEX_CACHE,
+            "spring_config_intel.workspace_index_cache",
+        );
         if let Some(entry) = cache
             .get_cloned(&root)
             .filter(|e| e.fingerprint == fingerprint)
@@ -104,9 +105,10 @@ fn workspace_index_for_root(db: &dyn Database, root: PathBuf) -> Arc<SpringWorks
 
     let built = Arc::new(build_workspace_index(db, &files, metadata));
 
-    let mut cache = SPRING_CONFIG_INDEX_CACHE
-        .lock()
-        .expect("spring config workspace cache lock poisoned");
+    let mut cache = crate::poison::lock(
+        &*SPRING_CONFIG_INDEX_CACHE,
+        "spring_config_intel.workspace_index_cache",
+    );
     if let Some(entry) = cache
         .get_cloned(&root)
         .filter(|e| e.fingerprint == fingerprint)

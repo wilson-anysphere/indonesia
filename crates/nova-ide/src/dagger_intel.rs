@@ -219,11 +219,10 @@ fn project_analysis_with_cancel<DB: ?Sized + Database>(
     }
 
     // Cache hit.
-    if let Some(existing) = DAGGER_ANALYSIS_CACHE
-        .lock()
-        .expect("dagger analysis cache mutex poisoned")
-        .get(&root)
-        .cloned()
+    if let Some(existing) =
+        crate::poison::lock(&*DAGGER_ANALYSIS_CACHE, "dagger_intel.analysis_cache")
+            .get(&root)
+            .cloned()
     {
         if existing.fingerprint == fingerprint {
             return Some(existing);
@@ -242,9 +241,7 @@ fn project_analysis_with_cancel<DB: ?Sized + Database>(
     let mut files: Vec<JavaSourceFile> = Vec::with_capacity(file_ids.len());
     for (path, file_id) in file_ids {
         if cancel.is_cancelled() {
-            return DAGGER_ANALYSIS_CACHE
-                .lock()
-                .expect("dagger analysis cache mutex poisoned")
+            return crate::poison::lock(&*DAGGER_ANALYSIS_CACHE, "dagger_intel.analysis_cache")
                 .get(&root)
                 .cloned();
         }
@@ -256,9 +253,7 @@ fn project_analysis_with_cancel<DB: ?Sized + Database>(
 
     let analysis = analyze_java_files(&files);
     let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
-    DAGGER_ANALYSIS_CACHE
-        .lock()
-        .expect("dagger analysis cache mutex poisoned")
+    crate::poison::lock(&*DAGGER_ANALYSIS_CACHE, "dagger_intel.analysis_cache")
         .insert(root, Arc::clone(&cached));
     Some(cached)
 }

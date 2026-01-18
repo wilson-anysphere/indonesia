@@ -82,34 +82,35 @@ static WORKSPACE_INDEX_BUILDS_BY_WORKSPACE: Lazy<Mutex<HashMap<u64, usize>>> =
 
 #[cfg(any(test, debug_assertions))]
 fn record_workspace_index_build(workspace_id: u64) {
-    let mut counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
-        .lock()
-        .expect("nav workspace index build counter lock poisoned");
+    let mut counts = crate::poison::lock(
+        &*WORKSPACE_INDEX_BUILDS_BY_WORKSPACE,
+        "nav_resolve.workspace_index_build_counts",
+    );
     *counts.entry(workspace_id).or_insert(0) += 1;
 }
 
 #[cfg(any(test, debug_assertions))]
 pub(crate) fn workspace_index_build_count(db: &dyn Database) -> usize {
     let (workspace_id, _) = workspace_id_and_fingerprint(db);
-    let counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
-        .lock()
-        .expect("nav workspace index build counter lock poisoned");
+    let counts = crate::poison::lock(
+        &*WORKSPACE_INDEX_BUILDS_BY_WORKSPACE,
+        "nav_resolve.workspace_index_build_counts",
+    );
     counts.get(&workspace_id).copied().unwrap_or(0)
 }
 
 #[cfg(any(test, debug_assertions))]
 pub(crate) fn reset_workspace_index_build_counts() {
     {
-        let mut counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
-            .lock()
-            .expect("nav workspace index build counter lock poisoned");
+        let mut counts = crate::poison::lock(
+            &*WORKSPACE_INDEX_BUILDS_BY_WORKSPACE,
+            "nav_resolve.workspace_index_build_counts",
+        );
         counts.clear();
     }
 
     // Keep tests deterministic by resetting the global LRU.
-    let mut cache = WORKSPACE_INDEX_CACHE
-        .lock()
-        .expect("nav workspace index cache lock poisoned");
+    let mut cache = crate::poison::lock(&*WORKSPACE_INDEX_CACHE, "nav_resolve.workspace_index");
     cache.map.clear();
     cache.order.clear();
 }
@@ -614,9 +615,8 @@ impl Resolver {
         let (workspace_id, fingerprint) = workspace_id_and_fingerprint(db);
 
         {
-            let mut cache = WORKSPACE_INDEX_CACHE
-                .lock()
-                .expect("nav workspace index cache lock poisoned");
+            let mut cache =
+                crate::poison::lock(&*WORKSPACE_INDEX_CACHE, "nav_resolve.workspace_index");
             if let Some(entry) = cache
                 .get_cloned(&workspace_id)
                 .filter(|e| e.fingerprint == fingerprint)
@@ -629,9 +629,7 @@ impl Resolver {
         #[cfg(any(test, debug_assertions))]
         record_workspace_index_build(workspace_id);
 
-        let mut cache = WORKSPACE_INDEX_CACHE
-            .lock()
-            .expect("nav workspace index cache lock poisoned");
+        let mut cache = crate::poison::lock(&*WORKSPACE_INDEX_CACHE, "nav_resolve.workspace_index");
         if let Some(entry) = cache
             .get_cloned(&workspace_id)
             .filter(|e| e.fingerprint == fingerprint)
