@@ -2050,10 +2050,7 @@ NOVA_JSON_END
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations
-                .lock()
-                .expect("invocations mutex poisoned")
-                .clone()
+            crate::poison::lock(&self.invocations, "gradle.tests.invocations").clone()
         }
     }
 
@@ -2064,10 +2061,7 @@ NOVA_JSON_END
             _program: &Path,
             args: &[String],
         ) -> std::io::Result<CommandOutput> {
-            self.invocations
-                .lock()
-                .expect("invocations mutex poisoned")
-                .push(args.to_vec());
+            crate::poison::lock(&self.invocations, "gradle.tests.invocations").push(args.to_vec());
             Ok(self.output.clone())
         }
     }

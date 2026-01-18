@@ -1915,10 +1915,10 @@ mod tests {
     }
 
     fn with_home_dir<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned");
+        let _guard = crate::poison::lock(
+            ENV_LOCK.get_or_init(|| Mutex::new(())),
+            "maven.tests.env_lock",
+        );
 
         // Set both to behave deterministically on Windows/Linux.
         let _home = EnvVarGuard::set("HOME", Some(home));
@@ -2479,10 +2479,7 @@ mod tests {
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations
-                .lock()
-                .expect("invocations mutex poisoned")
-                .clone()
+            crate::poison::lock(&self.invocations, "maven.tests.invocations").clone()
         }
     }
 
@@ -2507,10 +2504,7 @@ mod tests {
             _program: &Path,
             args: &[String],
         ) -> std::io::Result<CommandOutput> {
-            self.invocations
-                .lock()
-                .expect("invocations mutex poisoned")
-                .push(args.to_vec());
+            crate::poison::lock(&self.invocations, "maven.tests.invocations").push(args.to_vec());
 
             let expression = args
                 .iter()
