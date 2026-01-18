@@ -11,6 +11,8 @@
 //! source text rather than a full Java parser/HIR. This keeps the crate usable
 //! in isolation while the rest of Nova is under construction.
 
+mod poison;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -237,7 +239,10 @@ impl DaggerAnalyzer {
         if let Some(existing) = self
             .cache
             .lock()
-            .expect("dagger analysis cache mutex poisoned")
+            .unwrap_or_else(|err| {
+                drop(err);
+                poison::lock(&self.cache, "DaggerAnalyzer.cache")
+            })
             .get(&project)
             .cloned()
         {
@@ -265,10 +270,7 @@ impl DaggerAnalyzer {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let analysis = analyze_java_files(&files);
         let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
-        self.cache
-            .lock()
-            .expect("dagger analysis cache mutex poisoned")
-            .insert(project, Arc::clone(&cached));
+        poison::lock(&self.cache, "DaggerAnalyzer.cache").insert(project, Arc::clone(&cached));
         Some(cached)
     }
 
@@ -296,7 +298,10 @@ impl DaggerAnalyzer {
         if let Some(existing) = self
             .cache
             .lock()
-            .expect("dagger analysis cache mutex poisoned")
+            .unwrap_or_else(|err| {
+                drop(err);
+                poison::lock(&self.cache, "DaggerAnalyzer.cache")
+            })
             .get(&project)
             .cloned()
         {
@@ -334,10 +339,7 @@ impl DaggerAnalyzer {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let analysis = analyze_java_files(&files);
         let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
-        self.cache
-            .lock()
-            .expect("dagger analysis cache mutex poisoned")
-            .insert(project, Arc::clone(&cached));
+        poison::lock(&self.cache, "DaggerAnalyzer.cache").insert(project, Arc::clone(&cached));
         Some(cached)
     }
 }
