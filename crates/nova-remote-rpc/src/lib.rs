@@ -1861,7 +1861,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {
-        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
+        let _guard = lock_std_mutex(&TEST_LOCK, "TEST_LOCK");
 
         // A regression test for the length-prefixed framing: `read_wire_frame` must reject
         // lengths larger than `max_frame_len` *before* allocating the buffer.
@@ -1900,7 +1900,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_large_len_prefix_eof_does_not_allocate_full_len() {
-        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
+        let _guard = lock_std_mutex(&TEST_LOCK, "TEST_LOCK");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1942,7 +1942,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_large_len_prefix_blocks_without_allocating_full_len() {
-        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
+        let _guard = lock_std_mutex(&TEST_LOCK, "TEST_LOCK");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -3538,7 +3538,10 @@ mod tests {
                     || visitor.target.as_deref() == Some("nova.worker.output");
                 if matches_target {
                     if let Some(line) = visitor.line {
-                        self.lines.lock().expect("lines mutex poisoned").push(line);
+                        self.lines
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .push(line);
                     }
                 }
             }
@@ -3553,11 +3556,11 @@ mod tests {
 
         tracing::info!(target = "nova.worker.output", line = %"probe", "worker output");
         assert_eq!(
-            lines.lock().expect("lines mutex poisoned").len(),
+            lines.lock().unwrap_or_else(|err| err.into_inner()).len(),
             1,
             "capture layer did not receive probe event"
         );
-        lines.lock().expect("lines mutex poisoned").clear();
+        lines.lock().unwrap_or_else(|err| err.into_inner()).clear();
 
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         let task = tokio::spawn(drain_worker_output(1, "stdout", reader));
@@ -3569,7 +3572,7 @@ mod tests {
 
         task.await.unwrap();
 
-        let captured = lines.lock().expect("lines mutex poisoned");
+        let captured = lines.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(captured.len(), 1, "expected exactly one logged line");
 
         let line = &captured[0];

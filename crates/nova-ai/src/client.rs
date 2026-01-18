@@ -1133,7 +1133,7 @@ mod tests {
             "dummy returns unsanitized content"
         );
 
-        let events = events.lock().expect("events mutex poisoned");
+        let events = events.lock().unwrap_or_else(|err| err.into_inner());
         let audit = audit_events(&events);
 
         let request = audit
@@ -1213,7 +1213,7 @@ mod tests {
         let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
         assert_eq!(parts.concat(), format!("chunk {secret}"));
 
-        let events = events.lock().expect("events mutex poisoned");
+        let events = events.lock().unwrap_or_else(|err| err.into_inner());
         let audit = audit_events(&events);
 
         let response = audit
