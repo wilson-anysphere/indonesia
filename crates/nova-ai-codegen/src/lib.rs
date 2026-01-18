@@ -813,7 +813,7 @@ mod tests {
             if let Some(tx) = self
                 .started_tx
                 .lock()
-                .expect("started_tx mutex poisoned")
+                .unwrap_or_else(|err| err.into_inner())
                 .take()
             {
                 let _ = tx.send(());
@@ -821,7 +821,7 @@ mod tests {
             if let Some(rx) = self
                 .resume_rx
                 .lock()
-                .expect("resume_rx mutex poisoned")
+                .unwrap_or_else(|err| err.into_inner())
                 .take()
             {
                 let _ = rx.recv();
