@@ -45,7 +45,7 @@ impl Drop for EnvVarGuard {
 
 #[test]
 fn discovers_nova_toml_in_workspace_root() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -63,7 +63,7 @@ fn discovers_nova_toml_in_workspace_root() {
 
 #[test]
 fn env_override_wins_over_workspace_file() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
 
     let dir = tempdir().unwrap();
     std::fs::write(
@@ -94,7 +94,7 @@ fn env_override_wins_over_workspace_file() {
 
 #[test]
 fn env_override_accepts_absolute_path() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
 
     let dir = tempdir().unwrap();
     std::fs::write(
@@ -118,7 +118,7 @@ fn env_override_accepts_absolute_path() {
 
 #[test]
 fn missing_config_returns_defaults() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -129,7 +129,7 @@ fn missing_config_returns_defaults() {
 
 #[test]
 fn reload_for_workspace_reports_changes() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -164,7 +164,7 @@ fn reload_for_workspace_reports_changes() {
 
 #[test]
 fn load_for_workspace_with_diagnostics_resolves_relative_paths_from_workspace_root() {
-    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();

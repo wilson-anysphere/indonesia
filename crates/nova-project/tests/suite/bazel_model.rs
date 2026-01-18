@@ -40,7 +40,7 @@ impl MockRunner {
                 .inner
                 .responses
                 .lock()
-                .expect("responses mutex poisoned");
+                .unwrap_or_else(|err| err.into_inner());
             guard.insert(
                 key,
                 CommandOutput {
@@ -63,7 +63,7 @@ impl CommandRunner for MockRunner {
             .inner
             .responses
             .lock()
-            .expect("responses mutex poisoned");
+            .unwrap_or_else(|err| err.into_inner());
         guard
             .get(&key)
             .cloned()
