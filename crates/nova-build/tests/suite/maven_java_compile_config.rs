@@ -32,7 +32,7 @@ impl CommandRunner for MavenEvaluateRoutingRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),

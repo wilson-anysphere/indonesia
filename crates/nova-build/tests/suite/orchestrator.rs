@@ -55,7 +55,7 @@ impl CommandRunnerFactory for ScriptedRunnerFactory {
         &self,
         cancellation: nova_process::CancellationToken,
     ) -> Arc<dyn CommandRunner> {
-        let mut scripts = self.scripts.lock().expect("scripts mutex poisoned");
+        let mut scripts = self.scripts.lock().unwrap_or_else(|err| err.into_inner());
         let script = scripts.pop_front().unwrap_or_else(|| Script {
             delay: Duration::from_millis(0),
             output: CommandOutput {

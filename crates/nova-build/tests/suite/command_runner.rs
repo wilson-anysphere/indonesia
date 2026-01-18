@@ -33,7 +33,7 @@ impl FakeCommandRunner {
     fn invocations(&self) -> Vec<Invocation> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .clone()
     }
 }
@@ -42,7 +42,7 @@ impl CommandRunner for FakeCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),
@@ -69,7 +69,7 @@ impl RoutingCommandRunner {
     fn invocations(&self) -> Vec<Invocation> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .clone()
     }
 }
@@ -78,7 +78,7 @@ impl CommandRunner for RoutingCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),
@@ -114,7 +114,7 @@ impl MavenExpressionCommandRunner {
     fn invocations(&self) -> Vec<Invocation> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .clone()
     }
 }
@@ -123,7 +123,7 @@ impl CommandRunner for MavenExpressionCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("invocations mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),

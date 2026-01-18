@@ -40,7 +40,10 @@ impl CountingRunner {
     }
 
     fn invocations(&self) -> usize {
-        *self.invocations.lock().expect("invocations mutex poisoned")
+        *self
+            .invocations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 }
 
@@ -51,7 +54,10 @@ impl CommandRunner for CountingRunner {
         _program: &Path,
         _args: &[String],
     ) -> std::io::Result<CommandOutput> {
-        let mut invocations = self.invocations.lock().expect("invocations mutex poisoned");
+        let mut invocations = self
+            .invocations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         *invocations += 1;
         Ok(self.output.clone())
     }
@@ -74,13 +80,19 @@ impl MultiOutputRunner {
     }
 
     fn invocations(&self) -> usize {
-        *self.invocations.lock().expect("invocations mutex poisoned")
+        *self
+            .invocations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 }
 
 impl CommandRunner for MultiOutputRunner {
     fn run(&self, _cwd: &Path, _program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
-        let mut invocations = self.invocations.lock().expect("invocations mutex poisoned");
+        let mut invocations = self
+            .invocations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         *invocations += 1;
 
         if args
