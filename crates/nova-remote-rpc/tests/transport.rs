@@ -706,7 +706,7 @@ async fn cancel_sent_immediately_after_request_is_observed() {
                 token.cancelled().await;
             }
 
-            if let Some(done_tx) = done_tx.lock().expect("done_tx mutex poisoned").take() {
+            if let Some(done_tx) = done_tx.lock().unwrap_or_else(|err| err.into_inner()).take() {
                 let _ = done_tx.send(());
             }
 

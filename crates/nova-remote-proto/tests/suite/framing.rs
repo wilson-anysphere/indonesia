@@ -5,7 +5,7 @@ use nova_remote_proto::{RpcMessage, MAX_FRAME_BYTES};
 fn decode_framed_message_rejects_truncated_payload() {
     let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS
         .lock()
-        .expect("__TRANSPORT_ENV_LOCK_FOR_TESTS mutex poisoned");
+        .unwrap_or_else(|err| err.into_inner());
     let frame = transport::encode_framed_message(&RpcMessage::Ack).unwrap();
     let truncated = &frame[..frame.len() - 1];
     assert!(transport::decode_framed_message(truncated).is_err());
@@ -15,7 +15,7 @@ fn decode_framed_message_rejects_truncated_payload() {
 fn decode_framed_message_rejects_trailing_bytes() {
     let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS
         .lock()
-        .expect("__TRANSPORT_ENV_LOCK_FOR_TESTS mutex poisoned");
+        .unwrap_or_else(|err| err.into_inner());
     let mut frame = transport::encode_framed_message(&RpcMessage::Ack).unwrap();
     frame.push(0);
     assert!(transport::decode_framed_message(&frame).is_err());
@@ -25,7 +25,7 @@ fn decode_framed_message_rejects_trailing_bytes() {
 fn decode_framed_message_rejects_invalid_payload() {
     let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS
         .lock()
-        .expect("__TRANSPORT_ENV_LOCK_FOR_TESTS mutex poisoned");
+        .unwrap_or_else(|err| err.into_inner());
     let frame = transport::encode_frame(&[0xff]).unwrap();
     assert!(transport::decode_framed_message(&frame).is_err());
 }
@@ -34,7 +34,7 @@ fn decode_framed_message_rejects_invalid_payload() {
 fn decode_framed_message_rejects_oversized_len_prefix() {
     let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS
         .lock()
-        .expect("__TRANSPORT_ENV_LOCK_FOR_TESTS mutex poisoned");
+        .unwrap_or_else(|err| err.into_inner());
     let oversized_len: u32 = (MAX_FRAME_BYTES as u32).saturating_add(1);
     let bytes = oversized_len.to_le_bytes();
     assert!(transport::decode_framed_message(&bytes).is_err());
