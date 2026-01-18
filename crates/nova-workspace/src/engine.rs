@@ -1760,9 +1760,18 @@ impl WorkspaceEngine {
         for (from, to) in raw_move_events {
             // Directory moves can arrive as a single watcher event. Expand to per-file moves using
             // the currently-known VFS paths under `from`.
-            let (from_is_dir, to_is_dir) = if looks_like_file(&from) && looks_like_file(&to) {
+            let from_known_as_file = is_known_vfs_path(&from);
+            let to_known_as_file = is_known_vfs_path(&to);
+
+            let (from_is_dir, to_is_dir) = if (looks_like_file(&from) && looks_like_file(&to))
+                || (from_known_as_file && to_known_as_file)
+            {
                 // Fast-path: obvious file moves (e.g. `A.java` -> `B.java`) should not require
                 // `metadata` stats. Directory moves are guarded by extension-less/dot-dir paths.
+                //
+                // Additionally, if both endpoints are already tracked by the VFS, treat the move
+                // as file-level without probing the filesystem. This keeps extension-less file
+                // renames cheap while preserving directory-move expansion for unknown paths.
                 (false, false)
             } else {
                 (
@@ -1770,8 +1779,6 @@ impl WorkspaceEngine {
                     is_dir_best_effort(&to, "watch moved to"),
                 )
             };
-            let from_known_as_file = is_known_vfs_path(&from);
-            let to_known_as_file = is_known_vfs_path(&to);
 
             let dir_move_found = if from_is_dir
                 || to_is_dir
