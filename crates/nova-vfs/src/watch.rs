@@ -1066,7 +1066,18 @@ mod notify_impl {
             ENV_LOCK
                 .get_or_init(|| Mutex::new(()))
                 .lock()
-                .expect("env lock poisoned")
+                .unwrap_or_else(|err| {
+                    let loc = std::panic::Location::caller();
+                    tracing::error!(
+                        target = "nova.vfs",
+                        file = loc.file(),
+                        line = loc.line(),
+                        column = loc.column(),
+                        error = %err,
+                        "mutex poisoned; continuing with recovered guard"
+                    );
+                    err.into_inner()
+                })
         }
 
         #[cfg(feature = "watch-notify")]
