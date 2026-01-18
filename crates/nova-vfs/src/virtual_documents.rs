@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lru::LruCache;
 
@@ -39,6 +39,25 @@ impl VirtualDocumentStore {
         }
     }
 
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, Inner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.vfs",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     /// Inserts a UTF-8 document into the store.
     ///
     /// Non-decompiled paths are ignored.
@@ -50,10 +69,7 @@ impl VirtualDocumentStore {
         let text: Arc<str> = Arc::from(text);
         let bytes = text.len();
 
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("virtual document store mutex poisoned");
+        let mut inner = self.lock_inner();
 
         // A budget of 0 means "store nothing". Also avoid inserting documents that can never fit
         // into the configured budget.
@@ -86,10 +102,7 @@ impl VirtualDocumentStore {
             return None;
         }
 
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("virtual document store mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.lru.get(path).cloned()
     }
 
@@ -98,10 +111,7 @@ impl VirtualDocumentStore {
     /// This tracks `text.len()` for each cached virtual document (not capacity) and is intended
     /// for coarse memory accounting and telemetry.
     pub fn estimated_bytes(&self) -> usize {
-        let inner = self
-            .inner
-            .lock()
-            .expect("virtual document store mutex poisoned");
+        let inner = self.lock_inner();
         inner.total_bytes
     }
 
@@ -113,10 +123,7 @@ impl VirtualDocumentStore {
             return false;
         }
 
-        let inner = self
-            .inner
-            .lock()
-            .expect("virtual document store mutex poisoned");
+        let inner = self.lock_inner();
         inner.lru.contains(path)
     }
 }
