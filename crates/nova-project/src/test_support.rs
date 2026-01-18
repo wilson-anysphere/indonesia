@@ -8,7 +8,7 @@ pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env lock poisoned")
+        .unwrap_or_else(|err| err.into_inner())
 }
 
 pub(crate) struct EnvVarGuard {

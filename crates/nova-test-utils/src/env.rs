@@ -20,7 +20,7 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env lock mutex poisoned")
+        .unwrap_or_else(|err| err.into_inner())
 }
 
 /// RAII guard that sets/unsets an environment variable and restores the previous value on drop.
