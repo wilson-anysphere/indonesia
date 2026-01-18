@@ -1763,15 +1763,15 @@ impl WorkspaceEngine {
             let from_known_as_file = is_known_vfs_path(&from);
             let to_known_as_file = is_known_vfs_path(&to);
 
-            let (from_is_dir, to_is_dir) = if (looks_like_file(&from) && looks_like_file(&to))
-                || (from_known_as_file && to_known_as_file)
+            let looks_like_file_move = looks_like_file(&from) && looks_like_file(&to);
+            let (from_is_dir, to_is_dir) = if (from_known_as_file && to_known_as_file)
+                || (looks_like_file_move && (from_known_as_file || to_known_as_file))
             {
-                // Fast-path: obvious file moves (e.g. `A.java` -> `B.java`) should not require
-                // `metadata` stats. Directory moves are guarded by extension-less/dot-dir paths.
+                // Fast-path: file moves should not require `metadata` stats.
                 //
-                // Additionally, if both endpoints are already tracked by the VFS, treat the move
-                // as file-level without probing the filesystem. This keeps extension-less file
-                // renames cheap while preserving directory-move expansion for unknown paths.
+                // Only skip stats when at least one endpoint is already tracked by the VFS:
+                // watcher backends can report directory renames, and directory names can contain
+                // dots/extensions (e.g. `Foo.java/`).
                 (false, false)
             } else {
                 (
@@ -1817,6 +1817,9 @@ impl WorkspaceEngine {
             };
 
             if dir_move_found == 0 {
+                if from_is_dir || to_is_dir {
+                    continue;
+                }
                 let from_java = from.extension().and_then(|ext| ext.to_str()) == Some("java");
                 let to_java = to.extension().and_then(|ext| ext.to_str()) == Some("java");
                 // Avoid allocating ids for non-Java, untracked file moves. Directory moves are
@@ -6959,6 +6962,42 @@ mode = "off"
         assert!(
             engine.vfs.get_id(&vfs_path).is_none(),
             "directories must not allocate FileIds even if they look like files"
+        );
+    }
+
+    #[test]
+    fn move_event_for_directory_named_like_file_does_not_allocate_file_id() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let from_path = root.join("src/Foo.java");
+        let to_path = root.join("src/Bar.java");
+        fs::create_dir_all(&from_path).unwrap();
+        fs::rename(&from_path, &to_path).unwrap();
+
+        let from = VfsPath::local(from_path);
+        let to = VfsPath::local(to_path);
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        assert!(engine.vfs.get_id(&from).is_none());
+        assert!(engine.vfs.get_id(&to).is_none());
+
+        engine.apply_filesystem_events(vec![FileChange::Moved {
+            from: from.clone(),
+            to: to.clone(),
+        }]);
+
+        assert!(
+            engine.vfs.get_id(&from).is_none(),
+            "directories must not allocate FileIds even if they look like moved files"
+        );
+        assert!(
+            engine.vfs.get_id(&to).is_none(),
+            "directories must not allocate FileIds even if they look like moved files"
         );
     }
 
