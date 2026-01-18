@@ -5876,12 +5876,12 @@ mode = "off"
         }
 
         fn set_bytes(&self, bytes: u64) {
-            *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
+            *self.bytes.lock().recover_poisoned() = bytes;
             self.tracker.get().unwrap().set_bytes(bytes);
         }
 
         fn bytes(&self) -> u64 {
-            *self.bytes.lock().expect("bytes mutex poisoned")
+            *self.bytes.lock().recover_poisoned()
         }
 
         fn evict_calls(&self) -> usize {
@@ -5900,7 +5900,7 @@ mode = "off"
 
         fn evict(&self, request: EvictionRequest) -> EvictionResult {
             self.evict_calls.fetch_add(1, Ordering::Relaxed);
-            let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
+            let mut bytes = self.bytes.lock().recover_poisoned();
             let before = *bytes;
             let after = before.min(request.target_bytes);
             *bytes = after;
