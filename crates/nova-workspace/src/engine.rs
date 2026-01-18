@@ -1719,7 +1719,10 @@ impl WorkspaceEngine {
 
             // Ignore directory create/modify events that slip through categorization. Treating a
             // directory as a file would allocate bogus `FileId`s and corrupt stable-id behavior.
-            if is_dir_best_effort(&path, "watch path event") {
+            //
+            // Avoid `metadata` for obvious files (e.g. `Foo.java`), but keep the guard for
+            // extension-less paths where watcher backends can legitimately report directory events.
+            if !looks_like_file(&path) && is_dir_best_effort(&path, "watch path event") {
                 continue;
             }
 
