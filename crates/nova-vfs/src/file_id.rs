@@ -13,6 +13,15 @@ pub struct FileIdRegistry {
 }
 
 impl FileIdRegistry {
+    fn normalize_if_needed(&self, path: &VfsPath) -> Option<VfsPath> {
+        let normalized = crate::path::normalize_vfs_path(path.clone());
+        if &normalized == path {
+            None
+        } else {
+            Some(normalized)
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -22,6 +31,15 @@ impl FileIdRegistry {
         if let Some(&id) = self.path_to_id.get(&path) {
             return id;
         }
+
+        let path = if let Some(normalized) = self.normalize_if_needed(&path) {
+            if let Some(&id) = self.path_to_id.get(&normalized) {
+                return id;
+            }
+            normalized
+        } else {
+            path
+        };
 
         let raw = u32::try_from(self.id_to_path.len()).expect("too many file ids allocated");
         let id = FileId::from_raw(raw);
@@ -34,12 +52,35 @@ impl FileIdRegistry {
     ///
     /// If `from` is unknown, this behaves like [`file_id`] on `to`.
     pub fn rename_path(&mut self, from: &VfsPath, to: VfsPath) -> FileId {
-        let Some(id_from) = self.path_to_id.remove(from) else {
+        let (from_key, id_from) = if let Some(id_from) = self.path_to_id.remove(from) {
+            (from.clone(), id_from)
+        } else if let Some(normalized) = self.normalize_if_needed(from) {
+            let Some(id_from) = self.path_to_id.remove(&normalized) else {
+                return self.file_id(to);
+            };
+            (normalized, id_from)
+        } else {
             return self.file_id(to);
         };
 
+        let to_key = self.normalize_if_needed(&to).unwrap_or_else(|| to.clone());
+
+        // If the rename collapses into the same key (e.g. dot-segment normalization), restore the
+        // mapping and keep the original id.
+        if from_key == to_key {
+            if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
+                *slot = Some(to_key.clone());
+            }
+            self.path_to_id.insert(to_key, id_from);
+            return id_from;
+        }
+
         // If the destination path is already known, keep its id and treat this as a delete + modify.
-        if let Some(&id_to) = self.path_to_id.get(&to) {
+        if let Some(&id_to) = self
+            .path_to_id
+            .get(&to)
+            .or_else(|| self.path_to_id.get(&to_key))
+        {
             if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
                 *slot = None;
             }
@@ -47,20 +88,41 @@ impl FileIdRegistry {
         }
 
         if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
-            *slot = Some(to.clone());
+            *slot = Some(to_key.clone());
         }
-        self.path_to_id.insert(to, id_from);
+        self.path_to_id.insert(to_key, id_from);
         id_from
     }
 
     /// Rename (or move) a path, preserving the source `FileId` even if the destination path is
     /// already interned.
     pub fn rename_path_displacing_destination(&mut self, from: &VfsPath, to: VfsPath) -> FileId {
-        let Some(id_from) = self.path_to_id.remove(from) else {
+        let (from_key, id_from) = if let Some(id_from) = self.path_to_id.remove(from) {
+            (from.clone(), id_from)
+        } else if let Some(normalized) = self.normalize_if_needed(from) {
+            let Some(id_from) = self.path_to_id.remove(&normalized) else {
+                return self.file_id(to);
+            };
+            (normalized, id_from)
+        } else {
             return self.file_id(to);
         };
 
-        if let Some(id_to) = self.path_to_id.remove(&to) {
+        let to_key = self.normalize_if_needed(&to).unwrap_or_else(|| to.clone());
+
+        if from_key == to_key {
+            if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
+                *slot = Some(to_key.clone());
+            }
+            self.path_to_id.insert(to_key, id_from);
+            return id_from;
+        }
+
+        if let Some(id_to) = self
+            .path_to_id
+            .remove(&to)
+            .or_else(|| self.path_to_id.remove(&to_key))
+        {
             if id_to != id_from {
                 if let Some(slot) = self.id_to_path.get_mut(id_to.to_raw() as usize) {
                     *slot = None;
@@ -69,9 +131,9 @@ impl FileIdRegistry {
         }
 
         if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
-            *slot = Some(to.clone());
+            *slot = Some(to_key.clone());
         }
-        self.path_to_id.insert(to, id_from);
+        self.path_to_id.insert(to_key, id_from);
         id_from
     }
 
@@ -101,7 +163,11 @@ impl FileIdRegistry {
 
     /// Returns the id for `path` if it has been interned.
     pub fn get_id(&self, path: &VfsPath) -> Option<FileId> {
-        self.path_to_id.get(path).copied()
+        if let Some(id) = self.path_to_id.get(path).copied() {
+            return Some(id);
+        }
+        let normalized = self.normalize_if_needed(path)?;
+        self.path_to_id.get(&normalized).copied()
     }
 
     /// Returns the path for `id`.
@@ -166,6 +232,40 @@ mod tests {
         let id2 = registry.file_id(local);
 
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn file_id_is_stable_when_local_variant_is_constructed_directly() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let normalized_path = dir.path().join("Main.java");
+        let unnormalized_path = dir.path().join("x").join("..").join("Main.java");
+
+        let direct = VfsPath::Local(unnormalized_path);
+        let via_ctor = VfsPath::local(normalized_path);
+
+        let id1 = registry.file_id(direct);
+        let id2 = registry.file_id(via_ctor);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn file_id_is_stable_when_uri_variant_is_constructed_directly() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("Main.java");
+        let abs = AbsPathBuf::new(file_path).unwrap();
+        let uri_string = path_to_file_uri(&abs).unwrap();
+        let decoded = file_uri_to_path(&uri_string).unwrap().into_path_buf();
+
+        let via_ctor = VfsPath::local(decoded);
+        let id = registry.file_id(via_ctor);
+
+        let direct = VfsPath::Uri(uri_string.clone());
+        assert_eq!(registry.get_id(&direct), Some(id));
+
+        let id2 = registry.file_id(VfsPath::Uri(uri_string));
+        assert_eq!(id2, id);
     }
 
     #[test]

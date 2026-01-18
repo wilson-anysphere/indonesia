@@ -36,6 +36,37 @@ pub enum VfsPath {
     Uri(String),
 }
 
+/// Canonicalize a `VfsPath` for use as a stable key (e.g. `FileIdRegistry`, overlay maps).
+///
+/// This is intentionally best-effort and purely lexical:
+/// - local paths are normalized (dot segments removed, drive letter normalized on Windows)
+/// - `file:` URIs are converted into normalized local paths
+/// - archive / decompiled URI variants are normalized to their canonical shapes when possible
+pub(crate) fn normalize_vfs_path(path: VfsPath) -> VfsPath {
+    match path {
+        VfsPath::Local(path) => VfsPath::local(path),
+        VfsPath::Archive(archive) => {
+            let archive_path = normalize_local_path(archive.archive.as_path());
+            match normalize_archive_entry(&archive.entry) {
+                Some(entry) => {
+                    VfsPath::Archive(ArchivePath::new(archive.kind, archive_path, entry))
+                }
+                None => VfsPath::Uri(format_archive_uri_fallback(
+                    archive.kind,
+                    archive_path.as_path(),
+                    &archive.entry,
+                )),
+            }
+        }
+        VfsPath::Decompiled {
+            content_hash,
+            binary_name,
+        } => VfsPath::decompiled(content_hash, binary_name),
+        VfsPath::LegacyDecompiled { internal_name } => VfsPath::legacy_decompiled(internal_name),
+        VfsPath::Uri(uri) => VfsPath::uri(uri),
+    }
+}
+
 impl VfsPath {
     pub fn local(path: impl Into<PathBuf>) -> Self {
         let path = path.into();

@@ -26,6 +26,15 @@ pub struct OverlayFs<F: FileSystem> {
 }
 
 impl<F: FileSystem> OverlayFs<F> {
+    fn normalize_if_needed(&self, path: &VfsPath) -> Option<VfsPath> {
+        let normalized = crate::path::normalize_vfs_path(path.clone());
+        if &normalized == path {
+            None
+        } else {
+            Some(normalized)
+        }
+    }
+
     pub fn new(base: F) -> Self {
         Self {
             base,
@@ -55,7 +64,17 @@ impl<F: FileSystem> OverlayFs<F> {
     pub fn open_arc(&self, path: VfsPath, text: Arc<String>, version: i32) {
         let bytes = text.len();
         let mut state = self.lock_docs();
-        let old = state.docs.insert(path, Document::new(text, version));
+
+        // Ensure we only keep one entry for logically-equivalent paths (e.g. a `file:` URI vs a
+        // local path, or dot-segment differences).
+        let normalized = crate::path::normalize_vfs_path(path.clone());
+        if normalized != path {
+            if let Some(old) = state.docs.remove(&path) {
+                state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
+            }
+        }
+
+        let old = state.docs.insert(normalized, Document::new(text, version));
         if let Some(old) = old {
             state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
         }
@@ -70,6 +89,12 @@ impl<F: FileSystem> OverlayFs<F> {
         let mut state = self.lock_docs();
         if let Some(doc) = state.docs.remove(path) {
             state.text_bytes = state.text_bytes.saturating_sub(doc.text().len());
+            return;
+        }
+        if let Some(normalized) = self.normalize_if_needed(path) {
+            if let Some(doc) = state.docs.remove(&normalized) {
+                state.text_bytes = state.text_bytes.saturating_sub(doc.text().len());
+            }
         }
     }
 
@@ -94,13 +119,33 @@ impl<F: FileSystem> OverlayFs<F> {
         }
 
         let mut state = self.lock_docs();
-        let Some(doc) = state.docs.remove(from) else {
+        let (from_key, doc) = if let Some(doc) = state.docs.remove(from) {
+            (from.clone(), doc)
+        } else if let Some(normalized) = self.normalize_if_needed(from) {
+            let Some(doc) = state.docs.remove(&normalized) else {
+                return false;
+            };
+            (normalized, doc)
+        } else {
             return false;
         };
         let bytes = doc.text().len();
         state.text_bytes = state.text_bytes.saturating_sub(bytes);
 
-        match state.docs.entry(to) {
+        let to_key = crate::path::normalize_vfs_path(to.clone());
+        if from_key == to_key {
+            // No-op after normalization; restore the document.
+            state.docs.insert(from_key, doc);
+            state.text_bytes = state.text_bytes.saturating_add(bytes);
+            return false;
+        }
+
+        if state.docs.contains_key(&to) || state.docs.contains_key(&to_key) {
+            // Destination is already open; keep it and drop the source doc.
+            return false;
+        }
+
+        match state.docs.entry(to_key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(doc);
                 state.text_bytes = state.text_bytes.saturating_add(bytes);
@@ -116,14 +161,35 @@ impl<F: FileSystem> OverlayFs<F> {
     /// while it is open in the editor.
     pub fn rename_overwrite(&self, from: &VfsPath, to: VfsPath) {
         let mut state = self.lock_docs();
-        let Some(doc) = state.docs.remove(from) else {
+        let (from_key, doc) = if let Some(doc) = state.docs.remove(from) {
+            (from.clone(), doc)
+        } else if let Some(normalized) = self.normalize_if_needed(from) {
+            let Some(doc) = state.docs.remove(&normalized) else {
+                return;
+            };
+            (normalized, doc)
+        } else {
             return;
         };
 
         let bytes = doc.text().len();
         state.text_bytes = state.text_bytes.saturating_sub(bytes);
 
-        let old = state.docs.insert(to, doc);
+        let to_key = crate::path::normalize_vfs_path(to.clone());
+        if from_key == to_key {
+            // No-op after normalization; restore the document.
+            state.docs.insert(from_key, doc);
+            state.text_bytes = state.text_bytes.saturating_add(bytes);
+            return;
+        }
+
+        if to_key != to {
+            if let Some(old) = state.docs.remove(&to) {
+                state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
+            }
+        }
+
+        let old = state.docs.insert(to_key, doc);
         state.text_bytes = state.text_bytes.saturating_add(bytes);
         if let Some(old) = old {
             state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
@@ -132,7 +198,13 @@ impl<F: FileSystem> OverlayFs<F> {
 
     pub fn is_open(&self, path: &VfsPath) -> bool {
         let state = self.lock_docs();
-        state.docs.contains_key(path)
+        if state.docs.contains_key(path) {
+            return true;
+        }
+        let Some(normalized) = self.normalize_if_needed(path) else {
+            return false;
+        };
+        state.docs.contains_key(&normalized)
     }
 
     pub fn apply_changes(
@@ -142,10 +214,19 @@ impl<F: FileSystem> OverlayFs<F> {
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
         let mut state = self.lock_docs();
-        let doc = state
-            .docs
-            .get_mut(path)
-            .ok_or(DocumentError::DocumentNotOpen)?;
+        let doc = if state.docs.contains_key(path) {
+            state
+                .docs
+                .get_mut(path)
+                .expect("contains_key checked before get_mut")
+        } else if let Some(normalized) = self.normalize_if_needed(path) {
+            state
+                .docs
+                .get_mut(&normalized)
+                .ok_or(DocumentError::DocumentNotOpen)?
+        } else {
+            return Err(DocumentError::DocumentNotOpen);
+        };
 
         let before = doc.text().len();
         let result = doc.apply_changes(new_version, changes);
@@ -162,12 +243,20 @@ impl<F: FileSystem> OverlayFs<F> {
 
     pub fn document_text(&self, path: &VfsPath) -> Option<String> {
         let state = self.lock_docs();
-        state.docs.get(path).map(|d| d.text().to_owned())
+        if let Some(doc) = state.docs.get(path) {
+            return Some(doc.text().to_owned());
+        }
+        let normalized = self.normalize_if_needed(path)?;
+        state.docs.get(&normalized).map(|d| d.text().to_owned())
     }
 
     pub fn document_text_arc(&self, path: &VfsPath) -> Option<Arc<String>> {
         let state = self.lock_docs();
-        state.docs.get(path).map(Document::text_arc)
+        if let Some(doc) = state.docs.get(path) {
+            return Some(Document::text_arc(doc));
+        }
+        let normalized = self.normalize_if_needed(path)?;
+        state.docs.get(&normalized).map(Document::text_arc)
     }
 }
 
@@ -257,5 +346,25 @@ mod tests {
         assert!(!overlay.is_open(&b));
         assert_eq!(overlay.document_text(&c).unwrap(), "c");
         assert_eq!(overlay.estimated_bytes(), 1);
+    }
+
+    #[test]
+    fn overlay_normalizes_paths_for_lookup_and_close() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("x").join("..").join("Main.java");
+
+        let unnormalized = VfsPath::Local(file_path);
+        let normalized = crate::path::normalize_vfs_path(unnormalized.clone());
+
+        let overlay = OverlayFs::new(LocalFs::new());
+        overlay.open(unnormalized.clone(), "overlay".to_string(), 1);
+
+        assert!(overlay.is_open(&unnormalized));
+        assert!(overlay.is_open(&normalized));
+        assert_eq!(overlay.read_to_string(&normalized).unwrap(), "overlay");
+
+        overlay.close(&normalized);
+        assert!(!overlay.is_open(&unnormalized));
+        assert!(!overlay.is_open(&normalized));
     }
 }
