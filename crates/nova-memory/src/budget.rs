@@ -375,7 +375,7 @@ mod tests {
         ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("ENV_LOCK mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     fn set_env_var(name: &str, value: Option<&str>) -> Option<OsString> {
