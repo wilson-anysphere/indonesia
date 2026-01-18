@@ -159,7 +159,7 @@ impl FakeBspServer {
     pub fn requests(&self) -> Vec<Value> {
         self.requests
             .lock()
-            .expect("requests mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .clone()
     }
 }
@@ -178,7 +178,7 @@ pub fn spawn_fake_bsp_server(
         while let Ok(Some(msg)) = read_message(&mut reader) {
             requests_for_thread
                 .lock()
-                .expect("requests mutex poisoned")
+                .unwrap_or_else(|err| err.into_inner())
                 .push(msg.clone());
             let method = msg.get("method").and_then(Value::as_str);
             let id = msg.get("id").and_then(Value::as_i64);

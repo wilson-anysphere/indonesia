@@ -22,7 +22,10 @@ impl TestRunner {
     }
 
     fn call_count(&self) -> usize {
-        self.calls.lock().expect("calls mutex poisoned").len()
+        self.calls
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .len()
     }
 }
 
@@ -31,7 +34,7 @@ impl CommandRunner for TestRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(args.iter().map(|s| s.to_string()).collect());
 
         match args.first().copied() {
@@ -134,14 +137,14 @@ impl BuildfilesFallbackRunner {
     }
 
     fn call_count(&self) -> usize {
-        *self.calls.lock().expect("calls mutex poisoned")
+        *self.calls.lock().unwrap_or_else(|err| err.into_inner())
     }
 }
 
 impl CommandRunner for BuildfilesFallbackRunner {
     fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
         assert_eq!(program, "bazel");
-        *self.calls.lock().expect("calls mutex poisoned") += 1;
+        *self.calls.lock().unwrap_or_else(|err| err.into_inner()) += 1;
 
         match args {
             ["aquery", ..] => Ok(CommandOutput {

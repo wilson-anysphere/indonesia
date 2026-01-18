@@ -19,7 +19,7 @@ impl RecordingRunner {
     fn last_call(&self) -> Vec<String> {
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .last()
             .cloned()
             .expect("missing command invocation")
@@ -29,7 +29,7 @@ impl RecordingRunner {
         *self
             .timeouts
             .lock()
-            .expect("timeouts mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .last()
             .expect("missing timeout capture")
     }
@@ -38,7 +38,7 @@ impl RecordingRunner {
         *self
             .max_bytes
             .lock()
-            .expect("max_bytes mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .last()
             .expect("missing max_bytes capture")
     }
@@ -59,15 +59,15 @@ impl CommandRunner for RecordingRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(args.iter().map(|s| s.to_string()).collect());
         self.timeouts
             .lock()
-            .expect("timeouts mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(opts.timeout);
         self.max_bytes
             .lock()
-            .expect("max_bytes mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(opts.max_bytes);
         Ok(CommandOutput {
             stdout: "ok\n".to_string(),

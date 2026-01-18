@@ -43,7 +43,7 @@ impl BazelBuildExecutor for ScriptedExecutor {
         let script = self
             .scripts
             .lock()
-            .expect("scripts mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .pop_front()
             .unwrap_or(Script {
                 delay: Duration::from_millis(0),
@@ -99,7 +99,7 @@ impl BazelBuildExecutor for RecordingExecutor {
         _targets: &[String],
         _cancellation: nova_process::CancellationToken,
     ) -> anyhow::Result<BspCompileOutcome> {
-        *self.seen.lock().expect("seen mutex poisoned") = Some(config.clone());
+        *self.seen.lock().unwrap_or_else(|err| err.into_inner()) = Some(config.clone());
         Ok(BspCompileOutcome {
             status_code: 0,
             diagnostics: Vec::new(),
@@ -139,7 +139,7 @@ fn orchestrator_discovers_dot_bsp_config_when_request_missing() {
 
     let config = seen
         .lock()
-        .expect("seen mutex poisoned")
+        .unwrap_or_else(|err| err.into_inner())
         .clone()
         .expect("missing BSP config");
     assert_eq!(config.program, "bazel-bsp");

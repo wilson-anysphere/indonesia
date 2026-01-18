@@ -20,7 +20,10 @@ struct RecordingRunner {
 
 impl RecordingRunner {
     fn calls(&self) -> Vec<Vec<String>> {
-        self.calls.lock().expect("calls mutex poisoned").clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 }
 
@@ -39,7 +42,10 @@ impl QueryingRunner {
     }
 
     fn calls(&self) -> Vec<Vec<String>> {
-        self.calls.lock().expect("calls mutex poisoned").clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 }
 
@@ -48,7 +54,7 @@ impl CommandRunner for QueryingRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(args.iter().map(|s| s.to_string()).collect());
 
         let stdout = if args.first() == Some(&"query") {
@@ -69,7 +75,7 @@ impl CommandRunner for RecordingRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(args.iter().map(|s| s.to_string()).collect());
 
         // Return empty stdout for any query; this is sufficient for file-digest collection
