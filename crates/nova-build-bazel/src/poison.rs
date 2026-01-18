@@ -1,5 +1,5 @@
 use std::panic::Location;
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 #[track_caller]
 pub(crate) fn lock<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
@@ -21,6 +21,10 @@ pub(crate) fn lock<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGu
     }
 }
 
+#[cfg(any(test, feature = "bsp"))]
+use std::sync::Condvar;
+
+#[cfg(any(test, feature = "bsp"))]
 #[track_caller]
 pub(crate) fn wait<'a, T>(
     cv: &Condvar,

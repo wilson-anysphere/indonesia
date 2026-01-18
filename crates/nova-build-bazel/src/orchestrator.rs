@@ -382,7 +382,7 @@ mod tests {
 
     impl RecordingExecutor {
         fn configs(&self) -> Vec<BazelBspConfig> {
-            self.seen.lock().expect("seen mutex poisoned").clone()
+            crate::poison::lock(&self.seen, "RecordingExecutor.seen").clone()
         }
     }
 
@@ -394,10 +394,7 @@ mod tests {
             _targets: &[String],
             _cancellation: CancellationToken,
         ) -> Result<BspCompileOutcome> {
-            self.seen
-                .lock()
-                .expect("seen mutex poisoned")
-                .push(config.clone());
+            crate::poison::lock(&self.seen, "RecordingExecutor.seen").push(config.clone());
             Ok(BspCompileOutcome {
                 status_code: 0,
                 diagnostics: Vec::new(),

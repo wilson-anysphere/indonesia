@@ -26,7 +26,6 @@ mod bsp_config;
 #[cfg(any(test, feature = "bsp"))]
 mod orchestrator;
 
-#[cfg(any(test, feature = "bsp"))]
 mod poison;
 
 #[cfg(feature = "bsp")]

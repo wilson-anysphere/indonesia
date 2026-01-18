@@ -3,6 +3,7 @@ use crate::{
     build::{bazel_build_args, BazelBuildOptions},
     cache::{digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest},
     command::{read_line_limited, CommandOutput, CommandRunner},
+    poison,
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -952,12 +953,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(None);
         }
 
-        if let Some(cached) = self
-            .workspace_file_label_cache
-            .lock()
-            .expect("workspace_file_label_cache lock poisoned")
-            .get(&rel)
-            .cloned()
+        if let Some(cached) = poison::lock(
+            &self.workspace_file_label_cache,
+            "workspace_file_label_cache",
+        )
+        .get(&rel)
+        .cloned()
         {
             return Ok(cached);
         }
@@ -977,18 +978,14 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 .expect("package dir must be under workspace root")
                 .to_path_buf();
 
-            if let Some(cached) = self
-                .workspace_package_cache
-                .lock()
-                .expect("workspace_package_cache lock poisoned")
-                .get(&dir_rel)
-                .cloned()
+            if let Some(cached) =
+                poison::lock(&self.workspace_package_cache, "workspace_package_cache")
+                    .get(&dir_rel)
+                    .cloned()
             {
                 if !visited.is_empty() {
-                    let mut cache = self
-                        .workspace_package_cache
-                        .lock()
-                        .expect("workspace_package_cache lock poisoned");
+                    let mut cache =
+                        poison::lock(&self.workspace_package_cache, "workspace_package_cache");
                     for v in visited {
                         cache.insert(v, cached.clone());
                     }
@@ -1000,10 +997,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
             if contains_build_file(dir_abs) {
                 let cached = Some(dir_rel);
-                let mut cache = self
-                    .workspace_package_cache
-                    .lock()
-                    .expect("workspace_package_cache lock poisoned");
+                let mut cache =
+                    poison::lock(&self.workspace_package_cache, "workspace_package_cache");
                 for v in visited {
                     cache.insert(v, cached.clone());
                 }
@@ -1011,10 +1006,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             }
 
             if dir_abs == self.root {
-                let mut cache = self
-                    .workspace_package_cache
-                    .lock()
-                    .expect("workspace_package_cache lock poisoned");
+                let mut cache =
+                    poison::lock(&self.workspace_package_cache, "workspace_package_cache");
                 for v in visited {
                     cache.insert(v, None);
                 }
@@ -1046,10 +1039,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             None => None,
         };
 
-        self.workspace_file_label_cache
-            .lock()
-            .expect("workspace_file_label_cache lock poisoned")
-            .insert(rel, out.clone());
+        poison::lock(
+            &self.workspace_file_label_cache,
+            "workspace_file_label_cache",
+        )
+        .insert(rel, out.clone());
 
         Ok(out)
     }
@@ -1525,28 +1519,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             true
         });
         if saw_package_boundary_change {
-            self.workspace_package_cache
-                .lock()
-                .expect("workspace_package_cache lock poisoned")
-                .clear();
-            self.workspace_file_label_cache
-                .lock()
-                .expect("workspace_file_label_cache lock poisoned")
-                .clear();
+            poison::lock(&self.workspace_package_cache, "workspace_package_cache").clear();
+            poison::lock(
+                &self.workspace_file_label_cache,
+                "workspace_file_label_cache",
+            )
+            .clear();
         }
         if changed
             .iter()
             .any(|path| path.file_name().and_then(|n| n.to_str()) == Some(".bazelignore"))
         {
             let _ = self.ignored_prefixes.take();
-            self.workspace_package_cache
-                .lock()
-                .expect("workspace_package_cache lock poisoned")
-                .clear();
-            self.workspace_file_label_cache
-                .lock()
-                .expect("workspace_file_label_cache lock poisoned")
-                .clear();
+            poison::lock(&self.workspace_package_cache, "workspace_package_cache").clear();
+            poison::lock(
+                &self.workspace_file_label_cache,
+                "workspace_file_label_cache",
+            )
+            .clear();
         }
         self.cache.invalidate_changed_files(&changed);
         self.persist_cache()
