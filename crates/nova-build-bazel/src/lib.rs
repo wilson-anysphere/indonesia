@@ -79,7 +79,7 @@ pub mod test_support {
         ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("ENV_LOCK mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     /// RAII guard for temporary process environment variable mutations in tests.
