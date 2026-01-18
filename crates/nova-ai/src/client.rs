@@ -963,7 +963,7 @@ mod tests {
             };
             self.events
                 .lock()
-                .expect("events mutex poisoned")
+                .unwrap_or_else(|err| err.into_inner())
                 .push(captured);
         }
     }
@@ -1271,7 +1271,7 @@ mod tests {
                 .captured
                 .request
                 .lock()
-                .expect("captured request mutex poisoned") = Some(request);
+                .unwrap_or_else(|err| err.into_inner()) = Some(request);
             Ok("ok".to_string())
         }
 
@@ -1284,7 +1284,7 @@ mod tests {
                 .captured
                 .request
                 .lock()
-                .expect("captured request mutex poisoned") = Some(request);
+                .unwrap_or_else(|err| err.into_inner()) = Some(request);
             let stream = async_stream::try_stream! {
                 yield "ok".to_string();
             };
@@ -1345,7 +1345,7 @@ mod tests {
         let req = captured
             .request
             .lock()
-            .expect("captured request mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .take()
             .expect("provider should receive request");
         let msg1 = &req.messages[0].content;
