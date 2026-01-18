@@ -6937,6 +6937,32 @@ mode = "off"
     }
 
     #[test]
+    fn create_event_for_directory_named_like_file_does_not_allocate_file_id() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let dir_path = root.join("src/Foo.java");
+        fs::create_dir_all(&dir_path).unwrap();
+        let vfs_path = VfsPath::local(dir_path);
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        assert!(engine.vfs.get_id(&vfs_path).is_none());
+
+        engine.apply_filesystem_events(vec![FileChange::Created {
+            path: vfs_path.clone(),
+        }]);
+
+        assert!(
+            engine.vfs.get_id(&vfs_path).is_none(),
+            "directories must not allocate FileIds even if they look like files"
+        );
+    }
+
+    #[test]
     fn close_document_releases_open_document_pins() {
         use nova_db::salsa::{
             HasItemTreeStore, HasJavaParseStore, HasSyntaxTreeStore, NovaSemantic, NovaSyntax,
