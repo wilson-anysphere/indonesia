@@ -2605,12 +2605,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            client
-                .inner
-                .pending
-                .lock()
-                .expect("pending mutex poisoned")
-                .len(),
+            crate::wire::poison::lock(&client.inner.pending, "tests.pending").len(),
             0
         );
 
@@ -2621,14 +2616,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if client
-                    .inner
-                    .pending
-                    .lock()
-                    .expect("pending mutex poisoned")
-                    .len()
-                    == 1
-                {
+                if crate::wire::poison::lock(&client.inner.pending, "tests.pending").len() == 1 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2642,13 +2630,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if client
-                    .inner
-                    .pending
-                    .lock()
-                    .expect("pending mutex poisoned")
-                    .is_empty()
-                {
+                if crate::wire::poison::lock(&client.inner.pending, "tests.pending").is_empty() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
