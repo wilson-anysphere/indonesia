@@ -22,7 +22,9 @@ use nova_memory::{
 };
 use nova_workspace::Workspace;
 use std::collections::{HashMap, HashSet};
-use std::env::{self, VarError};
+use std::env;
+#[cfg(feature = "ai")]
+use std::env::VarError;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
@@ -402,7 +404,7 @@ mod tests {
 
     #[test]
     fn audit_logging_env_does_not_enable_ai_without_env_provider_config() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::poison::lock(&ENV_LOCK, "stdio_state/test/audit_logging_env");
 
         let _provider = EnvVarGuard::remove("NOVA_AI_PROVIDER");
         let _audit = EnvVarGuard::set("NOVA_AI_AUDIT_LOGGING", "1");

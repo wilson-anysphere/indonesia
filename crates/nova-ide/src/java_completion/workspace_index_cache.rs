@@ -214,11 +214,23 @@ where
 }
 
 fn normalize_root_for_cache(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for workspace index cache"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
+    crate::poison::lock(mutex, "workspace_index_cache")
 }
 
 // -----------------------------------------------------------------------------

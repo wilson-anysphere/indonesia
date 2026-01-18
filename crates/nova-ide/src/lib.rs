@@ -36,6 +36,7 @@ pub mod refactor;
 mod spring_config;
 mod spring_config_intel;
 mod spring_di;
+mod uri;
 
 pub use ai::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
@@ -96,6 +97,7 @@ mod nav_core;
 mod nav_resolve;
 mod navigation;
 mod parse;
+mod poison;
 mod text;
 mod workspace_hierarchy;
 

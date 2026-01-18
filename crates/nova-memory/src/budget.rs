@@ -138,12 +138,25 @@ impl MemoryBudgetOverrides {
     /// Any invalid values are ignored (treated as "unset").
     pub fn from_env() -> Self {
         fn read(name: &str) -> Option<u64> {
-            let value = std::env::var(name).ok()?;
+            let value = std::env::var_os(name)?;
+            let value = value.to_string_lossy();
             let value = value.trim();
             if value.is_empty() {
                 return None;
             }
-            parse_byte_size(value).ok()
+            match parse_byte_size(value) {
+                Ok(value) => Some(value),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.memory",
+                        name,
+                        value,
+                        error = %err,
+                        "invalid memory budget env override; ignoring"
+                    );
+                    None
+                }
+            }
         }
 
         Self {
@@ -353,16 +366,20 @@ fn system_total_memory_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("ENV_LOCK mutex poisoned")
     }
 
-    fn set_env_var(name: &str, value: Option<&str>) -> Option<String> {
-        let prev = std::env::var(name).ok();
+    fn set_env_var(name: &str, value: Option<&str>) -> Option<OsString> {
+        let prev = std::env::var_os(name);
         match value {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
@@ -370,7 +387,7 @@ mod tests {
         prev
     }
 
-    fn restore_env_var(name: &str, prev: Option<String>) {
+    fn restore_env_var(name: &str, prev: Option<OsString>) {
         match prev {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),

@@ -26,6 +26,9 @@ mod bsp_config;
 #[cfg(any(test, feature = "bsp"))]
 mod orchestrator;
 
+#[cfg(any(test, feature = "bsp"))]
+mod poison;
+
 #[cfg(feature = "bsp")]
 pub use crate::bsp::{BspClient, BspCompileOutcome, BspServerConfig, BspWorkspace};
 
@@ -74,7 +77,10 @@ pub mod test_support {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     pub fn env_lock() -> MutexGuard<'static, ()> {
-        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("ENV_LOCK mutex poisoned")
     }
 
     /// RAII guard for temporary process environment variable mutations in tests.

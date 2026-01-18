@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use nova_core::TextEdit;
 
@@ -33,9 +33,28 @@ impl<F: FileSystem> OverlayFs<F> {
         }
     }
 
+    #[track_caller]
+    fn lock_docs(&self) -> MutexGuard<'_, OverlayDocs> {
+        match self.docs.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.vfs",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     pub fn open_arc(&self, path: VfsPath, text: Arc<String>, version: i32) {
         let bytes = text.len();
-        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let mut state = self.lock_docs();
         let old = state.docs.insert(path, Document::new(text, version));
         if let Some(old) = old {
             state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
@@ -48,7 +67,7 @@ impl<F: FileSystem> OverlayFs<F> {
     }
 
     pub fn close(&self, path: &VfsPath) {
-        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let mut state = self.lock_docs();
         if let Some(doc) = state.docs.remove(path) {
             state.text_bytes = state.text_bytes.saturating_sub(doc.text().len());
         }
@@ -59,7 +78,7 @@ impl<F: FileSystem> OverlayFs<F> {
     /// This is intended for coarse memory accounting (e.g. `nova_memory`) and is updated
     /// incrementally on open/close/edit/rename operations.
     pub fn estimated_bytes(&self) -> usize {
-        let state = self.docs.lock().expect("overlay mutex poisoned");
+        let state = self.lock_docs();
         state.text_bytes
     }
 
@@ -74,7 +93,7 @@ impl<F: FileSystem> OverlayFs<F> {
             return false;
         }
 
-        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let mut state = self.lock_docs();
         let Some(doc) = state.docs.remove(from) else {
             return false;
         };
@@ -96,7 +115,7 @@ impl<F: FileSystem> OverlayFs<F> {
     /// This is primarily used to keep the overlay consistent when a file is renamed/moved on disk
     /// while it is open in the editor.
     pub fn rename_overwrite(&self, from: &VfsPath, to: VfsPath) {
-        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let mut state = self.lock_docs();
         let Some(doc) = state.docs.remove(from) else {
             return;
         };
@@ -112,7 +131,7 @@ impl<F: FileSystem> OverlayFs<F> {
     }
 
     pub fn is_open(&self, path: &VfsPath) -> bool {
-        let state = self.docs.lock().expect("overlay mutex poisoned");
+        let state = self.lock_docs();
         state.docs.contains_key(path)
     }
 
@@ -122,7 +141,7 @@ impl<F: FileSystem> OverlayFs<F> {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
-        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let mut state = self.lock_docs();
         let doc = state
             .docs
             .get_mut(path)
@@ -142,12 +161,12 @@ impl<F: FileSystem> OverlayFs<F> {
     }
 
     pub fn document_text(&self, path: &VfsPath) -> Option<String> {
-        let state = self.docs.lock().expect("overlay mutex poisoned");
+        let state = self.lock_docs();
         state.docs.get(path).map(|d| d.text().to_owned())
     }
 
     pub fn document_text_arc(&self, path: &VfsPath) -> Option<Arc<String>> {
-        let state = self.docs.lock().expect("overlay mutex poisoned");
+        let state = self.lock_docs();
         state.docs.get(path).map(Document::text_arc)
     }
 }

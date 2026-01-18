@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Parsed cgroup paths from `/proc/self/cgroup`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +74,23 @@ pub fn parse_cgroup_memory_limit_bytes(raw: &str) -> Option<u64> {
         return None;
     }
 
-    let value = raw.parse::<u64>().ok()?;
+    let value = match raw.parse::<u64>() {
+        Ok(value) => value,
+        Err(err) => {
+            // Best-effort: cgroup file formats should be stable, but container runtimes and
+            // sandbox environments can expose unexpected values.
+            static REPORTED_CGROUP_LIMIT_PARSE_ERROR: OnceLock<()> = OnceLock::new();
+            if REPORTED_CGROUP_LIMIT_PARSE_ERROR.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.memory",
+                    raw,
+                    error = %err,
+                    "failed to parse cgroup memory limit value"
+                );
+            }
+            return None;
+        }
+    };
     if value >= UNLIMITED_THRESHOLD_BYTES {
         return None;
     }
@@ -82,9 +100,24 @@ pub fn parse_cgroup_memory_limit_bytes(raw: &str) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn read_trimmed(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text.trim().to_string()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => {
+            // Best-effort: some environments restrict cgroup files; avoid log spam by reporting
+            // only the first unexpected read failure.
+            static REPORTED_CGROUP_READ_ERROR: OnceLock<()> = OnceLock::new();
+            if REPORTED_CGROUP_READ_ERROR.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.memory",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read cgroup file"
+                );
+            }
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -133,7 +166,20 @@ fn cgroup_v1_memory_limit_bytes(cgroup_path: &str) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn cgroup_memory_limit_bytes() -> Option<u64> {
-    let proc_contents = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let proc_contents = match std::fs::read_to_string("/proc/self/cgroup") {
+        Ok(contents) => contents,
+        Err(err) => {
+            // `/proc` may not be available in some sandboxed environments; treat it as best-effort.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.memory",
+                    error = %err,
+                    "failed to read /proc/self/cgroup while probing cgroup memory limit"
+                );
+            }
+            return None;
+        }
+    };
     let parsed = parse_proc_self_cgroup(&proc_contents);
 
     if let Some(path) = &parsed.v2_path {
@@ -162,15 +208,39 @@ pub fn cgroup_memory_current_bytes() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn cgroup_memory_current_bytes_impl() -> Option<u64> {
-    let proc_contents = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let proc_contents = match std::fs::read_to_string("/proc/self/cgroup") {
+        Ok(contents) => contents,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.memory",
+                    error = %err,
+                    "failed to read /proc/self/cgroup while sampling cgroup memory usage"
+                );
+            }
+            return None;
+        }
+    };
     let parsed = parse_proc_self_cgroup(&proc_contents);
+    static REPORTED_CGROUP_USAGE_PARSE_ERROR: OnceLock<()> = OnceLock::new();
 
     if let Some(path) = &parsed.v2_path {
         let rel = relative_cgroup_path(path);
         let usage_path = Path::new("/sys/fs/cgroup").join(rel).join("memory.current");
         if let Some(raw) = read_trimmed(&usage_path) {
-            if let Ok(value) = raw.parse::<u64>() {
-                return Some(value);
+            match raw.parse::<u64>() {
+                Ok(value) => return Some(value),
+                Err(err) => {
+                    if REPORTED_CGROUP_USAGE_PARSE_ERROR.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.memory",
+                            path = %usage_path.display(),
+                            raw,
+                            error = %err,
+                            "failed to parse cgroup memory usage value"
+                        );
+                    }
+                }
             }
         }
     }
@@ -181,8 +251,19 @@ fn cgroup_memory_current_bytes_impl() -> Option<u64> {
             .join(rel)
             .join("memory.usage_in_bytes");
         if let Some(raw) = read_trimmed(&usage_path) {
-            if let Ok(value) = raw.parse::<u64>() {
-                return Some(value);
+            match raw.parse::<u64>() {
+                Ok(value) => return Some(value),
+                Err(err) => {
+                    if REPORTED_CGROUP_USAGE_PARSE_ERROR.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.memory",
+                            path = %usage_path.display(),
+                            raw,
+                            error = %err,
+                            "failed to parse cgroup memory usage value"
+                        );
+                    }
+                }
             }
         }
     }

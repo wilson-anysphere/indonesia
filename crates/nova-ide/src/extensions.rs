@@ -1,4 +1,5 @@
 use nova_config::NovaConfig;
+use nova_core::panic_payload_to_str;
 use nova_ext::{
     CodeAction, CodeActionParams, CompletionItem, CompletionParams, CompletionProvider, Diagnostic,
     DiagnosticParams, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
@@ -16,7 +17,7 @@ use nova_refactor::{
 use nova_scheduler::CancellationToken;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub use crate::framework_db_adapter::FrameworkIdeDatabase;
 use crate::text::TextIndex;
@@ -98,17 +99,20 @@ where
     A: FrameworkAnalyzer,
 {
     fn cached_applicability(&self, project: ProjectId) -> Option<bool> {
-        self.applicability_cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&project)
-            .copied()
+        crate::poison::lock(
+            &self.applicability_cache,
+            "FrameworkAnalyzerAdapter.cached_applicability",
+        )
+        .get(&project)
+        .copied()
     }
 
     fn ensure_applicability<DB>(&self, ctx: &ExtensionContext<DB>) -> bool
     where
         DB: ?Sized + Send + Sync + FrameworkDatabase,
     {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
         if let Some(value) = self.cached_applicability(ctx.project) {
             return value;
         }
@@ -118,15 +122,30 @@ where
         }
 
         let db = FrameworkDatabaseView(ctx.db.as_ref());
-        let applicable = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let applicable = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.analyzer.applies_to(&db, ctx.project)
-        }))
-        .unwrap_or(false);
+        })) {
+            Ok(applicable) => applicable,
+            Err(panic) => {
+                if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                    tracing::error!(
+                        target = "nova.ide",
+                        id = %self.id,
+                        project = ctx.project.to_raw(),
+                        op = "applies_to",
+                        panic = %panic_payload_to_str(&*panic),
+                        "framework analyzer panicked; continuing best-effort"
+                    );
+                }
+                false
+            }
+        };
 
-        self.applicability_cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(ctx.project, applicable);
+        crate::poison::lock(
+            &self.applicability_cache,
+            "FrameworkAnalyzerAdapter.ensure_applicability/write_cache",
+        )
+        .insert(ctx.project, applicable);
 
         applicable
     }
@@ -1156,9 +1175,9 @@ where
         let source = self.db.file_content(file);
         let source_index = TextIndex::new(source);
         let uri: Option<lsp_types::Uri> = nova_db::Database::file_path(self.db.as_ref(), file)
-            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
-            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
-            .and_then(|uri| uri.parse().ok());
+            .and_then(|path| {
+                crate::uri::uri_from_path_best_effort(path, "extensions.code_actions")
+            });
 
         if let Some(uri) = uri.clone() {
             if source.contains("import") {
@@ -1277,9 +1296,9 @@ where
         let source = self.db.file_content(file);
         let source_index = TextIndex::new(source);
         let uri: Option<lsp_types::Uri> = nova_db::Database::file_path(self.db.as_ref(), file)
-            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
-            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
-            .and_then(|uri| uri.parse().ok());
+            .and_then(|path| {
+                crate::uri::uri_from_path_best_effort(path, "extensions.code_actions_with_context")
+            });
 
         // These source-level refactors do not depend on diagnostics context.
         if let Some(uri) = uri.clone() {

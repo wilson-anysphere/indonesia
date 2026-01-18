@@ -12,7 +12,7 @@ struct RecordingRunner {
 
 impl RecordingRunner {
     fn calls(&self) -> Vec<Vec<String>> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().expect("calls mutex poisoned").clone()
     }
 }
 
@@ -21,7 +21,7 @@ impl CommandRunner for RecordingRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls mutex poisoned")
             .push(args.iter().map(|s| s.to_string()).collect());
 
         match args {
@@ -90,7 +90,7 @@ struct FallbackRunner {
 
 impl FallbackRunner {
     fn calls(&self) -> Vec<Vec<String>> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().expect("calls mutex poisoned").clone()
     }
 }
 
@@ -99,7 +99,7 @@ impl CommandRunner for FallbackRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls mutex poisoned")
             .push(args.iter().map(|s| s.to_string()).collect());
 
         match args {

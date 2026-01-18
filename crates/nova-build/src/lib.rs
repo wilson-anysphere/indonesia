@@ -6,6 +6,7 @@
 
 mod cache;
 mod command;
+mod fs_cleanup;
 mod gradle;
 mod javac;
 mod jpms;

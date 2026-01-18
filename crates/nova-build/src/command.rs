@@ -75,8 +75,11 @@ impl CommandRunner for DefaultCommandRunner {
         let truncated = result.output.truncated;
 
         if result.timed_out {
-            let timeout = self.timeout.unwrap_or_default();
-            let mut msg = format!("command `{command}` timed out after {timeout:?}");
+            let mut msg = if let Some(timeout) = self.timeout {
+                format!("command `{command}` timed out after {timeout:?}")
+            } else {
+                format!("command `{command}` timed out")
+            };
             if truncated {
                 msg.push_str("\n(output truncated)");
             }

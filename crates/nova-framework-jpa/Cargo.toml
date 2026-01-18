@@ -12,6 +12,7 @@ nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 nova-framework-parse = { path = "../nova-framework-parse" }
 zip = "0.6"
+tracing = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

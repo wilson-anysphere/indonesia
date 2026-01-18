@@ -315,10 +315,28 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
             // Ensure the child is not left running with undrained pipes.
             let _ = terminate_process_tree(&mut child, opts.kill_grace);
             if let Some(handle) = stdout_handle {
-                let _ = handle.join();
+                static STDOUT_JOIN_PANIC_LOGGED: std::sync::OnceLock<()> =
+                    std::sync::OnceLock::new();
+                if handle.join().is_err() {
+                    if STDOUT_JOIN_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.process",
+                            "stdout reader thread panicked while handling spawn failure (best effort)"
+                        );
+                    }
+                }
             }
             if let Some(handle) = stderr_handle {
-                let _ = handle.join();
+                static STDERR_JOIN_PANIC_LOGGED: std::sync::OnceLock<()> =
+                    std::sync::OnceLock::new();
+                if handle.join().is_err() {
+                    if STDERR_JOIN_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.process",
+                            "stderr reader thread panicked while handling spawn failure (best effort)"
+                        );
+                    }
+                }
             }
             return Err(err);
         }

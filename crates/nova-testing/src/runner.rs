@@ -19,7 +19,19 @@ pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
     }
 
     let project_root = PathBuf::from(&req.project_root);
-    let project_root = project_root.canonicalize().unwrap_or(project_root);
+    let project_root = match project_root.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => project_root,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.testing",
+                path = %project_root.display(),
+                error = %err,
+                "failed to canonicalize project root for test run"
+            );
+            project_root
+        }
+    };
 
     let tool = match req.build_tool {
         BuildTool::Auto => detect_build_tool(&project_root)?,
@@ -277,7 +289,15 @@ fn command_output(mut command: Command) -> Result<std::process::Output> {
         Err(err) => {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout_handle.join();
+            static STDOUT_JOIN_PANIC_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            if stdout_handle.join().is_err() {
+                if STDOUT_JOIN_PANIC_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.testing",
+                        "stdout reader thread panicked while handling stderr spawn failure (best effort)"
+                    );
+                }
+            }
             return Err(NovaTestingError::CommandFailed(format!(
                 "{desc}: failed to spawn stderr reader: {err}"
             )));
@@ -425,12 +445,40 @@ fn discover_report_dirs(modules: &[ModuleRoot], tool: BuildTool) -> Result<Vec<P
 
                 // Best-effort: include any custom test tasks under `build/test-results/*`.
                 let test_results_dir = module_root.root.join("build/test-results");
-                if let Ok(entries) = std::fs::read_dir(&test_results_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            dirs.push(path);
+                match std::fs::read_dir(&test_results_dir) {
+                    Ok(entries) => {
+                        let mut logged_entry_error = false;
+                        for entry in entries {
+                            let entry = match entry {
+                                Ok(entry) => entry,
+                                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                                Err(err) => {
+                                    if !logged_entry_error {
+                                        tracing::debug!(
+                                            target = "nova.testing",
+                                            path = %test_results_dir.display(),
+                                            error = %err,
+                                            "failed to read directory entry while scanning test reports"
+                                        );
+                                        logged_entry_error = true;
+                                    }
+                                    continue;
+                                }
+                            };
+                            let path = entry.path();
+                            if path.is_dir() {
+                                dirs.push(path);
+                            }
                         }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.testing",
+                            path = %test_results_dir.display(),
+                            error = %err,
+                            "failed to scan test reports directory"
+                        );
                     }
                 }
             }
@@ -445,12 +493,22 @@ fn discover_report_dirs(modules: &[ModuleRoot], tool: BuildTool) -> Result<Vec<P
 }
 
 fn project_modules(project_root: &Path) -> Vec<ModuleRoot> {
+    static PROJECT_LOAD_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
     // Best-effort: if project loading fails (malformed build files, etc), fall back to scanning just
     // the workspace root as a single module. This keeps `nova/test/run` resilient while still
     // avoiding full workspace walks for report discovery.
     nova_project::load_project(project_root)
         .map(|project| collect_module_roots(&project.workspace_root, &project.modules))
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|err| {
+            if PROJECT_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.testing",
+                    project_root = %project_root.display(),
+                    error = %err,
+                    "failed to load project; falling back to single-module workspace"
+                );
+            }
             vec![ModuleRoot {
                 root: project_root.to_path_buf(),
                 rel_path: ".".to_string(),

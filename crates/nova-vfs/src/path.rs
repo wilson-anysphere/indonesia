@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
 
@@ -106,8 +107,22 @@ impl VfsPath {
         // Treat `file:` URIs as local paths so that LSP buffers and disk paths
         // map to the same `VfsPath`/`FileId`.
         if uri.starts_with("file:") {
-            if let Ok(path) = file_uri_to_path(&uri) {
-                return Self::Local(normalize_local_path(path.as_path()));
+            match file_uri_to_path(&uri) {
+                Ok(path) => return Self::Local(normalize_local_path(path.as_path())),
+                Err(err) => {
+                    // Best-effort: clients may send invalid `file:` URIs (especially when
+                    // bridging multiple URI implementations). Avoid log spam by reporting only
+                    // the first failure per process.
+                    static REPORTED_INVALID_FILE_URI: OnceLock<()> = OnceLock::new();
+                    if REPORTED_INVALID_FILE_URI.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.vfs",
+                            uri,
+                            error = %err,
+                            "failed to parse file URI"
+                        );
+                    }
+                }
             }
         }
         if let Some(decompiled) = parse_decompiled_uri(&uri) {
@@ -131,8 +146,41 @@ impl VfsPath {
         match self {
             VfsPath::Local(path) => {
                 let normalized = normalize_local_path(path.as_path());
-                let abs = AbsPathBuf::new(normalized).ok()?;
-                path_to_file_uri(&abs).ok()
+                if !normalized.is_absolute() {
+                    return None;
+                }
+                let abs = match AbsPathBuf::new(normalized) {
+                    Ok(abs) => abs,
+                    Err(err) => {
+                        // We already checked `is_absolute()`, so reaching this branch should be
+                        // impossible. Still, keep it best-effort and observable.
+                        static REPORTED_ABS_PATH_ERROR: OnceLock<()> = OnceLock::new();
+                        if REPORTED_ABS_PATH_ERROR.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.vfs",
+                                error = %err,
+                                "unexpected failure to construct AbsPathBuf for file URI conversion"
+                            );
+                        }
+                        return None;
+                    }
+                };
+                match path_to_file_uri(&abs) {
+                    Ok(uri) => Some(uri),
+                    Err(err) => {
+                        // Best-effort: some paths (e.g. non-UTF8) cannot be expressed as URIs.
+                        static REPORTED_PATH_TO_URI_ERROR: OnceLock<()> = OnceLock::new();
+                        if REPORTED_PATH_TO_URI_ERROR.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.vfs",
+                                path = %abs.as_path().display(),
+                                error = %err,
+                                "failed to convert path to file URI"
+                            );
+                        }
+                        None
+                    }
+                }
             }
             _ => None,
         }
@@ -150,8 +198,38 @@ impl VfsPath {
             VfsPath::Local(_) => self.to_file_uri(),
             VfsPath::Archive(path) => {
                 let normalized = normalize_local_path(path.archive.as_path());
-                let abs = AbsPathBuf::new(normalized).ok()?;
-                let archive_uri = path_to_file_uri(&abs).ok()?;
+                if !normalized.is_absolute() {
+                    return None;
+                }
+                let abs = match AbsPathBuf::new(normalized) {
+                    Ok(abs) => abs,
+                    Err(err) => {
+                        static REPORTED_ABS_PATH_ERROR: OnceLock<()> = OnceLock::new();
+                        if REPORTED_ABS_PATH_ERROR.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.vfs",
+                                error = %err,
+                                "unexpected failure to construct AbsPathBuf for archive URI conversion"
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let archive_uri = match path_to_file_uri(&abs) {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        static REPORTED_PATH_TO_URI_ERROR: OnceLock<()> = OnceLock::new();
+                        if REPORTED_PATH_TO_URI_ERROR.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.vfs",
+                                path = %abs.as_path().display(),
+                                error = %err,
+                                "failed to convert archive path to file URI"
+                            );
+                        }
+                        return None;
+                    }
+                };
                 let scheme = match path.kind {
                     ArchiveKind::Jar => "jar",
                     ArchiveKind::Jmod => "jmod",
@@ -192,7 +270,22 @@ impl VfsPath {
 
     #[cfg(feature = "lsp")]
     pub fn to_lsp_uri(&self) -> Option<lsp_types::Uri> {
-        self.to_uri()?.parse().ok()
+        let uri = self.to_uri()?;
+        match uri.parse() {
+            Ok(uri) => Some(uri),
+            Err(err) => {
+                static REPORTED_INVALID_LSP_URI: OnceLock<()> = OnceLock::new();
+                if REPORTED_INVALID_LSP_URI.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.vfs",
+                        uri,
+                        error = ?err,
+                        "failed to parse URI as lsp_types::Uri"
+                    );
+                }
+                None
+            }
+        }
     }
 }
 
@@ -291,7 +384,22 @@ fn percent_decode_utf8(s: &str) -> Option<String> {
         }
     }
 
-    String::from_utf8(out).ok()
+    match String::from_utf8(out) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            // Percent decoding can fail for arbitrary URIs that contain non-UTF-8 percent escapes.
+            // Avoid log spam by reporting only the first failure per process.
+            static REPORTED_INVALID_PERCENT_DECODE: OnceLock<()> = OnceLock::new();
+            if REPORTED_INVALID_PERCENT_DECODE.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.vfs",
+                    error = %err,
+                    "failed to percent-decode UTF-8 string"
+                );
+            }
+            None
+        }
+    }
 }
 
 fn percent_encode_archive_entry(entry: &str) -> String {
@@ -346,7 +454,7 @@ fn format_archive_uri_fallback(kind: ArchiveKind, archive: &Path, entry: &str) -
     format!("{scheme}:{}!/{entry}", archive.display())
 }
 
-fn normalize_local_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_local_path(path: &Path) -> PathBuf {
     let mut prefix: Option<OsString> = None;
     let mut has_root = false;
     let mut stack: Vec<OsString> = Vec::new();
@@ -399,7 +507,17 @@ fn normalize_prefix(prefix_component: std::path::PrefixComponent<'_>) -> OsStrin
                 if drive.is_ascii_alphabetic() {
                     bytes[colon - 1] = drive.to_ascii_uppercase();
                 }
-                return OsString::from(String::from_utf8(bytes).unwrap_or_default());
+                return match String::from_utf8(bytes) {
+                    Ok(prefix) => OsString::from(prefix),
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.vfs",
+                            error = %err,
+                            "failed to normalize Windows path prefix; using fallback"
+                        );
+                        OsString::from(prefix_component.as_os_str())
+                    }
+                };
             }
         }
         OsString::from(prefix)
@@ -476,7 +594,22 @@ fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     }
 
     let (archive_uri, entry) = rest.split_once('!')?;
-    let archive = file_uri_to_path(archive_uri).ok()?;
+    let archive = match file_uri_to_path(archive_uri) {
+        Ok(archive) => archive,
+        Err(err) => {
+            static REPORTED_INVALID_ARCHIVE_FILE_URI: OnceLock<()> = OnceLock::new();
+            if REPORTED_INVALID_ARCHIVE_FILE_URI.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.vfs",
+                    uri,
+                    archive_uri,
+                    error = %err,
+                    "failed to parse archive file URI"
+                );
+            }
+            return None;
+        }
+    };
     let archive = normalize_local_path(archive.as_path());
     let entry = percent_decode_utf8(entry)?;
     let entry = normalize_archive_entry(&entry)?;

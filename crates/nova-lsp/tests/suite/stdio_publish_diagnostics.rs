@@ -22,7 +22,10 @@ fn find_publish_diagnostics(
             return None;
         }
         let params = msg.get("params")?;
-        let params: PublishDiagnosticsParams = serde_json::from_value(params.clone()).ok()?;
+        let params: PublishDiagnosticsParams = serde_json::from_value(params.clone())
+            .unwrap_or_else(|err| {
+                panic!("failed to parse publishDiagnostics params: {err}\n{params:#?}")
+            });
         if &params.uri == uri {
             Some(params)
         } else {

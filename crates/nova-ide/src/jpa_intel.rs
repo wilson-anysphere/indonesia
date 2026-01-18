@@ -126,10 +126,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
     let java_files = match collect_java_files(db, &root, cancel) {
         Some(files) => files,
         None => {
-            let root_key = config
-                .as_ref()
-                .map(|cfg| cfg.workspace_root.clone())
-                .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+            let root_key = root_key_for_cache(config.as_ref(), &root);
             return JPA_ANALYSIS_CACHE
                 .lock()
                 .expect("jpa cache mutex poisoned")
@@ -143,10 +140,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
     let fingerprint = match fingerprint_sources(db, &java_files, cancel) {
         Some(fingerprint) => fingerprint,
         None => {
-            let root_key = config
-                .as_ref()
-                .map(|cfg| cfg.workspace_root.clone())
-                .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+            let root_key = root_key_for_cache(config.as_ref(), &root);
             return JPA_ANALYSIS_CACHE
                 .lock()
                 .expect("jpa cache mutex poisoned")
@@ -154,10 +148,7 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
         }
     };
 
-    let root_key = config
-        .as_ref()
-        .map(|cfg| cfg.workspace_root.clone())
-        .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+    let root_key = root_key_for_cache(config.as_ref(), &root);
 
     if let Some(hit) = JPA_ANALYSIS_CACHE
         .lock()
@@ -211,6 +202,26 @@ pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
         .insert(root_key, entry.clone());
 
     Some(entry)
+}
+
+fn root_key_for_cache(config: Option<&Arc<ProjectConfig>>, root: &Path) -> PathBuf {
+    if let Some(cfg) = config {
+        return cfg.workspace_root.clone();
+    }
+
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for jpa cache key"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 pub(crate) fn resolve_definition_in_jpql(

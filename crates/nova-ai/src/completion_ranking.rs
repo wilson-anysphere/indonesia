@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures::future::{BoxFuture, FutureExt};
 
 use nova_config::AiConfig;
-use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
+use nova_core::{panic_payload_to_str, CompletionContext, CompletionItem, CompletionItemKind};
 use nova_fuzzy::{FuzzyMatcher, MatchScore};
 
 use crate::util;
@@ -93,6 +94,9 @@ pub async fn rank_completions_with_timeout<R: CompletionRanker>(
     items: Vec<CompletionItem>,
     timeout: Duration,
 ) -> Vec<CompletionItem> {
+    static RANKING_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+    static RANKING_TIMEOUT_LOGGED: OnceLock<()> = OnceLock::new();
+
     let fallback = items.clone();
 
     let ranked_future = ranker.rank_completions(ctx, items);
@@ -100,8 +104,31 @@ pub async fn rank_completions_with_timeout<R: CompletionRanker>(
 
     match util::timeout(timeout, ranked_future).await {
         Ok(Ok(ranked)) => ranked,
-        Ok(Err(_panic)) => fallback,
-        Err(_timeout) => fallback,
+        Ok(Err(panic)) => {
+            if RANKING_PANIC_LOGGED.set(()).is_ok() {
+                tracing::error!(
+                    target = "nova.ai",
+                    ranker = std::any::type_name::<R>(),
+                    panic = %panic_payload_to_str(&*panic),
+                    prefix_len = ctx.prefix.len(),
+                    timeout_ms = timeout.as_millis(),
+                    "completion ranking panicked; returning unranked completions"
+                );
+            }
+            fallback
+        }
+        Err(_timeout) => {
+            if RANKING_TIMEOUT_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.ai",
+                    ranker = std::any::type_name::<R>(),
+                    prefix_len = ctx.prefix.len(),
+                    timeout_ms = timeout.as_millis(),
+                    "completion ranking timed out; returning unranked completions"
+                );
+            }
+            fallback
+        }
     }
 }
 

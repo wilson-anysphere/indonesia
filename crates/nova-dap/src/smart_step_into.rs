@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// A DAP-style step-in target.
 ///
@@ -158,6 +159,8 @@ pub fn enumerate_step_in_targets_in_line(line: &str) -> Vec<StepInTarget> {
 }
 
 fn identifier_before_paren(bytes: &[u8], open_paren: usize) -> Option<(String, usize, usize)> {
+    static IDENTIFIER_UTF8_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     if open_paren == 0 {
         return None;
     }
@@ -186,7 +189,21 @@ fn identifier_before_paren(bytes: &[u8], open_paren: usize) -> Option<(String, u
         start -= 1;
     }
 
-    let name = std::str::from_utf8(&bytes[start..=end]).ok()?.to_string();
+    let name = match std::str::from_utf8(&bytes[start..=end]) {
+        Ok(name) => name.to_string(),
+        Err(err) => {
+            if IDENTIFIER_UTF8_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    start,
+                    end,
+                    error = ?err,
+                    "failed to parse identifier slice as UTF-8 for step-in targets"
+                );
+            }
+            return None;
+        }
+    };
     Some((name, start, end))
 }
 

@@ -28,9 +28,9 @@ fn pom_java11() -> &'static str {
 }
 
 async fn wait_for_diagnostics(
-    events: &async_channel::Receiver<WorkspaceEvent>,
+    events: &async_channel::Receiver<std::sync::Arc<WorkspaceEvent>>,
     file: &VfsPath,
-) -> Vec<nova_types::Diagnostic> {
+) -> std::sync::Arc<Vec<nova_types::Diagnostic>> {
     loop {
         let ev = timeout(Duration::from_secs(2), events.recv())
             .await
@@ -39,10 +39,10 @@ async fn wait_for_diagnostics(
         if let WorkspaceEvent::DiagnosticsUpdated {
             file: got,
             diagnostics,
-        } = ev
+        } = ev.as_ref()
         {
-            if &got == file {
-                return diagnostics;
+            if got == file {
+                return std::sync::Arc::clone(diagnostics);
             }
         }
     }

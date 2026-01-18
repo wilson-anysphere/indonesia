@@ -177,7 +177,7 @@ pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
             continue;
         };
         let root = tree.root_node();
-        let package = parse_package_name(root, src).unwrap_or_default();
+        let package = parse_package_name(root, src).unwrap_or_else(String::new);
         let in_scan =
             scan_base_packages.is_empty() || package_matches_any(&package, &scan_base_packages);
 
@@ -450,9 +450,7 @@ fn parse_class_declaration(
     injections: &mut Vec<InjectionPoint>,
     hierarchy: &mut ClassHierarchy,
 ) {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     let name_node = node
         .child_by_field_name("name")
@@ -622,9 +620,7 @@ fn parse_field_injections(
     class_name: &str,
     injections: &mut Vec<InjectionPoint>,
 ) {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     if !annotations
         .iter()
@@ -638,9 +634,13 @@ fn parse_field_injections(
     let ty_node = node
         .child_by_field_name("type")
         .or_else(|| infer_field_type_node(node));
-    let ty = ty_node
-        .map(|n| simplify_type(node_text(source, n)))
-        .unwrap_or_default();
+    let Some(ty_node) = ty_node else {
+        return;
+    };
+    let ty = simplify_type(node_text(source, ty_node));
+    if ty.is_empty() {
+        return;
+    }
 
     let mut cursor = node.walk();
     for declarator in node.named_children(&mut cursor) {
@@ -691,9 +691,7 @@ fn parse_constructor(
     source: &str,
     class_name: &str,
 ) -> ConstructorData {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
     let is_autowired = annotations
         .iter()
         .any(|a| matches!(a.simple_name.as_str(), "Autowired" | "Inject"));
@@ -724,9 +722,7 @@ fn parse_constructor(
 }
 
 fn parse_constructor_param(node: Node<'_>, source: &str) -> Option<ConstructorParam> {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
     let qualifier = qualifier_from_annotations(&annotations);
 
     let name_node = node
@@ -818,9 +814,7 @@ fn parse_autowired_method_param_injections(
     class_name: &str,
     injections: &mut Vec<InjectionPoint>,
 ) {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     if !annotations
         .iter()
@@ -863,9 +857,7 @@ fn parse_autowired_method_param_injections(
 }
 
 fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<Bean> {
-    let annotations = modifier_node(node)
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     let bean_ann = annotations.iter().find(|a| a.simple_name == "Bean")?;
 
@@ -884,8 +876,7 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         .args
         .get("name")
         .or_else(|| bean_ann.args.get("value"))
-        .map(|raw| parse_string_list(raw))
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |raw| parse_string_list(raw));
     let (name, aliases) = if explicit_names.is_empty() {
         (method_name.clone(), Vec::new())
     } else {
@@ -970,16 +961,15 @@ fn discover_component_scan_base_packages(
             continue;
         };
         let root = tree.root_node();
-        let package = parse_package_name(root, src).unwrap_or_default();
+        let package = parse_package_name(root, src).unwrap_or_else(String::new);
 
         visit_nodes(root, &mut |node| {
             if node.kind() != "class_declaration" {
                 return;
             }
 
-            let annotations = modifier_node(node)
-                .map(|m| collect_annotations(m, src))
-                .unwrap_or_default();
+            let annotations =
+                modifier_node(node).map_or_else(Vec::new, |m| collect_annotations(m, src));
 
             let name_node = node
                 .child_by_field_name("name")

@@ -138,9 +138,23 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     };
 
     let max_rpc_bytes = clamp_max_rpc_bytes(args.max_rpc_bytes);
-    let max_rpc_len: u32 = max_rpc_bytes
-        .try_into()
-        .unwrap_or_else(|_| u32::MAX.min(nova_remote_proto::MAX_MESSAGE_BYTES as u32));
+    let max_allowed = u32::try_from(nova_remote_proto::MAX_MESSAGE_BYTES).unwrap_or(u32::MAX);
+    let max_rpc_len: u32 = match u32::try_from(max_rpc_bytes) {
+        Ok(value) => value,
+        Err(err) => {
+            static MAX_RPC_BYTES_TOO_LARGE_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            if MAX_RPC_BYTES_TOO_LARGE_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.worker",
+                    max_rpc_bytes,
+                    error = %err,
+                    "max_rpc_bytes does not fit in u32; clamping to protocol maximum"
+                );
+            }
+            max_allowed
+        }
+    };
 
     let hello = nova_remote_proto::v3::WorkerHello {
         shard_id: args.shard_id,

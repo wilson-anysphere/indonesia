@@ -36,18 +36,18 @@ impl TestEvictor {
     }
 
     fn set_bytes(&self, bytes: u64) {
-        *self.bytes.lock().unwrap() = bytes;
+        *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
         self.tracker.get().unwrap().set_bytes(bytes);
     }
 
     fn add_bytes(&self, delta: u64) {
-        let mut bytes = self.bytes.lock().unwrap();
+        let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
         *bytes = bytes.saturating_add(delta);
         self.tracker.get().unwrap().set_bytes(*bytes);
     }
 
     fn bytes(&self) -> u64 {
-        *self.bytes.lock().unwrap()
+        *self.bytes.lock().expect("bytes mutex poisoned")
     }
 }
 
@@ -61,7 +61,7 @@ impl MemoryEvictor for TestEvictor {
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
-        let mut bytes = self.bytes.lock().unwrap();
+        let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
         let before = *bytes;
         let after = before.min(request.target_bytes);
         *bytes = after;
@@ -131,12 +131,12 @@ impl RecordingEvictor {
     }
 
     fn set_bytes(&self, bytes: u64) {
-        *self.bytes.lock().unwrap() = bytes;
+        *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
         self.tracker.get().unwrap().set_bytes(bytes);
     }
 
     fn bytes(&self) -> u64 {
-        *self.bytes.lock().unwrap()
+        *self.bytes.lock().expect("bytes mutex poisoned")
     }
 }
 
@@ -172,12 +172,12 @@ impl PriorityRecordingEvictor {
     }
 
     fn set_bytes(&self, bytes: u64) {
-        *self.bytes.lock().unwrap() = bytes;
+        *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
         self.tracker.get().unwrap().set_bytes(bytes);
     }
 
     fn bytes(&self) -> u64 {
-        *self.bytes.lock().unwrap()
+        *self.bytes.lock().expect("bytes mutex poisoned")
     }
 }
 
@@ -191,9 +191,12 @@ impl MemoryEvictor for RecordingEvictor {
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
-        self.calls.lock().unwrap().push(self.name);
+        self.calls
+            .lock()
+            .expect("calls mutex poisoned")
+            .push(self.name);
 
-        let mut bytes = self.bytes.lock().unwrap();
+        let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
         let before = *bytes;
         let after = before.min(request.target_bytes);
         *bytes = after;
@@ -219,9 +222,12 @@ impl MemoryEvictor for PriorityRecordingEvictor {
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
-        self.calls.lock().unwrap().push(self.name);
+        self.calls
+            .lock()
+            .expect("calls mutex poisoned")
+            .push(self.name);
 
-        let mut bytes = self.bytes.lock().unwrap();
+        let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
         let before = *bytes;
         let after = before.min(request.target_bytes);
         *bytes = after;
@@ -263,7 +269,7 @@ impl OrderingEvictor {
     }
 
     fn set_bytes(&self, bytes: u64) {
-        *self.bytes.lock().unwrap() = bytes;
+        *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
         self.tracker.get().unwrap().set_bytes(bytes);
     }
 }
@@ -278,14 +284,20 @@ impl MemoryEvictor for OrderingEvictor {
     }
 
     fn flush_to_disk(&self) -> std::io::Result<()> {
-        self.calls.lock().unwrap().push("flush_to_disk");
+        self.calls
+            .lock()
+            .expect("calls mutex poisoned")
+            .push("flush_to_disk");
         Ok(())
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
-        self.calls.lock().unwrap().push("evict");
+        self.calls
+            .lock()
+            .expect("calls mutex poisoned")
+            .push("evict");
 
-        let mut bytes = self.bytes.lock().unwrap();
+        let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
         let before = *bytes;
         let after = before.min(request.target_bytes);
         *bytes = after;
@@ -322,7 +334,7 @@ fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
     manager.subscribe({
         let events = events.clone();
         Arc::new(move |event: MemoryEvent| {
-            events.lock().unwrap().push(event);
+            events.lock().expect("events mutex poisoned").push(event);
         })
     });
 
@@ -341,7 +353,7 @@ fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
     assert_eq!(report.pressure, nova_memory::MemoryPressure::High);
     assert!(report.degraded.skip_expensive_diagnostics);
 
-    let events = events.lock().unwrap();
+    let events = events.lock().expect("events mutex poisoned");
     assert_eq!(events.len(), 1);
     assert_eq!(
         events[0].previous_pressure,
@@ -539,8 +551,9 @@ fn stops_evicting_within_category_once_under_target() {
         1,
         "expected secondary evictor to not be called once category is within target"
     );
+    let calls = calls.lock().expect("calls mutex poisoned");
     assert_eq!(
-        calls.lock().unwrap().as_slice(),
+        calls.as_slice(),
         ["a"],
         "expected only the first evictor to be invoked"
     );
@@ -589,8 +602,9 @@ fn evicts_lower_priority_first_even_if_smaller() {
 
     manager.enforce();
 
+    let calls = calls.lock().expect("calls mutex poisoned");
     assert_eq!(
-        calls.lock().unwrap().as_slice(),
+        calls.as_slice(),
         ["cheap"],
         "expected low-priority evictor to run first and satisfy the target without invoking the expensive evictor"
     );
@@ -615,7 +629,7 @@ fn enforce_flushes_to_disk_before_evicting_under_high_and_critical_pressure() {
 
         manager.enforce();
 
-        let calls = calls.lock().unwrap();
+        let calls = calls.lock().expect("calls mutex poisoned");
         let flush_pos = calls
             .iter()
             .position(|entry| *entry == "flush_to_disk")

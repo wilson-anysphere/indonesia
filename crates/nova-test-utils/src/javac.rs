@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
@@ -166,7 +167,22 @@ pub fn javac_available() -> bool {
 ///
 /// Returns the feature release number (8, 11, 17, 21, ...).
 pub fn javac_version() -> Option<u32> {
-    let out = Command::new("javac").arg("-version").output().ok()?;
+    static JAVAC_VERSION_COMMAND_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let out = match Command::new("javac").arg("-version").output() {
+        Ok(out) => out,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            if JAVAC_VERSION_COMMAND_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.test_utils",
+                    error = %err,
+                    "failed to run `javac -version`"
+                );
+            }
+            return None;
+        }
+    };
     if !out.status.success() {
         return None;
     }
@@ -197,15 +213,48 @@ fn parse_javac_version(output: &str) -> Option<u32> {
 }
 
 fn parse_javac_version_token(version: &str) -> Option<u32> {
+    static JAVAC_VERSION_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut nums = version.split(['.', '_']);
     let first_part = nums.next()?;
     let first_digits: String = first_part
         .chars()
         .take_while(|ch| ch.is_ascii_digit())
         .collect();
-    let first = first_digits.parse::<u32>().ok()?;
+
+    let first = match first_digits.parse::<u32>() {
+        Ok(value) => value,
+        Err(err) => {
+            if JAVAC_VERSION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.test_utils",
+                    version = %version,
+                    first_part = %first_part,
+                    digits = %first_digits,
+                    error = %err,
+                    "failed to parse javac version token (best effort)"
+                );
+            }
+            return None;
+        }
+    };
     if first == 1 {
-        nums.next()?.parse::<u32>().ok()
+        let raw = nums.next()?;
+        match raw.parse::<u32>() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                if JAVAC_VERSION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.test_utils",
+                        version = %version,
+                        raw,
+                        error = %err,
+                        "failed to parse legacy javac version token (best effort)"
+                    );
+                }
+                None
+            }
+        }
     } else {
         Some(first)
     }
@@ -275,6 +324,8 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     }
     let loc_end_colon = loc_end_colon?;
 
+    static LOCATION_NUMBER_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     // Parse the trailing number (either column or line).
     let n2_end = loc_end_colon;
     let mut n2_start = n2_end;
@@ -284,7 +335,20 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     if n2_start == n2_end || n2_start == 0 || bytes[n2_start - 1] != b':' {
         return None;
     }
-    let n2: usize = line[n2_start..n2_end].parse().ok()?;
+    let n2: usize = match line[n2_start..n2_end].parse() {
+        Ok(n2) => n2,
+        Err(err) => {
+            if LOCATION_NUMBER_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.test_utils",
+                    number = &line[n2_start..n2_end],
+                    error = %err,
+                    "failed to parse javac numeric location field"
+                );
+            }
+            return None;
+        }
+    };
     let sep2 = n2_start - 1;
 
     // Attempt to parse a previous number (line number) before `sep2`. If present, `n2` is column.
@@ -296,7 +360,20 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     let (file_end_colon, line_no, col_no) =
         if n1_start < n1_end && n1_start > 0 && bytes[n1_start - 1] == b':' {
             // file:line:col:
-            let line_no: usize = line[n1_start..n1_end].parse().ok()?;
+            let line_no: usize = match line[n1_start..n1_end].parse() {
+                Ok(line_no) => line_no,
+                Err(err) => {
+                    if LOCATION_NUMBER_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.test_utils",
+                            number = &line[n1_start..n1_end],
+                            error = %err,
+                            "failed to parse javac numeric location field"
+                        );
+                    }
+                    return None;
+                }
+            };
             (n1_start - 1, line_no, n2)
         } else {
             // file:line:

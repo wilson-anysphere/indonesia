@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use nova_core::ProjectId;
 use nova_framework::Database;
@@ -41,7 +41,7 @@ impl WorkspaceCache {
         let fingerprint = project_fingerprint(db, project);
 
         {
-            let cache = lock_unpoison(&self.inner);
+            let cache = crate::poison::lock(&self.inner, "WorkspaceCache.workspace/read_cache");
             if let Some(entry) = cache.get(&project) {
                 if entry.fingerprint == fingerprint {
                     return entry.workspace.clone();
@@ -54,13 +54,10 @@ impl WorkspaceCache {
             fingerprint,
             workspace: workspace.clone(),
         };
-        lock_unpoison(&self.inner).insert(project, entry);
+        crate::poison::lock(&self.inner, "WorkspaceCache.workspace/write_cache")
+            .insert(project, entry);
         workspace
     }
-}
-
-fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
@@ -150,7 +147,10 @@ impl MapStructWorkspace {
         }
 
         {
-            let cache = lock_unpoison(&self.property_types);
+            let cache = crate::poison::lock(
+                &self.property_types,
+                "MapStructWorkspace.property_types_for_type/read_cache",
+            );
             if let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
@@ -165,17 +165,29 @@ impl MapStructWorkspace {
         };
 
         let Some(file_id) = file_id else {
-            lock_unpoison(&self.property_types).insert(cache_key, None);
+            crate::poison::lock(
+                &self.property_types,
+                "MapStructWorkspace.property_types_for_type/cache_missing_file",
+            )
+            .insert(cache_key, None);
             return None;
         };
 
         let Some(text) = db.file_text(file_id) else {
-            lock_unpoison(&self.property_types).insert(cache_key, None);
+            crate::poison::lock(
+                &self.property_types,
+                "MapStructWorkspace.property_types_for_type/cache_missing_text",
+            )
+            .insert(cache_key, None);
             return None;
         };
 
         let Ok(tree) = nova_framework_parse::parse_java(text) else {
-            lock_unpoison(&self.property_types).insert(cache_key, None);
+            crate::poison::lock(
+                &self.property_types,
+                "MapStructWorkspace.property_types_for_type/cache_parse_error",
+            )
+            .insert(cache_key, None);
             return None;
         };
 
@@ -190,7 +202,11 @@ impl MapStructWorkspace {
             &imports,
         );
         let map = Arc::new(map);
-        lock_unpoison(&self.property_types).insert(cache_key, Some(map.clone()));
+        crate::poison::lock(
+            &self.property_types,
+            "MapStructWorkspace.property_types_for_type/write_cache",
+        )
+        .insert(cache_key, Some(map.clone()));
         Some(map)
     }
 }

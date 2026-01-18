@@ -7,10 +7,30 @@ use crate::report::{ComponentUsage, MemoryReport};
 use crate::types::{MemoryBreakdown, MemoryCategory};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 type MemoryEventListener = Arc<dyn Fn(MemoryEvent) + Send + Sync>;
 type EvictorEntry = (u64, MemoryCategory, Arc<AtomicU64>, Arc<dyn MemoryEvictor>);
+
+#[track_caller]
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.memory",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 struct RegistrationEntry {
     name: String,
@@ -73,7 +93,7 @@ impl MemoryManager {
 
     /// Subscribe to memory pressure events.
     pub fn subscribe(&self, listener: MemoryEventListener) {
-        self.inner.listeners.lock().unwrap().push(listener);
+        lock_mutex(&self.inner.listeners, "subscribe").push(listener);
     }
 
     /// Register a component for memory accounting only.
@@ -104,7 +124,7 @@ impl MemoryManager {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let usage_bytes = Arc::new(AtomicU64::new(0));
 
-        self.inner.registrations.lock().unwrap().insert(
+        lock_mutex(&self.inner.registrations, "register").insert(
             id,
             RegistrationEntry {
                 name: name.clone(),
@@ -136,7 +156,7 @@ impl MemoryManager {
 
     /// Current degraded settings derived from the last computed pressure.
     pub fn degraded_settings(&self) -> DegradedSettings {
-        self.inner.state.lock().unwrap().degraded
+        lock_mutex(&self.inner.state, "degraded_settings").degraded
     }
 
     /// Snapshot of current memory state (no eviction).
@@ -158,7 +178,7 @@ impl MemoryManager {
     /// Snapshot of current memory state (no eviction) plus per-component usage.
     pub fn report_detailed(&self) -> (MemoryReport, Vec<ComponentUsage>) {
         let entries: Vec<(String, MemoryCategory, Arc<AtomicU64>)> = {
-            let registrations = self.inner.registrations.lock().unwrap();
+            let registrations = lock_mutex(&self.inner.registrations, "report_detailed");
             registrations
                 .values()
                 .map(|entry| {
@@ -249,7 +269,7 @@ impl MemoryManager {
 
     fn flush_to_disk_best_effort(&self) {
         let evictors: Vec<Arc<dyn MemoryEvictor>> = {
-            let registrations = self.inner.registrations.lock().unwrap();
+            let registrations = lock_mutex(&self.inner.registrations, "flush_to_disk_best_effort");
             registrations
                 .values()
                 .filter_map(|entry| entry.evictor.clone())
@@ -300,7 +320,7 @@ impl MemoryManager {
 
     fn collect_evictor_entries(&self) -> Vec<EvictorEntry> {
         {
-            let registrations = self.inner.registrations.lock().unwrap();
+            let registrations = lock_mutex(&self.inner.registrations, "collect_evictor_entries");
             registrations
                 .iter()
                 .filter_map(|(&id, entry)| {
@@ -487,7 +507,7 @@ impl MemoryManager {
     }
 
     fn maybe_emit_event(&self, before_pressure: MemoryPressure, report: MemoryReport) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = lock_mutex(&self.inner.state, "maybe_emit_event");
         let after_pressure = report.pressure;
         let after_degraded = report.degraded;
 
@@ -502,7 +522,7 @@ impl MemoryManager {
         state.degraded = after_degraded;
         drop(state);
 
-        let listeners = self.inner.listeners.lock().unwrap().clone();
+        let listeners = lock_mutex(&self.inner.listeners, "maybe_emit_event").clone();
         if listeners.is_empty() {
             return;
         }
@@ -529,7 +549,7 @@ impl MemoryManager {
     }
 
     fn usage_breakdown(&self) -> MemoryBreakdown {
-        let registrations = self.inner.registrations.lock().unwrap();
+        let registrations = lock_mutex(&self.inner.registrations, "usage_breakdown");
         let mut breakdown = MemoryBreakdown::default();
         for entry in registrations.values() {
             let bytes = entry.usage_bytes.load(Ordering::Relaxed);
@@ -606,7 +626,7 @@ impl Drop for MemoryRegistration {
     fn drop(&mut self) {
         self.usage_bytes.store(0, Ordering::Relaxed);
         if let Some(manager) = self.manager.upgrade() {
-            manager.registrations.lock().unwrap().remove(&self.id);
+            lock_mutex(&manager.registrations, "registration_drop").remove(&self.id);
         }
     }
 }

@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn go_to_definition_into_jdk_returns_canonical_virtual_uri_and_is_readable() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::poison::lock(&ENV_LOCK, "stdio_goto/test/go_to_definition_jdk");
 
         // Point JDK discovery at the tiny fake JDK shipped in this repository.
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

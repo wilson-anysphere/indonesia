@@ -38,5 +38,26 @@ pub use watch::{
     FileWatcher, ManualFileWatcher, ManualFileWatcherHandle, WatchEvent, WatchMessage, WatchMode,
 };
 
+/// Lexically normalizes a local filesystem path using the same rules as `VfsPath::local`.
+///
+/// This does not hit the filesystem and does not resolve symlinks.
+pub fn normalize_local_path(path: &std::path::Path) -> std::path::PathBuf {
+    crate::path::normalize_local_path(path)
+}
+
 #[cfg(feature = "watch-notify")]
 pub use watch::{EventNormalizer, NotifyFileWatcher};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::path::Path;
+
+    #[test]
+    fn normalize_local_path_matches_vfs_path_local() {
+        let raw = Path::new("a/./b/../c");
+        let normalized = normalize_local_path(raw);
+        assert_eq!(VfsPath::local(raw), VfsPath::Local(normalized));
+    }
+}

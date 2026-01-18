@@ -286,6 +286,7 @@ pub mod transport {
     use anyhow::anyhow;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::OnceLock;
 
     #[cfg(feature = "tokio")]
     use anyhow::Context;
@@ -318,12 +319,48 @@ pub mod transport {
     }
 
     fn compute_max_frame_size() -> usize {
-        std::env::var(MAX_MESSAGE_SIZE_ENV_VAR)
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
-            .clamp(1, MAX_FRAME_BYTES)
+        static MAX_FRAME_SIZE_ENV_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let raw = match std::env::var(MAX_MESSAGE_SIZE_ENV_VAR) {
+            Ok(raw) => raw,
+            Err(std::env::VarError::NotPresent) => {
+                return DEFAULT_MAX_FRAME_BYTES.clamp(1, MAX_FRAME_BYTES)
+            }
+            Err(err) => {
+                if MAX_FRAME_SIZE_ENV_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.remote_proto",
+                        key = MAX_MESSAGE_SIZE_ENV_VAR,
+                        error = ?err,
+                        "failed to read RPC max frame size env var; using default (best effort)"
+                    );
+                }
+                return DEFAULT_MAX_FRAME_BYTES.clamp(1, MAX_FRAME_BYTES);
+            }
+        };
+
+        let raw = raw.trim();
+        if raw.is_empty() || raw == "0" {
+            return DEFAULT_MAX_FRAME_BYTES.clamp(1, MAX_FRAME_BYTES);
+        }
+
+        let parsed = match raw.parse::<usize>() {
+            Ok(value) => value,
+            Err(err) => {
+                if MAX_FRAME_SIZE_ENV_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.remote_proto",
+                        key = MAX_MESSAGE_SIZE_ENV_VAR,
+                        raw = %raw,
+                        error = %err,
+                        "invalid RPC max frame size env var; using default (best effort)"
+                    );
+                }
+                DEFAULT_MAX_FRAME_BYTES
+            }
+        };
+
+        parsed.max(1).min(MAX_FRAME_BYTES)
     }
 
     fn max_frame_size() -> usize {

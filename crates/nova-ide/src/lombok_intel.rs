@@ -280,7 +280,7 @@ fn workspace_intel<DB: ?Sized + TextDatabase>(
     let fingerprint = workspace_fingerprint(db, &root);
 
     {
-        let guard = CACHE.lock().ok()?;
+        let guard = crate::poison::lock(&CACHE, "lombok_intel.workspace_intel/read_cache");
         if let Some(cached) = guard.get(&root) {
             if cached.fingerprint == fingerprint {
                 return Some(cached.intel.clone());
@@ -290,7 +290,7 @@ fn workspace_intel<DB: ?Sized + TextDatabase>(
 
     let intel = Arc::new(build_workspace_intel(db, &root)?);
 
-    let mut guard = CACHE.lock().ok()?;
+    let mut guard = crate::poison::lock(&CACHE, "lombok_intel.workspace_intel/write_cache");
     guard.insert(
         root,
         CachedIntel {

@@ -158,16 +158,28 @@ impl DependencyIndexStore {
         ) {
             Ok(Some(archive)) => archive,
             Ok(None) => return Ok(None),
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.deps_cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to open deps cache bundle; treating as miss"
+                );
+                remove_file_best_effort(&path, "open_failed");
                 return Ok(None);
             }
         };
 
         let bundle = match archive.to_owned() {
             Ok(bundle) => bundle,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.deps_cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to decode deps cache bundle; treating as miss"
+                );
+                remove_file_best_effort(&path, "decode_failed");
                 return Ok(None);
             }
         };
@@ -289,6 +301,22 @@ impl DependencyIndexStore {
                 .map_err(|e| DepsCacheError::Archive(e.to_string()))?;
         }
         Ok(())
+    }
+}
+
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.deps_cache",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to delete deps cache bundle"
+            );
+        }
     }
 }
 

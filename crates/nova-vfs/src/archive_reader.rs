@@ -81,7 +81,20 @@ impl ArchiveReader for NovaArchiveReader {
         }
 
         let archive = Archive::new(path.archive.clone());
-        archive.read(entry.as_ref()).ok().flatten().is_some()
+        match archive.read(entry.as_ref()) {
+            Ok(Some(_bytes)) => true,
+            Ok(None) => false,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.vfs",
+                    archive_path = %path.archive.display(),
+                    entry = %entry,
+                    error = %err,
+                    "failed to read archive entry while checking existence"
+                );
+                false
+            }
+        }
     }
 }
 

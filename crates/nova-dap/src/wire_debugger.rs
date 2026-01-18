@@ -4,7 +4,7 @@ use std::{
     hash::Hash,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, OnceLock},
     time::Duration,
 };
 
@@ -29,7 +29,7 @@ use nova_scheduler::CancellationToken;
 /// Internal representation of a DAP `SourceBreakpoint`.
 ///
 /// This is intentionally minimal and only captures the fields we need for the wire-level adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BreakpointSpec {
     pub line: i32,
     pub condition: Option<String>,
@@ -38,7 +38,7 @@ pub(crate) struct BreakpointSpec {
 }
 
 /// Internal representation of a DAP `FunctionBreakpoint`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FunctionBreakpointSpec {
     pub name: String,
     pub condition: Option<String>,
@@ -87,6 +87,34 @@ pub enum DebuggerError {
 }
 
 pub type Result<T> = std::result::Result<T, DebuggerError>;
+
+static REPORTED_SOURCE_FILE_ERRORS: OnceLock<()> = OnceLock::new();
+static REPORTED_REFERENCE_TYPE_METHODS_ERRORS: OnceLock<()> = OnceLock::new();
+static REPORTED_METHOD_LINE_TABLE_ERRORS: OnceLock<()> = OnceLock::new();
+static HIT_CONDITION_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+fn parse_hit_condition_count_modifier(hit_condition: Option<&str>) -> Option<u32> {
+    let raw = hit_condition?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    match raw.parse::<u32>() {
+        Ok(count) if count > 1 => Some(count),
+        Ok(_) => None,
+        Err(err) => {
+            if HIT_CONDITION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    raw = %raw,
+                    error = %err,
+                    "invalid DAP hitCondition (expected integer); ignoring (best effort)"
+                );
+            }
+            None
+        }
+    }
+}
 
 /// JDWP suspend policy used for stop events (breakpoints, stepping, exceptions).
 ///
@@ -271,6 +299,9 @@ pub struct Debugger {
     internal_eval_threads: Arc<StdMutex<HashSet<ThreadId>>>,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
     requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    breakpoint_ids: HashMap<String, HashMap<BreakpointSpec, i32>>,
+    function_breakpoint_ids: HashMap<FunctionBreakpointSpec, i32>,
+    next_breakpoint_id: i32,
     /// Tracks source breakpoints that were returned as unverified because the class was not yet
     /// loaded.
     ///
@@ -282,7 +313,7 @@ pub struct Debugger {
     requested_function_breakpoints: Vec<FunctionBreakpointSpec>,
     /// Tracks function breakpoints that were returned as unverified because the class was not yet
     /// loaded.
-    pending_function_breakpoints: HashSet<String>,
+    pending_function_breakpoints: HashSet<i32>,
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     /// Pending DAP breakpoint updates emitted after deferred installation (class prepare).
     ///
@@ -375,6 +406,9 @@ impl Debugger {
             internal_eval_threads: Arc::new(StdMutex::new(HashSet::new())),
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
+            breakpoint_ids: HashMap::new(),
+            function_breakpoint_ids: HashMap::new(),
+            next_breakpoint_id: 1,
             pending_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
             requested_function_breakpoints: Vec::new(),
@@ -502,6 +536,42 @@ impl Debugger {
     /// handling.
     pub(crate) fn take_breakpoint_updates(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.breakpoint_updates)
+    }
+
+    fn alloc_breakpoint_id(&mut self) -> i32 {
+        let id = self.next_breakpoint_id;
+        self.next_breakpoint_id = self.next_breakpoint_id.saturating_add(1);
+        if self.next_breakpoint_id <= 0 {
+            // Saturating add can overflow into non-positive integers; clamp defensively.
+            self.next_breakpoint_id = i32::MAX;
+        }
+        id
+    }
+
+    fn breakpoint_id_for_source(&mut self, file: &str, spec: &BreakpointSpec) -> i32 {
+        if let Some(id) = self
+            .breakpoint_ids
+            .get(file)
+            .and_then(|ids| ids.get(spec).copied())
+        {
+            return id;
+        }
+
+        let id = self.alloc_breakpoint_id();
+        self.breakpoint_ids
+            .entry(file.to_string())
+            .or_default()
+            .insert(spec.clone(), id);
+        id
+    }
+
+    fn breakpoint_id_for_function(&mut self, spec: &FunctionBreakpointSpec) -> i32 {
+        if let Some(id) = self.function_breakpoint_ids.get(spec).copied() {
+            return id;
+        }
+        let id = self.alloc_breakpoint_id();
+        self.function_breakpoint_ids.insert(spec.clone(), id);
+        id
     }
 
     fn invalidate_handles(&mut self) {
@@ -1038,6 +1108,39 @@ impl Debugger {
         }
     }
 
+    fn canonicalize_source_path_best_effort(source_path: &str) -> PathBuf {
+        match std::fs::canonicalize(source_path) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => PathBuf::from(source_path),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    source_path,
+                    error = %err,
+                    "failed to canonicalize source path"
+                );
+                PathBuf::from(source_path)
+            }
+        }
+    }
+
+    fn canonicalize_path_best_effort(path: PathBuf, context: &'static str) -> PathBuf {
+        match std::fs::canonicalize(&path) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => path,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    context,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize path"
+                );
+                path
+            }
+        }
+    }
+
     pub(crate) fn breakpoint_locations(
         source_path: &str,
         line: i64,
@@ -1047,11 +1150,19 @@ impl Debugger {
             return Vec::new();
         }
 
-        let file_path =
-            std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
+        let file_path = Self::canonicalize_source_path_best_effort(source_path);
         let text = match std::fs::read_to_string(&file_path) {
             Ok(text) => text,
-            Err(_) => return Vec::new(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    path = %file_path.display(),
+                    error = %err,
+                    "failed to read breakpoint source file"
+                );
+                return Vec::new();
+            }
         };
 
         let mut sites = nova_ide::semantics::collect_breakpoint_sites(&text);
@@ -1099,18 +1210,14 @@ impl Debugger {
             .unwrap_or(source_path)
             .to_string();
 
-        if !source_path.is_empty() {
-            let full_path =
-                std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
+        let canonical_path = (!source_path.is_empty())
+            .then(|| Self::canonicalize_source_path_best_effort(source_path));
+        if let Some(full_path) = canonical_path.as_ref() {
             self.source_paths
                 .insert(file_name.clone(), full_path.to_string_lossy().to_string());
         }
 
-        let file_path = if source_path.is_empty() {
-            PathBuf::from(source_path)
-        } else {
-            std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path))
-        };
+        let file_path = canonical_path.unwrap_or_else(|| PathBuf::from(source_path));
         let file_key = if source_path.is_empty() {
             file_name.clone()
         } else {
@@ -1123,14 +1230,27 @@ impl Debugger {
         self.pending_breakpoints.remove(&file);
 
         struct BreakpointRequest {
+            id: i32,
             requested_line: i32,
             spec: BreakpointSpec,
         }
 
         let resolved_lines = if file_path.is_file() {
-            std::fs::read_to_string(&file_path)
-                .ok()
-                .map(|text| {
+            let text = match std::fs::read_to_string(&file_path) {
+                Ok(text) => Some(text),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.dap",
+                        path = %file_path.display(),
+                        error = %err,
+                        "failed to read breakpoint source file"
+                    );
+                    None
+                }
+            };
+            match text {
+                Some(text) => {
                     let mut db = InMemoryFileStore::new();
                     let file_id = db.file_id_for_path(&file_path);
                     db.set_file_text(file_id, text);
@@ -1143,8 +1263,9 @@ impl Debugger {
                         .into_iter()
                         .map(|resolved| resolved.resolved_line as i32)
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| breakpoints.iter().map(|bp| bp.line).collect())
+                }
+                None => breakpoints.iter().map(|bp| bp.line).collect(),
+            }
         } else {
             breakpoints.iter().map(|bp| bp.line).collect()
         };
@@ -1152,12 +1273,15 @@ impl Debugger {
         let requests: Vec<BreakpointRequest> = breakpoints
             .into_iter()
             .zip(resolved_lines.into_iter())
-            .map(|(bp, resolved_line)| BreakpointRequest {
-                requested_line: bp.line,
-                spec: BreakpointSpec {
-                    line: resolved_line,
-                    ..bp
-                },
+            .map(|(mut bp, resolved_line)| {
+                let requested_line = bp.line;
+                bp.line = resolved_line;
+                let id = self.breakpoint_id_for_source(&file, &bp);
+                BreakpointRequest {
+                    id,
+                    requested_line,
+                    spec: bp,
+                }
             })
             .collect();
 
@@ -1190,7 +1314,17 @@ impl Debugger {
             let source_file = match self.source_file(cancel, class_info.type_id).await {
                 Ok(source_file) => source_file,
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_) => continue,
+                Err(err) => {
+                    if REPORTED_SOURCE_FILE_ERRORS.set(()).is_ok() {
+                        tracing::debug!(
+                            type_id = ?class_info.type_id,
+                            signature = %class_info.signature,
+                            err = %err,
+                            "best-effort breakpoint scan: failed to read source file for class"
+                        );
+                    }
+                    continue;
+                }
             };
 
             let resolved = match self
@@ -1215,16 +1349,18 @@ impl Debugger {
 
         if class_candidates.is_empty() {
             if !requests.is_empty() {
-                let pending_lines: HashSet<i32> =
-                    requests.iter().map(|req| req.spec.line).collect();
-                if !pending_lines.is_empty() {
-                    self.pending_breakpoints.insert(file.clone(), pending_lines);
+                let pending_ids: HashSet<i32> = requests.iter().map(|req| req.id).collect();
+                if !pending_ids.is_empty() {
+                    self.pending_breakpoints.insert(file.clone(), pending_ids);
                 }
             }
             for req in requests {
-                results.push(
-                    json!({"verified": false, "line": req.spec.line, "message": "class not loaded yet"}),
-                );
+                results.push(json!({
+                    "verified": false,
+                    "line": req.spec.line,
+                    "id": req.id,
+                    "message": "class not loaded yet"
+                }));
             }
             return Ok(results);
         }
@@ -1239,10 +1375,7 @@ impl Debugger {
             let mut hit_condition = normalize_breakpoint_string(req.spec.hit_condition);
             let log_message = normalize_breakpoint_string(req.spec.log_message);
 
-            let count_modifier = hit_condition
-                .as_deref()
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .filter(|count| *count > 1);
+            let count_modifier = parse_hit_condition_count_modifier(hit_condition.as_deref());
             if count_modifier.is_some() {
                 // Hit-count breakpoints are handled by JDWP's built-in `Count` filter.
                 // Clear the expression so we don't try to re-evaluate it per event.
@@ -1256,7 +1389,6 @@ impl Debugger {
             };
 
             let mut verified = false;
-            let mut first_request_id: Option<i32> = None;
             let mut last_error: Option<String> = None;
             let mut saw_location = false;
             let mut first_resolved_line = None;
@@ -1283,7 +1415,6 @@ impl Debugger {
                             Ok(request_id) => {
                                 verified = true;
                                 verified_resolved_line.get_or_insert(resolved.line);
-                                first_request_id.get_or_insert(request_id);
 
                                 all_entries.push(BreakpointEntry { request_id });
                                 self.breakpoint_metadata.insert(
@@ -1314,21 +1445,21 @@ impl Debugger {
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
                 obj.insert("line".to_string(), json!(line));
-                if let Some(id) = first_request_id {
-                    obj.insert("id".to_string(), json!(id));
-                }
+                obj.insert("id".to_string(), json!(req.id));
                 results.push(Value::Object(obj));
             } else if saw_location {
                 let line = first_resolved_line.unwrap_or(spec_line);
                 results.push(json!({
                     "verified": false,
                     "line": line,
+                    "id": req.id,
                     "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
                 }));
             } else {
                 results.push(json!({
                     "verified": false,
                     "line": spec_line,
+                    "id": req.id,
                     "message": "no executable code at this line"
                 }));
             }
@@ -1376,14 +1507,13 @@ impl Debugger {
                 continue;
             }
 
+            let id = self.breakpoint_id_for_function(&bp);
+
             let condition = normalize_breakpoint_string(bp.condition);
             let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
 
-            let count_modifier = hit_condition
-                .as_deref()
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .filter(|count| *count > 1);
+            let count_modifier = parse_hit_condition_count_modifier(hit_condition.as_deref());
             if count_modifier.is_some() {
                 hit_condition = None;
             }
@@ -1397,6 +1527,7 @@ impl Debugger {
             let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
                 results.push(json!({
                     "verified": false,
+                    "id": id,
                     "message": "unsupported function breakpoint. Use `Class.method` (optionally fully qualified)."
                 }));
                 continue;
@@ -1406,16 +1537,16 @@ impl Debugger {
             let classes =
                 cancellable_jdwp(cancel, self.jdwp.classes_by_signature(&signature)).await?;
             if classes.is_empty() {
-                self.pending_function_breakpoints.insert(spec_name.clone());
+                self.pending_function_breakpoints.insert(id);
                 results.push(json!({
                     "verified": false,
+                    "id": id,
                     "message": "class not loaded yet"
                 }));
                 continue;
             }
 
             let mut verified = false;
-            let mut first_request_id: Option<i32> = None;
             let mut first_line: Option<i32> = None;
             let mut last_error: Option<String> = None;
             let mut saw_method = false;
@@ -1487,7 +1618,6 @@ impl Debugger {
                     {
                         Ok(request_id) => {
                             verified = true;
-                            first_request_id.get_or_insert(request_id);
                             first_line.get_or_insert(line);
 
                             all_entries.push(BreakpointEntry { request_id });
@@ -1514,9 +1644,7 @@ impl Debugger {
             if verified {
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
-                if let Some(id) = first_request_id {
-                    obj.insert("id".to_string(), json!(id));
-                }
+                obj.insert("id".to_string(), json!(id));
                 if let Some(line) = first_line {
                     obj.insert("line".to_string(), json!(line));
                 }
@@ -1524,16 +1652,19 @@ impl Debugger {
             } else if !saw_method {
                 results.push(json!({
                     "verified": false,
+                    "id": id,
                     "message": format!("method `{method_name}` not found in {class_name}")
                 }));
             } else if saw_location {
                 results.push(json!({
                     "verified": false,
+                    "id": id,
                     "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
                 }));
             } else {
                 results.push(json!({
                     "verified": false,
+                    "id": id,
                     "message": "no executable code for this function"
                 }));
             }
@@ -1750,8 +1881,11 @@ impl Debugger {
                 }));
             }
 
-            let runtime_type = self.objects.runtime_type(handle).unwrap_or_default();
-            if runtime_type.ends_with("[]") {
+            let is_array = self
+                .objects
+                .runtime_type(handle)
+                .is_some_and(|runtime_type| runtime_type.ends_with("[]"));
+            if is_array {
                 // Arrays don't have fields; only "length" and indexed elements are surfaced.
                 return Ok(json!({
                     "description": format!("{name} (array element)"),
@@ -1883,10 +2017,7 @@ impl Debugger {
                 .to_string();
 
             let hit_condition = normalize_breakpoint_string(spec.hit_condition);
-            let count_modifier = hit_condition
-                .as_deref()
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .filter(|count| *count > 1);
+            let count_modifier = parse_hit_condition_count_modifier(hit_condition.as_deref());
 
             let Some(target) = decode_field_data_id(&spec.data_id) else {
                 out.push(json!({
@@ -2618,13 +2749,11 @@ impl Debugger {
             )));
         };
 
-        let runtime_type = self
+        let is_array = self
             .objects
             .runtime_type(handle)
-            .unwrap_or_default()
-            .to_string();
-
-        if runtime_type.ends_with("[]") {
+            .is_some_and(|runtime_type| runtime_type.ends_with("[]"));
+        if is_array {
             return self
                 .set_array_variable(cancel, handle, object_id, name, value)
                 .await;
@@ -3093,7 +3222,8 @@ impl Debugger {
                         root.join(&package_path).join(source_file)
                     };
                     if candidate.is_file() {
-                        let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+                        let candidate =
+                            Self::canonicalize_path_best_effort(candidate, "resolve_source_path");
                         self.resolved_source_paths
                             .insert(class_id, candidate.clone());
                         return Ok(Some(candidate));
@@ -3342,8 +3472,11 @@ impl Debugger {
             return Ok(vec![evicted_variable()]);
         };
 
-        let runtime_type = self.objects.runtime_type(handle).unwrap_or_default();
-        if runtime_type.ends_with("[]") {
+        let is_array = self
+            .objects
+            .runtime_type(handle)
+            .is_some_and(|runtime_type| runtime_type.ends_with("[]"));
+        if is_array {
             return self
                 .array_variables(cancel, handle, object_id, start, count)
                 .await;
@@ -3757,11 +3890,24 @@ impl Debugger {
         let class = ClassInfo {
             ref_type_tag,
             type_id,
-            signature: self
-                .jdwp
-                .reference_type_signature(type_id)
-                .await
-                .unwrap_or_default(),
+            signature: match self.jdwp.reference_type_signature(type_id).await {
+                Ok(signature) => signature,
+                Err(err) => {
+                    // Best-effort: missing signatures should not prevent breakpoint binding.
+                    // Avoid log spam by reporting only the first failure.
+                    static REPORTED_REFERENCE_TYPE_SIGNATURE_ERROR: std::sync::OnceLock<()> =
+                        std::sync::OnceLock::new();
+                    if REPORTED_REFERENCE_TYPE_SIGNATURE_ERROR.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.dap",
+                            type_id,
+                            error = %err,
+                            "failed to fetch JDWP reference type signature"
+                        );
+                    }
+                    String::new()
+                }
+            },
             status: 0,
         };
 
@@ -3770,14 +3916,12 @@ impl Debugger {
             let mut updated_lines: HashSet<i32> = HashSet::new();
             for bp in bps {
                 let spec_line = bp.line;
+                let id = self.breakpoint_id_for_source(&file, &bp);
                 let condition = normalize_breakpoint_string(bp.condition);
                 let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
                 let log_message = normalize_breakpoint_string(bp.log_message);
 
-                let count_modifier = hit_condition
-                    .as_deref()
-                    .and_then(|raw| raw.parse::<u32>().ok())
-                    .filter(|count| *count > 1);
+                let count_modifier = parse_hit_condition_count_modifier(hit_condition.as_deref());
                 if count_modifier.is_some() {
                     hit_condition = None;
                 }
@@ -3803,7 +3947,7 @@ impl Debugger {
                         let was_pending = self
                             .pending_breakpoints
                             .get(&file)
-                            .is_some_and(|lines| lines.contains(&spec_line));
+                            .is_some_and(|ids| ids.contains(&id));
 
                         entries.push(BreakpointEntry { request_id });
                         self.breakpoint_metadata.insert(
@@ -3822,14 +3966,14 @@ impl Debugger {
                                 let mut bp = serde_json::Map::new();
                                 bp.insert("verified".to_string(), json!(true));
                                 bp.insert("line".to_string(), json!(resolved.line));
-                                bp.insert("id".to_string(), json!(request_id));
+                                bp.insert("id".to_string(), json!(id));
                                 bp.insert("source".to_string(), json!({ "path": file.clone() }));
                                 self.breakpoint_updates.push(Value::Object(bp));
                             }
 
-                            if let Some(lines) = self.pending_breakpoints.get_mut(&file) {
-                                lines.remove(&spec_line);
-                                if lines.is_empty() {
+                            if let Some(ids) = self.pending_breakpoints.get_mut(&file) {
+                                ids.remove(&id);
+                                if ids.is_empty() {
                                     self.pending_breakpoints.remove(&file);
                                 }
                             }
@@ -3879,20 +4023,18 @@ impl Debugger {
             let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
                 continue;
             };
+            let id = self.breakpoint_id_for_function(&bp);
 
             if class_name_to_signature(&class_name) != class.signature {
                 continue;
             }
 
-            let is_pending = self.pending_function_breakpoints.contains(&spec_name);
+            let is_pending = self.pending_function_breakpoints.contains(&id);
             let condition = normalize_breakpoint_string(bp.condition);
             let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
 
-            let count_modifier = hit_condition
-                .as_deref()
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .filter(|count| *count > 1);
+            let count_modifier = parse_hit_condition_count_modifier(hit_condition.as_deref());
             if count_modifier.is_some() {
                 hit_condition = None;
             }
@@ -3913,12 +4055,22 @@ impl Debugger {
                             self.methods_cache.insert(class.type_id, methods.clone());
                             methods
                         }
-                        Err(_) => continue,
+                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                        Err(err) => {
+                            if REPORTED_REFERENCE_TYPE_METHODS_ERRORS.set(()).is_ok() {
+                                tracing::debug!(
+                                    type_id = ?class.type_id,
+                                    signature = %class.signature,
+                                    err = %err,
+                                    "best-effort function breakpoint scan: failed to list methods for class"
+                                );
+                            }
+                            continue;
+                        }
                     }
                 }
             };
 
-            let mut pending_first_request_id: Option<i32> = None;
             let mut pending_first_line: Option<i32> = None;
             let mut installed_any = false;
 
@@ -3932,7 +4084,20 @@ impl Debugger {
                 .await
                 {
                     Ok(table) => table,
-                    Err(_) => continue,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(err) => {
+                        if REPORTED_METHOD_LINE_TABLE_ERRORS.set(()).is_ok() {
+                            tracing::debug!(
+                                type_id = ?class.type_id,
+                                signature = %class.signature,
+                                method_id = ?method.method_id,
+                                method_name = %method.name,
+                                err = %err,
+                                "best-effort function breakpoint scan: failed to read method line table"
+                            );
+                        }
+                        continue;
+                    }
                 };
                 self.line_table_cache
                     .insert((class.type_id, method.method_id), table.clone());
@@ -3965,7 +4130,6 @@ impl Debugger {
                     .await
                 {
                     installed_any = true;
-                    pending_first_request_id.get_or_insert(request_id);
                     pending_first_line.get_or_insert(line);
                     entries.push(BreakpointEntry { request_id });
                     self.breakpoint_metadata.insert(
@@ -3986,14 +4150,12 @@ impl Debugger {
                 if let Some(line) = pending_first_line {
                     bp.insert("line".to_string(), json!(line));
                 }
-                if let Some(request_id) = pending_first_request_id {
-                    bp.insert("id".to_string(), json!(request_id));
-                }
+                bp.insert("id".to_string(), json!(id));
                 if !file.is_empty() {
                     bp.insert("source".to_string(), json!({ "path": file.clone() }));
                 }
                 self.breakpoint_updates.push(Value::Object(bp));
-                self.pending_function_breakpoints.remove(&spec_name);
+                self.pending_function_breakpoints.remove(&id);
             }
         }
 
@@ -4261,9 +4423,26 @@ fn parse_eval_expression(expr: &str) -> std::result::Result<ParsedEvalExpression
 }
 
 fn parse_array_index_name(name: &str) -> Option<i64> {
+    static ARRAY_INDEX_NAME_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let trimmed = name.trim();
     let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?;
-    inner.trim().parse::<i64>().ok()
+    let raw = inner.trim();
+    match raw.parse::<i64>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            if ARRAY_INDEX_NAME_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    name = %trimmed,
+                    inner = %raw,
+                    error = %err,
+                    "failed to parse array index name (best effort)"
+                );
+            }
+            None
+        }
+    }
 }
 
 fn parse_java_string_literal(raw: &str) -> String {
@@ -4780,6 +4959,8 @@ fn encode_field_data_id(
 }
 
 fn decode_field_data_id(data_id: &str) -> Option<FieldDataId> {
+    static FIELD_DATA_ID_DECODE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut parts = data_id.split(':');
     if parts.next()? != "nova" {
         return None;
@@ -4787,10 +4968,64 @@ fn decode_field_data_id(data_id: &str) -> Option<FieldDataId> {
     if parts.next()? != "field" {
         return None;
     }
-    let class_id: ReferenceTypeId = parts.next()?.parse().ok()?;
-    let field_id: u64 = parts.next()?.parse().ok()?;
-    let object_id_raw: ObjectId = parts.next()?.parse().ok()?;
+    let class_id_s = parts.next()?;
+    let class_id: ReferenceTypeId = match class_id_s.parse() {
+        Ok(v) => v,
+        Err(err) => {
+            if FIELD_DATA_ID_DECODE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    data_id,
+                    class_id = class_id_s,
+                    error = ?err,
+                    "failed to parse field data breakpoint class id"
+                );
+            }
+            return None;
+        }
+    };
+
+    let field_id_s = parts.next()?;
+    let field_id: u64 = match field_id_s.parse() {
+        Ok(v) => v,
+        Err(err) => {
+            if FIELD_DATA_ID_DECODE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    data_id,
+                    field_id = field_id_s,
+                    error = ?err,
+                    "failed to parse field data breakpoint field id"
+                );
+            }
+            return None;
+        }
+    };
+
+    let object_id_s = parts.next()?;
+    let object_id_raw: ObjectId = match object_id_s.parse() {
+        Ok(v) => v,
+        Err(err) => {
+            if FIELD_DATA_ID_DECODE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    data_id,
+                    object_id = object_id_s,
+                    error = ?err,
+                    "failed to parse field data breakpoint object id"
+                );
+            }
+            return None;
+        }
+    };
     if parts.next().is_some() {
+        if FIELD_DATA_ID_DECODE_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.dap",
+                data_id,
+                "unexpected extra segments in field data breakpoint id"
+            );
+        }
         return None;
     }
     Some(FieldDataId {

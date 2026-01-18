@@ -13,6 +13,7 @@ mod analyzer;
 mod applicability;
 mod completions;
 mod config;
+mod poison;
 
 pub use analysis::{
     analyze_java_sources, AnalysisResult, Bean, BeanKind, BeanModel, InjectionKind, InjectionPoint,

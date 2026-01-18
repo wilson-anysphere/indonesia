@@ -8,6 +8,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    sync::OnceLock,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -86,7 +87,19 @@ impl BazelCache {
 
         // Recompute digests to validate the entry. This avoids invoking Bazel when cached entries
         // are still valid.
-        let current_digests = digest_files(&entry.files).ok()?;
+        let current_digests = match digest_files(&entry.files) {
+            Ok(digests) => digests,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    target_label = target,
+                    provider = ?provider,
+                    error = %err,
+                    "failed to recompute bazel cache entry digests; treating as miss"
+                );
+                return None;
+            }
+        };
         if entry.files != current_digests {
             return None;
         }
@@ -131,9 +144,40 @@ impl BazelCache {
         }
         let data = match fs::read_to_string(path) {
             Ok(data) => data,
-            Err(_) => return Ok(Self::default()),
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build.bazel",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read bazel cache; treating as empty"
+                    );
+                }
+                return Ok(Self::default());
+            }
         };
-        let mut cache: Self = serde_json::from_str(&data).unwrap_or_default();
+        let mut cache: Self = match serde_json::from_str(&data) {
+            Ok(cache) => cache,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to parse bazel cache; deleting and treating as empty"
+                );
+                if let Err(remove_err) = fs::remove_file(path) {
+                    if remove_err.kind() != io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            path = %path.display(),
+                            error = %remove_err,
+                            "failed to remove invalid bazel cache file"
+                        );
+                    }
+                }
+                Self::default()
+            }
+        };
         cache.migrate_keys();
         // Compile info from BSP is intended to be used as an in-memory optimization only. Avoid
         // persisting it across sessions because our invalidation inputs are best-effort (and may
@@ -165,7 +209,16 @@ impl BazelCache {
             .and_then(|()| file.sync_all())
         {
             drop(file);
-            let _ = fs::remove_file(&tmp_path);
+            if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build.bazel",
+                        path = %tmp_path.display(),
+                        error = %remove_err,
+                        "failed to remove temporary bazel cache file after write failure"
+                    );
+                }
+            }
             return Err(err.into());
         }
         drop(file);
@@ -201,14 +254,20 @@ impl BazelCache {
         })();
 
         if let Err(err) = rename_result {
-            let _ = fs::remove_file(&tmp_path);
+            if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build.bazel",
+                        path = %tmp_path.display(),
+                        error = %remove_err,
+                        "failed to remove temporary bazel cache file after rename failure"
+                    );
+                }
+            }
             return Err(err.into());
         }
 
-        #[cfg(unix)]
-        {
-            let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+        sync_dir_best_effort(parent, "bazel_cache.save.sync_parent_dir");
 
         Ok(())
     }
@@ -222,6 +281,38 @@ impl BazelCache {
         }
         self.entries = migrated;
     }
+}
+
+#[track_caller]
+fn sync_dir_best_effort(dir: &Path, reason: &'static str) {
+    #[cfg(unix)]
+    static SYNC_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    #[cfg(unix)]
+    {
+        match fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if SYNC_DIR_ERROR_LOGGED.set(()).is_ok() {
+                    let loc = std::panic::Location::caller();
+                    tracing::debug!(
+                        target = "nova.build_bazel",
+                        dir = %dir.display(),
+                        reason,
+                        file = loc.file(),
+                        line = loc.line(),
+                        column = loc.column(),
+                        error = %err,
+                        "failed to sync directory (best effort)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (dir, reason);
 }
 
 pub fn digest_file(path: &Path) -> Result<FileDigest> {

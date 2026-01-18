@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use lsp_types::Uri;
-use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
@@ -188,9 +187,10 @@ impl WorkspaceHierarchyIndex {
         let (workspace_id, fingerprint) = workspace_identity(db);
 
         {
-            let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut cache = crate::poison::lock(
+                &WORKSPACE_HIERARCHY_INDEX_CACHE,
+                "WorkspaceHierarchyIndex.get_cached/read_cache",
+            );
             if let Some(entry) = cache
                 .get_cloned(&workspace_id)
                 .filter(|entry| entry.fingerprint == fingerprint)
@@ -201,9 +201,10 @@ impl WorkspaceHierarchyIndex {
 
         let built = Arc::new(Self::new(db));
 
-        let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut cache = crate::poison::lock(
+            &WORKSPACE_HIERARCHY_INDEX_CACHE,
+            "WorkspaceHierarchyIndex.get_cached/write_cache",
+        );
         if let Some(entry) = cache
             .get_cloned(&workspace_id)
             .filter(|entry| entry.fingerprint == fingerprint)
@@ -415,9 +416,7 @@ fn uri_for_file(db: &dyn Database, file_id: FileId) -> Uri {
 }
 
 fn uri_for_path(path: &Path) -> Option<Uri> {
-    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
-    let uri = path_to_file_uri(&abs).ok()?;
-    Uri::from_str(&uri).ok()
+    crate::uri::uri_from_path_best_effort(path, "workspace_hierarchy.uri_for_path")
 }
 
 #[cfg(test)]
@@ -429,9 +428,10 @@ mod tests {
     fn reset_rebuild_counter() {
         WORKSPACE_HIERARCHY_REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
         // Ensure the cache doesn't carry state across unrelated unit tests.
-        let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut cache = crate::poison::lock(
+            &WORKSPACE_HIERARCHY_INDEX_CACHE,
+            "workspace_hierarchy/test/reset_cache",
+        );
         cache.map.clear();
         cache.order.clear();
     }

@@ -155,7 +155,19 @@ impl WorkspaceLoader {
         let changed_set = changed_files.map(|files| {
             files
                 .iter()
-                .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+                .map(|path| match path.canonicalize() {
+                    Ok(path) => path,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.clone(),
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.db",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to canonicalize changed file path"
+                        );
+                        path.clone()
+                    }
+                })
                 .collect::<HashSet<_>>()
         });
 
@@ -385,7 +397,7 @@ impl WorkspaceLoader {
                     .map(|name| name.to_owned())
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         // Optional: seed a small, stable set of core JDK binary names (shared with the built-in
         // `nova-jdk` index) so semantic consumers can always obtain a `ClassId` for common JDK
@@ -429,7 +441,19 @@ impl WorkspaceLoader {
 }
 
 fn fallback_workspace_model(root: &Path) -> WorkspaceProjectModel {
-    let workspace_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let workspace_root = match root.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.db",
+                path = %root.display(),
+                error = %err,
+                "failed to canonicalize workspace root"
+            );
+            root.to_path_buf()
+        }
+    };
     let module_name = workspace_root
         .file_name()
         .and_then(|s| s.to_str())
@@ -483,11 +507,23 @@ fn scan_java_files(source_roots: &[SourceRoot]) -> Vec<(PathBuf, PathBuf)> {
         }
 
         let root_components = dir.components().count();
-        for entry in WalkDir::new(dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        let mut logged_walk_error = false;
+        for entry in WalkDir::new(dir).follow_links(true).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    if !logged_walk_error {
+                        tracing::debug!(
+                            target = "nova.db",
+                            root = %dir.display(),
+                            error = %err,
+                            "failed to walk source root while scanning Java files"
+                        );
+                        logged_walk_error = true;
+                    }
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }

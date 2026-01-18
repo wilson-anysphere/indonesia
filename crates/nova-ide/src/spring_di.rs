@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use once_cell::sync::Lazy;
 
@@ -96,8 +96,27 @@ impl<V> Default for SpringWorkspaceCache<V> {
 }
 
 impl<V> SpringWorkspaceCache<V> {
+    #[track_caller]
+    fn lock_entries(&self) -> MutexGuard<'_, LruCache<PathBuf, CacheEntry<V>>> {
+        match self.entries.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.ide",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     fn get_entry(&self, root: &PathBuf) -> Option<CacheEntry<V>> {
-        let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
+        let mut entries = self.lock_entries();
         entries.get_cloned(root)
     }
 
@@ -106,7 +125,7 @@ impl<V> SpringWorkspaceCache<V> {
     }
 
     fn insert_entry(&self, root: PathBuf, fingerprint: u64, value: Arc<V>) {
-        let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
+        let mut entries = self.lock_entries();
         entries.insert(root, CacheEntry { fingerprint, value });
     }
 }

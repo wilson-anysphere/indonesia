@@ -60,6 +60,10 @@ impl JavaVersion {
     pub const JAVA_21: JavaVersion = JavaVersion(21);
 
     pub fn parse(text: &str) -> Option<Self> {
+        static JAVA_VERSION_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> =
+            std::sync::OnceLock::new();
+
+        let raw = text;
         // These values come from a wide range of build tools and configs. Be tolerant of
         // surrounding whitespace and accidental quoting.
         let text = text.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
@@ -95,7 +99,23 @@ impl JavaVersion {
             return None;
         }
 
-        normalized[..end].parse::<u16>().ok().map(JavaVersion)
+        let digits = &normalized[..end];
+        match digits.parse::<u16>() {
+            Ok(v) => Some(JavaVersion(v)),
+            Err(err) => {
+                if JAVA_VERSION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.build_model",
+                        raw = %raw,
+                        normalized = %normalized,
+                        digits = %digits,
+                        error = %err,
+                        "failed to parse Java version"
+                    );
+                }
+                None
+            }
+        }
     }
 }
 
@@ -418,9 +438,16 @@ pub struct MavenGav {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkspaceModuleBuildId {
-    Maven { module_path: String, gav: MavenGav },
-    Gradle { project_path: String },
-    Bazel { label: String },
+    Maven {
+        module_path: String,
+        gav: Option<MavenGav>,
+    },
+    Gradle {
+        project_path: String,
+    },
+    Bazel {
+        label: String,
+    },
     Simple,
 }
 

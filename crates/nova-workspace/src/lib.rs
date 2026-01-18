@@ -15,12 +15,14 @@ use nova_syntax::SyntaxNode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
 
 mod engine;
+mod poison;
 mod snapshot;
 mod watch;
 mod watch_roots;
@@ -154,7 +156,7 @@ impl Workspace {
     ///
     /// This stream is **bounded** to avoid unbounded memory growth under event storms. If a
     /// subscriber does not keep up, events may be dropped.
-    pub fn subscribe(&self) -> async_channel::Receiver<WorkspaceEvent> {
+    pub fn subscribe(&self) -> async_channel::Receiver<std::sync::Arc<WorkspaceEvent>> {
         self.engine.subscribe()
     }
 
@@ -407,14 +409,25 @@ impl Workspace {
                 stamp_snapshot.file_fingerprints().keys().cloned().collect(),
             ),
         };
+        static CACHE_PERF_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        static CACHE_METADATA_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
         if invalidated_files.is_empty() && !load_shards_on_hit {
-            let symbols_indexed = self
-                .read_cache_perf(&cache_dir)
-                .ok()
-                .flatten()
-                .map(|perf| perf.symbols_indexed)
-                .unwrap_or(0);
+            let symbols_indexed = match self.read_cache_perf(&cache_dir) {
+                Ok(Some(perf)) => perf.symbols_indexed,
+                Ok(None) => 0,
+                Err(err) => {
+                    if CACHE_PERF_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            cache_root = %cache_dir.root().display(),
+                            error = %err,
+                            "failed to read cache perf metrics; continuing without perf metrics"
+                        );
+                    }
+                    0
+                }
+            };
 
             let metrics = PerfMetrics {
                 files_total: stamp_snapshot.file_fingerprints().len(),
@@ -496,12 +509,21 @@ impl Workspace {
         };
 
         if invalidated_files.is_empty() {
-            let symbols_indexed = self
-                .read_cache_perf(&cache_dir)
-                .ok()
-                .flatten()
-                .map(|perf| perf.symbols_indexed)
-                .unwrap_or_else(|| count_symbols(&shards));
+            let symbols_indexed = match self.read_cache_perf(&cache_dir) {
+                Ok(Some(perf)) => perf.symbols_indexed,
+                Ok(None) => count_symbols(&shards),
+                Err(err) => {
+                    if CACHE_PERF_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            cache_root = %cache_dir.root().display(),
+                            error = %err,
+                            "failed to read cache perf metrics; continuing without perf metrics"
+                        );
+                    }
+                    count_symbols(&shards)
+                }
+            };
 
             let metrics = PerfMetrics {
                 files_total: stamp_snapshot.file_fingerprints().len(),
@@ -533,13 +555,26 @@ impl Workspace {
         let mut content_fingerprints = if indexing_all_files {
             std::collections::BTreeMap::new()
         } else {
-            CacheMetadata::load(&metadata_path)
-                .ok()
-                .filter(|meta| {
-                    meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
-                })
-                .map(|meta| meta.file_fingerprints)
-                .unwrap_or_default()
+            match CacheMetadata::load(&metadata_path) {
+                Ok(meta)
+                    if meta.is_compatible()
+                        && &meta.project_hash == stamp_snapshot.project_hash() =>
+                {
+                    meta.file_fingerprints
+                }
+                Ok(_) => std::collections::BTreeMap::new(),
+                Err(err) => {
+                    if CACHE_METADATA_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            path = %metadata_path.display(),
+                            error = %err,
+                            "failed to load cache metadata; continuing with empty fingerprints"
+                        );
+                    }
+                    std::collections::BTreeMap::new()
+                }
+            }
         };
 
         // If metadata is missing content fingerprints for a file that still
@@ -752,7 +787,19 @@ impl Workspace {
 
         let mut sources = Vec::with_capacity(files.len());
         for file in &files {
-            let file = fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+            let file = match fs::canonicalize(file) {
+                Ok(path) => path,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => file.clone(),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.workspace",
+                        path = %file.display(),
+                        error = %err,
+                        "failed to canonicalize diagnostics source file path"
+                    );
+                    file.clone()
+                }
+            };
             let content = fs::read_to_string(&file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
             sources.push((file, content));
@@ -1015,9 +1062,44 @@ impl Workspace {
     pub fn cache_status(&self) -> Result<CacheStatus> {
         let cache_dir = self.open_cache_dir()?;
 
+        let mut logged_cache_stat_error = false;
+        let mut logged_cache_walk_error = false;
+        let mut logged_cache_walk_entry_metadata_error = false;
+
+        let mut file_len_best_effort = |path: &Path, context: &'static str| -> Option<u64> {
+            match fs::metadata(path) {
+                Ok(meta) => Some(meta.len()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    if !logged_cache_stat_error {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            context,
+                            path = %path.display(),
+                            error = %err,
+                            "failed to stat cache artifact"
+                        );
+                        logged_cache_stat_error = true;
+                    }
+                    None
+                }
+            }
+        };
+
         let metadata_path = cache_dir.metadata_path();
         let metadata = if metadata_path.exists() || cache_dir.metadata_bin_path().exists() {
-            CacheMetadata::load(&metadata_path).ok()
+            match CacheMetadata::load(&metadata_path) {
+                Ok(metadata) => Some(metadata),
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.workspace",
+                        path = %metadata_path.display(),
+                        error = %err,
+                        "failed to load cache metadata"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -1027,20 +1109,59 @@ impl Workspace {
         let shards_root = indexes_dir.join("shards");
         let shard_manifest = shards_root.join("manifest.txt");
         if shard_manifest.is_file() {
-            let bytes = fs::metadata(&shard_manifest).ok().map(|m| m.len());
+            let bytes = file_len_best_effort(&shard_manifest, "cache_status shards manifest");
             indexes.push(CacheArtifact {
                 name: "shards_manifest".to_string(),
                 path: shard_manifest,
                 bytes,
             });
 
-            let total_bytes = walkdir::WalkDir::new(&shards_root)
+            let mut total_bytes: u64 = 0;
+            for entry in walkdir::WalkDir::new(&shards_root)
                 .follow_links(false)
                 .into_iter()
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.file_type().is_file())
-                .filter_map(|entry| entry.metadata().ok().map(|m| m.len()))
-                .sum();
+            {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        if !logged_cache_walk_error {
+                            tracing::debug!(
+                                target = "nova.workspace",
+                                root = %shards_root.display(),
+                                error = %err,
+                                "failed to walk cache shard directory"
+                            );
+                            logged_cache_walk_error = true;
+                        }
+                        continue;
+                    }
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let len = match entry.metadata() {
+                    Ok(meta) => meta.len(),
+                    Err(err) => {
+                        if err
+                            .io_error()
+                            .is_some_and(|io_err| io_err.kind() == io::ErrorKind::NotFound)
+                        {
+                            continue;
+                        }
+                        if !logged_cache_walk_entry_metadata_error {
+                            tracing::debug!(
+                                target = "nova.workspace",
+                                path = %entry.path().display(),
+                                error = %err,
+                                "failed to stat cache shard file"
+                            );
+                            logged_cache_walk_entry_metadata_error = true;
+                        }
+                        continue;
+                    }
+                };
+                total_bytes = total_bytes.saturating_add(len);
+            }
             indexes.push(CacheArtifact {
                 name: "shards".to_string(),
                 path: shards_root,
@@ -1053,7 +1174,7 @@ impl Workspace {
                 ("inheritance", indexes_dir.join("inheritance.idx")),
                 ("annotations", indexes_dir.join("annotations.idx")),
             ] {
-                let bytes = fs::metadata(&path).ok().map(|m| m.len());
+                let bytes = file_len_best_effort(&path, "cache_status index file");
                 indexes.push(CacheArtifact {
                     name: name.to_string(),
                     path,
@@ -1063,7 +1184,7 @@ impl Workspace {
         }
 
         let perf_path = cache_dir.root().join("perf.json");
-        let perf_bytes = fs::metadata(&perf_path).ok().map(|m| m.len());
+        let perf_bytes = file_len_best_effort(&perf_path, "cache_status perf.json");
         let last_perf = self.read_cache_perf(&cache_dir)?;
 
         Ok(CacheStatus {
@@ -2022,23 +2143,7 @@ fn count_symbols(shards: &[ProjectIndexes]) -> usize {
 }
 
 fn current_rss_bytes() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            let line = line.trim_start();
-            if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
-                return Some(kb.saturating_mul(1024));
-            }
-        }
-        None
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
+    nova_memory::current_rss_bytes()
 }
 
 fn find_project_root(start: &Path) -> PathBuf {

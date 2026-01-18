@@ -6,7 +6,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::{Duration, Instant},
 };
@@ -21,12 +21,13 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     net::{lookup_host, TcpListener},
     process::{Child, Command},
-    sync::{broadcast, mpsc, watch, Mutex},
+    sync::{broadcast, mpsc, watch, Mutex as TokioMutex},
     task::JoinSet,
 };
 
 use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
+use parking_lot::Mutex;
 
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
@@ -61,6 +62,7 @@ const OUTGOING_OUTPUT_CAPACITY: usize = 128;
 
 #[derive(Clone)]
 struct OutgoingSender {
+    shutdown_token: CancellationToken,
     shutdown: mpsc::Sender<Value>,
     hi: mpsc::Sender<Value>,
     lo: mpsc::Sender<Value>,
@@ -69,11 +71,13 @@ struct OutgoingSender {
 
 impl OutgoingSender {
     fn new(
+        shutdown_token: CancellationToken,
         shutdown: mpsc::Sender<Value>,
         hi: mpsc::Sender<Value>,
         lo: mpsc::Sender<Value>,
     ) -> Self {
         Self {
+            shutdown_token,
             shutdown,
             hi,
             lo,
@@ -188,23 +192,30 @@ where
     #[cfg(unix)]
     ignore_sigpipe();
 
+    let server_shutdown = CancellationToken::new();
     let (out_shutdown_tx, mut out_shutdown_rx) = mpsc::channel::<Value>(OUTGOING_SHUTDOWN_CAPACITY);
     let (out_hi_tx, mut out_hi_rx) = mpsc::channel::<Value>(OUTGOING_HIGH_CAPACITY);
     let (out_lo_tx, mut out_lo_rx) = mpsc::channel::<Value>(OUTGOING_OUTPUT_CAPACITY);
-    let out_tx = OutgoingSender::new(out_shutdown_tx, out_hi_tx, out_lo_tx);
+    let out_tx = OutgoingSender::new(
+        server_shutdown.clone(),
+        out_shutdown_tx,
+        out_hi_tx,
+        out_lo_tx,
+    );
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let exited_sent = Arc::new(AtomicBool::new(false));
     let next_debugger_id = Arc::new(AtomicU64::new(1));
     let suppress_termination_debugger_id = Arc::new(AtomicU64::new(0));
-    let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
-    let launched_process: Arc<Mutex<Option<LaunchedProcess>>> = Arc::new(Mutex::new(None));
-    let session: Arc<Mutex<SessionLifecycle>> = Arc::new(Mutex::new(SessionLifecycle::default()));
-    let pending_config: Arc<Mutex<PendingConfiguration>> =
-        Arc::new(Mutex::new(PendingConfiguration::default()));
+    let debugger: Arc<TokioMutex<Option<Debugger>>> = Arc::new(TokioMutex::new(None));
+    let launched_process: Arc<TokioMutex<Option<LaunchedProcess>>> =
+        Arc::new(TokioMutex::new(None));
+    let session: Arc<TokioMutex<SessionLifecycle>> =
+        Arc::new(TokioMutex::new(SessionLifecycle::default()));
+    let pending_config: Arc<TokioMutex<PendingConfiguration>> =
+        Arc::new(TokioMutex::new(PendingConfiguration::default()));
     let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let server_shutdown = CancellationToken::new();
     let (initialized_tx, initialized_rx) = watch::channel(false);
 
     let writer_shutdown = server_shutdown.clone();
@@ -262,7 +273,7 @@ where
 
                 let request_token = CancellationToken::new();
                 {
-                    let mut in_flight = in_flight.lock().await;
+                    let mut in_flight = in_flight.lock();
                     in_flight.insert(request.seq, request_token.clone());
                 }
 
@@ -304,7 +315,7 @@ where
 
     // Cancel in-flight requests so long JDWP operations unwind quickly.
     {
-        let in_flight_guard = in_flight.lock().await;
+        let in_flight_guard = in_flight.lock();
         for (seq, token) in in_flight_guard.iter() {
             if shutdown_request_seq.map(|s| s == *seq).unwrap_or(false) {
                 continue;
@@ -313,8 +324,33 @@ where
         }
     }
 
-    while let Some(res) = tasks.join_next().await {
-        let _ = res;
+    // Best-effort: do not hang shutdown forever if the DAP client stops reading and the writer
+    // task can't drain the outgoing queues (which can block request tasks on `send().await`).
+    //
+    // We give request tasks a small grace period to unwind after cancellation. If they still
+    // haven't completed, abort them and continue shutdown.
+    let tasks_deadline = Instant::now() + Duration::from_secs(2);
+    while !tasks.is_empty() {
+        let remaining = tasks_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, tasks.join_next()).await {
+            Ok(Some(_res)) => {}
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    if !tasks.is_empty() {
+        tasks.abort_all();
+        let drain_deadline = Instant::now() + Duration::from_millis(250);
+        while !tasks.is_empty() {
+            let remaining = drain_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let _ = tokio::time::timeout(remaining, tasks.join_next()).await;
+        }
     }
 
     // Best-effort: ensure the JDWP connection is torn down even if the DAP client
@@ -342,10 +378,10 @@ async fn handle_request(
     seq: Arc<AtomicI64>,
     next_debugger_id: Arc<AtomicU64>,
     suppress_termination_debugger_id: Arc<AtomicU64>,
-    debugger: Arc<Mutex<Option<Debugger>>>,
-    launched_process: Arc<Mutex<Option<LaunchedProcess>>>,
-    session: Arc<Mutex<SessionLifecycle>>,
-    pending_config: Arc<Mutex<PendingConfiguration>>,
+    debugger: Arc<TokioMutex<Option<Debugger>>>,
+    launched_process: Arc<TokioMutex<Option<LaunchedProcess>>>,
+    session: Arc<TokioMutex<SessionLifecycle>>,
+    pending_config: Arc<TokioMutex<PendingConfiguration>>,
     in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -418,10 +454,23 @@ async fn handle_request(
                     {
                         let mut message = "internal error (panic)".to_string();
                         // In release builds, try to capture a bug report bundle to aid debugging.
-                        if let Ok(Some(path)) =
-                            std::panic::catch_unwind(|| build_panic_bug_report_bundle())
-                        {
-                            message.push_str(&format!(" bug report: {path}"));
+                        static BUG_REPORT_BUNDLE_PANIC_LOGGED: std::sync::OnceLock<()> =
+                            std::sync::OnceLock::new();
+                        match std::panic::catch_unwind(|| build_panic_bug_report_bundle()) {
+                            Ok(Some(path)) => {
+                                message.push_str(&format!(" bug report: {path}"));
+                            }
+                            Ok(None) => {}
+                            Err(panic) => {
+                                if BUG_REPORT_BUNDLE_PANIC_LOGGED.set(()).is_ok() {
+                                    let message = nova_core::panic_payload_to_str(panic.as_ref());
+                                    tracing::warn!(
+                                        target = "nova.dap",
+                                        panic = %message,
+                                        "build_panic_bug_report_bundle panicked (best effort)"
+                                    );
+                                }
+                            }
                         }
                         message
                     }
@@ -449,7 +498,7 @@ async fn handle_request(
         }
     }
 
-    let mut guard = in_flight.lock().await;
+    let mut guard = in_flight.lock();
     guard.remove(&request_seq);
     in_flight_cleanup.disarm();
 }
@@ -461,10 +510,10 @@ async fn handle_request_inner(
     seq: &Arc<AtomicI64>,
     next_debugger_id: &Arc<AtomicU64>,
     suppress_termination_debugger_id: &Arc<AtomicU64>,
-    debugger: &Arc<Mutex<Option<Debugger>>>,
-    launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
-    session: &Arc<Mutex<SessionLifecycle>>,
-    pending_config: &Arc<Mutex<PendingConfiguration>>,
+    debugger: &Arc<TokioMutex<Option<Debugger>>>,
+    launched_process: &Arc<TokioMutex<Option<LaunchedProcess>>>,
+    session: &Arc<TokioMutex<SessionLifecycle>>,
+    pending_config: &Arc<TokioMutex<PendingConfiguration>>,
     in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: &watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -642,10 +691,27 @@ async fn handle_request_inner(
             match BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
                 .options(options)
                 .extra_attachments(|dir| {
-                    if let Ok(metrics_json) = serde_json::to_string_pretty(
+                    match serde_json::to_string_pretty(
                         &nova_metrics::MetricsRegistry::global().snapshot(),
                     ) {
-                        let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                        Ok(metrics_json) => {
+                            let path = dir.join("metrics.json");
+                            if let Err(err) = std::fs::write(&path, metrics_json) {
+                                tracing::debug!(
+                                    target = "nova.dap",
+                                    path = %path.display(),
+                                    error = %err,
+                                    "failed to write bugreport attachment"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.dap",
+                                error = %err,
+                                "failed to serialize bugreport metrics attachment"
+                            );
+                        }
                     }
                     Ok(())
                 })
@@ -687,7 +753,7 @@ async fn handle_request_inner(
             };
 
             let token = {
-                let in_flight = in_flight.lock().await;
+                let in_flight = in_flight.lock();
                 in_flight.get(&request_id).cloned()
             };
             if let Some(token) = token {
@@ -856,9 +922,17 @@ async fn handle_request_inner(
             let attach_timeout = Duration::from_millis(attach_timeout_ms);
 
             // Determine which launch mode we are in.
-            let mode = if args.command.is_some() {
+            let mode = if args
+                .command
+                .as_deref()
+                .is_some_and(|command| !command.is_empty())
+            {
                 LaunchMode::Command
-            } else if args.main_class.is_some() {
+            } else if args
+                .main_class
+                .as_deref()
+                .is_some_and(|main_class| !main_class.is_empty())
+            {
                 LaunchMode::Java
             } else {
                 send_response(
@@ -874,11 +948,6 @@ async fn handle_request_inner(
                 )
                 .await;
                 return;
-            };
-
-            let process_name = match mode {
-                LaunchMode::Command => args.command.clone().unwrap_or_default(),
-                LaunchMode::Java => args.main_class.clone().unwrap_or_default(),
             };
 
             // Apply launch defaults so they can be reused by `restart`.
@@ -899,163 +968,54 @@ async fn handle_request_inner(
             }
 
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
-            let (attach_hosts, attach_port, attach_target_label, launched_pid) = match mode {
-                LaunchMode::Command => {
-                    let Some(cwd) = args.cwd.as_deref() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.cwd is required".to_string()),
-                        )
-                        .await;
-                        return;
-                    };
-                    let Some(command) = args.command.as_deref() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.command is required".to_string()),
-                        )
-                        .await;
-                        return;
-                    };
-
-                    let port = args.port.unwrap_or(5005);
-                    let host = args.host.as_deref().unwrap_or("127.0.0.1");
-                    let host_label = host.to_string();
-                    let resolved_hosts = match resolve_host_candidates(host, port).await {
-                        Ok(hosts) if !hosts.is_empty() => hosts,
-                        Ok(_) => {
+            let (attach_hosts, attach_port, attach_target_label, launched_pid, process_name) =
+                match mode {
+                    LaunchMode::Command => {
+                        let Some(cwd) = args.cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!(
-                                    "failed to resolve host {host_label:?}: no addresses found"
-                                )),
+                                Some("launch.cwd is required".to_string()),
                             )
                             .await;
                             return;
-                        }
-                        Err(err) => {
+                        };
+                        let Some(command) = args.command.as_deref().filter(|cmd| !cmd.is_empty())
+                        else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!("invalid host {host_label:?}: {err}")),
+                                Some("launch.command is required".to_string()),
                             )
                             .await;
                             return;
-                        }
-                    };
-                    let attach_target_label = format!("{host_label}:{port}");
+                        };
 
-                    let mut cmd = Command::new(command);
-                    cmd.args(&args.args);
-                    cmd.current_dir(cwd);
-                    cmd.stdin(Stdio::null());
-                    cmd.stdout(Stdio::piped());
-                    cmd.stderr(Stdio::piped());
-                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
-                    // killing the launched process.
-                    cmd.kill_on_drop(false);
-                    for (k, v) in &args.env {
-                        cmd.env(k, v);
-                    }
-
-                    let mut child = match cmd.spawn() {
-                        Ok(child) => child,
-                        Err(err) => {
-                            send_response(
-                                out_tx,
-                                seq,
-                                request,
-                                false,
-                                None,
-                                Some(format!("failed to spawn {command:?}: {err}")),
-                            )
-                            .await;
-                            return;
-                        }
-                    };
-                    let Some(pid) = child.id() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("failed to determine launched process pid".to_string()),
-                        )
-                        .await;
-                        return;
-                    };
-
-                    let launched_pid = Some(pid);
-                    if let Some(stdout) = child.stdout.take() {
-                        spawn_output_task(
-                            stdout,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stdout",
-                            server_shutdown.clone(),
-                        );
-                    }
-                    if let Some(stderr) = child.stderr.take() {
-                        spawn_output_task(
-                            stderr,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stderr",
-                            server_shutdown.clone(),
-                        );
-                    }
-
-                    {
-                        let mut guard = launched_process.lock().await;
-                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
-                            child,
-                            out_tx.clone(),
-                            seq.clone(),
-                            Arc::clone(exited_sent),
-                            Arc::clone(terminated_sent),
-                            server_shutdown.clone(),
-                        );
-                        launch_outcome_tx = Some(outcome_tx);
-                        *guard = Some(proc);
-                    }
-
-                    (resolved_hosts, port, attach_target_label, launched_pid)
-                }
-                LaunchMode::Java => {
-                    let main_class = args.main_class.as_deref().unwrap_or_default();
-                    let Some(classpath) = args.classpath.clone() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.classpath is required for Java launch".to_string()),
-                        )
-                        .await;
-                        return;
-                    };
-
-                    let port = match args.port {
-                        Some(port) => port,
-                        None => match pick_free_port().await {
-                            Ok(port) => port,
+                        let port = args.port.unwrap_or(5005);
+                        let host = args.host.as_deref().unwrap_or("127.0.0.1");
+                        let host_label = host.to_string();
+                        let resolved_hosts = match resolve_host_candidates(host, port).await {
+                            Ok(hosts) if !hosts.is_empty() => hosts,
+                            Ok(_) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!(
+                                        "failed to resolve host {host_label:?}: no addresses found"
+                                    )),
+                                )
+                                .await;
+                                return;
+                            }
                             Err(err) => {
                                 send_response(
                                     out_tx,
@@ -1063,125 +1023,263 @@ async fn handle_request_inner(
                                     request,
                                     false,
                                     None,
-                                    Some(format!("failed to select debug port: {err}")),
+                                    Some(format!("invalid host {host_label:?}: {err}")),
                                 )
                                 .await;
                                 return;
                             }
-                        },
-                    };
-                    // Persist the resolved port for restart so we can re-use it.
-                    args.port = Some(port);
-                    let host: IpAddr = "127.0.0.1".parse().unwrap();
-                    let attach_target_label = format!("{host}:{port}");
+                        };
+                        let attach_target_label = format!("{host_label}:{port}");
 
-                    let java = args.java.clone().unwrap_or_else(|| "java".to_string());
-
-                    let cp_joined = match join_classpath(&classpath) {
-                        Ok(cp) => cp,
-                        Err(err) => {
-                            send_response(out_tx, seq, request, false, None, Some(err)).await;
-                            return;
-                        }
-                    };
-
-                    let suspend = if args.stop_on_entry { "y" } else { "n" };
-                    let debug_arg = format!(
-                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
-                    );
-
-                    let mut cmd = Command::new(java);
-                    cmd.stdin(Stdio::null());
-                    cmd.stdout(Stdio::piped());
-                    cmd.stderr(Stdio::piped());
-                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
-                    // killing the launched JVM.
-                    cmd.kill_on_drop(false);
-                    if let Some(cwd) = args.cwd.as_deref() {
+                        let mut cmd = Command::new(command);
+                        cmd.args(&args.args);
                         cmd.current_dir(cwd);
-                    }
-                    for (k, v) in &args.env {
-                        cmd.env(k, v);
-                    }
-                    cmd.args(&args.vm_args);
-                    cmd.arg(debug_arg);
-                    if let Some(module_name) = args.module_name.as_deref() {
-                        cmd.arg("--module-path");
-                        cmd.arg(cp_joined.clone());
-                        cmd.arg("-m");
-                        cmd.arg(format!("{module_name}/{main_class}"));
-                    } else {
-                        cmd.arg("-classpath");
-                        cmd.arg(cp_joined);
-                        cmd.arg(main_class);
-                    }
-                    cmd.args(&args.args);
+                        cmd.stdin(Stdio::null());
+                        cmd.stdout(Stdio::piped());
+                        cmd.stderr(Stdio::piped());
+                        // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                        // killing the launched process.
+                        cmd.kill_on_drop(false);
+                        for (k, v) in &args.env {
+                            cmd.env(k, v);
+                        }
 
-                    let mut child = match cmd.spawn() {
-                        Ok(child) => child,
-                        Err(err) => {
+                        let mut child = match cmd.spawn() {
+                            Ok(child) => child,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to spawn {command:?}: {err}")),
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+                        let Some(pid) = child.id() else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!("failed to spawn java: {err}")),
+                                Some("failed to determine launched process pid".to_string()),
                             )
                             .await;
                             return;
+                        };
+
+                        let launched_pid = Some(pid);
+                        if let Some(stdout) = child.stdout.take() {
+                            spawn_output_task(
+                                stdout,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stdout",
+                                server_shutdown.clone(),
+                            );
                         }
-                    };
-                    let Some(pid) = child.id() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("failed to determine launched process pid".to_string()),
+                        if let Some(stderr) = child.stderr.take() {
+                            spawn_output_task(
+                                stderr,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stderr",
+                                server_shutdown.clone(),
+                            );
+                        }
+
+                        {
+                            let mut guard = launched_process.lock().await;
+                            let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                                child,
+                                out_tx.clone(),
+                                seq.clone(),
+                                Arc::clone(exited_sent),
+                                Arc::clone(terminated_sent),
+                                server_shutdown.clone(),
+                            );
+                            launch_outcome_tx = Some(outcome_tx);
+                            *guard = Some(proc);
+                        }
+
+                        (
+                            resolved_hosts,
+                            port,
+                            attach_target_label,
+                            launched_pid,
+                            command.to_string(),
                         )
-                        .await;
-                        return;
-                    };
-
-                    let launched_pid = Some(pid);
-                    if let Some(stdout) = child.stdout.take() {
-                        spawn_output_task(
-                            stdout,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stdout",
-                            server_shutdown.clone(),
-                        );
                     }
-                    if let Some(stderr) = child.stderr.take() {
-                        spawn_output_task(
-                            stderr,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stderr",
-                            server_shutdown.clone(),
-                        );
-                    }
+                    LaunchMode::Java => {
+                        let Some(main_class) = args
+                            .main_class
+                            .as_deref()
+                            .filter(|main_class| !main_class.is_empty())
+                        else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("launch.mainClass is required for Java launch".to_string()),
+                            )
+                            .await;
+                            return;
+                        };
+                        let Some(classpath) = args.classpath.clone() else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("launch.classpath is required for Java launch".to_string()),
+                            )
+                            .await;
+                            return;
+                        };
 
-                    {
-                        let mut guard = launched_process.lock().await;
-                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
-                            child,
-                            out_tx.clone(),
-                            seq.clone(),
-                            Arc::clone(exited_sent),
-                            Arc::clone(terminated_sent),
-                            server_shutdown.clone(),
-                        );
-                        launch_outcome_tx = Some(outcome_tx);
-                        *guard = Some(proc);
-                    }
+                        let port = match args.port {
+                            Some(port) => port,
+                            None => match pick_free_port().await {
+                                Ok(port) => port,
+                                Err(err) => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!("failed to select debug port: {err}")),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+                        // Persist the resolved port for restart so we can re-use it.
+                        args.port = Some(port);
+                        let host: IpAddr = "127.0.0.1".parse().unwrap();
+                        let attach_target_label = format!("{host}:{port}");
 
-                    (vec![host], port, attach_target_label, launched_pid)
-                }
-            };
+                        let java = args.java.clone().unwrap_or_else(|| "java".to_string());
+
+                        let cp_joined = match join_classpath(&classpath) {
+                            Ok(cp) => cp,
+                            Err(err) => {
+                                send_response(out_tx, seq, request, false, None, Some(err)).await;
+                                return;
+                            }
+                        };
+
+                        let suspend = if args.stop_on_entry { "y" } else { "n" };
+                        let debug_arg = format!(
+                            "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
+                        );
+
+                        let mut cmd = Command::new(java);
+                        cmd.stdin(Stdio::null());
+                        cmd.stdout(Stdio::piped());
+                        cmd.stderr(Stdio::piped());
+                        // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                        // killing the launched JVM.
+                        cmd.kill_on_drop(false);
+                        if let Some(cwd) = args.cwd.as_deref() {
+                            cmd.current_dir(cwd);
+                        }
+                        for (k, v) in &args.env {
+                            cmd.env(k, v);
+                        }
+                        cmd.args(&args.vm_args);
+                        cmd.arg(debug_arg);
+                        if let Some(module_name) = args.module_name.as_deref() {
+                            cmd.arg("--module-path");
+                            cmd.arg(cp_joined.clone());
+                            cmd.arg("-m");
+                            cmd.arg(format!("{module_name}/{main_class}"));
+                        } else {
+                            cmd.arg("-classpath");
+                            cmd.arg(cp_joined);
+                            cmd.arg(main_class);
+                        }
+                        cmd.args(&args.args);
+
+                        let mut child = match cmd.spawn() {
+                            Ok(child) => child,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to spawn java: {err}")),
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+                        let Some(pid) = child.id() else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("failed to determine launched process pid".to_string()),
+                            )
+                            .await;
+                            return;
+                        };
+
+                        let launched_pid = Some(pid);
+                        if let Some(stdout) = child.stdout.take() {
+                            spawn_output_task(
+                                stdout,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stdout",
+                                server_shutdown.clone(),
+                            );
+                        }
+                        if let Some(stderr) = child.stderr.take() {
+                            spawn_output_task(
+                                stderr,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stderr",
+                                server_shutdown.clone(),
+                            );
+                        }
+
+                        {
+                            let mut guard = launched_process.lock().await;
+                            let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                                child,
+                                out_tx.clone(),
+                                seq.clone(),
+                                Arc::clone(exited_sent),
+                                Arc::clone(terminated_sent),
+                                server_shutdown.clone(),
+                            );
+                            launch_outcome_tx = Some(outcome_tx);
+                            *guard = Some(proc);
+                        }
+
+                        (
+                            vec![host],
+                            port,
+                            attach_target_label,
+                            launched_pid,
+                            main_class.to_string(),
+                        )
+                    }
+                };
 
             let process_event_body =
                 make_process_event_body(&process_name, launched_pid, true, "launch");
@@ -1653,7 +1751,7 @@ async fn handle_request_inner(
             let (attach_hosts, attach_port, attach_target_label, process_name, process_pid) =
                 match mode {
                     LaunchMode::Command => {
-                        let Some(cwd) = args.cwd.as_deref() else {
+                        let Some(cwd) = args.cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
                             send_response(
                                 out_tx,
                                 seq,
@@ -1665,7 +1763,8 @@ async fn handle_request_inner(
                             .await;
                             return;
                         };
-                        let Some(command) = args.command.as_deref() else {
+                        let Some(command) = args.command.as_deref().filter(|cmd| !cmd.is_empty())
+                        else {
                             send_response(
                                 out_tx,
                                 seq,
@@ -1795,7 +1894,22 @@ async fn handle_request_inner(
                         )
                     }
                     LaunchMode::Java => {
-                        let main_class = args.main_class.as_deref().unwrap_or_default();
+                        let Some(main_class) = args
+                            .main_class
+                            .as_deref()
+                            .filter(|main_class| !main_class.is_empty())
+                        else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("launch.mainClass is required for Java launch".to_string()),
+                            )
+                            .await;
+                            return;
+                        };
                         let Some(classpath) = args.classpath.clone() else {
                             send_response(
                                 out_tx,
@@ -2152,37 +2266,114 @@ async fn handle_request_inner(
                 return;
             }
 
-            let breakpoints: Vec<FunctionBreakpointSpec> = request
-                .arguments
-                .get("breakpoints")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|bp| {
-                            let name = bp.get("name").and_then(|v| v.as_str())?.to_string();
-                            let condition = bp
-                                .get("condition")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
-                            let hit_condition = bp
-                                .get("hitCondition")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
-                            let log_message = bp
-                                .get("logMessage")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
+            let breakpoints = match request.arguments.get("breakpoints") {
+                None => Vec::new(),
+                Some(value) => {
+                    let Some(arr) = value.as_array() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("setFunctionBreakpoints.breakpoints must be an array".to_string()),
+                        )
+                        .await;
+                        return;
+                    };
 
-                            Some(FunctionBreakpointSpec {
-                                name,
-                                condition,
-                                hit_condition,
-                                log_message,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                    let mut out = Vec::with_capacity(arr.len());
+                    for (idx, bp) in arr.iter().enumerate() {
+                        let Some(name) = bp
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .filter(|name| !name.is_empty())
+                        else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!(
+                                    "setFunctionBreakpoints.breakpoints[{idx}].name is required"
+                                )),
+                            )
+                            .await;
+                            return;
+                        };
+
+                        let condition = match bp.get("condition") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setFunctionBreakpoints.breakpoints[{idx}].condition must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+                        let hit_condition = match bp.get("hitCondition") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setFunctionBreakpoints.breakpoints[{idx}].hitCondition must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+                        let log_message = match bp.get("logMessage") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setFunctionBreakpoints.breakpoints[{idx}].logMessage must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+
+                        out.push(FunctionBreakpointSpec {
+                            name: name.to_string(),
+                            condition,
+                            hit_condition,
+                            log_message,
+                        });
+                    }
+                    out
+                }
+            };
 
             {
                 let mut pending = pending_config.lock().await;
@@ -2283,43 +2474,159 @@ async fn handle_request_inner(
                 return;
             }
 
-            let source_path = request
+            let Some(source_path) = request
                 .arguments
                 .get("source")
                 .and_then(|s| s.get("path"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let breakpoints: Vec<BreakpointSpec> = request
-                .arguments
-                .get("breakpoints")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|bp| {
-                            let line = bp.get("line").and_then(|l| l.as_i64())? as i32;
-                            let condition = bp
-                                .get("condition")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
-                            let hit_condition = bp
-                                .get("hitCondition")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
-                            let log_message = bp
-                                .get("logMessage")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
+                .filter(|path| !path.is_empty())
+            else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("setBreakpoints.source.path is required".to_string()),
+                )
+                .await;
+                return;
+            };
+            let breakpoints = match request.arguments.get("breakpoints") {
+                None => Vec::new(),
+                Some(value) => {
+                    let Some(arr) = value.as_array() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("setBreakpoints.breakpoints must be an array".to_string()),
+                        )
+                        .await;
+                        return;
+                    };
 
-                            Some(BreakpointSpec {
-                                line,
-                                condition,
-                                hit_condition,
-                                log_message,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                    let mut out = Vec::with_capacity(arr.len());
+                    for (idx, bp) in arr.iter().enumerate() {
+                        let Some(line) = bp.get("line").and_then(|l| l.as_i64()) else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!(
+                                    "setBreakpoints.breakpoints[{idx}].line is required"
+                                )),
+                            )
+                            .await;
+                            return;
+                        };
+                        let line = match i32::try_from(line) {
+                            Ok(line) if line >= 1 => line,
+                            Ok(_) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!(
+                                        "setBreakpoints.breakpoints[{idx}].line must be >= 1"
+                                    )),
+                                )
+                                .await;
+                                return;
+                            }
+                            Err(_) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!(
+                                        "setBreakpoints.breakpoints[{idx}].line is out of range"
+                                    )),
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+
+                        let condition = match bp.get("condition") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setBreakpoints.breakpoints[{idx}].condition must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+                        let hit_condition = match bp.get("hitCondition") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setBreakpoints.breakpoints[{idx}].hitCondition must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+                        let log_message = match bp.get("logMessage") {
+                            None => None,
+                            Some(value) => match value.as_str() {
+                                Some(value) => Some(value.to_string()),
+                                None => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!(
+                                            "setBreakpoints.breakpoints[{idx}].logMessage must be a string"
+                                        )),
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            },
+                        };
+
+                        out.push(BreakpointSpec {
+                            line,
+                            condition,
+                            hit_condition,
+                            log_message,
+                        });
+                    }
+                    out
+                }
+            };
 
             {
                 let mut pending = pending_config.lock().await;
@@ -2424,12 +2731,24 @@ async fn handle_request_inner(
                 return;
             }
 
-            let source_path = request
+            let Some(source_path) = request
                 .arguments
                 .get("source")
                 .and_then(|s| s.get("path"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
+                .filter(|path| !path.is_empty())
+            else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("breakpointLocations.source.path is required".to_string()),
+                )
+                .await;
+                return;
+            };
 
             let Some(line) = request.arguments.get("line").and_then(|v| v.as_i64()) else {
                 send_response(
@@ -2457,16 +2776,54 @@ async fn handle_request_inner(
             .await;
         }
         "setExceptionBreakpoints" => {
-            let filters: Vec<String> = request
-                .arguments
-                .get("filters")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            if cancel.is_cancelled() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                )
+                .await;
+                return;
+            }
+
+            let mut filters = Vec::new();
+            if let Some(value) = request.arguments.get("filters") {
+                let Some(arr) = value.as_array() else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(
+                            "setExceptionBreakpoints.filters must be an array of strings"
+                                .to_string(),
+                        ),
+                    )
+                    .await;
+                    return;
+                };
+                for (idx, entry) in arr.iter().enumerate() {
+                    let Some(filter) = entry.as_str() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!(
+                                "setExceptionBreakpoints.filters[{idx}] must be a string"
+                            )),
+                        )
+                        .await;
+                        return;
+                    };
+                    filters.push(filter.to_string());
+                }
+            }
 
             let mut caught = false;
             let mut uncaught = false;
@@ -2482,18 +2839,48 @@ async fn handle_request_inner(
                 }
             }
 
-            if let Some(options) = request
-                .arguments
-                .get("exceptionOptions")
-                .and_then(|v| v.as_array())
-            {
-                for opt in options {
-                    match opt.get("breakMode").and_then(|v| v.as_str()) {
-                        Some("always") => {
+            if let Some(options_value) = request.arguments.get("exceptionOptions") {
+                let Some(options) = options_value.as_array() else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(
+                            "setExceptionBreakpoints.exceptionOptions must be an array".to_string(),
+                        ),
+                    )
+                    .await;
+                    return;
+                };
+                for (idx, opt) in options.iter().enumerate() {
+                    let break_mode = match opt.get("breakMode") {
+                        None => continue,
+                        Some(value) => match value.as_str() {
+                            Some(value) => value,
+                            None => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!(
+                                        "setExceptionBreakpoints.exceptionOptions[{idx}].breakMode must be a string"
+                                    )),
+                                )
+                                .await;
+                                return;
+                            }
+                        },
+                    };
+                    match break_mode {
+                        "always" => {
                             caught = true;
                             uncaught = true;
                         }
-                        Some("unhandled" | "userUnhandled") => uncaught = true,
+                        "unhandled" | "userUnhandled" => uncaught = true,
                         _ => {}
                     }
                 }
@@ -3473,7 +3860,7 @@ async fn handle_request_inner(
             // While stream debug is in-flight, mark the evaluation thread as being in internal
             // evaluation mode so the JDWP event task can auto-resume any breakpoint hits without
             // emitting DAP stop/output events or mutating hit-count breakpoint state.
-            let (fut, _eval_guard) = {
+            let (fut, eval_guard) = {
                 let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                     Some(guard) => guard,
                     None => {
@@ -3557,7 +3944,13 @@ async fn handle_request_inner(
                 }
             };
 
-            match fut.await {
+            let result = fut.await;
+            // Keep internal-evaluation mode enabled for the whole request, even if the future
+            // completes quickly. This prevents the JDWP event task from treating breakpoint hits
+            // during `InvokeMethod` as user-visible stops.
+            drop(eval_guard);
+
+            match result {
                 Ok(body) if cancel.is_cancelled() => {
                     send_response(
                         out_tx,
@@ -4116,12 +4509,11 @@ async fn handle_request_inner(
                 args.project_root
                     .clone()
                     .or(sess_root)
-                    .map(|root| std::fs::canonicalize(&root).unwrap_or(root))
+                    .map(|root| canonicalize_path_best_effort(root, "hot_swap.project_root"))
             };
             let base_dir = project_root
                 .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
+                .unwrap_or_else(|| current_dir_best_effort("hot_swap.base_dir"));
 
             let mut changed_files = Vec::new();
             let mut outputs = HashMap::<PathBuf, CompileOutputMulti>::new();
@@ -4260,18 +4652,29 @@ async fn handle_request_inner(
                 }
             }
 
-            send_response(
-                out_tx,
-                seq,
-                request,
-                true,
-                Some(
-                    serde_json::to_value(result)
-                        .unwrap_or_else(|_| Value::Object(serde_json::Map::new())),
-                ),
-                None,
-            )
-            .await;
+            let body = match serde_json::to_value(&result) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::error!(
+                        target = "nova.dap",
+                        command = %request.command,
+                        request_seq = request.seq,
+                        error = %err,
+                        "failed to serialize hot-swap result"
+                    );
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("internal error: failed to serialize hot-swap result".to_string()),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            send_response(out_tx, seq, request, true, Some(body), None).await;
         }
         // Method return values (e.g. step-out with return value).
         "nova/enableMethodReturnValues" => {
@@ -4361,9 +4764,11 @@ async fn handle_request_inner(
                 }
             }
 
+            // Ensure responses/events use shutdown best-effort behavior (avoid blocking on a client
+            // that stopped reading).
+            server_shutdown.cancel();
             send_response(out_tx, seq, request, true, None, None).await;
             send_terminated_once(out_tx, seq, terminated_sent).await;
-            server_shutdown.cancel();
         }
         "disconnect" => {
             let has_launched_process = launched_process.lock().await.is_some();
@@ -4402,9 +4807,11 @@ async fn handle_request_inner(
                 }
             }
 
+            // Ensure responses/events use shutdown best-effort behavior (avoid blocking on a client
+            // that stopped reading).
+            server_shutdown.cancel();
             send_response(out_tx, seq, request, true, None, None).await;
             send_terminated_once(out_tx, seq, terminated_sent).await;
-            server_shutdown.cancel();
         }
         _ => {
             send_response(
@@ -4427,14 +4834,14 @@ async fn attach_debugger_or_respond(
     request: &Request,
     out_tx: &OutgoingSender,
     seq: &Arc<AtomicI64>,
-    launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
+    launched_process: &Arc<TokioMutex<Option<LaunchedProcess>>>,
     launch_outcome_tx: &mut Option<watch::Sender<Option<bool>>>,
 ) -> Option<Debugger> {
     async fn fail_launch(
         request: &Request,
         out_tx: &OutgoingSender,
         seq: &Arc<AtomicI64>,
-        launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
+        launched_process: &Arc<TokioMutex<Option<LaunchedProcess>>>,
         launch_outcome_tx: &mut Option<watch::Sender<Option<bool>>>,
         message: String,
     ) {
@@ -4482,6 +4889,25 @@ fn is_cancelled_error(err: &DebuggerError) -> bool {
     matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
 }
 
+fn current_dir_best_effort(context: &'static str) -> PathBuf {
+    static CURRENT_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            if CURRENT_DIR_ERROR_LOGGED.set(()).is_ok() {
+                tracing::warn!(
+                    target = "nova.dap",
+                    context,
+                    error = %err,
+                    "failed to read current working directory; using '.'"
+                );
+            }
+            PathBuf::from(".")
+        }
+    }
+}
+
 fn resolve_source_roots(
     command: &str,
     arguments: &Value,
@@ -4490,7 +4916,7 @@ fn resolve_source_roots(
         .get("projectRoot")
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
-        .map(|root| std::fs::canonicalize(&root).unwrap_or(root));
+        .map(|root| canonicalize_path_best_effort(root, "resolve_source_roots.project_root"));
 
     let mut roots = Vec::new();
 
@@ -4518,8 +4944,7 @@ fn resolve_source_roots(
 
     let base_dir = project_root
         .clone()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+        .unwrap_or_else(|| current_dir_best_effort("resolve_source_roots.base_dir"));
 
     let mut out = Vec::new();
     for root in roots {
@@ -4528,7 +4953,7 @@ fn resolve_source_roots(
         } else {
             base_dir.join(root)
         };
-        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let root = canonicalize_path_best_effort(root, "resolve_source_roots.root");
         if !out.iter().any(|existing| existing == &root) {
             out.push(root);
         }
@@ -4542,7 +4967,24 @@ fn parse_project_root(arguments: &Value) -> Option<PathBuf> {
         .get("projectRoot")
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
-        .map(|root| std::fs::canonicalize(&root).unwrap_or(root))
+        .map(|root| canonicalize_path_best_effort(root, "parse_project_root"))
+}
+
+fn canonicalize_path_best_effort(path: PathBuf, context: &'static str) -> PathBuf {
+    match std::fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize path; using fallback"
+            );
+            path
+        }
+    }
 }
 
 fn requires_initialized(command: &str) -> bool {
@@ -4554,9 +4996,13 @@ fn requires_initialized(command: &str) -> bool {
 
 async fn apply_pending_configuration(
     cancel: &CancellationToken,
-    debugger: &Arc<Mutex<Option<Debugger>>>,
-    pending_config: &Arc<Mutex<PendingConfiguration>>,
+    debugger: &Arc<TokioMutex<Option<Debugger>>>,
+    pending_config: &Arc<TokioMutex<PendingConfiguration>>,
 ) {
+    static APPLY_PENDING_BREAKPOINTS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    static APPLY_PENDING_EXCEPTION_BREAKPOINTS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    static APPLY_PENDING_FUNCTION_BREAKPOINTS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let (breakpoints, exception_breakpoints, function_breakpoints) = {
         let pending = pending_config.lock().await;
         (
@@ -4582,23 +5028,62 @@ async fn apply_pending_configuration(
         if cancel.is_cancelled() {
             return;
         }
-        let _ = dbg.set_breakpoints(cancel, &source_path, bps).await;
+        if let Err(err) = dbg.set_breakpoints(cancel, &source_path, bps.clone()).await {
+            if !is_cancelled_error(&err) && APPLY_PENDING_BREAKPOINTS_ERROR_LOGGED.set(()).is_ok() {
+                tracing::warn!(
+                    target = "nova.dap",
+                    source_path,
+                    count = bps.len(),
+                    error = %err,
+                    "failed to apply pending breakpoints; continuing best-effort"
+                );
+            }
+        }
     }
 
     if let Some((caught, uncaught)) = exception_breakpoints {
         if cancel.is_cancelled() {
             return;
         }
-        let _ = dbg.set_exception_breakpoints(caught, uncaught).await;
+        if let Err(err) = dbg.set_exception_breakpoints(caught, uncaught).await {
+            if !is_cancelled_error(&err)
+                && APPLY_PENDING_EXCEPTION_BREAKPOINTS_ERROR_LOGGED
+                    .set(())
+                    .is_ok()
+            {
+                tracing::warn!(
+                    target = "nova.dap",
+                    caught,
+                    uncaught,
+                    error = %err,
+                    "failed to apply pending exception breakpoints; continuing best-effort"
+                );
+            }
+        }
     }
 
     if let Some(function_breakpoints) = function_breakpoints {
         if cancel.is_cancelled() {
             return;
         }
-        let _ = dbg
+        let count = function_breakpoints.len();
+        if let Err(err) = dbg
             .set_function_breakpoints(cancel, function_breakpoints)
-            .await;
+            .await
+        {
+            if !is_cancelled_error(&err)
+                && APPLY_PENDING_FUNCTION_BREAKPOINTS_ERROR_LOGGED
+                    .set(())
+                    .is_ok()
+            {
+                tracing::warn!(
+                    target = "nova.dap",
+                    count,
+                    error = %err,
+                    "failed to apply pending function breakpoints; continuing best-effort"
+                );
+            }
+        }
     }
 }
 
@@ -4963,9 +5448,9 @@ fn spawn_launched_process_exit_task(
             }
         }
 
+        server_shutdown.cancel();
         send_exited_once(&tx, &seq, &exited_sent, exit_code).await;
         send_terminated_once(&tx, &seq, &terminated_sent).await;
-        server_shutdown.cancel();
     });
 
     (
@@ -4999,7 +5484,7 @@ async fn join_or_abort<T>(
     }
 }
 
-async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
+async fn detach_existing_process(launched_process: &Arc<TokioMutex<Option<LaunchedProcess>>>) {
     let proc = {
         let mut guard = launched_process.lock().await;
         guard.take()
@@ -5016,7 +5501,7 @@ async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedPro
     .await;
 }
 
-async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
+async fn terminate_existing_process(launched_process: &Arc<TokioMutex<Option<LaunchedProcess>>>) {
     let proc = {
         let mut guard = launched_process.lock().await;
         guard.take()
@@ -5035,7 +5520,7 @@ async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Launched
     .await;
 }
 
-async fn disconnect_debugger(debugger: &Arc<Mutex<Option<Debugger>>>) {
+async fn disconnect_debugger(debugger: &Arc<TokioMutex<Option<Debugger>>>) {
     let mut dbg = {
         let mut guard = debugger.lock().await;
         guard.take()
@@ -5068,9 +5553,36 @@ async fn wait_initialized(
 
 async fn lock_or_cancel<'a, T>(
     cancel: &'a CancellationToken,
-    mutex: &'a Mutex<T>,
+    mutex: &'a TokioMutex<T>,
 ) -> Option<tokio::sync::MutexGuard<'a, T>> {
     crate::async_util::cancellable_value(cancel, async { Some(mutex.lock().await) }, || None).await
+}
+
+async fn send_best_effort_or_cancel(
+    cancel: &CancellationToken,
+    sender: &mpsc::Sender<Value>,
+    value: Value,
+) {
+    if cancel.is_cancelled() {
+        let _ = sender.try_send(value);
+        return;
+    }
+
+    let mut value = Some(value);
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            if let Some(value) = value.take() {
+                let _ = sender.try_send(value);
+            }
+        }
+        permit = sender.reserve() => {
+            if let Some(value) = value.take() {
+                if let Ok(permit) = permit {
+                    permit.send(value);
+                }
+            }
+        }
+    }
 }
 
 async fn send_event(
@@ -5082,7 +5594,24 @@ async fn send_event(
     let event = event.into();
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event.clone(), body);
-    let value = serde_json::to_value(evt).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+    let value = match serde_json::to_value(evt) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(
+                target = "nova.dap",
+                event = %event,
+                event_seq = s,
+                error = %err,
+                "failed to serialize DAP event"
+            );
+            json!({
+                "type": "event",
+                "seq": s,
+                "event": event.as_str(),
+                "body": null,
+            })
+        }
+    };
 
     if event == "output" {
         match tx.lo.try_send(value) {
@@ -5107,17 +5636,36 @@ async fn send_event(
                             "output": "<output dropped>\\n",
                         })),
                     );
-                    let notice_value = serde_json::to_value(notice)
-                        .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+                    let notice_value = match serde_json::to_value(notice) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            tracing::error!(
+                                target = "nova.dap",
+                                event = "output",
+                                event_seq = notice_s,
+                                error = %err,
+                                "failed to serialize DAP output notice event"
+                            );
+                            json!({
+                                "type": "event",
+                                "seq": notice_s,
+                                "event": "output",
+                                "body": {
+                                    "category": "console",
+                                    "output": "<output dropped>\\n",
+                                },
+                            })
+                        }
+                    };
                     let _ = tx.hi.try_send(notice_value);
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_value)) => {}
         }
     } else if matches!(event.as_str(), "terminated" | "exited") {
-        let _ = tx.shutdown.send(value).await;
+        send_best_effort_or_cancel(&tx.shutdown_token, &tx.shutdown, value).await;
     } else {
-        let _ = tx.hi.send(value).await;
+        send_best_effort_or_cancel(&tx.shutdown_token, &tx.hi, value).await;
     }
 }
 
@@ -5150,12 +5698,32 @@ async fn send_response(
     }
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
-    let value =
-        serde_json::to_value(resp).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
-    if matches!(request.command.as_str(), "disconnect" | "terminate") {
-        let _ = tx.shutdown.send(value).await;
+    let value = match serde_json::to_value(resp) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(
+                target = "nova.dap",
+                command = %request.command,
+                request_seq = request.seq,
+                response_seq = s,
+                error = %err,
+                "failed to serialize DAP response"
+            );
+            json!({
+                "type": "response",
+                "seq": s,
+                "request_seq": request.seq,
+                "success": false,
+                "command": request.command,
+                "message": "internal error: failed to serialize response",
+            })
+        }
+    };
+    let is_shutdown_request = matches!(request.command.as_str(), "disconnect" | "terminate");
+    if is_shutdown_request {
+        send_best_effort_or_cancel(&tx.shutdown_token, &tx.shutdown, value).await;
     } else {
-        let _ = tx.hi.send(value).await;
+        send_best_effort_or_cancel(&tx.shutdown_token, &tx.hi, value).await;
     }
 }
 
@@ -5170,18 +5738,36 @@ fn build_panic_bug_report_bundle() -> Option<String> {
         reproduction: Some("panic in wire DAP request handler".to_string()),
     };
 
-    let bundle = BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
+    let bundle = match BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
         .options(options)
         .extra_attachments(|dir| {
             if let Ok(metrics_json) =
                 serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
             {
-                let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                let path = dir.join("metrics.json");
+                if let Err(err) = std::fs::write(&path, metrics_json) {
+                    tracing::debug!(
+                        target = "nova.dap",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to write bugreport attachment"
+                    );
+                }
             }
             Ok(())
         })
         .build()
-        .ok()?;
+    {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            tracing::error!(
+                target = "nova.dap",
+                error = %err,
+                "failed to build panic bugreport bundle"
+            );
+            return None;
+        }
+    };
 
     Some(bundle.path().display().to_string())
 }
@@ -5212,18 +5798,8 @@ impl Drop for InFlightCleanupGuard {
             return;
         }
 
-        let in_flight = self.in_flight.clone();
-        let request_seq = self.request_seq;
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-
-        // Best-effort: ensure we don't leak `in_flight` entries even if the request task itself
-        // panics. This runs in a detached task because `Drop` can't be async.
-        handle.spawn(async move {
-            let mut guard = in_flight.lock().await;
-            guard.remove(&request_seq);
-        });
+        let mut guard = self.in_flight.lock();
+        guard.remove(&self.request_seq);
     }
 }
 
@@ -5282,7 +5858,7 @@ async fn send_terminated_once(
 }
 
 fn spawn_event_task(
-    debugger: Arc<Mutex<Option<Debugger>>>,
+    debugger: Arc<TokioMutex<Option<Debugger>>>,
     tx: OutgoingSender,
     seq: Arc<AtomicI64>,
     terminated_sent: Arc<AtomicBool>,
@@ -5336,8 +5912,8 @@ fn spawn_event_task(
                         return;
                     }
 
-                    send_terminated_once(&tx, &seq, &terminated_sent).await;
                     server_shutdown.cancel();
+                    send_terminated_once(&tx, &seq, &terminated_sent).await;
                     return;
                 }
                 event = events.recv() => match event {
@@ -5350,8 +5926,8 @@ fn spawn_event_task(
                             return;
                         }
 
-                        send_terminated_once(&tx, &seq, &terminated_sent).await;
                         server_shutdown.cancel();
+                        send_terminated_once(&tx, &seq, &terminated_sent).await;
                         return;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -5657,8 +6233,8 @@ fn spawn_event_task(
                     {
                         return;
                     }
-                    send_terminated_once(&tx, &seq, &terminated_sent).await;
                     server_shutdown.cancel();
+                    send_terminated_once(&tx, &seq, &terminated_sent).await;
                     return;
                 }
                 _ => {}
@@ -5676,8 +6252,31 @@ async fn exception_stopped_text(
         return None;
     }
 
-    let (_ref_type_tag, class_id) = jdwp.object_reference_reference_type(exception).await.ok()?;
-    let sig = jdwp.reference_type_signature(class_id).await.ok()?;
+    let (_ref_type_tag, class_id) = match jdwp.object_reference_reference_type(exception).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                exception,
+                error = %err,
+                "failed to read exception reference type"
+            );
+            return None;
+        }
+    };
+    let sig = match jdwp.reference_type_signature(class_id).await {
+        Ok(sig) => sig,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                exception,
+                class_id,
+                error = %err,
+                "failed to read exception signature"
+            );
+            return None;
+        }
+    };
     let full_type_name = signature_to_object_type_name(&sig)?;
     let type_name = full_type_name
         .rsplit(['.', '$'])
@@ -5699,10 +6298,22 @@ async fn exception_message(
     let field_id =
         throwable_detail_message_field_id(jdwp, throwable_detail_message_field_cache).await?;
 
-    let values = jdwp
+    let values = match jdwp
         .object_reference_get_values(exception, &[field_id])
         .await
-        .ok()?;
+    {
+        Ok(values) => values,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                exception,
+                field_id,
+                error = %err,
+                "failed to read throwable detailMessage"
+            );
+            return None;
+        }
+    };
     let value = values.into_iter().next()?;
     let JdwpValue::Object { id, .. } = value else {
         return None;
@@ -5710,7 +6321,19 @@ async fn exception_message(
     if id == 0 {
         return None;
     }
-    let message = jdwp.string_reference_value(id).await.ok()?;
+    let message = match jdwp.string_reference_value(id).await {
+        Ok(message) => message,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                exception,
+                message_id = id,
+                error = %err,
+                "failed to read throwable message string"
+            );
+            return None;
+        }
+    };
     if message.is_empty() {
         None
     } else {
@@ -5726,12 +6349,30 @@ async fn throwable_detail_message_field_id(
         return cached;
     }
 
-    let classes = jdwp
-        .classes_by_signature("Ljava/lang/Throwable;")
-        .await
-        .ok()?;
+    let classes = match jdwp.classes_by_signature("Ljava/lang/Throwable;").await {
+        Ok(classes) => classes,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                error = %err,
+                "failed to query Throwable class"
+            );
+            return None;
+        }
+    };
     let throwable = classes.first()?.type_id;
-    let fields = jdwp.reference_type_fields(throwable).await.ok()?;
+    let fields = match jdwp.reference_type_fields(throwable).await {
+        Ok(fields) => fields,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                throwable,
+                error = %err,
+                "failed to query Throwable fields"
+            );
+            return None;
+        }
+    };
     let field_id = fields
         .iter()
         .find(|field| field.name == "detailMessage")
@@ -5841,7 +6482,7 @@ mod tests {
         let message = panic_resp
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or_default();
+            .expect("panic response message");
         assert!(
             message.contains("internal error (panic)"),
             "unexpected panic response message: {message}"
@@ -5887,14 +6528,170 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_breakpoint_requests_are_rejected() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server);
+
+        let server_task = tokio::spawn(async move { run(server_read, server_write).await });
+
+        let (client_read, client_write) = tokio::io::split(client);
+        let mut writer = DapWriter::new(client_write);
+        let mut reader = DapReader::new(client_read);
+
+        let init = Request {
+            seq: 1,
+            message_type: "request".to_string(),
+            command: "initialize".to_string(),
+            arguments: json!({}),
+        };
+        writer
+            .write_value(&serde_json::to_value(init).unwrap())
+            .await
+            .unwrap();
+        let init_resp = read_response(&mut reader, 1).await;
+        assert_eq!(init_resp["success"], true);
+        let init_event = read_message(&mut reader).await;
+        assert_eq!(init_event["type"], "event");
+        assert_eq!(init_event["event"], "initialized");
+
+        let set_breakpoints = Request {
+            seq: 2,
+            message_type: "request".to_string(),
+            command: "setBreakpoints".to_string(),
+            arguments: json!({
+                "source": { "path": "/tmp/Foo.java" },
+                "breakpoints": {},
+            }),
+        };
+        writer
+            .write_value(&serde_json::to_value(set_breakpoints).unwrap())
+            .await
+            .unwrap();
+        let resp = read_response(&mut reader, 2).await;
+        assert_eq!(resp["success"], false);
+        let message = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .expect("error response message");
+        assert!(
+            message.contains("setBreakpoints.breakpoints must be an array"),
+            "unexpected message: {message}"
+        );
+
+        let set_function_breakpoints = Request {
+            seq: 3,
+            message_type: "request".to_string(),
+            command: "setFunctionBreakpoints".to_string(),
+            arguments: json!({
+                "breakpoints": "nope",
+            }),
+        };
+        writer
+            .write_value(&serde_json::to_value(set_function_breakpoints).unwrap())
+            .await
+            .unwrap();
+        let resp = read_response(&mut reader, 3).await;
+        assert_eq!(resp["success"], false);
+        let message = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .expect("error response message");
+        assert!(
+            message.contains("setFunctionBreakpoints.breakpoints must be an array"),
+            "unexpected message: {message}"
+        );
+
+        let set_exception_breakpoints = Request {
+            seq: 4,
+            message_type: "request".to_string(),
+            command: "setExceptionBreakpoints".to_string(),
+            arguments: json!({
+                "filters": "nope",
+            }),
+        };
+        writer
+            .write_value(&serde_json::to_value(set_exception_breakpoints).unwrap())
+            .await
+            .unwrap();
+        let resp = read_response(&mut reader, 4).await;
+        assert_eq!(resp["success"], false);
+        let message = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .expect("error response message");
+        assert!(
+            message.contains("setExceptionBreakpoints.filters must be an array"),
+            "unexpected message: {message}"
+        );
+
+        let disconnect_req = Request {
+            seq: 5,
+            message_type: "request".to_string(),
+            command: "disconnect".to_string(),
+            arguments: json!({ "terminateDebuggee": false }),
+        };
+        writer
+            .write_value(&serde_json::to_value(disconnect_req).unwrap())
+            .await
+            .unwrap();
+        let disconnect_resp = read_response(&mut reader, 5).await;
+        assert_eq!(disconnect_resp["success"], true);
+        let terminated_event = read_message(&mut reader).await;
+        assert_eq!(terminated_event["type"], "event");
+        assert_eq!(terminated_event["event"], "terminated");
+
+        let server_res = timeout(Duration::from_secs(2), server_task)
+            .await
+            .expect("server did not shut down in time")
+            .expect("server task panicked");
+        server_res.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn send_event_unblocks_when_shutdown_cancelled_while_queue_full() {
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
+        let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
+        let (lo_tx, _lo_rx) = mpsc::channel::<Value>(1);
+
+        let tx = OutgoingSender::new(shutdown.clone(), shutdown_tx, hi_tx.clone(), lo_tx);
+
+        // Fill the high-priority queue so `send_event(..)` must wait for capacity.
+        hi_tx
+            .try_send(json!({ "type": "event", "seq": 0, "event": "preload" }))
+            .expect("failed to fill hi queue");
+
+        let tx_for_task = tx.clone();
+        let seq_for_task = Arc::clone(&seq);
+        let mut task = tokio::spawn(async move {
+            send_event(&tx_for_task, &seq_for_task, "initialized", None).await;
+        });
+
+        // The send should be blocked on capacity before shutdown.
+        assert!(
+            timeout(Duration::from_millis(50), &mut task).await.is_err(),
+            "send_event unexpectedly completed with a full queue"
+        );
+
+        // Once shutdown is signaled, the send becomes best-effort and must not hang.
+        shutdown.cancel();
+        timeout(Duration::from_secs(1), &mut task)
+            .await
+            .expect("send_event did not unblock after shutdown")
+            .expect("send_event task panicked");
+    }
+
+    #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
+        let tx = OutgoingSender::new(shutdown.clone(), shutdown_tx, hi_tx, lo_tx);
 
         spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
 
@@ -5947,9 +6744,9 @@ mod tests {
         let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
+        let tx = OutgoingSender::new(shutdown.clone(), shutdown_tx, hi_tx, lo_tx);
 
         spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
 
@@ -5989,9 +6786,9 @@ mod tests {
         let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
+        let tx = OutgoingSender::new(shutdown.clone(), shutdown_tx, hi_tx, lo_tx);
 
         spawn_output_task(reader, tx, Arc::clone(&seq), "stderr", shutdown.clone());
 

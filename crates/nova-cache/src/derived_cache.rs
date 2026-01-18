@@ -3,7 +3,7 @@ use crate::fingerprint::Fingerprint;
 use crate::path::normalize_inputs_map;
 use crate::util::{
     atomic_write, atomic_write_with, bincode_deserialize, bincode_options_limited,
-    bincode_serialize, now_millis, read_file_limited,
+    bincode_serialize, now_millis, read_file_limited, remove_file_best_effort,
 };
 use bincode::Options;
 use serde::de::DeserializeOwned;
@@ -140,29 +140,29 @@ impl DerivedArtifactCache {
         let persisted: PersistedDerivedValueOwned<T> = match bincode_deserialize(&bytes) {
             Ok(value) => value,
             Err(_) => {
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "derived_cache.decode");
                 return Ok(None);
             }
         };
 
         if persisted.schema_version != DERIVED_CACHE_SCHEMA_VERSION {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "derived_cache.schema_version");
             return Ok(None);
         }
         if persisted.query_schema_version != query_schema_version {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "derived_cache.query_schema_version");
             return Ok(None);
         }
         if persisted.nova_version != nova_core::NOVA_VERSION {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "derived_cache.nova_version");
             return Ok(None);
         }
         if persisted.query_name != query_name {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "derived_cache.query_name");
             return Ok(None);
         }
         if persisted.key_fingerprint != key_fingerprint {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "derived_cache.key_fingerprint");
             return Ok(None);
         }
 
@@ -338,12 +338,31 @@ impl DerivedArtifactCache {
         for entry in std::fs::read_dir(&self.root)? {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        root = %self.root.display(),
+                        error = %err,
+                        "failed to read derived cache query directory entry"
+                    );
+                    continue;
+                }
             };
             let path = entry.path();
             let meta = match std::fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
-                Err(_) => continue,
+                Err(err) => {
+                    // Cache entries can race with deletion; only log unexpected errors.
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to stat derived cache query directory"
+                        );
+                    }
+                    continue;
+                }
             };
             let file_type = meta.file_type();
             if !file_type.is_dir() || file_type.is_symlink() {
@@ -382,7 +401,13 @@ impl DerivedArtifactCache {
                         }
                         index
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %index_path.display(),
+                            error = %err,
+                            "failed to decode derived cache query index; rebuilding"
+                        );
                         dirty = true;
                         DerivedQueryIndex::empty()
                     }
@@ -392,7 +417,13 @@ impl DerivedArtifactCache {
                 dirty = true;
                 DerivedQueryIndex::empty()
             }
-            Err(_) => {
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %index_path.display(),
+                    error = %err,
+                    "failed to open derived cache query index; rebuilding"
+                );
                 dirty = true;
                 DerivedQueryIndex::empty()
             }
@@ -404,7 +435,15 @@ impl DerivedArtifactCache {
         for entry in std::fs::read_dir(query_dir)? {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        query_dir = %query_dir.display(),
+                        error = %err,
+                        "failed to read derived cache query directory entry while rebuilding index"
+                    );
+                    continue;
+                }
             };
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name == DERIVED_CACHE_INDEX_FILE_NAME {
@@ -424,7 +463,18 @@ impl DerivedArtifactCache {
             let path = entry.path();
             let meta = match std::fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
-                Err(_) => continue,
+                Err(err) => {
+                    // Cache entries can race with deletion; only log unexpected errors.
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to stat derived cache entry while rebuilding index"
+                        );
+                    }
+                    continue;
+                }
             };
             let file_type = meta.file_type();
             if !file_type.is_file() && !file_type.is_symlink() {
@@ -638,21 +688,57 @@ fn is_safe_entry_file_name(file_name: &str) -> bool {
 }
 
 fn read_saved_at_millis(path: &Path) -> Option<u64> {
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            // Cache misses are expected; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to stat derived cache entry"
+                );
+            }
+            return None;
+        }
+    };
     if meta.len() > crate::BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
         return None;
     }
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to open derived cache entry"
+                );
+            }
+            return None;
+        }
+    };
     let mut reader = std::io::BufReader::new(file);
     let (schema_version, _query_schema_version, nova_version, saved_at_millis): (
         u32,
         u32,
         String,
         u64,
-    ) = bincode_options_limited()
-        .deserialize_from(&mut reader)
-        .ok()?;
+    ) = match bincode_options_limited().deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to decode derived cache entry header"
+            );
+            return None;
+        }
+    };
 
     if schema_version != DERIVED_CACHE_SCHEMA_VERSION {
         return None;

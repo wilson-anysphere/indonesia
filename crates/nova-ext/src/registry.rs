@@ -310,26 +310,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
     }
 
     pub fn stats(&self) -> ExtensionRegistryStats {
-        self.stats
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        crate::poison::lock(&self.stats, "ExtensionRegistry.stats").clone()
     }
 
     fn ensure_stats_entry(&self, kind: &'static str, id: &str) {
-        let mut stats = self
-            .stats
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stats = crate::poison::lock(&self.stats, "ExtensionRegistry.ensure_stats_entry");
         let map = stats.map_mut(kind);
         map.entry(id.to_string()).or_default();
     }
 
     fn should_skip_provider(&self, kind: &'static str, id: &str) -> bool {
-        let mut stats = self
-            .stats
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stats = crate::poison::lock(&self.stats, "ExtensionRegistry.should_skip_provider");
         let map = stats.map_mut(kind);
         let entry = map.entry(id.to_string()).or_default();
 
@@ -355,10 +346,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         outcome: ProviderInvocationOutcome,
         elapsed: Duration,
     ) -> bool {
-        let mut stats = self
-            .stats
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stats = crate::poison::lock(&self.stats, "ExtensionRegistry.record_provider_call");
         let map = stats.map_mut(kind);
         let entry = if let Some(entry) = map.get_mut(id) {
             entry
@@ -457,7 +445,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         }
 
         let mut provider_error: Option<ProviderError> = None;
-        let (outcome, call_result) = match result {
+        let (mut outcome, mut call_result) = match result {
             Ok(Ok(items)) => (ProviderInvocationOutcome::Ok, Some(items)),
             Ok(Err(err)) => {
                 let outcome = match err.kind {
@@ -474,6 +462,14 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             Err(TaskError::DeadlineExceeded(_)) => (ProviderInvocationOutcome::Timeout, None),
             Err(TaskError::Panicked) => (ProviderInvocationOutcome::PanicTrap, None),
         };
+        if outcome == ProviderInvocationOutcome::Ok && call_result.is_none() {
+            outcome = ProviderInvocationOutcome::InvalidResponse;
+            provider_error = Some(ProviderError::new(
+                ProviderErrorKind::InvalidResponse,
+                "provider returned ok without a result",
+            ));
+            call_result = None;
+        }
 
         span.record("outcome", outcome.as_str());
         span.record("elapsed_ms", elapsed.as_millis() as u64);
@@ -526,9 +522,18 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         }
 
         match outcome {
-            ProviderInvocationOutcome::Ok => {
-                ProviderInvokeResult::Ok(call_result.unwrap_or_default())
-            }
+            ProviderInvocationOutcome::Ok => match call_result {
+                Some(items) => ProviderInvokeResult::Ok(items),
+                None => {
+                    tracing::error!(
+                        target = "nova.ext",
+                        kind,
+                        provider_id = id,
+                        "provider outcome was ok but result was missing; treating as failed"
+                    );
+                    ProviderInvokeResult::Failed
+                }
+            },
             ProviderInvocationOutcome::Cancelled => ProviderInvokeResult::Cancelled,
             _ => ProviderInvokeResult::Failed,
         }
@@ -985,7 +990,17 @@ mod tests {
 
         match std::env::var(ENV_KEY) {
             Ok(raw) => match raw.parse::<usize>() {
-                Ok(0) | Err(_) => default_size,
+                Ok(0) => default_size,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        key = ENV_KEY,
+                        value = raw,
+                        error = %err,
+                        "invalid env override; using default run_with_timeout pool size"
+                    );
+                    default_size
+                }
                 Ok(n) => n,
             },
             Err(_) => default_size,
@@ -1090,7 +1105,9 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "ok");
 
-        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        let recorded = metrics
+            .snapshot_for(METRICS_KEY_DIAGNOSTICS)
+            .expect("metrics snapshot for diagnostics");
         assert_eq!(recorded.request_count, 1);
         assert_eq!(recorded.timeout_count, 0);
         assert_eq!(recorded.panic_count, 0);
@@ -1161,7 +1178,9 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
 
-        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        let recorded = metrics
+            .snapshot_for(METRICS_KEY_DIAGNOSTICS)
+            .expect("metrics snapshot for diagnostics");
         assert_eq!(recorded.request_count, 2);
         assert_eq!(recorded.timeout_count, 1);
         assert_eq!(recorded.panic_count, 0);
@@ -1469,7 +1488,9 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
 
-        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        let recorded = metrics
+            .snapshot_for(METRICS_KEY_DIAGNOSTICS)
+            .expect("metrics snapshot for diagnostics");
         assert_eq!(recorded.request_count, 2);
         assert_eq!(recorded.timeout_count, 0);
         assert_eq!(recorded.panic_count, 1);
@@ -1551,7 +1572,9 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
 
-        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        let recorded = metrics
+            .snapshot_for(METRICS_KEY_DIAGNOSTICS)
+            .expect("metrics snapshot for diagnostics");
         assert_eq!(recorded.request_count, 2);
         assert_eq!(recorded.timeout_count, 0);
         assert_eq!(recorded.panic_count, 0);

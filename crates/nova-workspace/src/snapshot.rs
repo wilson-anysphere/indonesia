@@ -91,6 +91,7 @@ impl WorkspaceSnapshot {
             let salsa_file_ids = snap.all_file_ids();
             let salsa_file_ids: &[FileId] = salsa_file_ids.as_ref().as_slice();
             let mut salsa_idx = 0usize;
+            let mut logged_vfs_read_error = false;
 
             for file_id in &all_file_ids {
                 let vfs_path = vfs.path_for_id(*file_id);
@@ -105,12 +106,29 @@ impl WorkspaceSnapshot {
                     path_to_id.insert(path, *file_id);
                 }
 
-                let fallback_to_vfs = || {
-                    vfs_path
-                        .as_ref()
-                        .and_then(|path| vfs.read_to_string(path).ok())
-                        .map(Arc::new)
-                        .unwrap_or_else(|| empty.clone())
+                let mut fallback_to_vfs = || {
+                    let Some(path) = vfs_path.as_ref() else {
+                        return empty.clone();
+                    };
+
+                    let text = match vfs.read_to_string(path) {
+                        Ok(text) => Some(text),
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(err) => {
+                            if !logged_vfs_read_error {
+                                tracing::debug!(
+                                    target = "nova.workspace",
+                                    path = %path,
+                                    error = %err,
+                                    "failed to read file contents from VFS while building snapshot"
+                                );
+                                logged_vfs_read_error = true;
+                            }
+                            None
+                        }
+                    };
+
+                    text.map(Arc::new).unwrap_or_else(|| empty.clone())
                 };
 
                 while salsa_idx < salsa_file_ids.len() && salsa_file_ids[salsa_idx] < *file_id {
@@ -246,10 +264,20 @@ impl WorkspaceDbView {
         &self.snapshot
     }
 
-    fn lock_unpoison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    fn lock_unpoison<'a, T>(
+        mutex: &'a Mutex<T>,
+        context: &'static str,
+    ) -> std::sync::MutexGuard<'a, T> {
         match mutex.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.workspace",
+                    context,
+                    "mutex poisoned; recovering workspace db view cache state"
+                );
+                poisoned.into_inner()
+            }
         }
     }
 
@@ -262,7 +290,7 @@ impl WorkspaceDbView {
     }
 
     fn cached_file_content_ptr(&self, file_id: FileId) -> *const str {
-        let mut cache = Self::lock_unpoison(&self.file_contents);
+        let mut cache = Self::lock_unpoison(&self.file_contents, "workspace_db_view.file_contents");
         let entry = cache
             .entry(file_id)
             .or_insert_with(|| self.snapshot_file_content(file_id));
@@ -270,7 +298,7 @@ impl WorkspaceDbView {
     }
 
     fn cached_file_path_ptr(&self, file_id: FileId) -> Option<*const Path> {
-        let mut cache = Self::lock_unpoison(&self.file_paths);
+        let mut cache = Self::lock_unpoison(&self.file_paths, "workspace_db_view.file_paths");
         let entry = cache.entry(file_id).or_insert_with(|| {
             self.vfs
                 .path_for_id(file_id)
@@ -278,7 +306,7 @@ impl WorkspaceDbView {
                 .and_then(VfsPath::as_local_path)
                 .map(Path::to_path_buf)
         });
-        entry.as_ref().map(|p| p.as_path() as *const Path)
+        entry.as_ref().map(|p: &PathBuf| p.as_path() as *const Path)
     }
 }
 

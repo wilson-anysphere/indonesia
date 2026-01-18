@@ -43,9 +43,7 @@ pub fn discover_endpoints(sources: &[JavaSource]) -> Vec<Endpoint> {
 
 fn discover_endpoints_in_class(node: SyntaxNode, src: &JavaSource) -> Vec<Endpoint> {
     let modifiers = modifier_node(&node);
-    let class_annotations = modifiers
-        .map(|m| collect_annotations(m, &src.text))
-        .unwrap_or_default();
+    let class_annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, &src.text));
     let controller = class_annotations
         .iter()
         .find(|a| a.simple_name == "Controller");
@@ -62,8 +60,8 @@ fn discover_endpoints_in_class(node: SyntaxNode, src: &JavaSource) -> Vec<Endpoi
         .args
         .get("value")
         .or_else(|| controller.args.get("uri"))
-        .cloned()
-        .unwrap_or_default();
+        .map(String::as_str)
+        .unwrap_or("");
 
     let Some(body) = find_named_child(&node, SyntaxKind::ClassBody) else {
         return Vec::new();
@@ -76,7 +74,7 @@ fn discover_endpoints_in_class(node: SyntaxNode, src: &JavaSource) -> Vec<Endpoi
     {
         out.extend(discover_endpoints_in_method(
             &class_name,
-            &base_path,
+            base_path,
             child,
             src,
         ));
@@ -111,9 +109,9 @@ fn discover_endpoints_in_method(
             .args
             .get("value")
             .or_else(|| ann.args.get("uri"))
-            .cloned()
-            .unwrap_or_default();
-        let full_path = join_paths(base_path, &path);
+            .map(String::as_str)
+            .unwrap_or("");
+        let full_path = join_paths(base_path, path);
 
         out.push(Endpoint {
             method: http_method.to_string(),

@@ -115,7 +115,6 @@ struct QueuedBuild {
 struct RunningBuild {
     id: BazelBuildTaskId,
     request: BazelBuildRequest,
-    started_at: SystemTime,
     cancel: CancellationToken,
 }
 
@@ -160,11 +159,7 @@ impl BazelBuildOrchestrator {
     /// Like `nova-build`'s orchestrator, the queue is bounded to one: enqueueing a new request
     /// cancels the running build (if any) and replaces any queued work.
     pub fn enqueue(&self, request: BazelBuildRequest) -> BazelBuildTaskId {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let mut state = crate::poison::lock(&self.inner.state, "BazelBuildOrchestrator.enqueue");
         state.next_id = state.next_id.wrapping_add(1);
         let id = state.next_id;
 
@@ -182,11 +177,7 @@ impl BazelBuildOrchestrator {
     }
 
     pub fn cancel(&self) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let mut state = crate::poison::lock(&self.inner.state, "BazelBuildOrchestrator.cancel");
         if let Some(running) = state.running.as_ref() {
             running.cancel.cancel();
         }
@@ -195,11 +186,7 @@ impl BazelBuildOrchestrator {
     }
 
     pub fn reset(&self) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let mut state = crate::poison::lock(&self.inner.state, "BazelBuildOrchestrator.reset");
         if let Some(running) = state.running.as_ref() {
             running.cancel.cancel();
         }
@@ -209,11 +196,7 @@ impl BazelBuildOrchestrator {
     }
 
     pub fn status(&self) -> BazelBuildStatusSnapshot {
-        let state = self
-            .inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let state = crate::poison::lock(&self.inner.state, "BazelBuildOrchestrator.status");
         let (status, active_id, message) = if let Some(running) = state.running.as_ref() {
             (
                 BazelBuildTaskState::Running,
@@ -243,11 +226,7 @@ impl BazelBuildOrchestrator {
     }
 
     pub fn diagnostics(&self) -> BazelBuildDiagnosticsSnapshot {
-        let state = self
-            .inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let state = crate::poison::lock(&self.inner.state, "BazelBuildOrchestrator.diagnostics");
         let status = if state.running.is_some() {
             BazelBuildTaskState::Running
         } else if !state.queue.is_empty() {
@@ -264,8 +243,7 @@ impl BazelBuildOrchestrator {
                 last.request.targets.clone(),
                 last.outcome
                     .as_ref()
-                    .map(|o| o.diagnostics.clone())
-                    .unwrap_or_default(),
+                    .map_or_else(Vec::new, |o| o.diagnostics.clone()),
                 last.error.clone(),
             ),
             None => (None, Vec::new(), Vec::new(), None),
@@ -283,16 +261,10 @@ impl BazelBuildOrchestrator {
 
 fn worker_loop(inner: Arc<Inner>) {
     loop {
-        let (id, request) = {
-            let mut state = inner
-                .state
-                .lock()
-                .expect("bazel orchestrator lock poisoned");
+        let (id, request, started_at, cancel) = {
+            let mut state = crate::poison::lock(&inner.state, "bazel_worker_loop.wait_for_queue");
             while state.queue.is_empty() {
-                state = inner
-                    .wake
-                    .wait(state)
-                    .expect("bazel orchestrator lock poisoned");
+                state = crate::poison::wait(&inner.wake, state, "bazel_worker_loop.wait_for_queue");
             }
             let Some(queued) = state.queue.pop_front() else {
                 continue;
@@ -303,32 +275,16 @@ fn worker_loop(inner: Arc<Inner>) {
             state.running = Some(RunningBuild {
                 id: queued.id,
                 request: queued.request.clone(),
-                started_at,
                 cancel: cancel.clone(),
             });
 
-            (queued.id, queued.request)
+            (queued.id, queued.request, started_at, cancel)
         };
 
-        let (started_at, cancel) = {
-            let state = inner
-                .state
-                .lock()
-                .expect("bazel orchestrator lock poisoned");
-            let running = state
-                .running
-                .as_ref()
-                .expect("running build should be populated");
-            (running.started_at, running.cancel.clone())
-        };
-
-        let (state, outcome, error) = run_build(&inner, &request, cancel.clone());
+        let (state, outcome, error) = run_build(&inner, &request, cancel);
         let finished_at = SystemTime::now();
 
-        let mut shared = inner
-            .state
-            .lock()
-            .expect("bazel orchestrator lock poisoned");
+        let mut shared = crate::poison::lock(&inner.state, "bazel_worker_loop.finish_build");
         shared.running = None;
         shared.last = Some(CompletedBuild {
             id,
@@ -426,7 +382,7 @@ mod tests {
 
     impl RecordingExecutor {
         fn configs(&self) -> Vec<BazelBspConfig> {
-            self.seen.lock().unwrap().clone()
+            self.seen.lock().expect("seen mutex poisoned").clone()
         }
     }
 
@@ -438,7 +394,10 @@ mod tests {
             _targets: &[String],
             _cancellation: CancellationToken,
         ) -> Result<BspCompileOutcome> {
-            self.seen.lock().unwrap().push(config.clone());
+            self.seen
+                .lock()
+                .expect("seen mutex poisoned")
+                .push(config.clone());
             Ok(BspCompileOutcome {
                 status_code: 0,
                 diagnostics: Vec::new(),

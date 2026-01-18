@@ -3,6 +3,7 @@ use crate::fingerprint::Fingerprint;
 use crate::path::normalize_rel_path;
 use crate::util::{
     atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
+    remove_file_best_effort,
 };
 use crate::CacheLock;
 use nova_hir::token_item_tree::{TokenItemTree, TokenSymbolSummary};
@@ -146,33 +147,33 @@ impl AstArtifactCache {
         let persisted: PersistedAstArtifactsOwned = match bincode_deserialize(&bytes) {
             Ok(persisted) => persisted,
             Err(_) => {
-                let _ = std::fs::remove_file(&artifact_path);
+                remove_file_best_effort(&artifact_path, "ast_cache.decode");
                 return Ok(None);
             }
         };
 
         if persisted.schema_version != AST_ARTIFACT_SCHEMA_VERSION {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.schema_version");
             return Ok(None);
         }
         if persisted.syntax_schema_version != nova_syntax::SYNTAX_SCHEMA_VERSION {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.syntax_schema_version");
             return Ok(None);
         }
         if persisted.hir_schema_version != nova_hir::HIR_SCHEMA_VERSION {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.hir_schema_version");
             return Ok(None);
         }
         if persisted.nova_version != nova_core::NOVA_VERSION {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.nova_version");
             return Ok(None);
         }
         if persisted.file_path != file_path {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.file_path");
             return Ok(None);
         }
         if persisted.file_fingerprint != *fingerprint {
-            let _ = std::fs::remove_file(&artifact_path);
+            remove_file_best_effort(&artifact_path, "ast_cache.file_fingerprint");
             return Ok(None);
         }
 

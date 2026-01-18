@@ -200,7 +200,10 @@ mod tests {
         }
 
         fn find_references(&self, symbol: SymbolId) -> Vec<Reference> {
-            self.refs.get(&symbol).cloned().unwrap_or_default()
+            match self.refs.get(&symbol) {
+                Some(refs) => refs.clone(),
+                None => Vec::new(),
+            }
         }
     }
 

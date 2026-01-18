@@ -8,6 +8,7 @@ nova-index = { path = "../nova-index", optional = true }
 lsp-types = { version = "0.97", optional = true }
 nova-ide = { path = "../nova-ide", optional = true }
 tempfile.workspace = true
+tracing = { workspace = true }
 
 [features]
 default = ["fixtures"]

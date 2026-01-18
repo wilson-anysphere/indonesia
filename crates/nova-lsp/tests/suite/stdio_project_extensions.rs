@@ -512,12 +512,12 @@ dependencies {
             let group_id = d
                 .get("groupId")
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
+                .expect("dependency groupId")
                 .to_string();
             let artifact_id = d
                 .get("artifactId")
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
+                .expect("dependency artifactId")
                 .to_string();
             let version = d
                 .get("version")

@@ -145,11 +145,11 @@ mod classpath_tests {
             root: PathBuf::from("/workspace/a"),
             build_id: WorkspaceModuleBuildId::Maven {
                 module_path: ":a".to_string(),
-                gav: MavenGav {
+                gav: Some(MavenGav {
                     group_id: "com.example".to_string(),
                     artifact_id: "a".to_string(),
                     version: Some("1.0.0".to_string()),
-                },
+                }),
             },
             language_level: ModuleLanguageLevel {
                 level: JavaLanguageLevel::from_java_config(JavaConfig::default()),
@@ -177,11 +177,11 @@ mod classpath_tests {
             root: PathBuf::from("/workspace/b"),
             build_id: WorkspaceModuleBuildId::Maven {
                 module_path: ":b".to_string(),
-                gav: MavenGav {
+                gav: Some(MavenGav {
                     group_id: "com.example".to_string(),
                     artifact_id: "b".to_string(),
                     version: Some("1.0.0".to_string()),
-                },
+                }),
             },
             language_level: ModuleLanguageLevel {
                 level: JavaLanguageLevel::from_java_config(JavaConfig::default()),

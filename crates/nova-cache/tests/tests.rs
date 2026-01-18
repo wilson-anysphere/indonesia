@@ -13,9 +13,7 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
+    TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned")
 }
 
 fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>, nova_cache::CacheError> {

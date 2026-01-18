@@ -8,6 +8,7 @@ serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0.56"
 walkdir = "2.5.0"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+tracing = { workspace = true }
 
 nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }

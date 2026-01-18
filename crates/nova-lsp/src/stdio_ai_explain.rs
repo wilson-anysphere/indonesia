@@ -207,7 +207,10 @@ mod tests {
             .iter()
             .filter(|msg| msg.get("method").and_then(|m| m.as_str()) == Some("$/progress"))
             .filter_map(|msg| msg.get("params").cloned())
-            .filter_map(|params| serde_json::from_value::<ProgressParams>(params).ok())
+            .map(|params| {
+                serde_json::from_value::<ProgressParams>(params)
+                    .expect("expected $/progress params to parse")
+            })
             .filter_map(|params| match params.value {
                 ProgressParamsValue::WorkDone(event) => Some(event),
             })

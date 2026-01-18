@@ -1,12 +1,14 @@
 use crate::error::{CacheError, Result};
 use crate::fingerprint::Fingerprint;
+use crate::util::remove_file_best_effort;
 use crate::CacheLock;
 use crate::{CacheDir, CacheMetadata, ProjectSnapshot};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use tar::EntryType;
 
 use crate::store::store_for_url;
@@ -342,6 +344,7 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
     if !metadata.file_metadata_fingerprints.is_empty() {
         let mut mismatched = 0usize;
         let project_root = cache_dir.project_root();
+        let mut logged_fingerprint_error = false;
 
         for path in metadata.file_fingerprints.keys() {
             // Defensively reject unsafe paths (absolute / `..`) to avoid probing
@@ -352,7 +355,22 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
 
             let expected = metadata.file_metadata_fingerprints.get(path);
             let full_path = project_root.join(path);
-            let local = Fingerprint::from_file_metadata(&full_path).ok();
+            let local = match Fingerprint::from_file_metadata(&full_path) {
+                Ok(local) => Some(local),
+                Err(CacheError::Io(err)) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    if !logged_fingerprint_error {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %full_path.display(),
+                            error = %err,
+                            "failed to compute metadata fingerprint while validating cache package"
+                        );
+                        logged_fingerprint_error = true;
+                    }
+                    None
+                }
+            };
 
             match (expected, local) {
                 (Some(expected), Some(local)) if expected == &local => {}
@@ -419,10 +437,42 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
 }
 
 fn cache_package_verify_sample_size() -> usize {
-    std::env::var("NOVA_CACHE_PACKAGE_VERIFY_SAMPLE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0)
+    static SAMPLE_SIZE_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let raw = match std::env::var("NOVA_CACHE_PACKAGE_VERIFY_SAMPLE") {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return 0,
+        Err(err) => {
+            if SAMPLE_SIZE_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cache",
+                    error = ?err,
+                    "failed to read NOVA_CACHE_PACKAGE_VERIFY_SAMPLE (best effort)"
+                );
+            }
+            return 0;
+        }
+    };
+
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return 0;
+    }
+
+    match raw.parse::<usize>() {
+        Ok(value) => value,
+        Err(err) => {
+            if SAMPLE_SIZE_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cache",
+                    raw = %raw,
+                    error = %err,
+                    "invalid NOVA_CACHE_PACKAGE_VERIFY_SAMPLE (best effort)"
+                );
+            }
+            0
+        }
+    }
 }
 
 fn sample_files<'a>(
@@ -565,14 +615,14 @@ fn replace_file_atomically(src_file: &Path, dest_file: &Path) -> Result<()> {
     }
     let backup = sibling_with_suffix(dest_file, "old");
     if backup.exists() {
-        let _ = std::fs::remove_file(&backup);
+        remove_file_best_effort(&backup, "pack.replace_file_atomically.preexisting_backup");
     }
     if dest_file.exists() {
         std::fs::rename(dest_file, &backup)?;
     }
     std::fs::rename(src_file, dest_file)?;
     if backup.exists() {
-        let _ = std::fs::remove_file(&backup);
+        remove_file_best_effort(&backup, "pack.replace_file_atomically.cleanup_backup");
     }
     Ok(())
 }

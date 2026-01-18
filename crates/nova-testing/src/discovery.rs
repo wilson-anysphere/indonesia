@@ -45,7 +45,19 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
     }
 
     let requested_root = PathBuf::from(&req.project_root);
-    let requested_root = requested_root.canonicalize().unwrap_or(requested_root);
+    let requested_root = match requested_root.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => requested_root,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.testing",
+                path = %requested_root.display(),
+                error = %err,
+                "failed to canonicalize requested project root for test discovery"
+            );
+            requested_root
+        }
+    };
 
     // Use nova-project to find source roots. This keeps discovery scoped to test sources
     // in Maven/Gradle projects and provides a reasonable fallback for simple projects.
@@ -306,9 +318,7 @@ fn discover_test_methods(
         let modifiers = child
             .child_by_field_name("modifiers")
             .or_else(|| find_named_child(child, "modifiers"));
-        let annotations = modifiers
-            .map(|m| collect_annotations(m, source))
-            .unwrap_or_default();
+        let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
         let Some(framework) = classify_test_annotations(imports, &annotations) else {
             continue;
         };
@@ -684,10 +694,23 @@ fn range_for_node(line_index: &LineIndex, source: &str, node: Node<'_>) -> Range
     }
 }
 
+#[track_caller]
 fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.testing",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
 }
 
 #[cfg(test)]

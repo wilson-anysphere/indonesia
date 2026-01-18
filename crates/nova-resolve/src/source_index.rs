@@ -31,7 +31,10 @@ impl SourceTypeIndex {
 
     pub fn extend_from_def_map(&mut self, def_map: &DefMap) {
         let file = def_map.file();
-        let pkg = def_map.package().map(|p| p.to_dotted()).unwrap_or_default();
+        let pkg = def_map
+            .package()
+            .map(|p| p.to_dotted())
+            .unwrap_or_else(String::new);
         self.packages.insert(pkg.clone());
 
         let mut top_levels: Vec<(&Name, ItemId)> = def_map.top_level_types().collect();

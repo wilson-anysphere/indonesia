@@ -28,14 +28,6 @@ impl JpaAnalyzer {
         }
     }
 
-    fn cache_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<ProjectId, Arc<CachedProjectAnalysis>>> {
-        self.cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     fn is_java_file(db: &dyn Database, file: FileId, file_text: Option<&str>) -> bool {
         if let Some(path) = db.file_path(file) {
             return path
@@ -102,7 +94,10 @@ impl JpaAnalyzer {
                 match std::fs::metadata(path) {
                     Ok(meta) => {
                         meta.len().hash(&mut hasher);
-                        hash_mtime(&mut hasher, meta.modified().ok());
+                        hash_mtime(
+                            &mut hasher,
+                            modified_best_effort(&meta, path, "fingerprint_project_files"),
+                        );
                     }
                     Err(_) => {
                         0u64.hash(&mut hasher);
@@ -131,7 +126,7 @@ impl JpaAnalyzer {
         let fingerprint = Self::fingerprint_project_files(db, &files);
 
         {
-            let cache = self.cache_lock();
+            let cache = crate::poison::lock(&self.cache, "JpaAnalyzer.project_analysis/read_cache");
             if let Some(hit) = cache.get(&project) {
                 if hit.fingerprint == fingerprint {
                     return Some(hit.clone());
@@ -167,13 +162,34 @@ impl JpaAnalyzer {
             analysis: Arc::new(analysis),
         });
 
-        self.cache_lock().insert(project, entry.clone());
+        crate::poison::lock(&self.cache, "JpaAnalyzer.project_analysis/write_cache")
+            .insert(project, entry.clone());
 
         Some(entry)
     }
 
     fn file_local_analysis(text: &str) -> AnalysisResult {
         analyze_java_sources(&[text])
+    }
+}
+
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &std::path::Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.jpa",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
     }
 }
 
@@ -184,9 +200,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.framework.jpa",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }

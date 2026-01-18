@@ -36,8 +36,17 @@ struct MethodMetrics {
 
 impl MethodMetrics {
     fn new() -> Self {
+        static HISTOGRAM_BOUNDS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let latency_us = Histogram::<u64>::new_with_bounds(1, MAX_LATENCY_US, LATENCY_SIGFIG)
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|err| {
+                if HISTOGRAM_BOUNDS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.metrics",
+                        error = %err,
+                        "failed to construct bounded latency histogram; falling back to unbounded histogram"
+                    );
+                }
                 // Safety net: hdrhistogram only errors for invalid bounds/precision. Fall back to the
                 // default constructor which should always succeed.
                 Histogram::<u64>::new(LATENCY_SIGFIG).expect("histogram")
@@ -61,6 +70,8 @@ impl MetricsRegistry {
 
     /// Record a completed request/notification for `method`, including total handling latency.
     pub fn record_request(&self, method: &str, duration: Duration) {
+        static HISTOGRAM_RECORD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let micros = duration.as_micros().min(u128::from(MAX_LATENCY_US)) as u64;
         let micros = micros.max(1);
 
@@ -70,7 +81,17 @@ impl MetricsRegistry {
             .entry(method.to_owned())
             .or_insert_with(MethodMetrics::new);
         metrics.request_count = metrics.request_count.saturating_add(1);
-        let _ = metrics.latency_us.record(micros);
+        if let Err(err) = metrics.latency_us.record(micros) {
+            if HISTOGRAM_RECORD_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.metrics",
+                    method,
+                    micros,
+                    error = %err,
+                    "failed to record latency sample"
+                );
+            }
+        }
     }
 
     /// Record a request/notification that completed with an error response.
@@ -111,6 +132,9 @@ impl MetricsRegistry {
 
     /// Create a snapshot of all recorded metrics suitable for debug export.
     pub fn snapshot(&self) -> MetricsSnapshot {
+        static TOTAL_HISTOGRAM_BOUNDS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static TOTAL_HISTOGRAM_ADD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let inner = self.inner.lock();
 
         let mut methods = BTreeMap::new();
@@ -120,7 +144,16 @@ impl MetricsRegistry {
         let mut total_panics = 0u64;
 
         let mut total_hist = Histogram::<u64>::new_with_bounds(1, MAX_LATENCY_US, LATENCY_SIGFIG)
-            .unwrap_or_else(|_| Histogram::<u64>::new(LATENCY_SIGFIG).expect("histogram"));
+            .unwrap_or_else(|err| {
+                if TOTAL_HISTOGRAM_BOUNDS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.metrics",
+                        error = %err,
+                        "failed to construct bounded total latency histogram; falling back to unbounded histogram"
+                    );
+                }
+                Histogram::<u64>::new(LATENCY_SIGFIG).expect("histogram")
+            });
 
         for (method, metrics) in inner.methods.iter() {
             total_requests = total_requests.saturating_add(metrics.request_count);
@@ -128,7 +161,16 @@ impl MetricsRegistry {
             total_timeouts = total_timeouts.saturating_add(metrics.timeout_count);
             total_panics = total_panics.saturating_add(metrics.panic_count);
 
-            let _ = total_hist.add(&metrics.latency_us);
+            if let Err(err) = total_hist.add(&metrics.latency_us) {
+                if TOTAL_HISTOGRAM_ADD_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.metrics",
+                        method,
+                        error = %err,
+                        "failed to merge per-method latency histogram into totals"
+                    );
+                }
+            }
 
             methods.insert(
                 method.clone(),

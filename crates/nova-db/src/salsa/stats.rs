@@ -1,9 +1,29 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+#[track_caller]
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.db",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 /// Database functionality needed by query implementations to record timing stats.
 pub trait HasQueryStats {
@@ -128,7 +148,7 @@ pub(super) struct QueryStatsCollector {
 
 impl QueryStatsCollector {
     pub(super) fn record_time(&self, query_name: &str, duration: Duration) {
-        let mut guard = self.inner.lock().expect("query stats mutex poisoned");
+        let mut guard = lock_mutex(&self.inner, "query_stats.record_time");
         let entry = if let Some(entry) = guard.get_mut(query_name) {
             entry
         } else {
@@ -176,7 +196,7 @@ impl QueryStatsCollector {
     }
 
     pub(super) fn snapshot(&self) -> QueryStats {
-        let guard = self.inner.lock().expect("query stats mutex poisoned");
+        let guard = lock_mutex(&self.inner, "query_stats.snapshot");
         QueryStats {
             by_query: guard.clone(),
             cancel_checks: self.cancel_checks.load(Ordering::Relaxed),
@@ -184,15 +204,12 @@ impl QueryStatsCollector {
     }
 
     pub(super) fn clear(&self) {
-        self.inner
-            .lock()
-            .expect("query stats mutex poisoned")
-            .clear();
+        lock_mutex(&self.inner, "query_stats.clear").clear();
         self.cancel_checks.store(0, Ordering::Relaxed);
     }
 
     fn record_event(&self, query_name: &str, f: impl FnOnce(&mut QueryStat)) {
-        let mut guard = self.inner.lock().expect("query stats mutex poisoned");
+        let mut guard = lock_mutex(&self.inner, "query_stats.record_event");
         let entry = if let Some(entry) = guard.get_mut(query_name) {
             entry
         } else {

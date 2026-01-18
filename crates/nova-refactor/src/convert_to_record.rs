@@ -1,4 +1,5 @@
 use nova_index::TextRange;
+use std::sync::OnceLock;
 use thiserror::Error;
 
 use crate::edit::{FileId, TextEdit, WorkspaceEdit};
@@ -128,6 +129,8 @@ pub fn convert_to_record(
 }
 
 fn maybe_nova_format(text: &str) -> String {
+    static NOVA_FORMAT_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
     let prefix_end = text
         .char_indices()
         .find(|(_, ch)| !ch.is_whitespace())
@@ -146,7 +149,17 @@ fn maybe_nova_format(text: &str) -> String {
 
     match formatted {
         Ok(formatted) if !formatted.is_empty() => format!("{prefix}{formatted}"),
-        _ => text.to_string(),
+        Err(panic) => {
+            if NOVA_FORMAT_PANIC_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.refactor",
+                    panic = %nova_core::panic_payload_to_str(panic.as_ref()),
+                    "nova_format panicked while formatting refactor output (best effort)"
+                );
+            }
+            text.to_string()
+        }
+        Ok(_) => text.to_string(),
     }
 }
 

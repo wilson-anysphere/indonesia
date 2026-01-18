@@ -22,9 +22,9 @@ async fn diagnostics_event_on_open_and_change() {
         if let WorkspaceEvent::DiagnosticsUpdated {
             file: got,
             diagnostics,
-        } = ev
+        } = ev.as_ref()
         {
-            if got == file {
+            if *got == file {
                 assert!(!diagnostics.is_empty());
                 break;
             }
@@ -47,9 +47,9 @@ async fn diagnostics_event_on_open_and_change() {
         if let WorkspaceEvent::DiagnosticsUpdated {
             file: got,
             diagnostics,
-        } = ev
+        } = ev.as_ref()
         {
-            if got == file {
+            if *got == file {
                 assert!(diagnostics.is_empty());
                 break;
             }
@@ -83,7 +83,7 @@ async fn indexing_emits_progress_and_ready() {
             .expect("event")
             .expect("channel open");
 
-        match ev {
+        match ev.as_ref() {
             WorkspaceEvent::IndexProgress(progress) => {
                 saw_progress = true;
                 assert!(progress.current <= progress.total);

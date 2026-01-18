@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 /// A stable SHA-256 fingerprint stored as a lowercase hex string.
@@ -61,14 +62,38 @@ impl Fingerprint {
     /// This avoids hashing full file contents and is intended for quick
     /// warm-start cache validation.
     pub fn from_file_metadata(path: impl AsRef<Path>) -> Result<Self, CacheError> {
+        let path = path.as_ref();
         let meta = std::fs::metadata(path)?;
         let len = meta.len();
-        let modified_nanos = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let modified_nanos: u128 = match meta.modified() {
+            Ok(time) => match time.duration_since(UNIX_EPOCH) {
+                Ok(dur) => dur.as_nanos(),
+                Err(err) => {
+                    static REPORTED_MTIME_BEFORE_EPOCH: OnceLock<()> = OnceLock::new();
+                    if REPORTED_MTIME_BEFORE_EPOCH.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %path.display(),
+                            error = ?err,
+                            "file mtime is before UNIX_EPOCH; using 0 for metadata fingerprint"
+                        );
+                    }
+                    0
+                }
+            },
+            Err(err) => {
+                static REPORTED_MTIME_ERROR: OnceLock<()> = OnceLock::new();
+                if REPORTED_MTIME_ERROR.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read file mtime; using 0 for metadata fingerprint"
+                    );
+                }
+                0
+            }
+        };
 
         let mut bytes = Vec::with_capacity(8 + 16);
         bytes.extend_from_slice(&len.to_le_bytes());
@@ -242,7 +267,18 @@ fn git_origin_url(project_root: &Path) -> Option<String> {
         let dot_git = repo_root.join(".git");
         let metadata = match std::fs::metadata(&dot_git) {
             Ok(metadata) => metadata,
-            Err(_) => continue,
+            Err(err) => {
+                // Most ancestors won't be git repos; only log unexpected filesystem errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        dot_git = %dot_git.display(),
+                        error = %err,
+                        "failed to stat .git while resolving git origin"
+                    );
+                }
+                continue;
+            }
         };
 
         let mut config_paths = Vec::new();
@@ -262,9 +298,19 @@ fn git_origin_url(project_root: &Path) -> Option<String> {
         }
 
         for config_path in config_paths {
-            let config = match std::fs::read_to_string(config_path) {
+            let config = match std::fs::read_to_string(&config_path) {
                 Ok(config) => config,
-                Err(_) => continue,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            config_path = %config_path.display(),
+                            error = %err,
+                            "failed to read git config while resolving origin"
+                        );
+                    }
+                    continue;
+                }
             };
             if let Some(origin) = parse_git_origin_from_config(&config) {
                 return Some(origin);
@@ -308,7 +354,21 @@ fn parse_git_origin_from_config(config: &str) -> Option<String> {
 }
 
 fn resolve_gitdir(dot_git_file: &Path, repo_root: &Path) -> Option<PathBuf> {
-    let contents = std::fs::read_to_string(dot_git_file).ok()?;
+    let contents = match std::fs::read_to_string(dot_git_file) {
+        Ok(contents) => contents,
+        Err(err) => {
+            // Workspaces may not be git repos; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    dot_git_file = %dot_git_file.display(),
+                    error = %err,
+                    "failed to read .git file while resolving gitdir"
+                );
+            }
+            return None;
+        }
+    };
     for raw_line in contents.lines() {
         let line = raw_line.trim();
         if line.is_empty() {
@@ -333,7 +393,20 @@ fn resolve_gitdir(dot_git_file: &Path, repo_root: &Path) -> Option<PathBuf> {
 
 fn resolve_commondir(gitdir: &Path) -> Option<PathBuf> {
     let commondir_path = gitdir.join("commondir");
-    let contents = std::fs::read_to_string(commondir_path).ok()?;
+    let contents = match std::fs::read_to_string(&commondir_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    commondir_path = %commondir_path.display(),
+                    error = %err,
+                    "failed to read git commondir marker"
+                );
+            }
+            return None;
+        }
+    };
     let line = contents.lines().next()?.trim();
     if line.is_empty() {
         return None;

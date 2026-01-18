@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use nova_classfile::{parse_module_info_class, ClassFile};
@@ -20,6 +20,26 @@ use crate::jmod;
 use crate::persist;
 use crate::stub::{binary_to_internal, internal_to_binary};
 use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+
+#[track_caller]
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.jdk",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 /// Optional indexing counters used by tests and the CLI.
 #[derive(Debug, Default)]
@@ -218,8 +238,8 @@ impl JdkSymbolIndex {
     /// called.
     pub fn binary_class_names(&self) -> Result<&[String], JdkIndexError> {
         match self {
-            Self::Jmods(index) => Ok(index.binary_names_sorted()?.as_slice()),
-            Self::CtSym(index) => Ok(index.binary_names_sorted()?.as_slice()),
+            Self::Jmods(index) => Ok(index.binary_names_sorted()?),
+            Self::CtSym(index) => Ok(index.binary_names_sorted()?),
         }
     }
 
@@ -279,8 +299,19 @@ impl JmodSymbolIndex {
         allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let cache_key_path =
-            std::fs::canonicalize(install.root()).unwrap_or_else(|_| install.root().to_path_buf());
+        let cache_key_path = match std::fs::canonicalize(install.root()) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => install.root().to_path_buf(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    path = %install.root().display(),
+                    error = %err,
+                    "failed to canonicalize JDK root for cache key"
+                );
+                install.root().to_path_buf()
+            }
+        };
 
         if let Some(jmods_dir) = install.jmods_dir() {
             return Self::from_jpms_with_cache(
@@ -307,13 +338,28 @@ impl JmodSymbolIndex {
             return Err(JdkIndexError::MissingJmodsDir { dir: jmods_dir });
         }
 
-        let jmods_dir = std::fs::canonicalize(&jmods_dir).unwrap_or(jmods_dir);
+        let jmods_dir = match std::fs::canonicalize(&jmods_dir) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => jmods_dir,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    path = %jmods_dir.display(),
+                    error = %err,
+                    "failed to canonicalize jmods directory"
+                );
+                jmods_dir
+            }
+        };
 
-        let mut module_paths: Vec<PathBuf> = std::fs::read_dir(&jmods_dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext == "jmod"))
-            .collect();
+        let entries = std::fs::read_dir(&jmods_dir)?;
+        let mut module_paths: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "jmod") {
+                module_paths.push(path);
+            }
+        }
 
         // Put `java.base.jmod` first since it's where most core types live.
         module_paths.sort_by_key(|p| {
@@ -449,7 +495,19 @@ impl JmodSymbolIndex {
 
         let container_paths: Vec<PathBuf> = container_paths
             .into_iter()
-            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .map(|path| match std::fs::canonicalize(&path) {
+                Ok(path) => path,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => path,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.jdk",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to canonicalize JDK container path; using fallback"
+                    );
+                    path
+                }
+            })
             .collect();
 
         let fingerprints = if cache_dir.is_some() {
@@ -517,7 +575,10 @@ impl JmodSymbolIndex {
             record_cache_hit(stats);
 
             {
-                let mut map = this.class_to_container.lock().expect("mutex poisoned");
+                let mut map = lock_mutex(
+                    &this.class_to_container,
+                    "jdk_index.load_cache.class_to_container",
+                );
                 *map = cached
                     .class_to_container
                     .into_iter()
@@ -541,16 +602,16 @@ impl JmodSymbolIndex {
             record_module_scan(stats);
         }
 
-        let packages_sorted = this.packages_sorted()?.clone();
-        let binary_names_sorted = this.binary_names_sorted()?.clone();
+        let packages_sorted = this.packages_sorted()?.to_vec();
+        let binary_names_sorted = this.binary_names_sorted()?.to_vec();
 
-        let class_to_container: HashMap<String, u32> = this
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .iter()
-            .map(|(k, v)| (k.clone(), *v as u32))
-            .collect();
+        let class_to_container: HashMap<String, u32> = lock_mutex(
+            &this.class_to_container,
+            "jdk_index.store_cache.class_to_container",
+        )
+        .iter()
+        .map(|(k, v)| (k.clone(), *v as u32))
+        .collect();
 
         if allow_write
             && persist::store_symbol_index(
@@ -596,21 +657,16 @@ impl JmodSymbolIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
-            .contains(&internal)
-        {
+        if lock_mutex(&self.missing, "jdk_index.module_of_type.missing").contains(&internal) {
             return Ok(None);
         }
 
-        if let Some(container_idx) = self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .get(&internal)
-            .copied()
+        if let Some(container_idx) = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.module_of_type.class_to_container",
+        )
+        .get(&internal)
+        .copied()
         {
             return Ok(self.containers[container_idx].kind.module_name().cloned());
         }
@@ -620,12 +676,12 @@ impl JmodSymbolIndex {
         let mut found_container = None;
         for container_idx in 0..self.containers.len() {
             self.ensure_container_indexed(container_idx)?;
-            let container = self
-                .class_to_container
-                .lock()
-                .expect("mutex poisoned")
-                .get(&internal)
-                .copied();
+            let container = lock_mutex(
+                &self.class_to_container,
+                "jdk_index.module_of_type.class_to_container",
+            )
+            .get(&internal)
+            .copied();
             if container.is_some() {
                 found_container = container;
                 break;
@@ -636,10 +692,7 @@ impl JmodSymbolIndex {
             return Ok(self.containers[container_idx].kind.module_name().cloned());
         }
 
-        self.missing
-            .lock()
-            .expect("mutex poisoned")
-            .insert(internal);
+        lock_mutex(&self.missing, "jdk_index.module_of_type.missing").insert(internal);
         Ok(None)
     }
 
@@ -655,10 +708,7 @@ impl JmodSymbolIndex {
             format!("java/lang/{name}")
         };
 
-        if let Some(stub) = self
-            .by_internal
-            .lock()
-            .expect("mutex poisoned")
+        if let Some(stub) = lock_mutex(&self.by_internal, "jdk_index.lookup_type.by_internal")
             .get(&internal)
             .cloned()
         {
@@ -669,21 +719,16 @@ impl JmodSymbolIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
-            .contains(&internal)
-        {
+        if lock_mutex(&self.missing, "jdk_index.lookup_type.missing").contains(&internal) {
             return Ok(None);
         }
 
-        if let Some(container_idx) = self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .get(&internal)
-            .copied()
+        if let Some(container_idx) = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.lookup_type.class_to_container",
+        )
+        .get(&internal)
+        .copied()
         {
             if let Some(stub) = self.load_stub_from_container(container_idx, &internal)? {
                 return Ok(Some(stub));
@@ -695,12 +740,12 @@ impl JmodSymbolIndex {
         let mut found_container = None;
         for container_idx in 0..self.containers.len() {
             self.ensure_container_indexed(container_idx)?;
-            let container = self
-                .class_to_container
-                .lock()
-                .expect("mutex poisoned")
-                .get(&internal)
-                .copied();
+            let container = lock_mutex(
+                &self.class_to_container,
+                "jdk_index.lookup_type.class_to_container",
+            )
+            .get(&internal)
+            .copied();
 
             if container.is_some() {
                 found_container = container;
@@ -714,10 +759,7 @@ impl JmodSymbolIndex {
             }
         }
 
-        self.missing
-            .lock()
-            .expect("mutex poisoned")
-            .insert(internal);
+        lock_mutex(&self.missing, "jdk_index.lookup_type.missing").insert(internal);
         Ok(None)
     }
 
@@ -731,21 +773,16 @@ impl JmodSymbolIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
-            .contains(internal_name)
-        {
+        if lock_mutex(&self.missing, "jdk_index.read_class_bytes.missing").contains(internal_name) {
             return Ok(None);
         }
 
-        if let Some(container_idx) = self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .get(internal_name)
-            .copied()
+        if let Some(container_idx) = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.read_class_bytes.class_to_container",
+        )
+        .get(internal_name)
+        .copied()
         {
             if let Some(bytes) =
                 self.load_class_bytes_from_container(container_idx, internal_name)?
@@ -759,12 +796,12 @@ impl JmodSymbolIndex {
         let mut found_container = None;
         for container_idx in 0..self.containers.len() {
             self.ensure_container_indexed(container_idx)?;
-            let container = self
-                .class_to_container
-                .lock()
-                .expect("mutex poisoned")
-                .get(internal_name)
-                .copied();
+            let container = lock_mutex(
+                &self.class_to_container,
+                "jdk_index.read_class_bytes.class_to_container",
+            )
+            .get(internal_name)
+            .copied();
 
             if container.is_some() {
                 found_container = container;
@@ -780,9 +817,7 @@ impl JmodSymbolIndex {
             }
         }
 
-        self.missing
-            .lock()
-            .expect("mutex poisoned")
+        lock_mutex(&self.missing, "jdk_index.read_class_bytes.missing")
             .insert(internal_name.to_owned());
         Ok(None)
     }
@@ -812,16 +847,16 @@ impl JmodSymbolIndex {
         };
         self.ensure_container_indexed(java_lang_container_idx)?;
 
-        let internal_names: Vec<String> = self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .keys()
-            .filter(|internal| {
-                internal.starts_with("java/lang/") && is_direct_java_lang_member(internal)
-            })
-            .cloned()
-            .collect();
+        let internal_names: Vec<String> = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.java_lang_symbols.class_to_container",
+        )
+        .keys()
+        .filter(|internal| {
+            internal.starts_with("java/lang/") && is_direct_java_lang_member(internal)
+        })
+        .cloned()
+        .collect();
 
         let mut out = Vec::new();
         for internal in internal_names {
@@ -839,11 +874,11 @@ impl JmodSymbolIndex {
 
     /// All packages present in the JDK module set.
     pub fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
-        Ok(self.packages_sorted()?.clone())
+        Ok(self.packages_sorted()?.to_vec())
     }
 
     pub(crate) fn binary_package_names(&self) -> Result<&[String], JdkIndexError> {
-        Ok(self.packages_sorted()?.as_slice())
+        Ok(self.packages_sorted()?)
     }
 
     pub fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
@@ -879,13 +914,9 @@ impl JmodSymbolIndex {
     }
 
     fn insert_stub(&self, stub: Arc<JdkClassStub>) {
-        self.by_internal
-            .lock()
-            .expect("mutex poisoned")
+        lock_mutex(&self.by_internal, "jdk_index.insert_stub.by_internal")
             .insert(stub.internal_name.clone(), stub.clone());
-        self.by_binary
-            .lock()
-            .expect("mutex poisoned")
+        lock_mutex(&self.by_binary, "jdk_index.insert_stub.by_binary")
             .insert(stub.binary_name.clone(), stub);
     }
 
@@ -931,7 +962,10 @@ impl JmodSymbolIndex {
             JdkContainerKind::ClassDir => scan_class_dir(&container.path)?,
         };
 
-        let mut map = self.class_to_container.lock().expect("mutex poisoned");
+        let mut map = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.ensure_container_indexed.class_to_container",
+        );
         for internal in class_names {
             map.entry(internal).or_insert(container_idx);
         }
@@ -954,10 +988,11 @@ impl JmodSymbolIndex {
             JdkContainerKind::ClassDir => read_class_bytes_from_dir(&container.path, internal)?,
         }) else {
             // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
-            self.class_to_container
-                .lock()
-                .expect("mutex poisoned")
-                .remove(internal);
+            lock_mutex(
+                &self.class_to_container,
+                "jdk_index.load_stub_from_container.class_to_container",
+            )
+            .remove(internal);
             return Ok(None);
         };
 
@@ -987,19 +1022,20 @@ impl JmodSymbolIndex {
             JdkContainerKind::ClassDir => read_class_bytes_from_dir(&container.path, internal)?,
         }) else {
             // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
-            self.class_to_container
-                .lock()
-                .expect("mutex poisoned")
-                .remove(internal);
+            lock_mutex(
+                &self.class_to_container,
+                "jdk_index.load_class_bytes_from_container.class_to_container",
+            )
+            .remove(internal);
             return Ok(None);
         };
 
         Ok(Some(bytes))
     }
 
-    fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+    fn packages_sorted(&self) -> Result<&[String], JdkIndexError> {
         if let Some(pkgs) = self.packages.get() {
-            return Ok(pkgs);
+            return Ok(pkgs.as_slice());
         }
 
         let mut set = BTreeSet::new();
@@ -1007,11 +1043,11 @@ impl JmodSymbolIndex {
             self.ensure_container_indexed(container_idx)?;
         }
 
-        for internal in self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .keys()
+        for internal in lock_mutex(
+            &self.class_to_container,
+            "jdk_index.packages_sorted.class_to_container",
+        )
+        .keys()
         {
             if let Some((pkg, _)) = internal.rsplit_once('/') {
                 set.insert(internal_to_binary(pkg));
@@ -1023,25 +1059,26 @@ impl JmodSymbolIndex {
         Ok(self
             .packages
             .get()
-            .expect("packages OnceLock should be initialized"))
+            .expect("packages OnceLock should be initialized")
+            .as_slice())
     }
 
-    fn binary_names_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+    fn binary_names_sorted(&self) -> Result<&[String], JdkIndexError> {
         if let Some(names) = self.binary_names_sorted.get() {
-            return Ok(names);
+            return Ok(names.as_slice());
         }
 
         for container_idx in 0..self.containers.len() {
             self.ensure_container_indexed(container_idx)?;
         }
 
-        let mut names: Vec<String> = self
-            .class_to_container
-            .lock()
-            .expect("mutex poisoned")
-            .keys()
-            .map(|internal| internal_to_binary(internal))
-            .collect();
+        let mut names: Vec<String> = lock_mutex(
+            &self.class_to_container,
+            "jdk_index.binary_names_sorted.class_to_container",
+        )
+        .keys()
+        .map(|internal| internal_to_binary(internal))
+        .collect();
         names.sort();
         names.dedup();
 
@@ -1049,7 +1086,8 @@ impl JmodSymbolIndex {
         Ok(self
             .binary_names_sorted
             .get()
-            .expect("binary_names_sorted OnceLock should be initialized"))
+            .expect("binary_names_sorted OnceLock should be initialized")
+            .as_slice())
     }
 
     /// Approximate heap memory usage of this index in bytes.
@@ -1110,10 +1148,20 @@ impl JmodSymbolIndex {
             bytes
         }
 
-        fn lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+        fn lock_best_effort<'a, T>(
+            mutex: &'a Mutex<T>,
+            context: &'static str,
+        ) -> Option<std::sync::MutexGuard<'a, T>> {
             match mutex.lock() {
                 Ok(guard) => Some(guard),
-                Err(poisoned) => Some(poisoned.into_inner()),
+                Err(poisoned) => {
+                    tracing::error!(
+                        target = "nova.jdk",
+                        context,
+                        "mutex poisoned; recovering inner value"
+                    );
+                    Some(poisoned.into_inner())
+                }
             }
         }
 
@@ -1136,7 +1184,9 @@ impl JmodSymbolIndex {
             }
         };
 
-        if let Some(map) = lock_best_effort(&self.by_internal) {
+        if let Some(map) =
+            lock_best_effort(&self.by_internal, "jdk_index.estimated_bytes.by_internal")
+        {
             bytes = bytes
                 .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, v) in map.iter() {
@@ -1145,7 +1195,8 @@ impl JmodSymbolIndex {
             }
         }
 
-        if let Some(map) = lock_best_effort(&self.by_binary) {
+        if let Some(map) = lock_best_effort(&self.by_binary, "jdk_index.estimated_bytes.by_binary")
+        {
             bytes = bytes
                 .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, v) in map.iter() {
@@ -1154,14 +1205,17 @@ impl JmodSymbolIndex {
             }
         }
 
-        if let Some(map) = lock_best_effort(&self.class_to_container) {
+        if let Some(map) = lock_best_effort(
+            &self.class_to_container,
+            "jdk_index.estimated_bytes.class_to_container",
+        ) {
             bytes = bytes.saturating_add((map.capacity() * size_of::<(String, usize)>()) as u64);
             for (k, _) in map.iter() {
                 add_string(&mut bytes, k);
             }
         }
 
-        if let Some(set) = lock_best_effort(&self.missing) {
+        if let Some(set) = lock_best_effort(&self.missing, "jdk_index.estimated_bytes.missing") {
             bytes = bytes.saturating_add((set.capacity() * size_of::<String>()) as u64);
             for entry in set.iter() {
                 add_string(&mut bytes, entry);
@@ -1197,23 +1251,39 @@ impl JmodSymbolIndex {
         use std::mem;
         use std::sync::TryLockError;
 
-        fn try_lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+        fn try_lock_best_effort<'a, T>(
+            mutex: &'a Mutex<T>,
+            context: &'static str,
+        ) -> Option<std::sync::MutexGuard<'a, T>> {
             match mutex.try_lock() {
                 Ok(guard) => Some(guard),
-                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    tracing::error!(
+                        target = "nova.jdk",
+                        context,
+                        "mutex poisoned; recovering inner value"
+                    );
+                    Some(poisoned.into_inner())
+                }
                 Err(TryLockError::WouldBlock) => None,
             }
         }
 
-        if let Some(mut map) = try_lock_best_effort(&self.by_internal) {
+        if let Some(mut map) =
+            try_lock_best_effort(&self.by_internal, "jdk_index.evict_caches.by_internal")
+        {
             let _ = mem::take(&mut *map);
         }
 
-        if let Some(mut map) = try_lock_best_effort(&self.by_binary) {
+        if let Some(mut map) =
+            try_lock_best_effort(&self.by_binary, "jdk_index.evict_caches.by_binary")
+        {
             let _ = mem::take(&mut *map);
         }
 
-        if let Some(mut missing) = try_lock_best_effort(&self.missing) {
+        if let Some(mut missing) =
+            try_lock_best_effort(&self.missing, "jdk_index.evict_caches.missing")
+        {
             let _ = mem::take(&mut *missing);
         }
 

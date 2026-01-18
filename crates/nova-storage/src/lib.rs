@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn corrupted_payload_is_hash_mismatch() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
         let _hash_guard = EnvVarGuard::set("NOVA_STORAGE_VALIDATE_HASH", "1");
         // Ensure size-related env vars from the environment don't make this test flaky.
         let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn oversized_decompressed_len_is_error() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
         let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
         let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
 
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn oversized_payload_len_is_error() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
         let _payload_limit_guard = EnvVarGuard::set("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES", "1024");
         let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
 
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn oversized_uncompressed_len_is_error_for_uncompressed_artifact() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
         let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
         let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
 

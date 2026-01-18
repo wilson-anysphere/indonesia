@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -313,9 +314,41 @@ fn validate_quick_links(
 
             if is_repo_root_path(&span) {
                 let exists = if span.contains('*') {
-                    glob_exists(repo_root, &span)
+                    match glob_exists(repo_root, &span) {
+                        Ok(exists) => exists,
+                        Err(err) => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "quick-link-glob-scan-failed",
+                                    format!(
+                                        "failed to validate quick-link glob `{}`: {}",
+                                        span, err
+                                    ),
+                                )
+                                .with_file(doc_path.display().to_string())
+                                .with_line(line_no),
+                            );
+                            true
+                        }
+                    }
                 } else {
-                    repo_root.join(&span).exists()
+                    match path_exists(repo_root, &span) {
+                        Ok(exists) => exists,
+                        Err(err) => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "quick-link-path-stat-failed",
+                                    format!(
+                                        "failed to validate quick-link path `{}`: {}",
+                                        span, err
+                                    ),
+                                )
+                                .with_file(doc_path.display().to_string())
+                                .with_line(line_no),
+                            );
+                            true
+                        }
+                    }
                 };
 
                 if !exists {
@@ -433,10 +466,24 @@ fn workspace_crate_name_from_path(span: &str) -> Option<&str> {
     Some(krate)
 }
 
-fn glob_exists(repo_root: &Path, pattern: &str) -> bool {
+fn path_exists(repo_root: &Path, rel: &str) -> Result<bool, io::Error> {
+    let path = repo_root.join(rel);
+    match std::fs::metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+fn glob_exists(repo_root: &Path, pattern: &str) -> Result<bool, io::Error> {
     // Handle the common "dir/*" glob by validating that the directory exists.
     if let Some(prefix) = pattern.strip_suffix("/*") {
-        return repo_root.join(prefix).is_dir();
+        let path = repo_root.join(prefix);
+        return match std::fs::metadata(&path) {
+            Ok(meta) => Ok(meta.is_dir()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        };
     }
 
     let (parent, file_pattern) = match pattern.rsplit_once('/') {
@@ -445,19 +492,37 @@ fn glob_exists(repo_root: &Path, pattern: &str) -> bool {
     };
 
     let parent_dir = repo_root.join(parent);
-    let Ok(entries) = std::fs::read_dir(parent_dir) else {
-        return false;
+    let entries = match std::fs::read_dir(&parent_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
     };
 
-    for entry in entries.flatten() {
+    let mut first_error: Option<io::Error> = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+                continue;
+            }
+        };
+
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if glob_component_matches(&name, file_pattern) {
-            return true;
+            return Ok(true);
         }
     }
 
-    false
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    Ok(false)
 }
 
 fn glob_component_matches(name: &str, pattern: &str) -> bool {

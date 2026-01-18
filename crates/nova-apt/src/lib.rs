@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
@@ -29,8 +30,17 @@ use tokio_util::sync::CancellationToken;
 /// [`ProjectConfig`] is available, prefer using its generated [`SourceRoot`]s
 /// (origin = `Generated`).
 pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
-    let Ok(status) = discover_generated_sources_status(project_root) else {
-        return Vec::new();
+    let status = match discover_generated_sources_status(project_root) {
+        Ok(status) => status,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.apt",
+                project_root = %project_root.display(),
+                error = %err,
+                "failed to discover generated sources status"
+            );
+            return Vec::new();
+        }
     };
 
     let mut roots: Vec<PathBuf> = status
@@ -55,11 +65,31 @@ pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
 pub fn discover_generated_sources_status(
     project_root: &Path,
 ) -> io::Result<GeneratedSourcesStatus> {
-    let workspace_root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let (config, config_path) = nova_config::load_for_workspace(&workspace_root)
-        .unwrap_or_else(|_| (NovaConfig::default(), None));
+    let workspace_root = match project_root.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => project_root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.apt",
+                project_root = %project_root.display(),
+                error = %err,
+                "failed to canonicalize workspace root"
+            );
+            project_root.to_path_buf()
+        }
+    };
+    let (config, config_path) = match nova_config::load_for_workspace(&workspace_root) {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.apt",
+                workspace_root = %workspace_root.display(),
+                error = %err,
+                "failed to load nova config; using defaults"
+            );
+            (NovaConfig::default(), None)
+        }
+    };
 
     let options = LoadOptions {
         nova_config: config.clone(),
@@ -69,7 +99,13 @@ pub fn discover_generated_sources_status(
 
     let project = match load_project_with_options(&workspace_root, &options) {
         Ok(project) => project,
-        Err(_) => {
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.apt",
+                workspace_root = %workspace_root.display(),
+                error = %err,
+                "project discovery failed; falling back to simple project config"
+            );
             // If project discovery fails, fall back to a minimal "simple" project
             // rooted at `workspace_root` so we can still surface conventional generated paths.
             //
@@ -403,20 +439,17 @@ impl AptMtimeCache {
         })();
         if let Err(err) = write_result {
             drop(file);
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "mtime_cache.save.write_failed");
             return Err(err);
         }
         drop(file);
 
         if let Err(err) = rename_overwrite(&tmp_path, &self.cache_path) {
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "mtime_cache.save.rename_failed");
             return Err(err);
         }
 
-        #[cfg(unix)]
-        {
-            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+        sync_dir_best_effort(parent, "mtime_cache.save.sync_parent");
 
         self.dirty = false;
         Ok(())
@@ -846,20 +879,17 @@ impl AptRunCache {
         })();
         if let Err(err) = write_result {
             drop(file);
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "apt_run_cache.save.write_failed");
             return Err(err);
         }
         drop(file);
 
         if let Err(err) = rename_overwrite(&tmp_path, &self.cache_path) {
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "apt_run_cache.save.rename_failed");
             return Err(err);
         }
 
-        #[cfg(unix)]
-        {
-            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+        sync_dir_best_effort(parent, "apt_run_cache.save.sync_parent");
 
         self.dirty = false;
         Ok(())
@@ -918,9 +948,76 @@ fn rename_overwrite(src: &Path, dest: &Path) -> io::Result<()> {
     }
 }
 
+#[track_caller]
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::debug!(
+                target = "nova.apt",
+                path = %path.display(),
+                reason,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "failed to remove file (best effort)"
+            );
+        }
+    }
+}
+
+#[track_caller]
+fn sync_dir_best_effort(dir: &Path, reason: &'static str) {
+    #[cfg(unix)]
+    static SYNC_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    #[cfg(unix)]
+    {
+        match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if SYNC_DIR_ERROR_LOGGED.set(()).is_ok() {
+                    let loc = std::panic::Location::caller();
+                    tracing::debug!(
+                        target = "nova.apt",
+                        dir = %dir.display(),
+                        reason,
+                        file = loc.file(),
+                        line = loc.line(),
+                        column = loc.column(),
+                        error = %err,
+                        "failed to sync directory (best effort)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (dir, reason);
+}
+
 fn time_to_epoch_nanos(time: Option<SystemTime>) -> Option<u64> {
+    static EPOCH_DURATION_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let time = time?;
-    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    let duration = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(err) => {
+            if EPOCH_DURATION_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.apt",
+                    error = ?err,
+                    "failed to convert SystemTime to epoch nanos (time before UNIX_EPOCH?)"
+                );
+            }
+            return None;
+        }
+    };
     Some(duration.as_nanos().min(u64::MAX as u128) as u64)
 }
 
@@ -1186,20 +1283,17 @@ impl AptManager {
         })();
         if let Err(err) = write_result {
             drop(file);
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "generated_roots_snapshot.save.write_failed");
             return Err(err);
         }
         drop(file);
 
         if let Err(err) = rename_overwrite(&tmp_path, &snapshot_path) {
-            let _ = std::fs::remove_file(&tmp_path);
+            remove_file_best_effort(&tmp_path, "generated_roots_snapshot.save.rename_failed");
             return Err(err);
         }
 
-        #[cfg(unix)]
-        {
-            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+        sync_dir_best_effort(parent, "generated_roots_snapshot.save.sync_parent");
 
         Ok(())
     }
@@ -1210,6 +1304,10 @@ impl AptManager {
         modules: &[&Module],
         freshness: &mut FreshnessCalculator<'_>,
     ) -> String {
+        static APT_RUN_CACHE_TARGET_SERDE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static APT_RUN_CACHE_CONFIG_SERDE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static APT_RUN_CACHE_BUILD_FINGERPRINT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let mut hasher = Sha256::new();
 
         hasher.update(b"nova-apt-run-cache");
@@ -1228,17 +1326,33 @@ impl AptManager {
         hasher.update(build_system.as_bytes());
         hasher.update([0]);
 
-        if let Ok(target_json) = serde_json::to_vec(target) {
-            hasher.update(&target_json);
-        } else {
-            hasher.update(b"<target-serde-error>");
+        match serde_json::to_vec(target) {
+            Ok(target_json) => hasher.update(&target_json),
+            Err(err) => {
+                if APT_RUN_CACHE_TARGET_SERDE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.apt",
+                        error = %err,
+                        "failed to serialize APT run target for cache key; using sentinel bytes"
+                    );
+                }
+                hasher.update(b"<target-serde-error>");
+            }
         }
         hasher.update([0]);
 
-        if let Ok(config_json) = serde_json::to_vec(&self.config.generated_sources) {
-            hasher.update(&config_json);
-        } else {
-            hasher.update(b"<config-serde-error>");
+        match serde_json::to_vec(&self.config.generated_sources) {
+            Ok(config_json) => hasher.update(&config_json),
+            Err(err) => {
+                if APT_RUN_CACHE_CONFIG_SERDE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.apt",
+                        error = %err,
+                        "failed to serialize generated sources config for cache key; using sentinel bytes"
+                    );
+                }
+                hasher.update(b"<config-serde-error>");
+            }
         }
         hasher.update([0]);
 
@@ -1251,7 +1365,18 @@ impl AptManager {
                     )?)
                 })
                 .map(|fp| fp.digest)
-                .unwrap_or_else(|_| "<maven-fingerprint-error>".to_string()),
+                .unwrap_or_else(|err| {
+                    if APT_RUN_CACHE_BUILD_FINGERPRINT_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.apt",
+                            workspace_root = %self.project.workspace_root.display(),
+                            build_system = "maven",
+                            error = %err,
+                            "failed to compute build files fingerprint for APT run cache key; using sentinel"
+                        );
+                    }
+                    "<maven-fingerprint-error>".to_string()
+                }),
             BuildSystem::Gradle => collect_gradle_build_files(&self.project.workspace_root)
                 .and_then(|files| {
                     Ok(BuildFileFingerprint::from_files(
@@ -1260,7 +1385,18 @@ impl AptManager {
                     )?)
                 })
                 .map(|fp| fp.digest)
-                .unwrap_or_else(|_| "<gradle-fingerprint-error>".to_string()),
+                .unwrap_or_else(|err| {
+                    if APT_RUN_CACHE_BUILD_FINGERPRINT_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.apt",
+                            workspace_root = %self.project.workspace_root.display(),
+                            build_system = "gradle",
+                            error = %err,
+                            "failed to compute build files fingerprint for APT run cache key; using sentinel"
+                        );
+                    }
+                    "<gradle-fingerprint-error>".to_string()
+                }),
             _ => "<no-build-fingerprint>".to_string(),
         };
         hasher.update(build_files_fingerprint.as_bytes());
@@ -1398,8 +1534,37 @@ impl AptManager {
             });
         }
 
-        let mut run_cache = AptRunCache::load(&self.project.workspace_root).ok();
-        let mut mtime_cache = AptMtimeCache::load(&self.project.workspace_root).ok();
+        static APT_RUN_CACHE_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static APT_MTIME_CACHE_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let mut run_cache = match AptRunCache::load(&self.project.workspace_root) {
+            Ok(cache) => Some(cache),
+            Err(err) => {
+                if APT_RUN_CACHE_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.apt",
+                        workspace_root = %self.project.workspace_root.display(),
+                        error = %err,
+                        "failed to load apt run cache (best effort)"
+                    );
+                }
+                None
+            }
+        };
+        let mut mtime_cache = match AptMtimeCache::load(&self.project.workspace_root) {
+            Ok(cache) => Some(cache),
+            Err(err) => {
+                if APT_MTIME_CACHE_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.apt",
+                        workspace_root = %self.project.workspace_root.display(),
+                        error = %err,
+                        "failed to load apt mtime cache (best effort)"
+                    );
+                }
+                None
+            }
+        };
 
         let modules = match self.resolve_modules(&target, gradle_projects.as_ref()) {
             Ok(modules) => modules,
@@ -1762,13 +1927,28 @@ impl AptManager {
             return None;
         }
 
+        static WORKSPACE_MODEL_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let options = LoadOptions {
             nova_config: self.config.clone(),
             ..Default::default()
         };
 
-        let model =
-            load_workspace_model_with_options(&self.project.workspace_root, &options).ok()?;
+        let model = match load_workspace_model_with_options(&self.project.workspace_root, &options)
+        {
+            Ok(model) => model,
+            Err(err) => {
+                if WORKSPACE_MODEL_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.apt",
+                        workspace_root = %self.project.workspace_root.display(),
+                        error = ?err,
+                        "failed to load workspace model for Gradle project path mapping"
+                    );
+                }
+                return None;
+            }
+        };
         if model.build_system != BuildSystem::Gradle {
             return None;
         }
@@ -2661,7 +2841,7 @@ class C {}
             result
                 .build_metadata_error
                 .as_deref()
-                .unwrap_or_default()
+                .expect("expected build_metadata_error to be set")
                 .contains("boom"),
             "expected build_metadata_error to include the runner failure: {result:?}"
         );

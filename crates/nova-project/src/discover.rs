@@ -1,5 +1,5 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::{borrow::Cow, fs};
 
 use nova_config::NovaConfig;
 
@@ -319,13 +319,32 @@ fn path_relative_to_workspace_or_modules<'a>(
     // back to canonicalizing the nearest existing ancestor and appending the remainder, mirroring
     // the approach used in Bazel path resolution.
     if path.is_absolute() {
-        let canon = fs::canonicalize(path).ok().or_else(|| {
+        let canon = canonicalize_best_effort_opt(
+            path,
+            "path_relative_to_workspace_or_modules.path",
+        )
+        .or_else(|| {
             let mut ancestor = path;
             while !ancestor.exists() {
                 ancestor = ancestor.parent()?;
             }
-            let ancestor_canon = fs::canonicalize(ancestor).ok()?;
-            let remainder = path.strip_prefix(ancestor).ok()?;
+            let ancestor_canon = canonicalize_best_effort_opt(
+                ancestor,
+                "path_relative_to_workspace_or_modules.ancestor",
+            )?;
+            let remainder = match path.strip_prefix(ancestor) {
+                Ok(remainder) => remainder,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %path.display(),
+                        ancestor = %ancestor.display(),
+                        error = ?err,
+                        "failed to strip existing ancestor prefix while normalizing changed path"
+                    );
+                    return None;
+                }
+            };
             Some(ancestor_canon.join(remainder))
         });
 
@@ -525,11 +544,30 @@ fn maven_workspace_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn pom_has_modules(pom_path: &Path) -> bool {
-    let Ok(contents) = std::fs::read_to_string(pom_path) else {
-        return false;
+    let contents = match std::fs::read_to_string(pom_path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                path = %pom_path.display(),
+                error = %err,
+                "failed to read pom.xml while checking for modules"
+            );
+            return false;
+        }
     };
-    let Ok(doc) = roxmltree::Document::parse(&contents) else {
-        return false;
+    let doc = match roxmltree::Document::parse(&contents) {
+        Ok(doc) => doc,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                path = %pom_path.display(),
+                error = %err,
+                "failed to parse pom.xml while checking for modules"
+            );
+            return false;
+        }
     };
 
     doc.root()
@@ -599,11 +637,34 @@ fn has_gradle_build(dir: &Path) -> bool {
     dir.join("build.gradle").is_file() || dir.join("build.gradle.kts").is_file()
 }
 
+fn canonicalize_best_effort_opt(path: &Path, context: &'static str) -> Option<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            // Callers canonicalize paths derived from disk layouts; races and deletions are
+            // expected. Only log unexpected filesystem failures.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    path = %path.display(),
+                    context,
+                    error = %err,
+                    "failed to canonicalize path"
+                );
+            }
+            None
+        }
+    }
+}
+
+fn canonicalize_or_self(path: &Path, context: &'static str) -> PathBuf {
+    canonicalize_best_effort_opt(path, context).unwrap_or_else(|| path.to_path_buf())
+}
+
 fn is_included_build_root(settings_root: &Path) -> bool {
     // `load_project*` starts from a canonical path, but keep this best-effort and fall back to the
     // raw path when canonicalization fails (e.g. broken symlinks).
-    let canonical_root =
-        std::fs::canonicalize(settings_root).unwrap_or_else(|_| settings_root.to_path_buf());
+    let canonical_root = canonicalize_or_self(settings_root, "is_included_build_root.root");
 
     let mut ancestor = settings_root.parent();
     while let Some(dir) = ancestor {
@@ -617,18 +678,32 @@ fn is_included_build_root(settings_root: &Path) -> bool {
 }
 
 fn gradle_settings_includes_build(workspace_root: &Path, build_root: &Path) -> bool {
+    let mut logged_read_error = false;
     for settings_name in ["settings.gradle.kts", "settings.gradle"] {
         let settings_path = workspace_root.join(settings_name);
         if !settings_path.is_file() {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&settings_path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&settings_path) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_read_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %settings_path.display(),
+                        error = %err,
+                        "failed to read Gradle settings while checking for includeBuild"
+                    );
+                    logged_read_error = true;
+                }
+                continue;
+            }
         };
 
         for dir_rel in gradle::parse_gradle_settings_included_builds(&contents) {
             let candidate = workspace_root.join(dir_rel);
-            let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            let candidate = canonicalize_or_self(&candidate, "gradle_settings_includes_build");
             if candidate == build_root {
                 return true;
             }

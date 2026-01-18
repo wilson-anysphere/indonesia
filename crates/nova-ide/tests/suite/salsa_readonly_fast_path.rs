@@ -36,7 +36,10 @@ impl LegacyDatabase for TestDb {
 }
 
 fn stat(stats: &nova_db::QueryStats, name: &str) -> QueryStat {
-    stats.by_query.get(name).copied().unwrap_or_default()
+    *stats
+        .by_query
+        .get(name)
+        .unwrap_or_else(|| panic!("missing query stats entry for `{name}`"))
 }
 
 #[test]

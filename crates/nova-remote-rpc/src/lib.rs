@@ -13,7 +13,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use bytes::Bytes;
 use nova_remote_proto::v3::{
@@ -26,6 +26,66 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 pub type RequestId = u64;
+
+#[track_caller]
+fn lock_std_mutex<'a, T>(mutex: &'a StdMutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.remote_rpc",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
+
+#[track_caller]
+fn read_rwlock<'a, T>(lock: &'a RwLock<T>, context: &'static str) -> RwLockReadGuard<'a, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.remote_rpc",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "rwlock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
+
+#[track_caller]
+fn write_rwlock<'a, T>(lock: &'a RwLock<T>, context: &'static str) -> RwLockWriteGuard<'a, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.remote_rpc",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "rwlock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 /// Result of a router-side handshake admission hook.
 #[derive(Debug, Clone)]
@@ -618,7 +678,7 @@ impl RpcConnection {
         Fut: Future<Output = Result<Response, ProtoRpcError>> + Send + 'static,
     {
         let handler: RequestHandler = Arc::new(move |ctx, req| Box::pin(handler(ctx, req)));
-        *self.inner.request_handler.write().unwrap() = Some(handler);
+        *write_rwlock(&self.inner.request_handler, "set_request_handler") = Some(handler);
         self.inner.request_handler_notify.notify_waiters();
     }
 
@@ -629,7 +689,8 @@ impl RpcConnection {
     {
         let handler: NotificationHandler = Arc::new(move |n| Box::pin(handler(n)));
         let pending = {
-            let mut state = self.inner.notification_state.lock().unwrap();
+            let mut state =
+                lock_std_mutex(&self.inner.notification_state, "set_notification_handler");
             state.handler = Some(handler.clone());
             std::mem::take(&mut state.pending)
         };
@@ -652,7 +713,7 @@ impl RpcConnection {
     where
         H: Fn(RequestId) + Send + Sync + 'static,
     {
-        *self.inner.cancel_handler.write().unwrap() = Some(Arc::new(handler));
+        *write_rwlock(&self.inner.cancel_handler, "set_cancel_handler") = Some(Arc::new(handler));
     }
 
     pub async fn start_call(&self, request: Request) -> Result<PendingCall, RpcError> {
@@ -1062,7 +1123,16 @@ async fn write_loop<W: AsyncWrite + Unpin + Send + 'static>(
         }
     }
 
-    let _ = w.shutdown().await;
+    static WRITER_SHUTDOWN_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if let Err(err) = w.shutdown().await {
+        if WRITER_SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.remote_rpc",
+                error = %err,
+                "failed to shutdown RPC writer (best effort)"
+            );
+        }
+    }
 }
 
 async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
@@ -1319,14 +1389,18 @@ async fn handle_payload(
                 // Wait briefly for the handler to be installed instead of immediately returning an
                 // InvalidRequest error.
                 let handler: Option<RequestHandler> = loop {
-                    if let Some(handler) = inner_clone.request_handler.read().unwrap().clone() {
+                    if let Some(handler) =
+                        read_rwlock(&inner_clone.request_handler, "request_handler_wait").clone()
+                    {
                         break Some(handler);
                     }
 
                     let notified = inner_clone.request_handler_notify.notified();
 
                     // Re-check after registering the waiter to avoid missing a fast notify.
-                    if let Some(handler) = inner_clone.request_handler.read().unwrap().clone() {
+                    if let Some(handler) =
+                        read_rwlock(&inner_clone.request_handler, "request_handler_wait").clone()
+                    {
                         break Some(handler);
                     }
 
@@ -1370,7 +1444,7 @@ async fn handle_payload(
             }
 
             let handler = {
-                let mut state = inner.notification_state.lock().unwrap();
+                let mut state = lock_std_mutex(&inner.notification_state, "handle_notification");
                 if let Some(handler) = state.handler.clone() {
                     handler
                 } else {
@@ -1406,7 +1480,7 @@ async fn handle_payload(
                     let _ = tx.send(Err(RpcError::Canceled));
                 }
 
-                let handler = inner.cancel_handler.read().unwrap().clone();
+                let handler = read_rwlock(&inner.cancel_handler, "cancel_handler").clone();
                 if let Some(handler) = handler {
                     handler(request_id);
                 }
@@ -1787,7 +1861,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
 
         // A regression test for the length-prefixed framing: `read_wire_frame` must reject
         // lengths larger than `max_frame_len` *before* allocating the buffer.
@@ -1826,7 +1900,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_large_len_prefix_eof_does_not_allocate_full_len() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1868,7 +1942,7 @@ mod tests {
 
     #[test]
     fn read_wire_frame_large_len_prefix_blocks_without_allocating_full_len() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

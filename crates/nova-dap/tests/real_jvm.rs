@@ -33,7 +33,7 @@ fn harness_is_single_root_test_file() {
         if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
             root_rs_files.push(
                 path.file_name()
-                    .unwrap_or_default()
+                    .expect("test file path missing file name")
                     .to_string_lossy()
                     .into_owned(),
             );

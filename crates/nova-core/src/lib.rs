@@ -4,6 +4,7 @@ pub mod debug_config;
 pub mod edit;
 pub mod id;
 pub mod name;
+pub mod panic_util;
 pub mod path;
 pub mod text;
 
@@ -54,6 +55,7 @@ pub use debug_config::{AttachConfig, LaunchConfig};
 pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, WorkspaceEdit};
 pub use id::*;
 pub use name::{InternedName, Name, NameInterner, SymbolName};
+pub use panic_util::{panic_payload_to_str, panic_payload_to_string, NON_STRING_PANIC_PAYLOAD};
 pub use path::{file_uri_to_path, path_to_file_uri, AbsPathBuf, PathToUriError, UriToPathError};
 pub use text::{LineCol, LineIndex, Position, Range, TextRange, TextSize};
 

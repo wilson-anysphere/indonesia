@@ -14,18 +14,21 @@ fn tests_root_contains_only_tests_rs_harness() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let tests_dir = manifest_dir.join("tests");
 
-    let mut root_rs_files: Vec<String> = std::fs::read_dir(&tests_dir)
-        .expect("read nova-ide tests/ directory")
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                Some(path.file_name()?.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut root_rs_files: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&tests_dir).expect("read nova-ide tests/ directory") {
+        let entry = entry.expect("read nova-ide tests/ directory entry");
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        root_rs_files.push(name.to_string_lossy().into_owned());
+    }
     root_rs_files.sort();
 
     assert_eq!(
@@ -47,23 +50,25 @@ fn suite_mod_is_in_sync_with_suite_directory() {
     let suite_mod_source =
         std::fs::read_to_string(&suite_mod_rs).expect("read nova-ide tests/suite/mod.rs");
 
-    let suite_files: BTreeSet<String> = std::fs::read_dir(&suite_dir)
-        .expect("read nova-ide tests/suite directory")
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                let stem = path.file_stem()?.to_string_lossy().into_owned();
-                if stem == "mod" {
-                    None
-                } else {
-                    Some(stem)
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut suite_files: BTreeSet<String> = BTreeSet::new();
+    for entry in std::fs::read_dir(&suite_dir).expect("read nova-ide tests/suite directory") {
+        let entry = entry.expect("read nova-ide tests/suite directory entry");
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(stem) = path.file_stem() else {
+            continue;
+        };
+        let stem = stem.to_string_lossy().into_owned();
+        if stem == "mod" {
+            continue;
+        }
+        suite_files.insert(stem);
+    }
 
     let mod_decls: BTreeSet<String> = {
         let re = regex::Regex::new(r"(?m)^\s*(?:#\[[^\]]*\]\s*)*mod\s+([A-Za-z0-9_]+)\s*;")

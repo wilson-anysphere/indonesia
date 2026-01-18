@@ -55,7 +55,8 @@ pub(crate) fn load_maven_project(
 
     // Workspace-level Java config: take the maximum across modules so we don't
     // under-report language features used anywhere in the workspace.
-    let mut workspace_java = root_effective.java.unwrap_or_default();
+    let root_java = root_effective.java.unwrap_or_else(JavaConfig::default);
+    let mut workspace_java = root_java;
 
     for module in &discovered_modules {
         let module_root = &module.root;
@@ -67,9 +68,7 @@ pub(crate) fn load_maven_project(
         }
 
         let effective = module.effective.as_ref();
-        let module_java = effective
-            .java
-            .unwrap_or(root_effective.java.unwrap_or_default());
+        let module_java = effective.java.unwrap_or(root_java);
 
         if module_java.source > workspace_java.source {
             workspace_java.source = module_java.source;
@@ -282,7 +281,8 @@ pub(crate) fn load_maven_workspace_model(
 
     // Workspace-level Java config: take the maximum across modules so we don't
     // under-report language features used anywhere in the workspace.
-    let mut workspace_java = root_effective.java.unwrap_or_default();
+    let root_java = root_effective.java.unwrap_or_else(JavaConfig::default);
+    let mut workspace_java = root_java;
 
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
@@ -293,9 +293,7 @@ pub(crate) fn load_maven_workspace_model(
 
         let effective = module.effective.as_ref();
 
-        let module_java = effective
-            .java
-            .unwrap_or(root_effective.java.unwrap_or_default());
+        let module_java = effective.java.unwrap_or(root_java);
 
         workspace_java.source = workspace_java.source.max(module_java.source);
         workspace_java.target = workspace_java.target.max(module_java.target);
@@ -315,11 +313,18 @@ pub(crate) fn load_maven_workspace_model(
                 .to_string()
         };
 
-        let group_id = effective.group_id.clone().unwrap_or_default();
-        let artifact_id = effective
-            .artifact_id
-            .clone()
-            .unwrap_or_else(|| module_display_name.clone());
+        let gav = match (effective.group_id.clone(), effective.artifact_id.clone()) {
+            (Some(group_id), Some(artifact_id))
+                if !group_id.trim().is_empty() && !artifact_id.trim().is_empty() =>
+            {
+                Some(MavenGav {
+                    group_id,
+                    artifact_id,
+                    version: effective.version.clone(),
+                })
+            }
+            _ => None,
+        };
 
         let module_path = if module_root == root {
             ".".to_string()
@@ -331,8 +336,8 @@ pub(crate) fn load_maven_workspace_model(
                 .to_string()
         };
 
-        let id = if !group_id.is_empty() && !artifact_id.is_empty() {
-            format!("maven:{group_id}:{artifact_id}")
+        let id = if let Some(gav) = &gav {
+            format!("maven:{}:{}", gav.group_id, gav.artifact_id)
         } else if module_root == root {
             "maven:root".to_string()
         } else {
@@ -353,14 +358,7 @@ pub(crate) fn load_maven_workspace_model(
             provenance: java_provenance,
         };
 
-        let build_id = WorkspaceModuleBuildId::Maven {
-            module_path,
-            gav: MavenGav {
-                group_id,
-                artifact_id,
-                version: effective.version.clone(),
-            },
-        };
+        let build_id = WorkspaceModuleBuildId::Maven { module_path, gav };
 
         let mut source_roots = Vec::new();
         let main_standard = push_source_root(
@@ -483,8 +481,8 @@ pub(crate) fn load_maven_workspace_model(
 
             let exclusions = workspace_module_exclusions
                 .get(&key)
-                .cloned()
-                .unwrap_or_default();
+                .expect("workspace module exclusion set must be present after insertion")
+                .clone();
 
             classpath.push(ClasspathEntry {
                 kind: ClasspathEntryKind::Directory,
@@ -736,7 +734,20 @@ fn discover_modules_recursive(
 }
 
 fn canonicalize_or_fallback(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize path; using fallback"
+                );
+            }
+            path.to_path_buf()
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -971,7 +982,7 @@ impl EffectivePom {
             .or_else(|| raw.parent.as_ref().and_then(|p| p.version.clone()))
             .or_else(|| parent.and_then(|p| p.version.clone()));
 
-        let mut properties = parent.map(|p| p.properties.clone()).unwrap_or_default();
+        let mut properties = parent.map_or_else(BTreeMap::new, |p| p.properties.clone());
         properties.extend(raw.properties.clone());
 
         if let Some(v) = group_id.as_ref() {
@@ -1563,9 +1574,13 @@ fn build_workspace_module_index(
             continue;
         }
 
-        let group_id = module.effective.group_id.clone().unwrap_or_default();
-        let artifact_id = module.effective.artifact_id.clone().unwrap_or_default();
-        if group_id.is_empty() || artifact_id.is_empty() {
+        let (Some(group_id), Some(artifact_id)) = (
+            module.effective.group_id.clone(),
+            module.effective.artifact_id.clone(),
+        ) else {
+            continue;
+        };
+        if group_id.trim().is_empty() || artifact_id.trim().is_empty() {
             continue;
         }
 
@@ -1702,18 +1717,15 @@ fn parse_profile(profile_node: roxmltree::Node<'_, '_>) -> RawProfile {
         .is_some_and(|t| t.eq_ignore_ascii_case("true"));
 
     let properties = child_element(&profile_node, "properties")
-        .map(|n| parse_properties(&n))
-        .unwrap_or_default();
+        .map_or_else(BTreeMap::new, |n| parse_properties(&n));
 
     let dependencies = child_element(&profile_node, "dependencies")
-        .map(|n| parse_dependencies(&n))
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |n| parse_dependencies(&n));
 
     let dependency_management =
         if let Some(dep_mgmt) = child_element(&profile_node, "dependencyManagement") {
             child_element(&dep_mgmt, "dependencies")
-                .map(|deps| parse_dependencies(&deps))
-                .unwrap_or_default()
+                .map_or_else(Vec::new, |deps| parse_dependencies(&deps))
         } else {
             Vec::new()
         };
@@ -1967,7 +1979,21 @@ fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf 
 
 fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
     let config_path = workspace_root.join(".mvn").join("maven.config");
-    let contents = std::fs::read_to_string(&config_path).ok()?;
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            // It's common for workspaces to omit `.mvn/maven.config`; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    config_path = %config_path.display(),
+                    error = %err,
+                    "failed to read .mvn/maven.config"
+                );
+            }
+            return None;
+        }
+    };
 
     // `.mvn/maven.config` uses whitespace-delimited JVM/maven command line arguments.
     // The `-Dmaven.repo.local` property can be expressed as:
@@ -2005,7 +2031,21 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
 
 fn maven_repo_from_jvm_config(workspace_root: &Path) -> Option<PathBuf> {
     let config_path = workspace_root.join(".mvn").join("jvm.config");
-    let contents = std::fs::read_to_string(&config_path).ok()?;
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            // It's common for workspaces to omit `.mvn/jvm.config`; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    config_path = %config_path.display(),
+                    error = %err,
+                    "failed to read .mvn/jvm.config"
+                );
+            }
+            return None;
+        }
+    };
 
     // `.mvn/jvm.config` is used to provide JVM arguments for Maven invocations.
     //
@@ -2078,9 +2118,34 @@ fn maven_repo_from_user_settings() -> Option<PathBuf> {
     let home = home_dir()?;
     let user_home = maven_user_home_dir(&home);
     let path = user_home.join("settings.xml");
-    let contents = std::fs::read_to_string(&path).ok()?;
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            // Users frequently don't have a custom `~/.m2/settings.xml`; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    settings_path = %path.display(),
+                    error = %err,
+                    "failed to read Maven user settings.xml"
+                );
+            }
+            return None;
+        }
+    };
 
-    let doc = roxmltree::Document::parse(&contents).ok()?;
+    let doc = match roxmltree::Document::parse(&contents) {
+        Ok(doc) => doc,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                settings_path = %path.display(),
+                error = %err,
+                "failed to parse Maven user settings.xml"
+            );
+            return None;
+        }
+    };
     let local_repo = doc
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "localRepository")
@@ -2333,9 +2398,25 @@ fn resolve_snapshot_jar_file_name(
     let mut best_value: Option<String> = None;
 
     fn parse_snapshot_timestamp_and_build(value: &str) -> Option<(&str, u32)> {
+        static SNAPSHOT_BUILD_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let (prefix_and_timestamp, build) = value.rsplit_once('-')?;
         let (_prefix, timestamp) = prefix_and_timestamp.rsplit_once('-')?;
-        let build = build.parse().ok()?;
+        let build: u32 = match build.parse() {
+            Ok(build) => build,
+            Err(err) => {
+                if SNAPSHOT_BUILD_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.project",
+                        value,
+                        build_segment = build,
+                        error = %err,
+                        "failed to parse Maven snapshot build number"
+                    );
+                }
+                return None;
+            }
+        };
         Some((timestamp, build))
     }
 
@@ -2363,9 +2444,40 @@ fn resolve_snapshot_jar_file_name(
         "maven-metadata-local.xml".to_string(),
         "maven-metadata.xml".to_string(),
     ];
-    if let Ok(entries) = std::fs::read_dir(version_dir) {
+    let read_dir = match std::fs::read_dir(version_dir) {
+        Ok(entries) => Some(entries),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                version_dir = %version_dir.display(),
+                error = %err,
+                "failed to scan Maven version directory for metadata files"
+            );
+            None
+        }
+    };
+    if let Some(entries) = read_dir {
         let mut extra = Vec::new();
-        for entry in entries.filter_map(Result::ok) {
+        let mut logged_entry_error = false;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    if !logged_entry_error {
+                        tracing::debug!(
+                            target = "nova.project",
+                            version_dir = %version_dir.display(),
+                            error = %err,
+                            "failed to read directory entry while scanning Maven metadata files"
+                        );
+                        logged_entry_error = true;
+                    }
+                    continue;
+                }
+            };
+
             let file_name = entry.file_name();
             let Some(file_name) = file_name.to_str() else {
                 continue;
@@ -2382,13 +2494,40 @@ fn resolve_snapshot_jar_file_name(
         metadata_names.extend(extra);
     }
 
+    let mut logged_metadata_read_error = false;
+    let mut logged_metadata_parse_error = false;
     for metadata_name in metadata_names {
         let metadata_path = version_dir.join(metadata_name);
-        let Ok(contents) = std::fs::read_to_string(&metadata_path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&metadata_path) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_metadata_read_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %metadata_path.display(),
+                        error = %err,
+                        "failed to read Maven metadata file"
+                    );
+                    logged_metadata_read_error = true;
+                }
+                continue;
+            }
         };
-        let Ok(doc) = roxmltree::Document::parse(&contents) else {
-            continue;
+        let doc = match roxmltree::Document::parse(&contents) {
+            Ok(doc) => doc,
+            Err(err) => {
+                if !logged_metadata_parse_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %metadata_path.display(),
+                        error = %err,
+                        "failed to parse Maven metadata XML"
+                    );
+                    logged_metadata_parse_error = true;
+                }
+                continue;
+            }
         };
 
         let mut saw_snapshot_versions = false;
@@ -2573,11 +2712,27 @@ fn push_source_root_if_has_java(
         return false;
     }
 
+    let mut logged_walk_error = false;
     let has_java = WalkDir::new(&path)
         .follow_links(false)
         .into_iter()
-        .filter_map(Result::ok)
         .any(|entry| {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    if !logged_walk_error {
+                        tracing::debug!(
+                            target = "nova.project",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to walk directory while checking for Java sources"
+                        );
+                        logged_walk_error = true;
+                    }
+                    return false;
+                }
+            };
+
             entry.file_type().is_file()
                 && entry
                     .path()

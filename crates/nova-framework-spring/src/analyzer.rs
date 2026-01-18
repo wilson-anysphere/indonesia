@@ -109,7 +109,8 @@ impl SpringAnalyzer {
 
         // Fast path: cache hit.
         {
-            let mut cache = self.cache.lock().unwrap_or_else(|err| err.into_inner());
+            let mut cache =
+                crate::poison::lock(&self.cache, "SpringAnalyzer.cached_workspace/read_cache");
             if let Some(entry) = cache.get(&project) {
                 if entry.fingerprint == fingerprint {
                     return Some(Arc::clone(entry));
@@ -120,7 +121,8 @@ impl SpringAnalyzer {
         // Cache miss: build.
         let built = Arc::new(build_workspace(db, &relevant_files));
 
-        let mut cache = self.cache.lock().unwrap_or_else(|err| err.into_inner());
+        let mut cache =
+            crate::poison::lock(&self.cache, "SpringAnalyzer.cached_workspace/write_cache");
         if let Some(entry) = cache.get(&project) {
             if entry.fingerprint == fingerprint {
                 return Some(Arc::clone(entry));
@@ -779,7 +781,10 @@ fn workspace_fingerprint(db: &dyn Database, all_files: &[FileId]) -> (u64, Vec<F
                 match std::fs::metadata(path) {
                     Ok(meta) => {
                         meta.len().hash(&mut hasher);
-                        hash_mtime(&mut hasher, meta.modified().ok());
+                        hash_mtime(
+                            &mut hasher,
+                            modified_best_effort(&meta, path, "fingerprint_workspace_files"),
+                        );
                     }
                     Err(_) => {
                         0u64.hash(&mut hasher);
@@ -812,6 +817,26 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     }
 }
 
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &std::path::Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.spring",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
+    }
+}
+
 fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     let Some(time) = time else {
         0u64.hash(hasher);
@@ -819,9 +844,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.framework.spring",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
@@ -873,7 +907,19 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
             Some(text) => Cow::Borrowed(text),
             None => match std::fs::read_to_string(path) {
                 Ok(text) => Cow::Owned(text),
-                Err(_) => continue,
+                Err(err) => {
+                    // Best-effort: metadata files can be deleted/rewritten during scans.
+                    // Missing files are expected; only log unexpected filesystem errors.
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.framework.spring",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read Spring metadata file"
+                        );
+                    }
+                    continue;
+                }
             },
         };
         let _ = metadata.ingest_json_bytes(text.as_bytes());
@@ -886,7 +932,17 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
             Some(text) => Cow::Borrowed(text),
             None => match std::fs::read_to_string(path) {
                 Ok(text) => Cow::Owned(text),
-                Err(_) => continue,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.framework.spring",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read Spring config file"
+                        );
+                    }
+                    continue;
+                }
             },
         };
         index.add_config_file(path.clone(), text.as_ref());
@@ -896,7 +952,17 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
             Some(text) => Cow::Borrowed(text),
             None => match std::fs::read_to_string(path) {
                 Ok(text) => Cow::Owned(text),
-                Err(_) => continue,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.framework.spring",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read Java source while building Spring workspace"
+                        );
+                    }
+                    continue;
+                }
             },
         };
         // Avoid scanning every Java file in the project; only ones that can
@@ -915,7 +981,17 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
             Some(text) => Cow::Borrowed(text),
             None => match std::fs::read_to_string(path) {
                 Ok(text) => Cow::Owned(text),
-                Err(_) => continue,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.framework.spring",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read Java source while building Spring analysis inputs"
+                        );
+                    }
+                    continue;
+                }
             },
         };
         let idx = sources.len();
@@ -1015,9 +1091,23 @@ fn add_application_config_files_from_disk(index: &mut SpringWorkspaceIndex, proj
     paths.sort();
     paths.dedup();
 
+    let mut logged_read_error = false;
     for path in paths {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_read_error {
+                    tracing::debug!(
+                        target = "nova.framework.spring",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read application config file"
+                    );
+                    logged_read_error = true;
+                }
+                continue;
+            }
         };
         index.add_config_file(path, &text);
     }
@@ -1052,10 +1142,36 @@ fn collect_application_config_files_inner(root: &Path, out: &mut Vec<PathBuf>, l
 
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.spring",
+                root = %root.display(),
+                error = %err,
+                "failed to scan application config directory"
+            );
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    let mut logged_entry_error = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.framework.spring",
+                        root = %root.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning application config files"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
         if out.len() >= limit {
             break;
         }

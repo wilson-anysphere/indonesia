@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
@@ -18,8 +18,8 @@ use lsp_types::{
 };
 
 use nova_core::{
-    path_to_file_uri, AbsPathBuf, Name, PackageName, QualifiedName, StaticMemberInfo,
-    StaticMemberKind, TypeIndex, TypeName,
+    panic_payload_to_str, Name, PackageName, QualifiedName, StaticMemberInfo, StaticMemberKind,
+    TypeIndex, TypeName,
 };
 use nova_db::{
     Database, FileId, NovaFlow, NovaHir, NovaInputs, NovaResolve, NovaSyntax, NovaTypeck,
@@ -27,7 +27,7 @@ use nova_db::{
 };
 use nova_fuzzy::FuzzyMatcher;
 use nova_hir::item_tree;
-use nova_jdk::JdkIndex;
+use nova_jdk::{JdkClassStub, JdkIndex};
 use nova_resolve::{ImportMap, Resolver as ImportResolver};
 use nova_types::{
     CallKind, ChainTypeProvider, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef,
@@ -62,13 +62,17 @@ use nova_core::{
 };
 
 fn is_spring_properties_file(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
     name.starts_with("application")
         && path.extension().and_then(|e| e.to_str()) == Some("properties")
 }
 
 fn is_spring_yaml_file(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
     if !name.starts_with("application") {
         return false;
     }
@@ -107,10 +111,7 @@ fn spring_location_to_lsp(
     loc: &nova_framework_spring::ConfigLocation,
 ) -> Option<Location> {
     let uri = uri_from_path(&loc.path)?;
-    let target_text = db
-        .file_id(&loc.path)
-        .map(|id| db.file_content(id).to_string())
-        .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+    let target_text = file_text_from_db_or_disk(db, &loc.path, "spring_location_to_lsp")?;
     let text_index = TextIndex::new(&target_text);
 
     Some(Location {
@@ -124,10 +125,7 @@ fn spring_source_location_to_lsp(
     loc: &spring_di::SpringSourceLocation,
 ) -> Option<Location> {
     let uri = uri_from_path(&loc.path)?;
-    let target_text = db
-        .file_id(&loc.path)
-        .map(|id| db.file_content(id).to_string())
-        .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+    let target_text = file_text_from_db_or_disk(db, &loc.path, "spring_source_location_to_lsp")?;
     let text_index = TextIndex::new(&target_text);
 
     Some(Location {
@@ -137,9 +135,7 @@ fn spring_source_location_to_lsp(
 }
 
 fn uri_from_path(path: &std::path::Path) -> Option<lsp_types::Uri> {
-    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
-    let uri = path_to_file_uri(&abs).ok()?;
-    lsp_types::Uri::from_str(&uri).ok()
+    crate::uri::uri_from_path_best_effort(path, "code_intelligence.uri_from_path")
 }
 
 fn location_from_path_and_span(
@@ -148,15 +144,37 @@ fn location_from_path_and_span(
     span: Span,
 ) -> Option<Location> {
     let uri = uri_from_path(path)?;
-    let target_text = db
-        .file_id(path)
-        .map(|id| db.file_content(id).to_string())
-        .or_else(|| std::fs::read_to_string(path).ok())?;
+    let target_text = file_text_from_db_or_disk(db, path, "location_from_path_and_span")?;
     let text_index = TextIndex::new(&target_text);
     Some(Location {
         uri,
         range: text_index.span_to_lsp_range(span),
     })
+}
+
+fn file_text_from_db_or_disk(
+    db: &dyn Database,
+    path: &std::path::Path,
+    context: &'static str,
+) -> Option<String> {
+    if let Some(id) = db.file_id(path) {
+        return Some(db.file_content(id).to_string());
+    }
+
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read file from disk"
+            );
+            None
+        }
+    }
 }
 
 fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
@@ -1272,6 +1290,8 @@ pub(crate) fn with_salsa_snapshot_for_single_file<T>(
     text: &str,
     f: impl FnOnce(&nova_db::Snapshot) -> T,
 ) -> T {
+    static SNAPSHOT_FILE_EXISTS_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
     // Fast-path: if the host provides a shared `SalsaDatabase`, treat it as the
     // authoritative incremental state and keep this helper strictly read-only.
     //
@@ -1288,9 +1308,22 @@ pub(crate) fn with_salsa_snapshot_for_single_file<T>(
         let snap = salsa.snapshot();
         let file_is_known = snap.all_file_ids().as_ref().binary_search(&file).is_ok();
         if file_is_known {
-            let exists =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| snap.file_exists(file)))
-                    .ok();
+            let exists = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                snap.file_exists(file)
+            })) {
+                Ok(exists) => Some(exists),
+                Err(panic) => {
+                    if SNAPSHOT_FILE_EXISTS_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.ide",
+                            file = file.to_raw(),
+                            panic = %panic_payload_to_str(panic.as_ref()),
+                            "salsa snapshot file_exists panicked (best effort)"
+                        );
+                    }
+                    None
+                }
+            };
 
             match exists {
                 Some(true) => {
@@ -3748,12 +3781,32 @@ fn call_insert_text_with_arity(name: &str, arity: usize) -> (String, Option<Inse
     (snippet, Some(InsertTextFormat::SNIPPET))
 }
 
+fn jdk_lookup_type_best_effort(
+    jdk: &JdkIndex,
+    binary_name: &str,
+    context: &'static str,
+) -> Option<Arc<JdkClassStub>> {
+    match jdk.lookup_type(binary_name) {
+        Ok(stub) => stub,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                context,
+                binary_name,
+                error = %err,
+                "failed to look up type in JDK index"
+            );
+            None
+        }
+    }
+}
+
 fn smallest_accessible_constructor_arity(
     types: &TypeStore,
     jdk: &JdkIndex,
     binary_name: &str,
 ) -> Option<usize> {
-    let stub = jdk.lookup_type(binary_name).ok().flatten()?;
+    let stub = jdk_lookup_type_best_effort(jdk, binary_name, "ide.smallest_ctor_arity")?;
     let mut best: Option<usize> = None;
     for method in &stub.methods {
         if method.name != "<init>" {
@@ -5067,7 +5120,9 @@ fn package_decl_completions(
     // 2) Classpath packages (optional, when a Salsa-backed DB provides a classpath index).
     if !ctx.dotted_prefix.is_empty() {
         if let Some(salsa) = db.salsa_db() {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            static CLASSPATH_PACKAGES_SNAPSHOT_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 salsa.with_snapshot(|snap| {
                     let project = snap.file_project(file);
 
@@ -5095,8 +5150,19 @@ fn package_decl_completions(
                         );
                     }
                 })
-            }))
-            .ok();
+            })) {
+                Ok(()) => {}
+                Err(panic) => {
+                    if CLASSPATH_PACKAGES_SNAPSHOT_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.ide",
+                            file = file.to_raw(),
+                            panic = %panic_payload_to_str(panic.as_ref()),
+                            "salsa snapshot panicked while enumerating classpath packages (best effort)"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -5109,10 +5175,33 @@ fn package_decl_completions(
             .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
         let fallback_jdk = JdkIndex::new();
-        let packages: &[String] = jdk
-            .all_packages()
-            .or_else(|_| fallback_jdk.all_packages())
-            .unwrap_or(&[]);
+        static JDK_PACKAGES_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        let packages: &[String] = match jdk.all_packages() {
+            Ok(packages) => packages,
+            Err(err) => match fallback_jdk.all_packages() {
+                Ok(packages) => {
+                    if JDK_PACKAGES_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.ide",
+                            error = %err,
+                            "failed to enumerate JDK packages; continuing best-effort"
+                        );
+                    }
+                    packages
+                }
+                Err(fallback_err) => {
+                    if JDK_PACKAGES_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.ide",
+                            error = %err,
+                            fallback_error = %fallback_err,
+                            "failed to enumerate JDK packages; continuing best-effort"
+                        );
+                    }
+                    &[]
+                }
+            },
+        };
         let prefix = normalize_binary_prefix(&ctx.dotted_prefix);
         let start = packages.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
         let mut added = 0usize;
@@ -10038,7 +10127,11 @@ fn static_member_completions(
             })
             .min()
     };
-    let stub = jdk.lookup_type(owner_binary_name).ok().flatten();
+    let stub = jdk_lookup_type_best_effort(
+        jdk.as_ref(),
+        owner_binary_name,
+        "ide.static_member_completions.owner_stub",
+    );
 
     let additional_text_edits = if !receiver.contains('.') {
         let import_info = parse_java_imports(text);
@@ -11541,7 +11634,12 @@ fn type_name_completions(
                     continue;
                 }
 
-                let class_kind = jdk.lookup_type(binary).ok().flatten().map(|stub| {
+                let class_kind = jdk_lookup_type_best_effort(
+                    jdk.as_ref(),
+                    binary,
+                    "ide.star_import_candidates.kind",
+                )
+                .map(|stub| {
                     if stub.access_flags & ACC_INTERFACE != 0 {
                         ClassKind::Interface
                     } else {
@@ -12274,6 +12372,8 @@ fn expression_type_name_completions(
     text_index: &TextIndex<'_>,
     prefix: &str,
 ) -> Vec<CompletionItem> {
+    static JDK_LOOKUP_TYPE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     // Avoid flooding completion lists with hundreds of type names when the user hasn't typed
     // anything yet. Once a prefix exists (even a single character), type-name completions are
     // useful for static member access (`Math.max`, `Collections.emptyList`, ...).
@@ -12403,7 +12503,9 @@ fn expression_type_name_completions(
                     }
                 }
             }
-        } else if let Some(stub) = jdk.lookup_type(fqn).ok().flatten() {
+        } else if let Some(stub) =
+            jdk_lookup_type_best_effort(jdk.as_ref(), fqn, "ide.explicit_import_candidates.kind")
+        {
             if stub.access_flags & ACC_INTERFACE != 0 {
                 kind = CompletionItemKind::INTERFACE;
             } else if stub.access_flags & ACC_ENUM != 0 {
@@ -12507,11 +12609,8 @@ fn expression_type_name_completions(
                     continue;
                 }
 
-                let kind = jdk
-                    .lookup_type(binary.as_str())
-                    .ok()
-                    .flatten()
-                    .map(|stub| {
+                let kind = match jdk.lookup_type(binary.as_str()) {
+                    Ok(Some(stub)) => {
                         if stub.access_flags & ACC_INTERFACE != 0 {
                             CompletionItemKind::INTERFACE
                         } else if stub.access_flags & ACC_ENUM != 0 {
@@ -12519,8 +12618,20 @@ fn expression_type_name_completions(
                         } else {
                             CompletionItemKind::CLASS
                         }
-                    })
-                    .unwrap_or(CompletionItemKind::CLASS);
+                    }
+                    Ok(None) => CompletionItemKind::CLASS,
+                    Err(err) => {
+                        if JDK_LOOKUP_TYPE_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.ide",
+                                binary = binary.as_str(),
+                                error = %err,
+                                "jdk lookup_type failed (best effort)"
+                            );
+                        }
+                        CompletionItemKind::CLASS
+                    }
+                };
 
                 push_type(
                     rest.to_string(),
@@ -12560,11 +12671,8 @@ fn expression_type_name_completions(
                     continue;
                 }
 
-                let kind = jdk
-                    .lookup_type(binary.as_str())
-                    .ok()
-                    .flatten()
-                    .map(|stub| {
+                let kind = match jdk.lookup_type(binary.as_str()) {
+                    Ok(Some(stub)) => {
                         if stub.access_flags & ACC_INTERFACE != 0 {
                             CompletionItemKind::INTERFACE
                         } else if stub.access_flags & ACC_ENUM != 0 {
@@ -12572,8 +12680,20 @@ fn expression_type_name_completions(
                         } else {
                             CompletionItemKind::CLASS
                         }
-                    })
-                    .unwrap_or(CompletionItemKind::CLASS);
+                    }
+                    Ok(None) => CompletionItemKind::CLASS,
+                    Err(err) => {
+                        if JDK_LOOKUP_TYPE_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.ide",
+                                binary = binary.as_str(),
+                                error = %err,
+                                "jdk lookup_type failed (best effort)"
+                            );
+                        }
+                        CompletionItemKind::CLASS
+                    }
+                };
 
                 push_type(
                     rest.to_string(),
@@ -13285,7 +13405,9 @@ fn maybe_add_smart_constructor_completions(
                 if let Some(mut item) =
                     smart_constructor_completion_item(env_types, id, &expected_detail, prefix)
                 {
-                    let cand_name = env_types.class(id).map(|c| c.name.as_str()).unwrap_or("");
+                    let Some(cand_name) = env_types.class(id).map(|c| c.name.as_str()) else {
+                        continue;
+                    };
                     decorate_smart_constructor_completion_item(
                         &mut item, cand_name, &imports, text, text_index,
                     );
@@ -13317,7 +13439,9 @@ fn smart_constructor_candidate_key(
     id: ClassId,
     current_package: Option<&str>,
 ) -> (u8, String) {
-    let name = types.class(id).map(|c| c.name.as_str()).unwrap_or("");
+    let Some(name) = types.class(id).map(|c| c.name.as_str()) else {
+        return (u8::MAX, String::new());
+    };
     let pkg = name.rsplit_once('.').map(|(pkg, _)| pkg).unwrap_or("");
     let current_package = current_package.unwrap_or("");
 
@@ -15678,10 +15802,8 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     if let Some((target_path, target_span)) = crate::dagger_intel::goto_definition(db, file, offset)
     {
         let uri = uri_from_path(&target_path)?;
-        let target_text = db
-            .file_id(&target_path)
-            .map(|id| db.file_content(id).to_string())
-            .or_else(|| std::fs::read_to_string(&target_path).ok())?;
+        let target_text =
+            file_text_from_db_or_disk(db, &target_path, "dagger_goto_definition_target_text")?;
         let target_index = TextIndex::new(&target_text);
         return Some(Location {
             uri,
@@ -15805,10 +15927,8 @@ pub fn find_references(
             .into_iter()
             .filter_map(|(path, span)| {
                 let uri = uri_from_path(&path)?;
-                let target_text = db
-                    .file_id(&path)
-                    .map(|id| db.file_content(id).to_string())
-                    .or_else(|| std::fs::read_to_string(&path).ok())?;
+                let target_text =
+                    file_text_from_db_or_disk(db, &path, "dagger_find_references_target_text")?;
                 let target_index = TextIndex::new(&target_text);
                 Some(Location {
                     uri,
@@ -16979,9 +17099,7 @@ fn file_uri(db: &dyn Database, file: FileId) -> lsp_types::Uri {
 }
 
 fn file_uri_from_path(path: &Path) -> Option<lsp_types::Uri> {
-    let abs = nova_core::AbsPathBuf::new(path.to_path_buf()).ok()?;
-    let uri = nova_core::path_to_file_uri(&abs).ok()?;
-    lsp_types::Uri::from_str(&uri).ok()
+    crate::uri::uri_from_path_best_effort(path, "code_intelligence.file_uri_from_path")
 }
 
 // -----------------------------------------------------------------------------
@@ -17260,14 +17378,58 @@ static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> = Lazy::new(|| {
     // Best-effort: honor workspace JDK overrides from `nova.toml` if the process is started
     // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails
     // (missing config, invalid config, etc.), fall back to environment-based discovery.
-    let configured = std::env::current_dir().ok().and_then(|cwd| {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => Some(cwd),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                error = %err,
+                "failed to determine current working directory for workspace JDK discovery"
+            );
+            None
+        }
+    };
+
+    let configured = cwd.and_then(|cwd| {
         let workspace_root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
-        let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
+        let config = match nova_config::load_for_workspace(&workspace_root) {
+            Ok((config, _path)) => Some(config),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    workspace_root = %workspace_root.display(),
+                    error = %err,
+                    "failed to load workspace config for JDK discovery"
+                );
+                None
+            }
+        }?;
+
         let jdk_config = config.jdk_config();
-        JdkIndex::discover(Some(&jdk_config)).ok().map(Arc::new)
+        match JdkIndex::discover(Some(&jdk_config)) {
+            Ok(index) => Some(Arc::new(index)),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    error = %err,
+                    "failed to discover JDK using workspace config overrides"
+                );
+                None
+            }
+        }
     });
 
-    configured.or_else(|| JdkIndex::discover(None).ok().map(Arc::new))
+    configured.or_else(|| match JdkIndex::discover(None) {
+        Ok(index) => Some(Arc::new(index)),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                error = %err,
+                "failed to discover JDK"
+            );
+            None
+        }
+    })
 });
 
 static EMPTY_JDK_INDEX: Lazy<Arc<JdkIndex>> = Lazy::new(|| Arc::new(JdkIndex::new()));
@@ -17975,7 +18137,7 @@ fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
     }
 
     let jdk = JDK_INDEX.as_ref()?;
-    let stub = jdk.lookup_type(name).ok().flatten()?;
+    let stub = jdk_lookup_type_best_effort(jdk.as_ref(), name, "ide.ensure_class_id")?;
 
     let kind = if stub.access_flags & ACC_INTERFACE != 0 {
         ClassKind::Interface

@@ -252,7 +252,7 @@ async fn dap_attach_emits_process_event() {
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .expect("process event missing body.name");
     assert!(
         !name.is_empty(),
         "process event missing body.name: {process_evt}"
@@ -314,7 +314,7 @@ async fn attach_emits_process_event_with_name() {
     let name = process_evt
         .pointer("/body/name")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .expect("process event missing body.name");
     assert!(
         !name.is_empty(),
         "process event missing body.name: {process_evt}"

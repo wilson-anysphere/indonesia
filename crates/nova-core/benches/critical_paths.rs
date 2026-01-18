@@ -278,7 +278,11 @@ fn diagnostics_for(source: &str) -> usize {
 }
 
 fn find_references(index: &ReferenceIndex, symbol: &str) -> Vec<ReferenceLocation> {
-    let mut refs = index.references.get(symbol).cloned().unwrap_or_default();
+    let mut refs = index
+        .references
+        .get(symbol)
+        .cloned()
+        .unwrap_or_else(Vec::new);
     refs.sort_by(|a, b| {
         a.file
             .cmp(&b.file)

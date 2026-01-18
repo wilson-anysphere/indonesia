@@ -22,6 +22,7 @@ mod completion_validation;
 mod error;
 mod features;
 mod llm_privacy;
+mod poison;
 mod project_database;
 mod providers;
 mod semantic_search;

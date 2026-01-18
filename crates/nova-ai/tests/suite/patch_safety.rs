@@ -201,6 +201,34 @@ fn rejects_new_files_in_unified_diff_by_default() {
 }
 
 #[test]
+fn rejects_json_edit_with_out_of_bounds_range() {
+    let workspace = VirtualWorkspace::new(vec![(
+        "Existing.java".to_string(),
+        "class Existing {}".to_string(),
+    )]);
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "Existing.java".to_string(),
+            range: Range {
+                start: Position {
+                    line: 100,
+                    character: 0,
+                },
+                end: Position {
+                    line: 100,
+                    character: 1,
+                },
+            },
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::InvalidEditRange { .. }));
+}
+
+#[test]
 fn allows_new_files_when_enabled() {
     let workspace = VirtualWorkspace::default();
     let patch = Patch::Json(JsonPatch {
@@ -335,4 +363,63 @@ fn allows_file_deletes_and_renames_when_enabled() {
 
     cfg.allow_rename_files = true;
     enforce_patch_safety(&rename, &workspace, &cfg).expect("rename safety");
+}
+
+#[test]
+fn rejects_delete_of_missing_file_even_when_deletes_are_allowed() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Delete {
+            file: "Missing.java".to_string(),
+        }],
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allow_delete_files = true;
+    let err = enforce_patch_safety(&patch, &workspace, &cfg).unwrap_err();
+    assert!(matches!(err, SafetyError::MissingFile { file } if file == "Missing.java"));
+}
+
+#[test]
+fn rejects_rename_of_missing_file_even_when_renames_are_allowed() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: vec![nova_ai::patch::JsonPatchOp::Rename {
+            from: "Old.java".to_string(),
+            to: "New.java".to_string(),
+        }],
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allow_rename_files = true;
+    let err = enforce_patch_safety(&patch, &workspace, &cfg).unwrap_err();
+    assert!(matches!(err, SafetyError::MissingFile { file } if file == "Old.java"));
+}
+
+#[test]
+fn edit_after_delete_is_treated_as_new_file() {
+    let workspace = VirtualWorkspace::new(vec![(
+        "Existing.java".to_string(),
+        "class Existing {}".to_string(),
+    )]);
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "Existing.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: vec![nova_ai::patch::JsonPatchOp::Delete {
+            file: "Existing.java".to_string(),
+        }],
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allow_delete_files = true;
+    let err = enforce_patch_safety(&patch, &workspace, &cfg).unwrap_err();
+    assert!(matches!(err, SafetyError::NewFileNotAllowed { file } if file == "Existing.java"));
+
+    cfg.allow_new_files = true;
+    enforce_patch_safety(&patch, &workspace, &cfg).expect("patch safety");
 }

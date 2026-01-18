@@ -537,7 +537,12 @@ fn validate_patch(
 
     for (file, touched) in &applied.touched_ranges {
         let before_path = resolve_before_path(file, &applied.renamed_files);
-        let after_text = after.get(file).unwrap_or_default();
+        let after_text = after.get(file).ok_or_else(|| ErrorReport {
+            summary: format!(
+                "internal error: applied patch references `{file}`, but it is missing from the updated workspace"
+            ),
+            new_diagnostics: Vec::new(),
+        })?;
 
         let before_diags = diagnostics_for_path(&before_db, &before_path);
         let after_diags = diagnostics_for_path(&after_db, file);
@@ -805,10 +810,20 @@ mod tests {
         ) -> Result<String, PromptCompletionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
 
-            if let Some(tx) = self.started_tx.lock().expect("poisoned mutex").take() {
+            if let Some(tx) = self
+                .started_tx
+                .lock()
+                .expect("started_tx mutex poisoned")
+                .take()
+            {
                 let _ = tx.send(());
             }
-            if let Some(rx) = self.resume_rx.lock().expect("poisoned mutex").take() {
+            if let Some(rx) = self
+                .resume_rx
+                .lock()
+                .expect("resume_rx mutex poisoned")
+                .take()
+            {
                 let _ = rx.recv();
             }
 

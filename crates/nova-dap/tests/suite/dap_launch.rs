@@ -135,7 +135,7 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
     let process_name = process_evt
         .pointer("/body/name")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .expect("process event missing body.name");
     assert!(
         !process_name.is_empty(),
         "process event missing body.name: {process_evt}"

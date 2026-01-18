@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use nova_core::FileId;
 
@@ -80,6 +81,22 @@ impl FileIdRegistry {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    /// Returns all currently-tracked file ids (unsorted).
+    ///
+    /// This is intended for callers that will impose their own ordering (or do not require a
+    /// stable order) and want to avoid an extra sort.
+    pub fn all_file_ids_unsorted(&self) -> Vec<FileId> {
+        self.path_to_id.values().copied().collect()
+    }
+
+    pub fn for_each_local_path(&self, mut f: impl FnMut(&Path)) {
+        for path in self.path_to_id.keys() {
+            if let Some(local) = path.as_local_path() {
+                f(local);
+            }
+        }
     }
 
     /// Returns the id for `path` if it has been interned.

@@ -75,8 +75,12 @@ impl LlmProvider for OllamaProvider {
                 .error_for_status()?;
 
             let parsed: OllamaChatResponse = response.json().await?;
-            let content = parsed.message.map(|m| m.content).unwrap_or_default();
-            Ok::<_, AiError>(content)
+            let Some(message) = parsed.message else {
+                return Err(AiError::UnexpectedResponse(
+                    "missing message in Ollama chat response".into(),
+                ));
+            };
+            Ok::<_, AiError>(message.content)
         };
 
         tokio::select! {

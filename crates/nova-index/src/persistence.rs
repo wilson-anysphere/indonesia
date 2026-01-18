@@ -922,7 +922,23 @@ pub fn append_index_segment(
         crate::segments::ensure_segments_dir(&indexes_dir)?;
         let mut manifest = match crate::segments::load_manifest(&indexes_dir) {
             Ok(Some(manifest)) if manifest.is_compatible() => manifest,
-            Ok(Some(_)) | Err(_) => {
+            Ok(Some(manifest)) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    indexes_dir = %indexes_dir.display(),
+                    schema_version = manifest.schema_version,
+                    "segment manifest is incompatible; clearing segments"
+                );
+                crate::segments::clear_segments(cache_dir)?;
+                crate::segments::SegmentManifest::new()
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    indexes_dir = %indexes_dir.display(),
+                    error = %err,
+                    "failed to load segment manifest; clearing segments"
+                );
                 crate::segments::clear_segments(cache_dir)?;
                 crate::segments::SegmentManifest::new()
             }
@@ -941,7 +957,21 @@ pub fn append_index_segment(
             nova_storage::Compression::None,
         )?;
 
-        let bytes = std::fs::metadata(&segment_path).ok().map(|m| m.len());
+        let bytes = match std::fs::metadata(&segment_path) {
+            Ok(meta) => Some(meta.len()),
+            Err(err) => {
+                // Segment metadata can race with compaction/cleanup; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.index",
+                        segment_path = %segment_path.display(),
+                        error = %err,
+                        "failed to stat index segment after write"
+                    );
+                }
+                None
+            }
+        };
         let entry = crate::segments::SegmentEntry {
             id,
             created_at_millis: generation,
@@ -986,7 +1016,23 @@ pub fn compact_index_segments(cache_dir: &CacheDir) -> Result<(), IndexPersisten
 
     let manifest = match crate::segments::load_manifest(&indexes_dir) {
         Ok(Some(manifest)) if manifest.is_compatible() => manifest,
-        Ok(Some(_)) | Err(_) => {
+        Ok(Some(manifest)) => {
+            tracing::debug!(
+                target = "nova.index",
+                indexes_dir = %indexes_dir.display(),
+                schema_version = manifest.schema_version,
+                "segment manifest is incompatible during compaction; clearing segments"
+            );
+            crate::segments::clear_segments(cache_dir)?;
+            return Ok(());
+        }
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                indexes_dir = %indexes_dir.display(),
+                error = %err,
+                "failed to load segment manifest during compaction; clearing segments"
+            );
             crate::segments::clear_segments(cache_dir)?;
             return Ok(());
         }
@@ -1107,7 +1153,15 @@ pub fn load_index_archives(
         Some(metadata) => MetadataSource::Archived(metadata),
         None => match CacheMetadata::load(&metadata_path) {
             Ok(metadata) => MetadataSource::Owned(metadata),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    metadata_path = %metadata_path.display(),
+                    error = %err,
+                    "failed to load index metadata; treating as miss"
+                );
+                return Ok(None);
+            }
         },
     };
     if !metadata.is_compatible() {
@@ -1215,7 +1269,15 @@ pub fn load_index_archives(
                 }
             }
             Ok(None) => (Vec::new(), BTreeMap::new(), base_generation),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    indexes_dir = %indexes_dir.display(),
+                    error = %err,
+                    "failed to load segment manifest while opening index archives; treating as miss"
+                );
+                return Ok(None);
+            }
         };
 
     if metadata.last_updated_millis() != expected_generation {
@@ -1254,16 +1316,32 @@ pub fn load_index_archives_fast(
         Some(metadata) => MetadataSource::Archived(metadata),
         None => match CacheMetadata::load(&metadata_path) {
             Ok(metadata) => MetadataSource::Owned(metadata),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    metadata_path = %metadata_path.display(),
+                    error = %err,
+                    "failed to load index metadata; treating as miss"
+                );
+                return Ok(None);
+            }
         },
     };
     if !metadata.is_compatible() {
         return Ok(None);
     }
 
-    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+    let current_snapshot = match ProjectSnapshot::new_fast(project_root.as_ref(), files) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                project_root = %project_root.as_ref().display(),
+                error = %err,
+                "failed to build fast project snapshot; treating persisted indexes as miss"
+            );
+            return Ok(None);
+        }
     };
 
     if !metadata.project_hash_matches(&current_snapshot) {
@@ -1367,7 +1445,15 @@ pub fn load_index_archives_fast(
                 }
             }
             Ok(None) => (Vec::new(), BTreeMap::new(), base_generation),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    indexes_dir = %indexes_dir.display(),
+                    error = %err,
+                    "failed to load segment manifest while opening index archives; treating as miss"
+                );
+                return Ok(None);
+            }
         };
 
     if metadata.last_updated_millis() != expected_generation {
@@ -1397,19 +1483,47 @@ pub fn load_indexes(
 
     let symbols = match archives.symbols.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize symbol index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let references = match archives.references.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize reference index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let inheritance = match archives.inheritance.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize inheritance index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let annotations = match archives.annotations.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize annotation index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
 
     let mut indexes = ProjectIndexes {
@@ -1425,7 +1539,15 @@ pub fn load_indexes(
         }
         let delta = match segment.archive.to_owned() {
             Ok(value) => value,
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    segment_id = segment.id,
+                    error = %err,
+                    "failed to deserialize index segment archive; treating as miss"
+                );
+                return Ok(None);
+            }
         };
         indexes.merge_from(delta);
     }
@@ -1448,9 +1570,17 @@ pub fn load_indexes_with_fingerprints(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
+    let metadata = match CacheMetadata::load(&metadata_path) {
         Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                metadata_path = %metadata_path.display(),
+                error = %err,
+                "failed to load index metadata; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     if !metadata.is_compatible() {
         return Ok(None);
@@ -1505,19 +1635,47 @@ pub fn load_indexes_with_fingerprints(
 
     let symbols = match symbols.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize symbol index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let references = match references.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize reference index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let inheritance = match inheritance.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize inheritance index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let annotations = match annotations.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize annotation index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
 
     let mut indexes = ProjectIndexes {
@@ -1610,19 +1768,47 @@ pub fn load_indexes_fast(
 
     let symbols = match archives.symbols.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize symbol index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let references = match archives.references.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize reference index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let inheritance = match archives.inheritance.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize inheritance index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     let annotations = match archives.annotations.to_owned() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                error = %err,
+                "failed to deserialize annotation index archive; treating as miss"
+            );
+            return Ok(None);
+        }
     };
 
     let mut indexes = ProjectIndexes {
@@ -1638,7 +1824,15 @@ pub fn load_indexes_fast(
         }
         let delta = match segment.archive.to_owned() {
             Ok(value) => value,
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    segment_id = segment.id,
+                    error = %err,
+                    "failed to deserialize index segment archive; treating as miss"
+                );
+                return Ok(None);
+            }
         };
         indexes.merge_from(delta);
     }
@@ -1679,8 +1873,38 @@ where
     T: rkyv::Archive,
     rkyv::Archived<T>: nova_storage::CheckableArchived,
 {
-    nova_storage::PersistedArchive::<T>::open_optional(&path, kind, INDEX_SCHEMA_VERSION)
-        .unwrap_or_default()
+    match nova_storage::PersistedArchive::<T>::open_optional(&path, kind, INDEX_SCHEMA_VERSION) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                path = %path.display(),
+                kind = ?kind,
+                schema_version = INDEX_SCHEMA_VERSION,
+                error = %err,
+                "failed to open persisted index artifact; treating as miss"
+            );
+            remove_file_best_effort(&path, kind, "open_index_file.open_failed");
+            None
+        }
+    }
+}
+
+fn remove_file_best_effort(path: &Path, kind: nova_storage::ArtifactKind, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                path = %path.display(),
+                kind = ?kind,
+                reason,
+                error = %err,
+                "failed to delete persisted index artifact"
+            );
+        }
+    }
 }
 
 struct IndexWriteLock {
@@ -2970,6 +3194,14 @@ pub fn save_sharded_indexes(
 
     let metadata_path = cache_dir.metadata_path();
     let previous_metadata = CacheMetadata::load(&metadata_path)
+        .inspect_err(|err| {
+            tracing::debug!(
+                target = "nova.index",
+                metadata_path = %metadata_path.display(),
+                error = %err,
+                "failed to load sharded index metadata; proceeding without previous metadata"
+            );
+        })
         .ok()
         .filter(|m| m.is_compatible() && &m.project_hash == snapshot.project_hash());
 
@@ -3193,9 +3425,17 @@ pub fn load_sharded_index_archives(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
+    let metadata = match CacheMetadata::load(&metadata_path) {
         Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                metadata_path = %metadata_path.display(),
+                error = %err,
+                "failed to load sharded index metadata; treating as miss"
+            );
+            return Ok(None);
+        }
     };
     if !metadata.is_compatible() {
         return Ok(None);
@@ -3266,7 +3506,15 @@ pub fn load_sharded_index_archives_from_fast_snapshot(
         Some(metadata) => MetadataSource::Archived(metadata),
         None => match CacheMetadata::load(&metadata_path) {
             Ok(metadata) => MetadataSource::Owned(metadata),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    metadata_path = %metadata_path.display(),
+                    error = %err,
+                    "failed to load sharded index metadata; treating as miss"
+                );
+                return Ok(None);
+            }
         },
     };
     if !metadata.is_compatible() {
@@ -3334,9 +3582,17 @@ pub fn load_sharded_index_archives_fast(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+    let current_snapshot = match ProjectSnapshot::new_fast(project_root.as_ref(), files) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                project_root = %project_root.as_ref().display(),
+                error = %err,
+                "failed to build fast project snapshot; treating sharded indexes as miss"
+            );
+            return Ok(None);
+        }
     };
     load_sharded_index_archives_from_fast_snapshot(cache_dir, &current_snapshot, shard_count)
 }
@@ -3368,7 +3624,15 @@ pub fn load_sharded_index_view_lazy(
         Some(metadata) => MetadataSource::Archived(metadata),
         None => match CacheMetadata::load(&metadata_path) {
             Ok(metadata) => MetadataSource::Owned(metadata),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    metadata_path = %metadata_path.display(),
+                    error = %err,
+                    "failed to load sharded index metadata; treating as miss"
+                );
+                return Ok(None);
+            }
         },
     };
     if !metadata.is_compatible() {
@@ -3428,7 +3692,15 @@ pub fn load_sharded_index_view_lazy_from_fast_snapshot(
         Some(metadata) => MetadataSource::Archived(metadata),
         None => match CacheMetadata::load(&metadata_path) {
             Ok(metadata) => MetadataSource::Owned(metadata),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.index",
+                    metadata_path = %metadata_path.display(),
+                    error = %err,
+                    "failed to load sharded index metadata; treating as miss"
+                );
+                return Ok(None);
+            }
         },
     };
     if !metadata.is_compatible() {
@@ -3483,9 +3755,17 @@ pub fn load_sharded_index_view_lazy_fast(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let fast_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+    let fast_snapshot = match ProjectSnapshot::new_fast(project_root.as_ref(), files) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                project_root = %project_root.as_ref().display(),
+                error = %err,
+                "failed to build fast project snapshot; treating sharded indexes as miss"
+            );
+            return Ok(None);
+        }
     };
     load_sharded_index_view_lazy_from_fast_snapshot(cache_dir, &fast_snapshot, shard_count)
 }
@@ -3556,7 +3836,21 @@ fn read_shard_manifest(shards_root: &Path) -> Option<u32> {
     let manifest_path = shard_manifest_path(shards_root);
     // Safety: the shard-count manifest should be a tiny text file. Guard against corrupted
     // manifests that would otherwise allocate unbounded memory.
-    let meta = std::fs::symlink_metadata(&manifest_path).ok()?;
+    let meta = match std::fs::symlink_metadata(&manifest_path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            // Cache misses are expected; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.index",
+                    manifest_path = %manifest_path.display(),
+                    error = %err,
+                    "failed to stat shard manifest"
+                );
+            }
+            return None;
+        }
+    };
     if meta.file_type().is_symlink() || !meta.is_file() {
         return None;
     }
@@ -3564,9 +3858,34 @@ fn read_shard_manifest(shards_root: &Path) -> Option<u32> {
         return None;
     }
 
-    let text = std::fs::read_to_string(manifest_path).ok()?;
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.index",
+                    manifest_path = %manifest_path.display(),
+                    error = %err,
+                    "failed to read shard manifest"
+                );
+            }
+            return None;
+        }
+    };
     let line = text.lines().next()?.trim();
-    line.parse::<u32>().ok()
+    match line.parse::<u32>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                manifest_path = %manifest_path.display(),
+                value = line,
+                error = %err,
+                "invalid shard manifest contents"
+            );
+            None
+        }
+    }
 }
 
 fn probe_sharded_symbols_idx_schema(shards_root: &Path) -> bool {
@@ -3581,23 +3900,66 @@ fn probe_sharded_symbols_idx_schema(shards_root: &Path) -> bool {
     // Probe a single known shard file (`symbols.idx` in shard 0) by reading its header only. This
     // is O(1) and avoids mmap/`rkyv` validation work on the cache-hit fast path.
     let probe_path = shard_dir(shards_root, 0).join("symbols.idx");
-    let Ok(mut file) = std::fs::File::open(&probe_path) else {
-        return false;
+    let mut file = match std::fs::File::open(&probe_path) {
+        Ok(file) => file,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.index",
+                    probe_path = %probe_path.display(),
+                    error = %err,
+                    "failed to open shard schema probe file"
+                );
+            }
+            return false;
+        }
     };
 
     let mut header_bytes = [0u8; nova_storage::HEADER_LEN];
-    if file.read_exact(&mut header_bytes).is_err() {
+    if let Err(err) = file.read_exact(&mut header_bytes) {
+        tracing::debug!(
+            target = "nova.index",
+            probe_path = %probe_path.display(),
+            error = %err,
+            "failed to read shard schema probe header"
+        );
         return false;
     }
-    let Ok(header) = nova_storage::StorageHeader::decode(&header_bytes) else {
-        return false;
+    let header = match nova_storage::StorageHeader::decode(&header_bytes) {
+        Ok(header) => header,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.index",
+                probe_path = %probe_path.display(),
+                error = %err,
+                "failed to decode shard schema probe header"
+            );
+            return false;
+        }
     };
 
-    header.kind == nova_storage::ArtifactKind::SymbolIndex
+    let ok = header.kind == nova_storage::ArtifactKind::SymbolIndex
         && header.schema_version == INDEX_SCHEMA_VERSION
         && header.nova_version == nova_core::NOVA_VERSION
         && header.endian == nova_core::target_endian()
-        && header.pointer_width == nova_core::target_pointer_width()
+        && header.pointer_width == nova_core::target_pointer_width();
+    if !ok {
+        tracing::debug!(
+            target = "nova.index",
+            probe_path = %probe_path.display(),
+            kind = ?header.kind,
+            schema_version = header.schema_version,
+            nova_version = header.nova_version,
+            endian = ?header.endian,
+            pointer_width = header.pointer_width,
+            expected_schema_version = INDEX_SCHEMA_VERSION,
+            expected_nova_version = nova_core::NOVA_VERSION,
+            expected_endian = ?nova_core::target_endian(),
+            expected_pointer_width = nova_core::target_pointer_width(),
+            "shard schema probe header mismatch"
+        );
+    }
+    ok
 }
 
 fn load_shard_archives(shard_dir: &Path) -> Option<LoadedShardIndexArchives> {

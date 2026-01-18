@@ -11,6 +11,25 @@ use std::sync::Mutex;
 // predictable under parallel `cargo test` execution.
 static STDIO_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
+#[track_caller]
+fn lock_unpoison<'a>(mutex: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.cli.tests",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
+
 fn command_output_with_retry(
     mut make_command: impl FnMut() -> ProcessCommand,
     context: &str,
@@ -52,7 +71,8 @@ fn path_with_test_executable(name: &str) -> (TempDir, std::ffi::OsString) {
     std::fs::copy(&stub, &dest).expect("copy nova CLI test server");
 
     let mut entries =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_else(std::ffi::OsString::new))
+            .collect::<Vec<_>>();
     entries.insert(0, temp.path().to_path_buf());
     let path = std::env::join_paths(entries).expect("join PATH");
     (temp, path)
@@ -266,9 +286,7 @@ fn lsp_passthrough_config_equals_overrides_global_config() {
 
 #[test]
 fn lsp_stdio_initialize_shutdown_exit_passthrough() {
-    let _guard = STDIO_SERVER_LOCK
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let _guard = lock_unpoison(&STDIO_SERVER_LOCK);
     let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
 
     let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
@@ -316,9 +334,7 @@ fn lsp_stdio_initialize_shutdown_exit_passthrough() {
 
 #[test]
 fn lsp_exit_without_shutdown_propagates_failure_status() {
-    let _guard = STDIO_SERVER_LOCK
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let _guard = lock_unpoison(&STDIO_SERVER_LOCK);
     let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
 
     let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))

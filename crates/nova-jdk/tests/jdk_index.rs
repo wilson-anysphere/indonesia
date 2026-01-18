@@ -150,10 +150,11 @@ fn fake_jdk8_root() -> PathBuf {
 
 fn find_jdk_symbol_index_cache_file(cache_root: &Path) -> PathBuf {
     fn visit(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|err| {
+            panic!("failed to read cache directory `{}`: {err}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.expect("failed to read cache directory entry");
             let path = entry.path();
             if path.is_dir() {
                 visit(&path, out);
@@ -1032,7 +1033,7 @@ fn discovery_falls_back_to_java_on_path_via_java_home_property(
 
     let _java_home = EnvVarGuard::unset("JAVA_HOME");
 
-    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let old_path = std::env::var_os("PATH").unwrap_or_else(std::ffi::OsString::new);
     let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
     paths.extend(std::env::split_paths(&old_path));
     let new_path = std::env::join_paths(paths)?;
@@ -1073,7 +1074,7 @@ fn discovery_falls_back_to_java_on_path_via_symlink_resolution(
 
     let _java_home = EnvVarGuard::unset("JAVA_HOME");
 
-    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let old_path = std::env::var_os("PATH").unwrap_or_else(std::ffi::OsString::new);
     let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
     paths.extend(std::env::split_paths(&old_path));
     let new_path = std::env::join_paths(paths)?;

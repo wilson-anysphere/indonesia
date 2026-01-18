@@ -41,5 +41,6 @@ pub use degraded::{BackgroundIndexingMode, DegradedSettings};
 pub use eviction::{EvictionRequest, EvictionResult, MemoryEvictor};
 pub use manager::{MemoryEvent, MemoryManager, MemoryRegistration, MemoryTracker};
 pub use pressure::{MemoryPressure, MemoryPressureThresholds};
+pub use process::current_rss_bytes;
 pub use report::{ComponentUsage, MemoryReport};
 pub use types::{MemoryBreakdown, MemoryCategory};

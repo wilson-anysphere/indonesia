@@ -47,7 +47,7 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
         .send_request(
             "nova/streamDebug",
             json!({
-                "expression": "arr.stream().count()",
+                "expression": "list.stream().count()",
                 "frameId": frame_id,
                 "maxSampleSize": 2,
                 "maxTotalTimeMs": 10_000,

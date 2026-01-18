@@ -12,6 +12,7 @@ mod analyzer;
 mod applicability;
 mod entity;
 mod jpql;
+mod poison;
 
 pub use analyzer::JpaAnalyzer;
 pub use applicability::is_jpa_applicable;

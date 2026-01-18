@@ -11,7 +11,7 @@ use lsp_types::{
 
 use crate::support::{
     did_open_notification, exit_notification, initialize_request_empty, initialized_notification,
-    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    jsonrpc_request, jsonrpc_result, read_response_with_id, shutdown_request, stdio_server_lock,
     write_jsonrpc_message,
 };
 
@@ -121,7 +121,7 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
+    let locations = decode_goto_locations(jsonrpc_result(&resp));
     assert_eq!(locations.len(), 1);
     assert_eq!(locations[0].uri, impl_uri);
 
@@ -142,7 +142,7 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
         ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let mut locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
+    let mut locations = decode_goto_locations(jsonrpc_result(&resp));
     assert_eq!(locations.len(), 1);
     let loc = locations.pop().expect("location");
     assert_eq!(loc.uri, iface_uri);
@@ -163,7 +163,7 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
         ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let locations = decode_goto_locations(resp.get("result").cloned().unwrap_or_default());
+    let locations = decode_goto_locations(jsonrpc_result(&resp));
     assert_eq!(locations.len(), 1);
     assert_eq!(locations[0].uri, foo_uri);
 

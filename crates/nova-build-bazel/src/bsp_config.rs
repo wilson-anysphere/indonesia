@@ -37,10 +37,34 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
     workspace_root: &Path,
 ) -> Option<BspServerConfig> {
     let bsp_dir = workspace_root.join(".bsp");
-    let read_dir = fs::read_dir(&bsp_dir).ok()?;
+    let read_dir = match fs::read_dir(&bsp_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build.bazel",
+                bsp_dir = %bsp_dir.display(),
+                error = %err,
+                "failed to read .bsp directory"
+            );
+            return None;
+        }
+    };
 
     let mut json_paths = Vec::<PathBuf>::new();
-    for entry in read_dir.flatten() {
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    bsp_dir = %bsp_dir.display(),
+                    error = %err,
+                    "failed to read .bsp directory entry"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -60,7 +84,18 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
     for path in json_paths {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(_) => continue,
+            Err(err) => {
+                // Candidates can race with deletion; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build.bazel",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read .bsp connection file"
+                    );
+                }
+                continue;
+            }
         };
 
         // `serde_json` does not accept a UTF-8 BOM by default; handle it explicitly so discovery is
@@ -70,10 +105,26 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
             Err(_) if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) => {
                 match serde_json::from_slice(&bytes[3..]) {
                     Ok(parsed) => parsed,
-                    Err(_) => continue,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to decode .bsp connection file (UTF-8 BOM stripped)"
+                        );
+                        continue;
+                    }
                 }
             }
-            Err(_) => continue,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to decode .bsp connection file"
+                );
+                continue;
+            }
         };
 
         let Some(argv) = parsed.argv.as_deref() else {
@@ -90,7 +141,7 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
         let has_java = parsed
             .languages
             .as_deref()
-            .unwrap_or_default()
+            .unwrap_or(&[])
             .iter()
             .any(|lang| lang.eq_ignore_ascii_case("java"));
 

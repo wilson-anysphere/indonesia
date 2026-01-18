@@ -285,43 +285,67 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
     }
 
-    fn ignored_prefixes(&self) -> &Vec<PathBuf> {
-        self.ignored_prefixes.get_or_init(|| {
-            let ignore_file = self.root.join(".bazelignore");
-            let Ok(contents) = fs::read_to_string(&ignore_file) else {
-                // Bazel ignores `.git`-internal files/directories regardless of `.bazelignore`, and
-                // editors/file-watchers may still hand us such paths. Treat it as ignored by
-                // default to match Bazel's package universe.
-                return vec![PathBuf::from(".git")];
-            };
+    fn ignored_prefixes(&self) -> &[PathBuf] {
+        self.ignored_prefixes
+            .get_or_init(|| {
+                let ignore_file = self.root.join(".bazelignore");
+                let contents = match fs::read_to_string(&ignore_file) {
+                    Ok(contents) => Some(contents),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            path = %ignore_file.display(),
+                            error = %err,
+                            "failed to read .bazelignore; using default ignored prefixes"
+                        );
+                        None
+                    }
+                };
+                let Some(contents) = contents else {
+                    // Bazel ignores `.git`-internal files/directories regardless of `.bazelignore`, and
+                    // editors/file-watchers may still hand us such paths. Treat it as ignored by
+                    // default to match Bazel's package universe.
+                    return vec![PathBuf::from(".git")];
+                };
 
-            // Bazel also ignores `.git` regardless of `.bazelignore`.
-            let mut prefixes = vec![PathBuf::from(".git")];
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
+                // Bazel also ignores `.git` regardless of `.bazelignore`.
+                let mut prefixes = vec![PathBuf::from(".git")];
+                for line in contents.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+
+                    // `.bazelignore` entries are workspace-relative path prefixes. Normalize them
+                    // lexically (without hitting the filesystem) and ignore entries that escape the
+                    // workspace root or contain unsupported components.
+                    let raw = PathBuf::from(line);
+                    match normalize_workspace_relative_path(&raw) {
+                        Ok(prefix) => prefixes.push(prefix),
+                        Err(err) => {
+                            tracing::debug!(
+                                bazelignore_file = %ignore_file.display(),
+                                raw_prefix = %raw.display(),
+                                err = %err,
+                                "ignoring invalid .bazelignore entry"
+                            );
+                            continue;
+                        }
+                    }
                 }
 
-                // `.bazelignore` entries are workspace-relative path prefixes. Normalize them
-                // lexically (without hitting the filesystem) and ignore entries that escape the
-                // workspace root or contain unsupported components.
-                let raw = PathBuf::from(line);
-                match normalize_workspace_relative_path(&raw) {
-                    Ok(prefix) => prefixes.push(prefix),
-                    Err(_) => continue,
-                }
-            }
-
-            prefixes.sort();
-            prefixes.dedup();
-            prefixes
-        })
+                prefixes.sort();
+                prefixes.dedup();
+                prefixes
+            })
+            .as_slice()
     }
 
-    fn bazelrc_imports(&self) -> &Vec<PathBuf> {
+    fn bazelrc_imports(&self) -> &[PathBuf] {
         self.bazelrc_imports
             .get_or_init(|| bazelrc_imported_files(&self.root))
+            .as_slice()
     }
 
     fn is_ignored_workspace_path(&self, workspace_rel: &Path) -> bool {
@@ -1300,8 +1324,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) -> Result<()> {
+        use std::io::ErrorKind;
+
         let mut changed_norm = Vec::with_capacity(changed.len());
         let mut root_canon: Option<PathBuf> = None;
+        let mut logged_root_canon_error = false;
+        let mut logged_ancestor_canon_error = false;
 
         for path in changed {
             let abs = if path.is_absolute() {
@@ -1328,7 +1356,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         )
                     })
                 });
-                root_canon = root_canon_result.as_ref().ok().cloned();
+                match root_canon_result.as_ref() {
+                    Ok(root) => root_canon = Some(root.clone()),
+                    Err(err) => {
+                        if !logged_root_canon_error {
+                            logged_root_canon_error = true;
+                            tracing::debug!(
+                                target = "nova.build_bazel",
+                                root = %self.root.display(),
+                                error = %err,
+                                "failed to canonicalize Bazel workspace root for change normalization"
+                            );
+                        }
+                    }
+                }
             }
 
             if let Some(root_canon) = &root_canon {
@@ -1349,13 +1390,28 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     ancestor = parent;
                 }
                 if ancestor.exists() {
-                    if let Ok(ancestor_canon) = fs::canonicalize(ancestor) {
-                        if let Ok(remainder) = abs.strip_prefix(ancestor) {
-                            let abs_canon = ancestor_canon.join(remainder);
-                            if let Ok(rel) = abs_canon.strip_prefix(root_canon) {
-                                changed_norm
-                                    .push(normalize_absolute_path_lexically(&self.root.join(rel)));
-                                continue;
+                    match fs::canonicalize(ancestor) {
+                        Ok(ancestor_canon) => {
+                            if let Ok(remainder) = abs.strip_prefix(ancestor) {
+                                let abs_canon = ancestor_canon.join(remainder);
+                                if let Ok(rel) = abs_canon.strip_prefix(root_canon) {
+                                    changed_norm.push(normalize_absolute_path_lexically(
+                                        &self.root.join(rel),
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            if err.kind() != ErrorKind::NotFound && !logged_ancestor_canon_error {
+                                logged_ancestor_canon_error = true;
+                                tracing::debug!(
+                                    target = "nova.build_bazel",
+                                    root = %self.root.display(),
+                                    path = %ancestor.display(),
+                                    error = %err,
+                                    "failed to canonicalize changed path ancestor for normalization"
+                                );
                             }
                         }
                     }
@@ -1810,8 +1866,39 @@ fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<Pat
 
     // Some repositories use symlinks or generated BUILD files; avoid failing hard.
     if package_path.exists() {
-        if let Ok(read_dir) = fs::read_dir(&package_path) {
-            for entry in read_dir.flatten() {
+        let read_dir = match fs::read_dir(&package_path) {
+            Ok(read_dir) => Some(read_dir),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    path = %package_path.display(),
+                    error = %err,
+                    "failed to scan Bazel package directory for BUILD files"
+                );
+                None
+            }
+        };
+        if let Some(read_dir) = read_dir {
+            let mut logged_entry_error = false;
+            for entry in read_dir {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => {
+                        if !logged_entry_error {
+                            tracing::debug!(
+                                target = "nova.build.bazel",
+                                path = %package_path.display(),
+                                error = %err,
+                                "failed to read directory entry while scanning for BUILD files"
+                            );
+                            logged_entry_error = true;
+                        }
+                        continue;
+                    }
+                };
+
                 let file_name = entry.file_name();
                 let file_name = file_name.to_string_lossy();
                 if file_name == "BUILD" || file_name == "BUILD.bazel" {
@@ -1839,8 +1926,39 @@ fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(read_dir) = fs::read_dir(workspace_root) {
-        for entry in read_dir.flatten() {
+    let read_dir = match fs::read_dir(workspace_root) {
+        Ok(read_dir) => Some(read_dir),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build.bazel",
+                workspace_root = %workspace_root.display(),
+                error = %err,
+                "failed to scan workspace root for bazel config files"
+            );
+            None
+        }
+    };
+    if let Some(read_dir) = read_dir {
+        let mut logged_entry_error = false;
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    if !logged_entry_error {
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            workspace_root = %workspace_root.display(),
+                            error = %err,
+                            "failed to read directory entry while scanning for bazel config files"
+                        );
+                        logged_entry_error = true;
+                    }
+                    continue;
+                }
+            };
+
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
             if !file_name.starts_with(".bazelrc.") {
@@ -1863,8 +1981,39 @@ fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut rc_files = Vec::<PathBuf>::new();
     rc_files.push(workspace_root.join(".bazelrc"));
 
-    if let Ok(read_dir) = fs::read_dir(workspace_root) {
-        for entry in read_dir.flatten() {
+    let read_dir = match fs::read_dir(workspace_root) {
+        Ok(read_dir) => Some(read_dir),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build.bazel",
+                workspace_root = %workspace_root.display(),
+                error = %err,
+                "failed to scan workspace root for .bazelrc fragments"
+            );
+            None
+        }
+    };
+    if let Some(read_dir) = read_dir {
+        let mut logged_entry_error = false;
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    if !logged_entry_error {
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            workspace_root = %workspace_root.display(),
+                            error = %err,
+                            "failed to read directory entry while scanning for .bazelrc fragments"
+                        );
+                        logged_entry_error = true;
+                    }
+                    continue;
+                }
+            };
+
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
             if file_name.starts_with(".bazelrc.") {
@@ -1889,7 +2038,15 @@ fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
         // Best-effort: ignore missing/unreadable files and parse failures.
         let bytes = match fs::read(&rc_path) {
             Ok(bytes) => bytes,
-            Err(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                tracing::debug!(
+                    rc_path = %rc_path.display(),
+                    err = %err,
+                    "failed to read .bazelrc while discovering imports"
+                );
+                continue;
+            }
         };
         let contents = String::from_utf8_lossy(&bytes);
 

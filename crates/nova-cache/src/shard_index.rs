@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CacheError;
 use crate::util::{
-    atomic_write, bincode_deserialize, bincode_serialize, BINCODE_PAYLOAD_LIMIT_BYTES,
+    atomic_write, bincode_deserialize, bincode_serialize, remove_file_best_effort,
+    BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 
 const SHARD_INDEX_CACHE_MAGIC: [u8; 8] = *b"NOVASHRD";
@@ -235,12 +236,16 @@ pub fn load_shard_index(
 
 fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice = bytes.get(offset..offset + 4)?;
-    Some(u32::from_le_bytes(slice.try_into().ok()?))
+    let mut out = [0u8; 4];
+    out.copy_from_slice(slice);
+    Some(u32::from_le_bytes(out))
 }
 
 fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
     let slice = bytes.get(offset..offset + 8)?;
-    Some(u64::from_le_bytes(slice.try_into().ok()?))
+    let mut out = [0u8; 8];
+    out.copy_from_slice(slice);
+    Some(u64::from_le_bytes(out))
 }
 
 fn fixint_symbols_len_in_versioned_wrapper(bytes: &[u8]) -> Option<u64> {
@@ -307,7 +312,7 @@ fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {
     };
 
     if meta.file_type().is_symlink() {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "shard_index.symlink");
         emit_cache_diagnostic(
             shard_id,
             path,
@@ -363,16 +368,17 @@ fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {
 }
 
 fn emit_cache_diagnostic(shard_id: ShardId, path: &Path, message: std::fmt::Arguments<'_>) {
-    // Prefer tracing when it's configured, but fall back to stderr in binaries
-    // (like `nova-worker`) that don't install a subscriber.
-    if tracing::enabled!(tracing::Level::WARN) {
-        tracing::warn!(
-            target: "nova.cache",
-            shard_id,
-            path = %path.display(),
-            "{message}"
-        );
-    } else {
+    tracing::warn!(
+        target: "nova.cache",
+        shard_id,
+        path = %path.display(),
+        "{message}"
+    );
+
+    // Unit tests don't always install a subscriber; fall back to stderr to keep
+    // failures diagnosable when `tracing` is effectively a no-op.
+    #[cfg(test)]
+    if !tracing::enabled!(tracing::Level::WARN) {
         eprintln!(
             "shard index cache miss (shard_id={shard_id}, path={}): {message}",
             path.display()

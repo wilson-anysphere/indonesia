@@ -29,7 +29,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
             root_rs_files.push(
                 path.file_name()
-                    .unwrap_or_default()
+                    .expect("test file path missing file name")
                     .to_string_lossy()
                     .into_owned(),
             );
@@ -67,7 +67,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let file_name = path
                 .file_name()
-                .unwrap_or_default()
+                .expect("test suite file path missing file name")
                 .to_string_lossy()
                 .into_owned();
             if file_name != "mod.rs" {

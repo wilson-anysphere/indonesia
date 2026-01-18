@@ -25,7 +25,29 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+
+static DERIVED_CACHE_KEY_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+static DERIVED_CACHE_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+static DERIVED_CACHE_STORE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+fn log_derived_cache_error_once<E: std::fmt::Display>(
+    once: &'static OnceLock<()>,
+    kind: &'static str,
+    query_name: &str,
+    query_schema_version: u32,
+    err: &E,
+) {
+    if once.set(()).is_ok() {
+        tracing::debug!(
+            target = "nova.db",
+            query_name,
+            query_schema_version,
+            error = %err,
+            "{kind}"
+        );
+    }
+}
 
 /// Two-tier query cache with a hot LRU and warm clock (second-chance) policy.
 #[derive(Debug)]
@@ -111,7 +133,7 @@ impl QueryCache {
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<Vec<u8>>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
 
         if let Some(value) = inner.hot.get(key) {
             return Some(value);
@@ -138,9 +160,28 @@ impl QueryCache {
     }
 
     pub fn insert(&self, key: String, value: Arc<Vec<u8>>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         inner.hot.insert(key, value);
         self.update_tracker_locked(&inner);
+    }
+
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, QueryCacheInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.db",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
     }
 
     fn total_bytes(inner: &QueryCacheInner) -> u64 {
@@ -180,7 +221,7 @@ impl MemoryEvictor for QueryCache {
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let before = Self::total_bytes(&inner);
 
         if request.target_bytes == 0 {
@@ -202,7 +243,7 @@ impl MemoryEvictor for QueryCache {
         let Some(store) = &self.disk else {
             return Ok(());
         };
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
         // Best-effort: persistent cache writes should never impact correctness.
         let _ = inner.warm.flush_all(store);
         Ok(())
@@ -407,9 +448,21 @@ impl PersistentQueryCache {
         }
 
         let derived = self.derived.as_ref()?;
-        let bytes: Vec<u8> = derived
-            .load(query_name, query_schema_version, args, input_fingerprints)
-            .ok()??;
+        let bytes: Vec<u8> =
+            match derived.load(query_name, query_schema_version, args, input_fingerprints) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => return None,
+                Err(err) => {
+                    log_derived_cache_error_once(
+                        &DERIVED_CACHE_LOAD_ERROR_LOGGED,
+                        "derived query cache load failed; treating as cache miss",
+                        query_name,
+                        query_schema_version,
+                        &err,
+                    );
+                    return None;
+                }
+            };
         let value = Arc::new(bytes);
         if let Some(memory) = &self.memory {
             memory.insert(cache_key, value.clone());
@@ -437,13 +490,21 @@ impl PersistentQueryCache {
         let Some(derived) = self.derived.as_ref() else {
             return;
         };
-        let _ = derived.store(
+        if let Err(err) = derived.store(
             query_name,
             query_schema_version,
             args,
             input_fingerprints,
             &*value,
-        );
+        ) {
+            log_derived_cache_error_once(
+                &DERIVED_CACHE_STORE_ERROR_LOGGED,
+                "derived query cache store failed; ignoring",
+                query_name,
+                query_schema_version,
+                &err,
+            );
+        }
     }
 
     /// Load a memoized value from disk or compute + persist it.
@@ -468,20 +529,36 @@ impl PersistentQueryCache {
             return compute();
         };
 
-        if let Ok(Some(value)) =
-            derived.load(query_name, query_schema_version, args, input_fingerprints)
-        {
-            return value;
+        match derived.load(query_name, query_schema_version, args, input_fingerprints) {
+            Ok(Some(value)) => return value,
+            Ok(None) => {}
+            Err(err) => {
+                log_derived_cache_error_once(
+                    &DERIVED_CACHE_LOAD_ERROR_LOGGED,
+                    "derived query cache load failed; treating as cache miss",
+                    query_name,
+                    query_schema_version,
+                    &err,
+                );
+            }
         }
 
         let value = compute();
-        let _ = derived.store(
+        if let Err(err) = derived.store(
             query_name,
             query_schema_version,
             args,
             input_fingerprints,
             &value,
-        );
+        ) {
+            log_derived_cache_error_once(
+                &DERIVED_CACHE_STORE_ERROR_LOGGED,
+                "derived query cache store failed; ignoring",
+                query_name,
+                query_schema_version,
+                &err,
+            );
+        }
         value
     }
 }
@@ -492,13 +569,24 @@ fn cache_key<T: Serialize>(
     args: &T,
     input_fingerprints: &BTreeMap<String, Fingerprint>,
 ) -> Option<String> {
-    let fingerprint = DerivedArtifactCache::key_fingerprint(
+    let fingerprint = match DerivedArtifactCache::key_fingerprint(
         query_name,
         query_schema_version,
         args,
         input_fingerprints,
-    )
-    .ok()?;
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            log_derived_cache_error_once(
+                &DERIVED_CACHE_KEY_ERROR_LOGGED,
+                "failed to compute derived query cache key; treating as cache miss",
+                query_name,
+                query_schema_version,
+                &err,
+            );
+            return None;
+        }
+    };
     Some(fingerprint.as_str().to_string())
 }
 

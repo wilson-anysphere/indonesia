@@ -197,6 +197,13 @@ pub struct DemandExprTypeckResult {
 }
 
 fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
+    fn i32_from_i64(v: i64) -> Option<i32> {
+        match i32::try_from(v) {
+            Ok(v32) => Some(v32),
+            Err(_) => None,
+        }
+    }
+
     match &body.exprs[expr] {
         HirExpr::Literal {
             kind: LiteralKind::Int,
@@ -234,7 +241,7 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                 (UnaryOp::Plus, Some(v)) => Some(v),
                 (UnaryOp::Minus, Some(nova_types::ConstValue::Int(v))) => {
                     // Java integer constants use 32-bit two's complement arithmetic (JLS 4.2.2).
-                    let v32 = i32::try_from(v).ok()?;
+                    let v32 = i32_from_i64(v)?;
                     Some(nova_types::ConstValue::Int(i64::from(v32.wrapping_neg())))
                 }
                 (UnaryOp::Minus, None) => {
@@ -248,7 +255,10 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                         if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
                             return None;
                         }
-                        text.parse().ok()
+                        match text.parse::<u64>() {
+                            Ok(value) => Some(value),
+                            Err(_) => None,
+                        }
                     }
 
                     match &body.exprs[*expr] {
@@ -279,7 +289,7 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                 }
                 (UnaryOp::BitNot, Some(nova_types::ConstValue::Int(v))) => {
                     // Java bitwise operators on `int` operate on 32-bit two's complement values.
-                    let v32 = i32::try_from(v).ok()?;
+                    let v32 = i32_from_i64(v)?;
                     Some(nova_types::ConstValue::Int(i64::from(!v32)))
                 }
                 (UnaryOp::Not, Some(nova_types::ConstValue::Boolean(v))) => {
@@ -312,23 +322,23 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                 let rhs = const_value_for_expr(body, *rhs)?;
                 match (*op, lhs, rhs) {
                     (BinaryOp::Add, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32.wrapping_add(b32))))
                     }
                     (BinaryOp::Sub, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32.wrapping_sub(b32))))
                     }
                     (BinaryOp::Mul, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32.wrapping_mul(b32))))
                     }
                     (BinaryOp::Div, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         if b32 == 0 {
                             return None;
                         }
@@ -341,8 +351,8 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                         Some(ConstValue::Int(i64::from(out)))
                     }
                     (BinaryOp::Rem, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         if b32 == 0 {
                             return None;
                         }
@@ -355,18 +365,18 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                         Some(ConstValue::Int(i64::from(out)))
                     }
                     (BinaryOp::BitAnd, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32 & b32)))
                     }
                     (BinaryOp::BitOr, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32 | b32)))
                     }
                     (BinaryOp::BitXor, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Int(i64::from(a32 ^ b32)))
                     }
                     (BinaryOp::BitAnd, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
@@ -379,32 +389,32 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                         Some(ConstValue::Boolean(a ^ b))
                     }
                     (BinaryOp::Shl, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         let shift = (b32 as u32) & 0x1f;
                         Some(ConstValue::Int(i64::from(a32.wrapping_shl(shift))))
                     }
                     (BinaryOp::Shr, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         let shift = (b32 as u32) & 0x1f;
                         Some(ConstValue::Int(i64::from(a32 >> shift)))
                     }
                     (BinaryOp::UShr, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         let shift = (b32 as u32) & 0x1f;
                         let out = ((a32 as u32) >> shift) as i32;
                         Some(ConstValue::Int(i64::from(out)))
                     }
                     (BinaryOp::EqEq, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 == b32))
                     }
                     (BinaryOp::NotEq, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 != b32))
                     }
                     (BinaryOp::EqEq, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
@@ -414,23 +424,23 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                         Some(ConstValue::Boolean(a != b))
                     }
                     (BinaryOp::Less, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 < b32))
                     }
                     (BinaryOp::LessEq, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 <= b32))
                     }
                     (BinaryOp::Greater, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 > b32))
                     }
                     (BinaryOp::GreaterEq, ConstValue::Int(a), ConstValue::Int(b)) => {
-                        let a32 = i32::try_from(a).ok()?;
-                        let b32 = i32::try_from(b).ok()?;
+                        let a32 = i32_from_i64(a)?;
+                        let b32 = i32_from_i64(b)?;
                         Some(ConstValue::Boolean(a32 >= b32))
                     }
                     _ => None,
@@ -6548,7 +6558,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
                             return None;
                         }
-                        text.parse().ok()
+                        match text.parse::<u64>() {
+                            Ok(value) => Some(value),
+                            Err(_) => None,
+                        }
                     }
 
                     let replacement = match &self.body.exprs[*operand] {
@@ -7050,7 +7063,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             self.switch_yield_stack.push(Vec::new());
                             let expected_return = self.current_expected_return.clone();
                             self.check_stmt(loader, *stmt, &expected_return);
-                            let yields = self.switch_yield_stack.pop().unwrap_or_default();
+                            let yields = self
+                                .switch_yield_stack
+                                .pop()
+                                .expect("switch_yield_stack entry missing");
                             yield_types.extend(yields);
                         }
                     }

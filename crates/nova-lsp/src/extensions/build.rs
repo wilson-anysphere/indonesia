@@ -2792,7 +2792,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_maven() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard =
+            crate::poison::lock(env_lock(), "extensions/build/test/target_classpath_maven");
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -2863,7 +2864,8 @@ echo \"null\"\n",
     #[test]
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_gradle() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard =
+            crate::poison::lock(env_lock(), "extensions/build/test/target_classpath_gradle");
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -2908,7 +2910,10 @@ echo \"null\"\n",
     #[test]
     #[cfg(unix)]
     fn project_model_uses_batch_gradle_task_for_multi_module_workspaces() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::poison::lock(
+            env_lock(),
+            "extensions/build/test/project_model_uses_batch_gradle_task",
+        );
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -3049,7 +3054,10 @@ esac\n",
     #[test]
     #[cfg(unix)]
     fn project_model_uses_batch_gradle_task_with_settings_project_dir_overrides() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::poison::lock(
+            env_lock(),
+            "extensions/build/test/project_model_batch_gradle_task_project_dir_overrides",
+        );
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -3184,7 +3192,10 @@ esac\n",
     #[test]
     #[cfg(unix)]
     fn project_model_resolves_buildsrc_via_gradle_wrapper_project_dir() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::poison::lock(
+            env_lock(),
+            "extensions/build/test/project_model_resolves_buildsrc_via_gradle_wrapper",
+        );
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -3370,7 +3381,10 @@ fi\n",
     #[test]
     #[cfg(unix)]
     fn project_model_uses_gradle_project_path_from_settings_project_dir_override() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::poison::lock(
+            env_lock(),
+            "extensions/build/test/project_model_gradle_project_path_project_dir_override",
+        );
         let original_path = path_env_or_empty();
 
         let tmp = TempDir::new().unwrap();
@@ -3464,7 +3478,10 @@ esac\n",
     #[test]
     #[cfg(unix)]
     fn project_model_uses_gradle_project_path_for_include_flat_modules() {
-        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::poison::lock(
+            env_lock(),
+            "extensions/build/test/project_model_gradle_project_path_include_flat",
+        );
         let original_path = path_env_or_empty();
 
         // `includeFlat` references a sibling directory of the Gradle workspace root.

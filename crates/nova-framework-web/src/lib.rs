@@ -81,7 +81,15 @@ pub fn extract_http_endpoints_in_dir(
     for file in java_files {
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                tracing::debug!(
+                    path = %file.display(),
+                    err = %err,
+                    "failed to read Java source while extracting HTTP endpoints"
+                );
+                continue;
+            }
         };
 
         let rel = file
@@ -107,7 +115,15 @@ pub fn extract_jaxrs_endpoints_in_dir(
     for file in java_files {
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                tracing::debug!(
+                    path = %file.display(),
+                    err = %err,
+                    "failed to read Java source while extracting JAX-RS endpoints"
+                );
+                continue;
+            }
         };
 
         let rel = file
@@ -233,7 +249,7 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
                     .iter()
                     .find(|ann| ann.name == "RequestMapping")
                     .and_then(|ann| ann.args.as_deref().map(extract_spring_mapping_paths))
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 pending_annotations.clear();
                 in_class = true;
                 class_body_started = false;
@@ -307,7 +323,7 @@ fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<Pars
             .args
             .as_deref()
             .map(|args| extract_mapping_paths(args, path_keys))
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
         return Some(ParsedMapping {
             methods: vec![method.to_string()],
             paths,
@@ -324,7 +340,7 @@ fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<Pars
             .args
             .as_deref()
             .map(|args| extract_mapping_paths(args, &["path", "value"]))
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         return Some(ParsedMapping { methods, paths });
     }
@@ -398,7 +414,7 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
                     .iter()
                     .find(|ann| ann.name == "Controller")
                     .and_then(|ann| ann.args.as_deref().map(extract_micronaut_mapping_paths))
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 pending_annotations.clear();
                 in_class = true;
                 class_body_started = false;
@@ -466,7 +482,7 @@ fn parse_micronaut_method_mapping(annotations: &[PendingAnnotation]) -> Option<P
             .args
             .as_deref()
             .map(|args| extract_mapping_paths(args, &["uri", "value"]))
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
         return Some(ParsedMapping {
             methods: vec![method.to_string()],
             paths: path,
@@ -791,12 +807,29 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
 }
 
 pub fn looks_like_jaxrs_project(root: &Path) -> bool {
+    let mut logged_read_error = false;
     for file in ["pom.xml", "build.gradle", "build.gradle.kts"] {
         let path = root.join(file);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if content.contains("javax.ws.rs") || content.contains("jakarta.ws.rs") {
-                return true;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => Some(content),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                if !logged_read_error {
+                    tracing::debug!(
+                        target = "nova.framework.web",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read build file while checking for JAX-RS usage"
+                    );
+                    logged_read_error = true;
+                }
+                None
             }
+        };
+        if content.as_ref().is_some_and(|content| {
+            content.contains("javax.ws.rs") || content.contains("jakarta.ws.rs")
+        }) {
+            return true;
         }
     }
     false

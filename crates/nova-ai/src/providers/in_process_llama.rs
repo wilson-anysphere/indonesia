@@ -1,7 +1,7 @@
 #![cfg(feature = "local-llm")]
 
 use crate::{
-    providers::AiProvider,
+    providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest, ChatRole},
     AiError,
 };
@@ -19,11 +19,13 @@ use nova_config::{AiProviderConfig, InProcessLlamaConfig};
 use std::{
     num::NonZeroU32,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
 
 const MAX_CONTEXT_SIZE_TOKENS: usize = 8_192;
+
+static IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED: OnceLock<()> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct InProcessLlamaProvider {
@@ -96,7 +98,7 @@ impl InProcessLlamaProvider {
 }
 
 #[async_trait]
-impl AiProvider for InProcessLlamaProvider {
+impl LlmProvider for InProcessLlamaProvider {
     async fn chat(
         &self,
         request: ChatRequest,
@@ -104,9 +106,18 @@ impl AiProvider for InProcessLlamaProvider {
     ) -> Result<String, AiError> {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = inner
-                .lock()
-                .expect("in-process llama provider mutex poisoned");
+            let mut guard = match inner.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    if IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.ai",
+                            "in-process llama provider mutex poisoned; continuing with inner value"
+                        );
+                    }
+                    err.into_inner()
+                }
+            };
             guard.complete(request, cancel, None)
         })
         .await
@@ -122,9 +133,18 @@ impl AiProvider for InProcessLlamaProvider {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, AiError>>();
 
         let _handle = tokio::task::spawn_blocking(move || {
-            let mut guard = inner
-                .lock()
-                .expect("in-process llama provider mutex poisoned");
+            let mut guard = match inner.lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    if IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.ai",
+                            "in-process llama provider mutex poisoned; continuing with inner value"
+                        );
+                    }
+                    err.into_inner()
+                }
+            };
             let result = guard.complete(request, cancel, Some(&tx));
             if let Err(err) = result {
                 let _ = tx.send(Err(err));
@@ -177,6 +197,8 @@ impl Inner {
         cancel: CancellationToken,
         stream: Option<&tokio::sync::mpsc::UnboundedSender<Result<String, AiError>>>,
     ) -> Result<String, AiError> {
+        static AVAILABLE_PARALLELISM_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let max_new_tokens = request
             .max_tokens
             .ok_or_else(|| AiError::InvalidConfig("missing max_tokens".into()))?;
@@ -195,7 +217,19 @@ impl Inner {
             .cfg
             .threads
             .and_then(|t| if t == 0 { None } else { Some(t) })
-            .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
+            .or_else(|| match std::thread::available_parallelism() {
+                Ok(n) => Some(n.get()),
+                Err(err) => {
+                    if AVAILABLE_PARALLELISM_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.ai",
+                            error = %err,
+                            "failed to query available parallelism; using default llama thread settings"
+                        );
+                    }
+                    None
+                }
+            })
         {
             let threads = i32::try_from(threads.min(i32::MAX as usize)).unwrap_or(i32::MAX);
             ctx_params = ctx_params

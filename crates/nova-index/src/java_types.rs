@@ -46,7 +46,7 @@ impl ClassIndex {
                             origin: root.origin,
                         });
 
-                    let pkg = package.clone().unwrap_or_default();
+                    let pkg = package.clone().unwrap_or_else(String::new);
                     index.packages.insert(pkg.clone());
                     index
                         .package_to_types

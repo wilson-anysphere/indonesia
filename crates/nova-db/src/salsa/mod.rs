@@ -74,8 +74,7 @@ use std::time::Duration;
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
 
-use nova_core::ClassId;
-use nova_core::ProjectDatabase;
+use nova_core::{panic_payload_to_str, ClassId, ProjectDatabase};
 use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
@@ -537,7 +536,13 @@ impl SalsaMemoFootprint {
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, SalsaMemoFootprintInner> {
         match self.inner.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.db",
+                    "mutex poisoned; recovering salsa memo footprint state"
+                );
+                poisoned.into_inner()
+            }
         }
     }
 
@@ -679,7 +684,13 @@ impl SalsaInputFootprint {
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, SalsaInputFootprintInner> {
         match self.inner.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.db",
+                    "mutex poisoned; recovering salsa input footprint state"
+                );
+                poisoned.into_inner()
+            }
         }
     }
 
@@ -1157,7 +1168,14 @@ impl InputIndexTracker {
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, InputIndexTrackerInner> {
         match self.inner.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.db",
+                    name = %self.name,
+                    "mutex poisoned; recovering input index tracker state"
+                );
+                poisoned.into_inner()
+            }
         }
     }
 
@@ -1632,7 +1650,17 @@ pub struct RootDatabase {
 
 impl Default for RootDatabase {
     fn default() -> Self {
-        let project_root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let project_root = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.db",
+                    error = %err,
+                    "failed to get current directory; falling back to '.'"
+                );
+                Path::new(".").to_path_buf()
+            }
+        };
         Self::new_with_persistence(project_root, PersistenceConfig::from_env())
     }
 }
@@ -2042,10 +2070,23 @@ impl MemoryEvictor for SalsaMemoEvictor {
             open_docs: Arc::new(OpenDocuments::default()),
         };
 
+        static PERSIST_PROJECT_INDEXES_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         for project in projects {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _ = db.persist_project_indexes(project);
-            }));
+            })) {
+                Ok(()) => {}
+                Err(panic) => {
+                    if PERSIST_PROJECT_INDEXES_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.db",
+                            project = project.to_raw(),
+                            panic = %panic_payload_to_str(panic.as_ref()),
+                            "persist_project_indexes panicked under memory pressure (best effort)"
+                        );
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -2090,8 +2131,9 @@ impl MemoryEvictor for SalsaMemoEvictor {
         // Rebuilding would ordinarily also drop `#[ra_salsa::interned]` tables.
         // To keep interned IDs stable we snapshot+restore the relevant interned
         // entries (see `InternedTablesSnapshot`).
+        static EVICTOR_SWAP_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let mut swapped = false;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs
             // lock while applying them to the fresh database.
@@ -2127,7 +2169,18 @@ impl MemoryEvictor for SalsaMemoEvictor {
             }
             *db = fresh;
             swapped = true;
-        }));
+        })) {
+            Ok(()) => {}
+            Err(panic) => {
+                if EVICTOR_SWAP_PANIC_LOGGED.set(()).is_ok() {
+                    tracing::error!(
+                        target = "nova.db",
+                        panic = %panic_payload_to_str(panic.as_ref()),
+                        "salsa memo evictor panicked while swapping database (best effort)"
+                    );
+                }
+            }
+        }
 
         if swapped {
             // Clear tracked footprint; memos will be re-recorded as queries
@@ -2439,9 +2492,25 @@ impl Database {
                 None
             } else {
                 inputs.file_ids_dirty = false;
-                Some(Arc::new(
-                    inputs.file_ids.iter().copied().collect::<Vec<_>>(),
-                ))
+                // `ra_salsa` input queries panic when a value hasn't been set yet. We may observe
+                // intermediate states while hosts update many per-file inputs; keep `all_file_ids`
+                // restricted to file IDs whose core per-file inputs are fully initialized.
+                let safe_ids: Vec<FileId> = inputs
+                    .file_ids
+                    .iter()
+                    .copied()
+                    .filter(|&file| {
+                        inputs.file_exists.contains_key(&file)
+                            && inputs.file_content.contains_key(&file)
+                            && inputs.file_prev_content.contains_key(&file)
+                            && inputs.file_last_edit.contains_key(&file)
+                            && inputs.file_is_dirty.contains_key(&file)
+                            && inputs.file_rel_path.contains_key(&file)
+                            && inputs.file_project.contains_key(&file)
+                            && inputs.source_root.contains_key(&file)
+                    })
+                    .collect();
+                Some(Arc::new(safe_ids))
             }
         };
 
@@ -2560,24 +2629,87 @@ impl Database {
         self.input_footprint
             .record_file_text(file, &content, &content, None, None);
 
-        let init_dirty = {
+        let default_project = ProjectId::from_raw(0);
+        let default_root = SourceRootId::from_raw(0);
+
+        let (
+            init_exists,
+            init_dirty,
+            set_default_project,
+            set_default_root,
+            set_default_rel_path,
+            rel_path,
+        ) = {
             let mut inputs = self.inputs.lock();
+            let init_exists = match inputs.file_exists.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(true);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+
+            let set_default_project = !inputs.file_project.contains_key(&file);
+            if set_default_project {
+                inputs.file_project.insert(file, default_project);
+            }
+
+            let set_default_root = !inputs.source_root.contains_key(&file);
+            if set_default_root {
+                inputs.source_root.insert(file, default_root);
+            }
+
+            let (set_default_rel_path, rel_path) =
+                if let Some(path) = inputs.file_rel_path.get(&file) {
+                    (false, path.clone())
+                } else {
+                    let path = Arc::new(format!("file-{}.java", file.to_raw()));
+                    inputs.file_rel_path.insert(file, path.clone());
+                    (true, path)
+                };
+
             inputs.file_content.insert(file, content.clone());
             inputs.file_prev_content.insert(file, content.clone());
             inputs.file_last_edit.insert(file, None);
             if inputs.file_ids.insert(file) {
                 inputs.file_ids_dirty = true;
             }
-            match inputs.file_is_dirty.entry(file) {
+            let init_dirty = match inputs.file_is_dirty.entry(file) {
                 Entry::Vacant(entry) => {
                     entry.insert(false);
                     true
                 }
                 Entry::Occupied(_) => false,
-            }
+            };
+            (
+                init_exists,
+                init_dirty,
+                set_default_project,
+                set_default_root,
+                set_default_rel_path,
+                rel_path,
+            )
         };
 
+        if set_default_rel_path {
+            self.input_footprint
+                .record_file_rel_path_len(file, rel_path.len() as u64);
+        }
+
         let mut db = self.inner.lock();
+        if init_exists {
+            db.set_file_exists(file, true);
+        }
+        if set_default_project {
+            db.set_file_project(file, default_project);
+        }
+        if set_default_root {
+            db.set_source_root(file, default_root);
+        }
+        if set_default_rel_path {
+            db.set_file_rel_path(file, Arc::clone(&rel_path));
+            db.set_file_path_arc(file, rel_path);
+        }
         if init_dirty {
             db.set_file_is_dirty(file, false);
         }
@@ -3204,8 +3336,9 @@ impl Database {
         // NB: This is necessarily coarse (see `SalsaMemoEvictor::evict` for
         // details). We rebuild the underlying Salsa database because `ra_salsa`
         // doesn't currently provide a production-safe per-key memo eviction API.
+        static EVICT_MEMOS_SWAP_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let mut swapped = false;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs
             // lock while applying them to the fresh database.
@@ -3241,7 +3374,19 @@ impl Database {
             }
             *db = fresh;
             swapped = true;
-        }));
+        })) {
+            Ok(()) => {}
+            Err(panic) => {
+                if EVICT_MEMOS_SWAP_PANIC_LOGGED.set(()).is_ok() {
+                    tracing::error!(
+                        target = "nova.db",
+                        pressure = ?pressure,
+                        panic = %panic_payload_to_str(panic.as_ref()),
+                        "evict_salsa_memos panicked while swapping database (best effort)"
+                    );
+                }
+            }
+        }
         if swapped {
             self.memo_footprint.clear();
         }
@@ -3460,6 +3605,8 @@ impl Database {
         // disk), the in-memory indexes would not correspond to a stable on-disk snapshot and
         // could be reused incorrectly on the next warm-start. Treat persistence as a no-op in
         // that case.
+        static INDEX_PERSIST_METADATA_FINGERPRINT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         for &file in snap.project_files(project).iter() {
             if !snap.file_exists(file) {
                 continue;
@@ -3489,8 +3636,29 @@ impl Database {
             path_to_file.insert(rel_path.clone(), file);
 
             let full_path = cache_dir.project_root().join(&rel_path);
-            let fp = Fingerprint::from_file_metadata(full_path)
-                .unwrap_or_else(|_| snap.file_fingerprint(file).as_ref().clone());
+            let fp = match Fingerprint::from_file_metadata(&full_path) {
+                Ok(fp) => fp,
+                Err(err) => {
+                    match &err {
+                        nova_cache::CacheError::Io(io_err)
+                            if io_err.kind() == std::io::ErrorKind::NotFound => {}
+                        _ => {
+                            if INDEX_PERSIST_METADATA_FINGERPRINT_ERROR_LOGGED
+                                .set(())
+                                .is_ok()
+                            {
+                                tracing::debug!(
+                                    target = "nova.db",
+                                    path = %full_path.display(),
+                                    error = %err,
+                                    "failed to fingerprint file by mtime/size for persisted index metadata; falling back to content fingerprint"
+                                );
+                            }
+                        }
+                    }
+                    snap.file_fingerprint(file).as_ref().clone()
+                }
+            };
             stamp_map.insert(rel_path, fp);
         }
 
@@ -3507,9 +3675,24 @@ impl Database {
         let metadata_exists = metadata_path.exists() || cache_dir.metadata_bin_path().exists();
 
         let mut invalidated_files = if metadata_exists {
-            CacheMetadataArchive::open(&metadata_path)
-                .ok()
-                .flatten()
+            static METADATA_ARCHIVE_OPEN_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+            let archive = match CacheMetadataArchive::open(&metadata_path) {
+                Ok(archive) => archive,
+                Err(err) => {
+                    if METADATA_ARCHIVE_OPEN_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.db",
+                            metadata_path = %metadata_path.display(),
+                            error = ?err,
+                            "failed to open cache metadata archive (best effort)"
+                        );
+                    }
+                    None
+                }
+            };
+
+            archive
                 .filter(|m| {
                     m.is_compatible() && m.project_hash() == cache_dir.project_hash().as_str()
                 })
@@ -3529,11 +3712,28 @@ impl Database {
         let mut content_fingerprints: BTreeMap<String, Fingerprint> = if indexing_all_files {
             BTreeMap::new()
         } else if metadata_exists {
-            CacheMetadata::load(&metadata_path)
-                .ok()
-                .filter(|m| m.is_compatible() && &m.project_hash == cache_dir.project_hash())
-                .map(|m| m.file_fingerprints)
-                .unwrap_or_default()
+            static METADATA_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+            match CacheMetadata::load(&metadata_path) {
+                Ok(metadata)
+                    if metadata.is_compatible()
+                        && &metadata.project_hash == cache_dir.project_hash() =>
+                {
+                    metadata.file_fingerprints
+                }
+                Ok(_) => BTreeMap::new(),
+                Err(err) => {
+                    if METADATA_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.db",
+                            metadata_path = %metadata_path.display(),
+                            error = ?err,
+                            "failed to load cache metadata (best effort)"
+                        );
+                    }
+                    BTreeMap::new()
+                }
+            }
         } else {
             BTreeMap::new()
         };
@@ -3750,15 +3950,17 @@ mod tests {
     use tempfile::TempDir;
 
     fn stat(db: &RootDatabase, query_name: &str) -> QueryStat {
-        db.query_stats()
+        *db.query_stats()
             .by_query
             .get(query_name)
-            .copied()
-            .unwrap_or_default()
+            .unwrap_or_else(|| panic!("missing query stats entry for `{query_name}`"))
     }
 
     fn executions(db: &RootDatabase, query_name: &str) -> u64 {
-        stat(db, query_name).executions
+        db.query_stats()
+            .by_query
+            .get(query_name)
+            .map_or(0, |stat| stat.executions)
     }
 
     fn expr_path(body: &Body, expr: ExprId) -> Option<String> {
@@ -4612,21 +4814,25 @@ class Foo {
 
         db.set_file_content(file1, Arc::new("abcd".to_string()));
         db.set_file_content(file2, Arc::new("hello!".to_string()));
+        let rel_path_1_bytes = format!("file-{}.java", file1.to_raw()).len() as u64;
+        let rel_path_2_bytes = format!("file-{}.java", file2.to_raw()).len() as u64;
         assert_eq!(
             manager.report().usage.other,
-            4 + 6,
-            "expected other usage to equal sum of file_content lengths"
+            4 + 6 + rel_path_1_bytes + rel_path_2_bytes,
+            "expected other usage to include file_content and implicit default rel paths"
         );
 
         // Replacing a file's content should update accounting incrementally.
         db.set_file_content(file1, Arc::new("a".to_string()));
-        assert_eq!(manager.report().usage.other, 1 + 6);
+        assert_eq!(
+            manager.report().usage.other,
+            1 + 6 + rel_path_1_bytes + rel_path_2_bytes
+        );
 
         // `set_file_text` also updates `file_content` and should be tracked.
         db.set_file_text(file2, "xyz");
-        let rel_path_bytes = format!("file-{}.java", file2.to_raw()).len() as u64;
         let project_files_bytes = std::mem::size_of::<FileId>() as u64;
-        let expected = 1 + 3 + rel_path_bytes + project_files_bytes;
+        let expected = 1 + 3 + rel_path_1_bytes + rel_path_2_bytes + project_files_bytes;
         assert_eq!(manager.report().usage.other, expected);
         assert_eq!(db.salsa_input_bytes(), expected);
     }
@@ -4944,7 +5150,8 @@ class Foo {
 
         let fake_jdk_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../nova-jdk/testdata/fake-jdk");
-        let fake_jdk_root = std::fs::canonicalize(&fake_jdk_root).unwrap_or(fake_jdk_root);
+        let fake_jdk_root = std::fs::canonicalize(&fake_jdk_root)
+            .expect("failed to canonicalize fake-jdk testdata path");
 
         let jdk = Arc::new(
             nova_jdk::JdkIndex::from_jdk_root_with_cache(fake_jdk_root, None)

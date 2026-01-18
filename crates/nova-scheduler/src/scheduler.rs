@@ -4,6 +4,8 @@ use rayon::ThreadPool;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, oneshot};
 
+use nova_core::panic_payload_to_str;
+
 use crate::{
     task::AsyncTask, task::BlockingTask, CancellationToken, Cancelled, ProgressSender,
     RequestContext, TaskError,
@@ -198,11 +200,23 @@ impl Scheduler {
         }
 
         let token_for_job = token.clone();
+        let pool_for_job = pool;
         let job = move || {
             let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_job)))
-                    .map_err(|_| TaskError::Panicked)
-                    .and_then(|result| result.map_err(TaskError::from));
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_job))) {
+                    Ok(Ok(value)) => Ok(value),
+                    Ok(Err(err)) => Err(TaskError::from(err)),
+                    Err(panic) => {
+                        let message = panic_payload_to_str(&*panic);
+                        tracing::error!(
+                            target = "nova.scheduler",
+                            pool = ?pool_for_job,
+                            panic = %message,
+                            "task panicked"
+                        );
+                        Err(TaskError::Panicked)
+                    }
+                };
             let _ = tx.send(result);
         };
 

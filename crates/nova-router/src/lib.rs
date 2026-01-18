@@ -567,9 +567,21 @@ struct InProcessRouter {
 
 impl InProcessRouter {
     fn new(layout: WorkspaceLayout) -> Self {
-        let scheduler = tokio::runtime::Handle::try_current()
-            .map(|handle| Scheduler::new_with_io_handle(SchedulerConfig::default(), handle))
-            .unwrap_or_else(|_| Scheduler::default());
+        let scheduler = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => Scheduler::new_with_io_handle(SchedulerConfig::default(), handle),
+            Err(err) => {
+                static SCHEDULER_INIT_ERROR_LOGGED: std::sync::OnceLock<()> =
+                    std::sync::OnceLock::new();
+                if SCHEDULER_INIT_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.router",
+                        error = %err,
+                        "no tokio runtime in scope; falling back to default scheduler"
+                    );
+                }
+                Scheduler::default()
+            }
+        };
         Self {
             layout,
             global_revision: AtomicU64::new(0),
@@ -1037,7 +1049,11 @@ impl DistributedRouter {
                         });
                     }
                     Err(_) => {
-                        let _ = worker.conn.shutdown().await;
+                        shutdown_connection_best_effort(
+                            &worker.conn,
+                            "router.index_shard.write_timeout",
+                        )
+                        .await;
                         return Err(anyhow!(
                             "timed out writing request to worker {} (shard {})",
                             worker.worker_id,
@@ -1072,7 +1088,11 @@ impl DistributedRouter {
                                 }
                             },
                             Err(_) => {
-                                let _ = worker.conn.shutdown().await;
+                                shutdown_connection_best_effort(
+                                    &worker.conn,
+                                    "router.index_shard.read_timeout",
+                                )
+                                .await;
                                 return Err(anyhow!(
                                     "timed out waiting for response from worker {} (shard {})",
                                     worker.worker_id,
@@ -1368,7 +1388,7 @@ impl DistributedRouter {
                     let _ = timeout(WORKER_SHUTDOWN_RPC_TIMEOUT, pending.wait()).await;
                 }
 
-                let _ = conn.shutdown().await;
+                shutdown_connection_best_effort(&conn, "router.shutdown.worker_conn").await;
             }));
         }
 
@@ -1397,7 +1417,7 @@ impl DistributedRouter {
 
         #[cfg(unix)]
         if let ListenAddr::Unix(path) = &self.state.config.listen_addr {
-            let _ = std::fs::remove_file(path);
+            remove_file_best_effort(path, "router.shutdown.unix_socket");
         }
 
         Ok(())
@@ -1406,7 +1426,7 @@ impl DistributedRouter {
     async fn disconnect_worker(&self, worker: &WorkerHandle) {
         // Treat shard mismatches as a protocol violation and sever the connection so it cannot
         // keep returning poisoned cross-shard responses.
-        let _ = worker.conn.shutdown().await;
+        shutdown_connection_best_effort(&worker.conn, "router.disconnect_worker").await;
 
         let mut guard = self.state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&worker.shard_id) {
@@ -1515,7 +1535,8 @@ async fn worker_call_cancelable(
                 })
             }
             Err(_) => {
-                let _ = worker.conn.shutdown().await;
+                shutdown_connection_best_effort(&worker.conn, "router.call_worker.write_timeout")
+                    .await;
                 return Err(anyhow!(
                     "timed out writing request to worker {} (shard {})",
                     worker.worker_id,
@@ -1546,7 +1567,7 @@ async fn worker_call_cancelable(
                     }),
                 },
                 Err(_) => {
-                    let _ = worker.conn.shutdown().await;
+                    shutdown_connection_best_effort(&worker.conn, "router.call_worker.read_timeout").await;
                     Err(anyhow!(
                         "timed out waiting for response from worker {} (shard {})",
                         worker.worker_id,
@@ -1578,7 +1599,7 @@ async fn accept_loop_unix(
     path: PathBuf,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    let _ = std::fs::remove_file(&path);
+    remove_file_best_effort(&path, "router.accept_loop_unix.pre_bind_cleanup");
     ipc_security::ensure_unix_socket_dir(&path)?;
 
     let listener =
@@ -1655,6 +1676,37 @@ async fn accept_loop_unix(
                     }
                 });
             }
+        }
+    }
+}
+
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.router",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove file (best effort)"
+            );
+        }
+    }
+}
+
+async fn shutdown_connection_best_effort(conn: &RpcConnection, reason: &'static str) {
+    static SHUTDOWN_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    if let Err(err) = conn.shutdown().await {
+        if SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.router",
+                reason,
+                error = ?err,
+                "failed to shutdown RPC connection (best effort)"
+            );
         }
     }
 }
@@ -2044,7 +2096,11 @@ async fn handle_new_connection(
 
                             // Close the transport outside the mutex to avoid holding router state
                             // across an await.
-                            let _ = conn.shutdown().await;
+                            shutdown_connection_best_effort(
+                                &conn,
+                                "router.handle_notification.close_transport",
+                            )
+                            .await;
                             return;
                         }
 
@@ -2142,7 +2198,11 @@ async fn handle_new_connection(
                     return;
                 }
                 Err(_) => {
-                    let _ = refresh_handle.conn.shutdown().await;
+                    shutdown_connection_best_effort(
+                        &refresh_handle.conn,
+                        "router.refresh_cached_index.write_timeout",
+                    )
+                    .await;
                     warn!(
                         shard_id,
                         worker_id = refresh_handle.worker_id,
@@ -2165,7 +2225,11 @@ async fn handle_new_connection(
                     );
                 }
                 Err(_) => {
-                    let _ = refresh_handle.conn.shutdown().await;
+                    shutdown_connection_best_effort(
+                        &refresh_handle.conn,
+                        "router.refresh_cached_index.read_timeout",
+                    )
+                    .await;
                     warn!(
                         shard_id,
                         worker_id = refresh_handle.worker_id,
@@ -3474,7 +3538,7 @@ mod tests {
                     || visitor.target.as_deref() == Some("nova.worker.output");
                 if matches_target {
                     if let Some(line) = visitor.line {
-                        self.lines.lock().unwrap().push(line);
+                        self.lines.lock().expect("lines mutex poisoned").push(line);
                     }
                 }
             }
@@ -3489,11 +3553,11 @@ mod tests {
 
         tracing::info!(target = "nova.worker.output", line = %"probe", "worker output");
         assert_eq!(
-            lines.lock().unwrap().len(),
+            lines.lock().expect("lines mutex poisoned").len(),
             1,
             "capture layer did not receive probe event"
         );
-        lines.lock().unwrap().clear();
+        lines.lock().expect("lines mutex poisoned").clear();
 
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         let task = tokio::spawn(drain_worker_output(1, "stdout", reader));
@@ -3505,7 +3569,7 @@ mod tests {
 
         task.await.unwrap();
 
-        let captured = lines.lock().unwrap();
+        let captured = lines.lock().expect("lines mutex poisoned");
         assert_eq!(captured.len(), 1, "expected exactly one logged line");
 
         let line = &captured[0];
@@ -3743,6 +3807,8 @@ mod tests {
         let symbols = vec![Symbol {
             name: "Straße".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         }];
 
         let index = GlobalSymbolIndex::new(symbols, 0);
@@ -3770,10 +3836,14 @@ mod tests {
             Symbol {
                 name: "σome".into(),
                 path: "a.java".into(),
+                line: 0,
+                column: 0,
             },
             Symbol {
                 name: "Σome".into(),
                 path: "b.java".into(),
+                line: 0,
+                column: 0,
             },
         ];
 
@@ -3799,6 +3869,8 @@ mod tests {
         let symbols = vec![Symbol {
             name: "ffi".into(),
             path: "a.java".into(),
+            line: 0,
+            column: 0,
         }];
 
         let index = GlobalSymbolIndex::new(symbols, 0);

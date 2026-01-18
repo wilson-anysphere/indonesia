@@ -2,6 +2,7 @@ use crate::rpc_out::RpcOut;
 
 use crossbeam_channel::{Receiver, Sender};
 use lsp_server::{Message, Notification, Request, RequestId, Response};
+use nova_core::panic_payload_to_str;
 use nova_db::SalsaDatabase;
 use tokio_util::sync::CancellationToken;
 
@@ -97,24 +98,13 @@ pub(super) fn message_router(
                                         salsa.request_cancellation();
                                     }));
                                 if let Err(panic) = result {
-                                    match crate::panic_util::panic_payload_to_string(panic.as_ref())
-                                    {
-                                        Some(message) => {
-                                            tracing::error!(
-                                                target = "nova.lsp",
-                                                cancel_id = ?params.id,
-                                                panic = %message,
-                                                "panic while forwarding $/cancelRequest to salsa; continuing"
-                                            );
-                                        }
-                                        None => {
-                                            tracing::error!(
-                                                target = "nova.lsp",
-                                                cancel_id = ?params.id,
-                                                "panic while forwarding $/cancelRequest to salsa; continuing"
-                                            );
-                                        }
-                                    }
+                                    let message = panic_payload_to_str(panic.as_ref());
+                                    tracing::error!(
+                                        target = "nova.lsp",
+                                        cancel_id = ?params.id,
+                                        panic = %message,
+                                        "panic while forwarding $/cancelRequest to salsa; continuing"
+                                    );
                                 }
                             }
                         }

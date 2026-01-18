@@ -7,11 +7,10 @@ use nova_jdk::JdkIndex;
 use nova_scheduler::CancellationToken;
 
 fn stat(db: &SalsaDatabase, query: &str) -> QueryStat {
-    db.query_stats()
+    *db.query_stats()
         .by_query
         .get(query)
-        .copied()
-        .unwrap_or_default()
+        .unwrap_or_else(|| panic!("missing query stats entry for `{query}`"))
 }
 
 struct TestDb {

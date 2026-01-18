@@ -99,7 +99,7 @@ impl BazelBuildExecutor for RecordingExecutor {
         _targets: &[String],
         _cancellation: nova_process::CancellationToken,
     ) -> anyhow::Result<BspCompileOutcome> {
-        *self.seen.lock().unwrap() = Some(config.clone());
+        *self.seen.lock().expect("seen mutex poisoned") = Some(config.clone());
         Ok(BspCompileOutcome {
             status_code: 0,
             diagnostics: Vec::new(),
@@ -137,7 +137,11 @@ fn orchestrator_discovers_dot_bsp_config_when_request_missing() {
         status.state == BazelBuildTaskState::Success && status.last_completed_id == Some(id)
     });
 
-    let config = seen.lock().unwrap().clone().expect("missing BSP config");
+    let config = seen
+        .lock()
+        .expect("seen mutex poisoned")
+        .clone()
+        .expect("missing BSP config");
     assert_eq!(config.program, "bazel-bsp");
     assert_eq!(
         config.args,
@@ -267,5 +271,9 @@ fn executor_errors_surface_as_failure() {
 
     let status = orchestrator.status();
     assert_eq!(status.state, BazelBuildTaskState::Failure);
-    assert!(status.last_error.unwrap_or_default().contains("boom"));
+    assert!(status
+        .last_error
+        .as_deref()
+        .expect("expected last_error to be set")
+        .contains("boom"));
 }

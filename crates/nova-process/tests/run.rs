@@ -162,7 +162,7 @@ fn runs_cmd_scripts_via_comspec() {
     let mut dir = std::env::temp_dir();
     let token = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
+        .unwrap_or_else(|err| err.duration())
         .as_nanos();
     // Include spaces to ensure the cmd.exe invocation handles quoted paths.
     dir.push(format!("nova process test {token}"));
@@ -184,5 +184,12 @@ fn runs_cmd_scripts_via_comspec() {
         .to_ascii_lowercase()
         .contains("arg=foo bar"));
 
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(err) = std::fs::remove_dir_all(&dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "failed to remove process test directory {}: {err}",
+                dir.display()
+            );
+        }
+    }
 }

@@ -79,6 +79,9 @@ pub fn parse_javac_diagnostics(output: &str, source: &str) -> Vec<BuildDiagnosti
 fn parse_maven_diag_header(
     line: &str,
 ) -> Option<(BuildDiagnosticSeverity, PathBuf, u32, u32, String)> {
+    static MAVEN_DIAG_LOCATION_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> =
+        std::sync::OnceLock::new();
+
     // Example:
     // [ERROR] /path/Foo.java:[10,5] cannot find symbol
     let level = line.strip_prefix('[')?.split_once(']')?.0;
@@ -92,8 +95,40 @@ fn parse_maven_diag_header(
     let (path_part, loc_and_msg) = rest.rsplit_once(":[")?;
     let (loc_part, msg) = loc_and_msg.split_once("] ")?;
     let (line_s, col_s) = loc_part.split_once(',')?;
-    let line_no = line_s.parse::<u32>().ok()?;
-    let col_no = col_s.parse::<u32>().ok()?;
+    let line_no = match line_s.parse::<u32>() {
+        Ok(line_no) => line_no,
+        Err(err) => {
+            if MAVEN_DIAG_LOCATION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    line = %line,
+                    loc_part = %loc_part,
+                    line_s = %line_s,
+                    col_s = %col_s,
+                    error = %err,
+                    "failed to parse maven javac diagnostic location (best effort)"
+                );
+            }
+            return None;
+        }
+    };
+    let col_no = match col_s.parse::<u32>() {
+        Ok(col_no) => col_no,
+        Err(err) => {
+            if MAVEN_DIAG_LOCATION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    line = %line,
+                    loc_part = %loc_part,
+                    line_s = %line_s,
+                    col_s = %col_s,
+                    error = %err,
+                    "failed to parse maven javac diagnostic location (best effort)"
+                );
+            }
+            return None;
+        }
+    };
 
     Some((
         severity,
@@ -147,7 +182,25 @@ fn parse_standard_javac_header<'a>(
     let msg = msg_part[sev_marker.1..].trim_start();
 
     let (path_s, line_s) = left.rsplit_once(':')?;
-    let line_no = line_s.trim().parse::<u32>().ok()?;
+    static STANDARD_DIAG_LOCATION_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> =
+        std::sync::OnceLock::new();
+    let line_s = line_s.trim();
+    let line_no = match line_s.parse::<u32>() {
+        Ok(line_no) => line_no,
+        Err(err) => {
+            if STANDARD_DIAG_LOCATION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    line = %line,
+                    path = %path_s,
+                    line_s = %line_s,
+                    error = %err,
+                    "failed to parse javac diagnostic line number (best effort)"
+                );
+            }
+            return None;
+        }
+    };
 
     // Best-effort column extraction using the caret line (if present).
     let mut col_1_based: Option<u32> = None;

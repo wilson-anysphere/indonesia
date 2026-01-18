@@ -27,7 +27,10 @@ impl FakeGradleRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().expect("lock poisoned").clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
@@ -35,7 +38,7 @@ impl CommandRunner for FakeGradleRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("lock poisoned")
+            .expect("invocations mutex poisoned")
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),
@@ -88,7 +91,10 @@ impl MultiOutputGradleRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().expect("lock poisoned").clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
@@ -96,7 +102,7 @@ impl CommandRunner for MultiOutputGradleRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("lock poisoned")
+            .expect("invocations mutex poisoned")
             .push(Invocation {
                 cwd: cwd.to_path_buf(),
                 program: program.to_path_buf(),

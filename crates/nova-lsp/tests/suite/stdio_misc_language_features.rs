@@ -12,7 +12,7 @@ use lsp_types::{
 
 use crate::support::{
     decode_initialize_result, did_open_notification, exit_notification,
-    initialize_request_with_root_uri, initialized_notification, jsonrpc_request,
+    initialize_request_with_root_uri, initialized_notification, jsonrpc_request, jsonrpc_result_as,
     read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
 };
 
@@ -118,9 +118,7 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let highlights: Vec<DocumentHighlight> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("documentHighlight result array");
+    let highlights: Vec<DocumentHighlight> = jsonrpc_result_as(&resp);
     assert!(
         highlights.len() >= 2,
         "expected >= 2 document highlights for `foo`"
@@ -142,9 +140,7 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
         ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let ranges: Vec<FoldingRange> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("foldingRange result array");
+    let ranges: Vec<FoldingRange> = jsonrpc_result_as(&resp);
     assert!(
         ranges.iter().any(|range| range.start_line < range.end_line),
         "expected at least one folding range with startLine < endLine",
@@ -167,9 +163,7 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
         ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let selections: Vec<SelectionRange> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("selectionRange result array");
+    let selections: Vec<SelectionRange> = jsonrpc_result_as(&resp);
     assert_eq!(selections.len(), 1);
     let mut depth = 0usize;
     let mut current = selections[0].clone();

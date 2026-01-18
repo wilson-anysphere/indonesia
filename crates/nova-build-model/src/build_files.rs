@@ -4,6 +4,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
+fn canonicalize_best_effort(path: &Path, context: &'static str) -> PathBuf {
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build_model",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize path"
+            );
+            path.to_path_buf()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildFileFingerprint {
     pub digest: String,
@@ -21,7 +38,19 @@ impl BuildFileFingerprint {
         // We intentionally treat canonicalization failures as "no canonical root" to avoid
         // introducing new IO errors in edge cases (if callers are hashing files outside
         // `project_root`, for example).
-        let canonical_root = project_root.canonicalize().ok();
+        let canonical_root = match project_root.canonicalize() {
+            Ok(path) => Some(path),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build_model",
+                    path = %project_root.display(),
+                    error = %err,
+                    "failed to canonicalize project root for build-file fingerprint"
+                );
+                None
+            }
+        };
 
         let mut hasher = Sha256::new();
         for path in files {
@@ -42,29 +71,55 @@ impl BuildFileFingerprint {
                 if !rel_has_dot_segments {
                     hasher.update(rel.to_string_lossy().as_bytes());
                 } else if let Some(canonical_root) = canonical_root.as_ref() {
-                    if let Ok(canonical_path) = path.canonicalize() {
-                        if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
+                    let canonical_path = match path.canonicalize() {
+                        Ok(path) => path,
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {
                             hasher.update(rel.to_string_lossy().as_bytes());
-                        } else {
-                            hasher.update(canonical_path.to_string_lossy().as_bytes());
+                            continue;
                         }
-                    } else {
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.build_model",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to canonicalize build file path"
+                            );
+                            hasher.update(rel.to_string_lossy().as_bytes());
+                            continue;
+                        }
+                    };
+                    if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
                         hasher.update(rel.to_string_lossy().as_bytes());
+                    } else {
+                        hasher.update(canonical_path.to_string_lossy().as_bytes());
                     }
                 } else {
                     hasher.update(rel.to_string_lossy().as_bytes());
                 }
             } else if let Some(canonical_root) = canonical_root.as_ref() {
-                if let Ok(canonical_path) = path.canonicalize() {
-                    if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
-                        hasher.update(rel.to_string_lossy().as_bytes());
-                    } else {
-                        // For paths outside the (canonical) project root, use the canonical file
-                        // path for fingerprinting.
-                        hasher.update(canonical_path.to_string_lossy().as_bytes());
+                let canonical_path = match path.canonicalize() {
+                    Ok(path) => path,
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                        hasher.update(path.to_string_lossy().as_bytes());
+                        continue;
                     }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.build_model",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to canonicalize build file path"
+                        );
+                        hasher.update(path.to_string_lossy().as_bytes());
+                        continue;
+                    }
+                };
+                if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
+                    hasher.update(rel.to_string_lossy().as_bytes());
                 } else {
-                    hasher.update(path.to_string_lossy().as_bytes());
+                    // For paths outside the (canonical) project root, use the canonical file
+                    // path for fingerprinting.
+                    hasher.update(canonical_path.to_string_lossy().as_bytes());
                 }
             } else {
                 hasher.update(path.to_string_lossy().as_bytes());
@@ -94,7 +149,7 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut visited_build_roots: BTreeSet<PathBuf> = BTreeSet::new();
     let mut pending_build_roots = std::collections::VecDeque::new();
     pending_build_roots.push_back(root.to_path_buf());
-    visited_build_roots.insert(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+    visited_build_roots.insert(canonicalize_best_effort(root, "gradle.visit_root"));
 
     while let Some(build_root) = pending_build_roots.pop_front() {
         collect_gradle_build_files_rec(&build_root, &build_root, &mut out)?;
@@ -113,9 +168,7 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
         }
 
         for included_root in included_build_roots_from_settings(&build_root)? {
-            let key = included_root
-                .canonicalize()
-                .unwrap_or_else(|_| included_root.clone());
+            let key = canonicalize_best_effort(&included_root, "gradle.included_build_root");
             if visited_build_roots.insert(key) {
                 pending_build_roots.push_back(included_root);
             }
@@ -160,7 +213,7 @@ fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<P
         if !root.is_dir() || !is_gradle_marker_root(&root) {
             continue;
         }
-        let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let canonical = canonicalize_best_effort(&root, "gradle.include_build.dedup");
         if !seen_roots.insert(canonical) {
             continue;
         }
@@ -285,9 +338,10 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
         }
 
         let args = if bytes[idx] == b'(' {
-            extract_balanced_parens(contents, idx)
-                .map(|(args, _end)| args)
-                .unwrap_or_default()
+            let Some((args, _end)) = extract_balanced_parens(contents, idx) else {
+                continue;
+            };
+            args
         } else {
             extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
@@ -316,9 +370,10 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
         }
 
         let args = if bytes[idx] == b'(' {
-            extract_balanced_parens(contents, idx)
-                .map(|(args, _end)| args)
-                .unwrap_or_default()
+            let Some((args, _end)) = extract_balanced_parens(contents, idx) else {
+                continue;
+            };
+            args
         } else {
             extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
@@ -1076,7 +1131,9 @@ mod tests {
             std::fs::canonicalize(included.join("build.gradle")).unwrap();
         let included_matches = files
             .iter()
-            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .map(|path| {
+                std::fs::canonicalize(path).expect("failed to canonicalize collected build file")
+            })
             .filter(|path| path == &canonical_included_build_gradle)
             .count();
         assert_eq!(

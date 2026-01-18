@@ -5,16 +5,19 @@ use std::path::{Component, Path, PathBuf};
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaLanguageLevel,
-    LanguageLevelProvenance, Module, ModuleLanguageLevel, OutputDir, OutputDirKind, ProjectConfig,
-    SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
+    LanguageLevelProvenance, Module, ModuleLanguageLevel, ProjectConfig, SourceRoot,
+    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
     WorkspaceProjectModel,
 };
 
 #[cfg(feature = "bazel")]
-use crate::{JavaVersion, ModuleConfig, WorkspaceModel};
+use crate::{JavaVersion, ModuleConfig, OutputDir, OutputDirKind, WorkspaceModel};
 
 #[cfg(feature = "bazel")]
 use nova_build_bazel::{BazelWorkspace, CommandRunner, DefaultCommandRunner, JavaCompileInfo};
+
+#[cfg(feature = "bazel")]
+use std::sync::OnceLock;
 
 pub(crate) fn load_bazel_project(
     root: &Path,
@@ -162,7 +165,20 @@ fn bazel_ignored_path_prefixes(workspace_root: &Path) -> BTreeSet<PathBuf> {
     ignored.extend(BAZEL_ALWAYS_IGNORED_DIRS.iter().map(PathBuf::from));
 
     let bazelignore_path = workspace_root.join(".bazelignore");
-    let Ok(contents) = std::fs::read_to_string(&bazelignore_path) else {
+    let contents = match std::fs::read_to_string(&bazelignore_path) {
+        Ok(contents) => Some(contents),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                path = %bazelignore_path.display(),
+                error = %err,
+                "failed to read .bazelignore; using default ignored prefixes"
+            );
+            None
+        }
+    };
+    let Some(contents) = contents else {
         return ignored;
     };
 
@@ -244,12 +260,27 @@ fn discover_bazel_source_roots_heuristic(workspace_root: &Path) -> Vec<SourceRoo
     let ignored_prefixes = bazel_ignored_path_prefixes(workspace_root);
 
     let mut source_roots = Vec::new();
+    let mut logged_walk_error = false;
     for entry in walkdir::WalkDir::new(workspace_root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| bazel_walkdir_filter_entry(workspace_root, &ignored_prefixes, entry))
-        .filter_map(Result::ok)
     {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                if !logged_walk_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        workspace_root = %workspace_root.display(),
+                        error = %err,
+                        "failed to walk Bazel workspace while discovering source roots"
+                    );
+                    logged_walk_error = true;
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -372,7 +403,21 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
 
     // Best-effort: `bazel info execution_root` can fail in some environments; fall back to
     // workspace-root-relative resolution if it does.
-    let execution_root = workspace.execution_root().ok();
+    static EXECUTION_ROOT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    let execution_root = match workspace.execution_root() {
+        Ok(execution_root) => Some(execution_root),
+        Err(err) => {
+            if EXECUTION_ROOT_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.project",
+                    workspace_root = %root.display(),
+                    error = %err,
+                    "failed to resolve bazel execution_root (best effort)"
+                );
+            }
+            None
+        }
+    };
 
     let mut targets = match options.bazel.target_universe.as_deref() {
         Some(universe) => workspace.java_targets_in_universe(universe),
@@ -850,6 +895,7 @@ fn sort_dedup_classpath(entries: &mut Vec<ClasspathEntry>) {
     entries.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
 }
 
+#[cfg(feature = "bazel")]
 fn sort_dedup_output_dirs(dirs: &mut Vec<OutputDir>) {
     dirs.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
     dirs.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);

@@ -1,6 +1,7 @@
 mod context;
 mod metrics;
 mod outcome;
+mod poison;
 mod registry;
 mod traits;
 mod types;

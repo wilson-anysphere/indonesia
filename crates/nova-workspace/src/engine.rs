@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
@@ -12,7 +13,7 @@ use lsp_types::Position;
 use nova_build::{BuildCache, BuildFileFingerprint, BuildManager, BuildSystemKind, CommandRunner};
 use nova_cache::normalize_rel_path;
 use nova_config::{BuildIntegrationMode, EffectiveConfig};
-use nova_core::{TextEdit, TextRange, TextSize};
+use nova_core::{panic_payload_to_str, TextEdit, TextRange, TextSize};
 use nova_db::persistence::PersistenceConfig;
 use nova_db::{salsa, Database, NovaIndexing, NovaInputs, NovaSyntax, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
@@ -37,15 +38,19 @@ use nova_vfs::{
     LocalFs, NotifyFileWatcher, OpenDocuments, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 
+use crate::poison::RecoverPoisoned as _;
 use crate::snapshot::WorkspaceDbView;
-use crate::watch::{categorize_event, normalize_watch_path, ChangeCategory, WatchConfig};
+use crate::watch::{
+    looks_like_file, normalize_watch_path, BatchDirCache, ChangeCategory, DirStat, WatchBatchPlan,
+    WatchBatchPlanner, WatchConfig,
+};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
 fn compute_watch_roots(
     workspace_root: &Path,
     watch_config: &WatchConfig,
 ) -> Vec<(PathBuf, WatchMode)> {
-    let workspace_root = normalize_watch_path(workspace_root.to_path_buf());
+    let workspace_root = normalize_watch_path(workspace_root);
 
     let mut roots: Vec<(PathBuf, WatchMode)> = Vec::new();
     roots.push((workspace_root.clone(), WatchMode::Recursive));
@@ -58,7 +63,7 @@ fn compute_watch_roots(
         .chain(watch_config.generated_source_roots.iter())
         .chain(watch_config.module_roots.iter())
     {
-        let root = normalize_watch_path(root.clone());
+        let root = normalize_watch_path(root);
         if root.starts_with(&workspace_root) {
             continue;
         }
@@ -68,7 +73,7 @@ fn compute_watch_roots(
     // Watch the discovered config file when it lives outside the workspace root. Use a
     // non-recursive watch so we don't accidentally watch huge trees like `$HOME`.
     if let Some(config_path) = watch_config.nova_config_path.as_ref() {
-        let config_path = normalize_watch_path(config_path.clone());
+        let config_path = normalize_watch_path(config_path);
         if !config_path.starts_with(&workspace_root) {
             roots.push((config_path, WatchMode::NonRecursive));
         }
@@ -120,7 +125,7 @@ pub enum WorkspaceStatus {
 pub enum WorkspaceEvent {
     DiagnosticsUpdated {
         file: VfsPath,
-        diagnostics: Vec<NovaDiagnostic>,
+        diagnostics: Arc<Vec<NovaDiagnostic>>,
     },
     IndexProgress(IndexProgress),
     Status(WorkspaceStatus),
@@ -181,10 +186,7 @@ impl WorkspaceProjectIndexesEvictor {
 
     fn replace_indexes(&self, new_indexes: ProjectIndexes) {
         let bytes = new_indexes.estimated_bytes();
-        *self
-            .indexes
-            .lock()
-            .expect("workspace indexes lock poisoned") = new_indexes;
+        *self.indexes.lock().recover_poisoned() = new_indexes;
 
         if let Some(tracker) = self.tracker.get() {
             tracker.set_bytes(bytes);
@@ -192,10 +194,7 @@ impl WorkspaceProjectIndexesEvictor {
     }
 
     fn clear_indexes(&self) {
-        *self
-            .indexes
-            .lock()
-            .expect("workspace indexes lock poisoned") = ProjectIndexes::default();
+        *self.indexes.lock().recover_poisoned() = ProjectIndexes::default();
         if let Some(tracker) = self.tracker.get() {
             tracker.set_bytes(0);
         }
@@ -203,10 +202,7 @@ impl WorkspaceProjectIndexesEvictor {
 
     #[cfg(test)]
     fn snapshot_indexes_for_tests(&self) -> ProjectIndexes {
-        self.indexes
-            .lock()
-            .expect("workspace indexes lock poisoned")
-            .clone()
+        self.indexes.lock().recover_poisoned().clone()
     }
 }
 
@@ -262,10 +258,7 @@ impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
         // Best-effort partial retention: keep the most useful subsets (symbols)
         // when we can fit them within the requested target.
         let after_bytes = {
-            let mut guard = self
-                .indexes
-                .lock()
-                .expect("workspace indexes lock poisoned");
+            let mut guard = self.indexes.lock().recover_poisoned();
 
             let symbols_bytes = guard.symbols.estimated_bytes();
             if symbols_bytes > request.target_bytes {
@@ -424,7 +417,7 @@ impl ClosedFileTextStore {
     fn is_evicted(&self, file_id: FileId) -> bool {
         self.state
             .lock()
-            .expect("workspace closed file text store mutex poisoned")
+            .recover_poisoned()
             .evicted
             .contains(&file_id)
     }
@@ -435,10 +428,7 @@ impl ClosedFileTextStore {
         // the "non-evictable inputs" report accurate.
         self.query_db.set_file_text_suppressed(file_id, false);
 
-        let mut state = self
-            .state
-            .lock()
-            .expect("workspace closed file text store mutex poisoned");
+        let mut state = self.state.lock().recover_poisoned();
         let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
         state.evicted.remove(&file_id);
 
@@ -460,10 +450,7 @@ impl ClosedFileTextStore {
         self.query_db.set_file_text_suppressed(file_id, true);
 
         let new_bytes = text.len() as u64;
-        let mut state = self
-            .state
-            .lock()
-            .expect("workspace closed file text store mutex poisoned");
+        let mut state = self.state.lock().recover_poisoned();
 
         state.evicted.remove(&file_id);
         let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
@@ -485,10 +472,7 @@ impl ClosedFileTextStore {
         // No longer tracked/evictable: ensure the Salsa input tracker returns to default behavior.
         self.query_db.set_file_text_suppressed(file_id, false);
 
-        let mut state = self
-            .state
-            .lock()
-            .expect("workspace closed file text store mutex poisoned");
+        let mut state = self.state.lock().recover_poisoned();
         let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
         state.evicted.remove(&file_id);
         if removed != 0 {
@@ -504,10 +488,7 @@ impl ClosedFileTextStore {
         }
 
         let should_restore = {
-            let state = self
-                .state
-                .lock()
-                .expect("workspace closed file text store mutex poisoned");
+            let state = self.state.lock().recover_poisoned();
             state.evicted.contains(&file_id)
         };
 
@@ -524,8 +505,23 @@ impl ClosedFileTextStore {
             return;
         }
 
-        let Ok(text) = vfs.read_to_string(&path) else {
-            return;
+        let text = match vfs.read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound {
+                    static RESTORE_EVICTED_FILE_READ_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                    if RESTORE_EVICTED_FILE_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            file_id = ?file_id,
+                            path = ?path,
+                            error = %err,
+                            "failed to restore evicted file contents from disk"
+                        );
+                    }
+                }
+                return;
+            }
         };
 
         if self.open_docs.is_open(file_id) {
@@ -574,10 +570,7 @@ impl MemoryEvictor for ClosedFileTextStore {
 
         let open_files = self.open_docs.snapshot();
         let mut candidates: Vec<(FileId, u64)> = {
-            let state = self
-                .state
-                .lock()
-                .expect("workspace closed file text store mutex poisoned");
+            let state = self.state.lock().recover_poisoned();
             state
                 .bytes_by_file
                 .iter()
@@ -605,10 +598,7 @@ impl MemoryEvictor for ClosedFileTextStore {
             // placeholder contents.
             self.query_db.set_file_is_dirty(file_id, true);
 
-            let mut state = self
-                .state
-                .lock()
-                .expect("workspace closed file text store mutex poisoned");
+            let mut state = self.state.lock().recover_poisoned();
             let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
             state.evicted.insert(file_id);
             drop(state);
@@ -659,22 +649,45 @@ pub struct WatcherHandle {
     watcher_command_store: Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
 }
 
+#[track_caller]
+fn join_thread_best_effort(handle: thread::JoinHandle<()>, reason: &'static str) {
+    static JOIN_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
+    if let Err(panic) = handle.join() {
+        if JOIN_PANIC_LOGGED.set(()).is_ok() {
+            let loc = std::panic::Location::caller();
+            let message = panic
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string panic>");
+
+            tracing::debug!(
+                target = "nova.workspace",
+                reason,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                panic = %message,
+                "background thread panicked (best effort join)"
+            );
+        }
+    }
+}
+
 impl Drop for WatcherHandle {
     fn drop(&mut self) {
         let _ = self.watcher_stop.send(());
         if let Some(handle) = self.watcher_thread.take() {
-            let _ = handle.join();
+            join_thread_best_effort(handle, "workspace.watcher_thread");
         }
 
         let _ = self.driver_stop.send(());
         if let Some(handle) = self.driver_thread.take() {
-            let _ = handle.join();
+            join_thread_best_effort(handle, "workspace.driver_thread");
         }
 
-        *self
-            .watcher_command_store
-            .lock()
-            .expect("workspace watcher command store mutex poisoned") = None;
+        *self.watcher_command_store.lock().recover_poisoned() = None;
     }
 }
 
@@ -705,7 +718,7 @@ pub(crate) struct WorkspaceEngine {
     index_debouncer: KeyedDebouncer<&'static str>,
     project_reload_debouncer: KeyedDebouncer<&'static str>,
     memory_enforce_debouncer: KeyedDebouncer<&'static str>,
-    subscribers: Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    subscribers: Arc<Mutex<Vec<Sender<Arc<WorkspaceEvent>>>>>,
 
     project_state: Arc<Mutex<ProjectState>>,
     ide_project: RwLock<Option<Project>>,
@@ -783,6 +796,11 @@ fn workspace_scheduler() -> Scheduler {
 fn empty_file_content() -> Arc<String> {
     static EMPTY: OnceLock<Arc<String>> = OnceLock::new();
     EMPTY.get_or_init(|| Arc::new(String::new())).clone()
+}
+
+fn empty_diagnostics() -> Arc<Vec<NovaDiagnostic>> {
+    static EMPTY: OnceLock<Arc<Vec<NovaDiagnostic>>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
 }
 
 #[cfg(test)]
@@ -1088,12 +1106,9 @@ impl WorkspaceEngine {
     ///
     /// This channel is bounded to avoid unbounded memory growth; if a subscriber does not keep up,
     /// events may be dropped.
-    pub fn subscribe(&self) -> Receiver<WorkspaceEvent> {
+    pub fn subscribe(&self) -> Receiver<Arc<WorkspaceEvent>> {
         let (tx, rx) = async_channel::bounded(SUBSCRIBER_QUEUE_CAPACITY);
-        self.subscribers
-            .lock()
-            .expect("workspace subscriber mutex poisoned")
-            .push(tx);
+        self.subscribers.lock().recover_poisoned().push(tx);
         rx
     }
 
@@ -1101,10 +1116,7 @@ impl WorkspaceEngine {
         let root = fs::canonicalize(root.as_ref())
             .with_context(|| format!("failed to canonicalize {}", root.as_ref().display()))?;
         {
-            let mut state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let mut state = self.project_state.lock().recover_poisoned();
             state.workspace_root = Some(root.clone());
             state.load_options = LoadOptions::default();
             state.projects.clear();
@@ -1114,18 +1126,12 @@ impl WorkspaceEngine {
         }
 
         {
-            let mut loader = self
-                .workspace_loader
-                .lock()
-                .expect("workspace loader mutex poisoned");
+            let mut loader = self.workspace_loader.lock().recover_poisoned();
             *loader = salsa::WorkspaceLoader::new();
         }
 
         {
-            let mut cfg = self
-                .watch_config
-                .write()
-                .expect("workspace watch config lock poisoned");
+            let mut cfg = self.watch_config.write().recover_poisoned();
             cfg.workspace_root = root.clone();
             cfg.source_roots.clear();
             cfg.generated_source_roots.clear();
@@ -1164,10 +1170,7 @@ impl WorkspaceEngine {
         F: FnOnce() -> std::io::Result<W> + Send + 'static,
     {
         let watch_root = {
-            let state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let state = self.project_state.lock().recover_poisoned();
             let root = state
                 .workspace_root
                 .clone()
@@ -1188,361 +1191,218 @@ impl WorkspaceEngine {
             channel::bounded::<WatchCommand>(WATCH_COMMAND_QUEUE_CAPACITY);
 
         {
-            *self
-                .watcher_command_store
-                .lock()
-                .expect("workspace watcher command store mutex poisoned") =
-                Some(command_tx.clone());
+            *self.watcher_command_store.lock().recover_poisoned() = Some(command_tx.clone());
         }
 
         let subscribers = Arc::clone(&self.subscribers);
         let watcher_thread = thread::Builder::new()
             .name("workspace-watcher".to_string())
             .spawn(move || {
-            let mut debouncer = Debouncer::new([
-                (ChangeCategory::Source, debounce.source),
-                (ChangeCategory::Build, debounce.build),
-            ]);
-            let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
-            let retry_tick = channel::tick(Duration::from_secs(2));
-
-            let mut watcher = match watcher_factory() {
-                Ok(watcher) => watcher,
-                Err(err) => {
-                    publish_to_subscribers(
-                        &subscribers,
-                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                            "Failed to start file watcher: {err}"
-                        ))),
-                    );
-                    return;
-                }
-            };
-            let watch_rx = watcher.receiver().clone();
-
-            let desired_roots = |workspace_root: &Path,
-                                 config: &WatchConfig|
-             -> std::collections::HashMap<PathBuf, WatchMode> {
-                compute_watch_roots(workspace_root, config).into_iter().collect()
-            };
-
-            let now = Instant::now();
-            let cfg = watch_config
-                .read()
-                .expect("workspace watch config lock poisoned")
-                .clone();
-            for err in watch_root_manager.set_desired_roots(
-                desired_roots(&watch_root, &cfg),
-                now,
-                &mut watcher,
-            ) {
-                publish_watch_root_error(&subscribers, err);
-            }
-
-            let mut rescan_pending = false;
-
-            loop {
-                if rescan_pending {
-                    match batch_tx.try_send(WatcherMessage::Rescan) {
-                        Ok(()) => rescan_pending = false,
-                        Err(channel::TrySendError::Full(_)) => {
-                            // Downstream is behind; keep the rescan pending and retry soon.
+                let mut debouncer = Debouncer::new([
+                    (ChangeCategory::Source, debounce.source),
+                    (ChangeCategory::Build, debounce.build),
+                ]);
+                let reset_debouncer = |debouncer: &mut Debouncer<ChangeCategory, FileChange>| {
+                    *debouncer = Debouncer::new([
+                        (ChangeCategory::Source, debounce.source),
+                        (ChangeCategory::Build, debounce.build),
+                    ]);
+                };
+                let flush_due_batches =
+                    |now: Instant,
+                     debouncer: &mut Debouncer<ChangeCategory, FileChange>,
+                     batch_tx: &channel::Sender<WatcherMessage>,
+                     rescan_pending: &mut bool| {
+                        for (cat, events) in debouncer.flush_due(now) {
+                            match batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
+                                Ok(()) => {}
+                                Err(channel::TrySendError::Full(_)) => {
+                                    *rescan_pending = true;
+                                    reset_debouncer(debouncer);
+                                }
+                                Err(channel::TrySendError::Disconnected(_)) => break,
+                            }
                         }
-                        Err(channel::TrySendError::Disconnected(_)) => break,
+                    };
+                let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
+                let retry_tick = channel::tick(Duration::from_secs(2));
+
+                let mut watcher = match watcher_factory() {
+                    Ok(watcher) => watcher,
+                    Err(err) => {
+                        publish_to_subscribers(
+                            &subscribers,
+                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                "Failed to start file watcher: {err}"
+                            ))),
+                        );
+                        return;
                     }
-                }
+                };
+                let watch_rx = watcher.receiver().clone();
+
+                let desired_roots =
+                    |workspace_root: &Path,
+                     config: &WatchConfig|
+                     -> std::collections::HashMap<PathBuf, WatchMode> {
+                        compute_watch_roots(workspace_root, config)
+                            .into_iter()
+                            .collect()
+                    };
 
                 let now = Instant::now();
-                let mut deadline = debouncer
-                    .next_deadline()
-                    .unwrap_or(now + Duration::from_secs(3600));
-                if rescan_pending {
-                    deadline = deadline.min(now + OVERFLOW_RETRY_INTERVAL);
+                let cfg = watch_config.read().recover_poisoned().clone();
+                for err in watch_root_manager.set_desired_roots(
+                    desired_roots(&watch_root, &cfg),
+                    now,
+                    &mut watcher,
+                ) {
+                    publish_watch_root_error(&subscribers, err);
                 }
-                let timeout = deadline.saturating_duration_since(now);
-                let tick = channel::after(timeout);
 
-                channel::select! {
-                    recv(watcher_stop_rx) -> _ => {
-                        for (cat, events) in debouncer.flush_all() {
-                            let _ = batch_tx.try_send(WatcherMessage::Batch(cat, events));
-                        }
-                        break;
-                    }
-                    recv(command_rx) -> msg => {
-                        let Ok(cmd) = msg else { break };
-                        match cmd {
-                            WatchCommand::Refresh => {
-                                let now = Instant::now();
-                                let cfg = watch_config
-                                    .read()
-                                    .expect("workspace watch config lock poisoned")
-                                    .clone();
-                                for err in watch_root_manager.set_desired_roots(
-                                    desired_roots(&watch_root, &cfg),
-                                    now,
-                                    &mut watcher,
-                                ) {
-                                    publish_watch_root_error(&subscribers, err);
-                                }
+                let mut rescan_pending = false;
 
-                                for err in watch_root_manager.retry_pending(now, &mut watcher) {
-                                    publish_watch_root_error(&subscribers, err);
-                                }
+                loop {
+                    if rescan_pending {
+                        match batch_tx.try_send(WatcherMessage::Rescan) {
+                            Ok(()) => rescan_pending = false,
+                            Err(channel::TrySendError::Full(_)) => {
+                                // Downstream is behind; keep the rescan pending and retry soon.
                             }
+                            Err(channel::TrySendError::Disconnected(_)) => break,
                         }
                     }
-                    recv(watch_rx) -> msg => {
-                        let Ok(res) = msg else { break };
-                        match res {
-                            Ok(WatchEvent::Changes { changes }) => {
-                                let now = Instant::now();
-                                let mut saw_directory_event = false;
-                                {
-                                    let config = watch_config
+
+                    let now = Instant::now();
+                    let mut deadline = debouncer
+                        .next_deadline()
+                        .unwrap_or(now + Duration::from_secs(3600));
+                    if rescan_pending {
+                        deadline = deadline.min(now + OVERFLOW_RETRY_INTERVAL);
+                    }
+                    let timeout = deadline.saturating_duration_since(now);
+
+                    channel::select! {
+                        recv(watcher_stop_rx) -> _ => {
+                            for (cat, events) in debouncer.flush_all() {
+                                let _ = batch_tx.try_send(WatcherMessage::Batch(cat, events));
+                            }
+                            break;
+                        }
+                        recv(command_rx) -> msg => {
+                            let Ok(cmd) = msg else { break };
+                            match cmd {
+                                WatchCommand::Refresh => {
+                                    let now = Instant::now();
+                                    let cfg = watch_config
                                         .read()
-                                        .expect("workspace watch config lock poisoned");
-                                    let has_configured_roots = !config.source_roots.is_empty()
-                                        || !config.generated_source_roots.is_empty();
-                                    let is_within_any_source_root = |path: &Path| {
-                                        if has_configured_roots {
-                                            config
-                                                .source_roots
-                                                .iter()
-                                                .chain(config.generated_source_roots.iter())
-                                                .any(|root| path.starts_with(root))
-                                        } else {
-                                            path.starts_with(&config.workspace_root)
-                                        }
-                                    };
-                                    let is_ancestor_of_any_source_root = |path: &Path| {
-                                        if has_configured_roots {
-                                            config
-                                                .source_roots
-                                                .iter()
-                                                .chain(config.generated_source_roots.iter())
-                                                .any(|root| root.starts_with(path))
-                                        } else {
-                                            false
-                                        }
-                                    };
-                                    let is_relevant_dir_for_move_or_delete = |path: &Path| {
-                                        is_within_any_source_root(path)
-                                            || is_ancestor_of_any_source_root(path)
-                                    };
-                                    for change in changes {
-                                        // NOTE: Directory-level watcher events cannot be safely
-                                        // mapped into per-file operations in the VFS. Falling back
-                                        // to a full rescan keeps the workspace consistent.
-                                        let is_heuristic_directory_change_for_missing_path =
-                                            |local: &Path| {
-                                                // Safety net when `fs::metadata` fails (e.g. the
-                                                // path was deleted before we observed it). Only
-                                                // treat extension-less paths that are within (or
-                                                // ancestors of) known source roots as potential
-                                                // directory-level operations.
-                                                local.extension().is_none()
-                                                    && is_relevant_dir_for_move_or_delete(local)
-                                            };
-                                        let mut category: Option<ChangeCategory> = None;
-                                        let is_directory_change = match &change {
-                                            FileChange::Created { path }
-                                            | FileChange::Modified { path } => {
-                                                match path.as_local_path() {
-                                                    Some(local) => fs::metadata(local)
-                                                        .map(|meta| {
-                                                            meta.is_dir()
-                                                                && is_within_any_source_root(local)
-                                                        })
-                                                        .unwrap_or(false),
-                                                    None => false,
-                                                }
-                                            }
-                                            FileChange::Deleted { path } => {
-                                                match path.as_local_path() {
-                                                    Some(local) => match fs::metadata(local) {
-                                                        Ok(meta) => {
-                                                            meta.is_dir()
-                                                                && is_relevant_dir_for_move_or_delete(local)
-                                                        }
-                                                        Err(err)
-                                                            if err.kind()
-                                                                == std::io::ErrorKind::NotFound =>
-                                                        {
-                                                            // The directory is already gone, so
-                                                            // `metadata` can't tell whether this was
-                                                            // a file or directory deletion. Use
-                                                            // categorization only to avoid treating
-                                                            // build-file deletes (e.g. `BUILD`,
-                                                            // `WORKSPACE`) as directory operations.
-                                                            category =
-                                                                categorize_event(&config, &change);
-                                                            // Directory deletes are often observed
-                                                            // *after* the directory is removed, so
-                                                            // metadata fails. As a safety net,
-                                                            // treat extension-less paths that are
-                                                            // within (or are ancestors of) known
-                                                            // source roots as potential
-                                                            // directory-level operations and fall
-                                                            // back to a rescan.
-                                                            category != Some(ChangeCategory::Build)
-                                                                && is_heuristic_directory_change_for_missing_path(local)
-                                                        }
-                                                        Err(_) => false,
-                                                    },
-                                                    None => false,
-                                                }
-                                            }
-                                            FileChange::Moved { from, to } => {
-                                                let from_local = from.as_local_path();
-                                                let to_local = to.as_local_path();
-                                                let from_meta = from_local.map(fs::metadata);
-                                                let to_meta = to_local.map(fs::metadata);
-
-                                                let from_is_dir = matches!(
-                                                    from_meta.as_ref(),
-                                                    Some(Ok(meta)) if meta.is_dir()
-                                                );
-                                                let to_is_dir = matches!(
-                                                    to_meta.as_ref(),
-                                                    Some(Ok(meta)) if meta.is_dir()
-                                                );
-                                                let any_relevant = from_local
-                                                    .is_some_and(is_relevant_dir_for_move_or_delete)
-                                                    || to_local
-                                                        .is_some_and(is_relevant_dir_for_move_or_delete);
-                                                if (from_is_dir || to_is_dir) && any_relevant {
-                                                    true
-                                                } else {
-                                                    // If we can't stat either path because both are
-                                                    // already gone, treat it as a directory-level
-                                                    // operation when the paths look like directories.
-                                                    // This prevents silently ignoring directory moves
-                                                    // that are immediately followed by deletion (and
-                                                    // only surface as a move event).
-                                                    let from_missing = matches!(
-                                                        from_meta.as_ref(),
-                                                        Some(Err(err))
-                                                            if err.kind() == std::io::ErrorKind::NotFound
-                                                    );
-                                                    let to_missing = matches!(
-                                                        to_meta.as_ref(),
-                                                        Some(Err(err))
-                                                            if err.kind() == std::io::ErrorKind::NotFound
-                                                    );
-                                                    if from_missing && to_missing {
-                                                        category =
-                                                            categorize_event(&config, &change);
-                                                        category != Some(ChangeCategory::Build)
-                                                            && (from_local.is_some_and(
-                                                                is_heuristic_directory_change_for_missing_path,
-                                                            ) || to_local.is_some_and(
-                                                                is_heuristic_directory_change_for_missing_path,
-                                                            ))
-                                                    } else {
-                                                        false
-                                                    }
-                                                }
-                                            }
-                                        };
-
-                                        if is_directory_change {
-                                            saw_directory_event = true;
-                                            break;
-                                        }
-
-                                        if category.is_none() {
-                                            category = categorize_event(&config, &change);
-                                        }
-                                        if let Some(cat) = category {
-                                            debouncer.push(&cat, change, now);
-                                        }
+                                        .recover_poisoned()
+                                        .clone();
+                                    for err in watch_root_manager.set_desired_roots(
+                                        desired_roots(&watch_root, &cfg),
+                                        now,
+                                        &mut watcher,
+                                    ) {
+                                        publish_watch_root_error(&subscribers, err);
                                     }
-                                }
 
-                                if saw_directory_event {
-                                    rescan_pending = true;
-                                    // Drop any pending debounced batches; we will reconcile via a
-                                    // full project reload instead.
-                                    debouncer = Debouncer::new([
-                                        (ChangeCategory::Source, debounce.source),
-                                        (ChangeCategory::Build, debounce.build),
-                                    ]);
-                                    continue;
-                                }
-
-                                for (cat, events) in debouncer.flush_due(now) {
-                                    if let Err(err) = batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
-                                        if matches!(err, channel::TrySendError::Full(_)) {
-                                            rescan_pending = true;
-                                            debouncer = Debouncer::new([
-                                                (ChangeCategory::Source, debounce.source),
-                                                (ChangeCategory::Build, debounce.build),
-                                            ]);
-                                        } else {
-                                            break;
-                                        }
+                                    for err in watch_root_manager.retry_pending(now, &mut watcher) {
+                                        publish_watch_root_error(&subscribers, err);
                                     }
                                 }
                             }
-                            Ok(WatchEvent::Rescan) | Err(_) => {
-                                rescan_pending = true;
-                                debouncer = Debouncer::new([
-                                    (ChangeCategory::Source, debounce.source),
-                                    (ChangeCategory::Build, debounce.build),
-                                ]);
-                            }
                         }
-                    }
-                    recv(tick) -> _ => {
-                        let now = Instant::now();
-                        for (cat, events) in debouncer.flush_due(now) {
-                            if let Err(err) = batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
-                                if matches!(err, channel::TrySendError::Full(_)) {
+                        recv(watch_rx) -> msg => {
+                            let Ok(res) = msg else { break };
+                            match res {
+                                Ok(WatchEvent::Changes { changes }) => {
+                                    let now = Instant::now();
+                                    {
+                                        let config = watch_config
+                                            .read()
+                                            .recover_poisoned();
+                                        let mut planner = WatchBatchPlanner::new(&config);
+                                        for change in changes {
+                                            match planner.plan(&change) {
+                                                WatchBatchPlan::RescanRequired => {
+                                                    rescan_pending = true;
+                                                    // Drop any pending debounced batches; we will reconcile via a
+                                                    // full project reload instead.
+                                                    reset_debouncer(&mut debouncer);
+                                                    break;
+                                                }
+                                                WatchBatchPlan::Debounce(cat) => {
+                                                    debouncer.push(&cat, change, now);
+                                                }
+                                                WatchBatchPlan::Ignore => {}
+                                            }
+                                        }
+                                    }
+
+                                    flush_due_batches(
+                                        now,
+                                        &mut debouncer,
+                                        &batch_tx,
+                                        &mut rescan_pending,
+                                    );
+                                }
+                                Ok(WatchEvent::Rescan) => {
                                     rescan_pending = true;
-                                    debouncer = Debouncer::new([
-                                        (ChangeCategory::Source, debounce.source),
-                                        (ChangeCategory::Build, debounce.build),
-                                    ]);
-                                } else {
-                                    break;
+                                    reset_debouncer(&mut debouncer);
+                                }
+                                Err(err) => {
+                                    tracing::debug!(
+                                        target = "nova.workspace",
+                                        error = %err,
+                                        "watcher event stream error; scheduling rescan"
+                                    );
+                                    rescan_pending = true;
+                                    reset_debouncer(&mut debouncer);
                                 }
                             }
                         }
-                    }
-                    recv(retry_tick) -> _ => {
-                        let now = Instant::now();
-
-                        let cfg = watch_config
-                            .read()
-                            .expect("workspace watch config lock poisoned")
-                            .clone();
-                        for err in watch_root_manager.set_desired_roots(
-                            desired_roots(&watch_root, &cfg),
-                            now,
-                            &mut watcher,
-                        ) {
-                            publish_watch_root_error(&subscribers, err);
+                        default(timeout) => {
+                            let now = Instant::now();
+                            flush_due_batches(
+                                now,
+                                &mut debouncer,
+                                &batch_tx,
+                                &mut rescan_pending,
+                            );
                         }
+                        recv(retry_tick) -> _ => {
+                            let now = Instant::now();
 
-                        for err in watch_root_manager.retry_pending(now, &mut watcher) {
-                            publish_watch_root_error(&subscribers, err);
-                        }
+                            let cfg = watch_config
+                                .read()
+                                .recover_poisoned()
+                                .clone();
+                            for err in watch_root_manager.set_desired_roots(
+                                desired_roots(&watch_root, &cfg),
+                                now,
+                                &mut watcher,
+                            ) {
+                                publish_watch_root_error(&subscribers, err);
+                            }
 
-                        for (cat, events) in debouncer.flush_due(now) {
-                            let _ = batch_tx.try_send(WatcherMessage::Batch(cat, events));
+                            for err in watch_root_manager.retry_pending(now, &mut watcher) {
+                                publish_watch_root_error(&subscribers, err);
+                            }
+
+                            flush_due_batches(
+                                now,
+                                &mut debouncer,
+                                &batch_tx,
+                                &mut rescan_pending,
+                            );
                         }
                     }
                 }
-            }
-        })
+            })
             .map_err(|err| {
                 // If watcher creation fails, make sure the workspace doesn't think a watcher is
                 // running (the `WatcherHandle` won't be returned so `Drop` can't clear the store).
-                *self
-                    .watcher_command_store
-                    .lock()
-                    .expect("workspace watcher command store mutex poisoned") = None;
+                *self.watcher_command_store.lock().recover_poisoned() = None;
                 err
             })
             .context("failed to spawn workspace watcher thread")?;
@@ -1608,11 +1468,11 @@ impl WorkspaceEngine {
             Err(err) => {
                 // Clean up the already-running watcher thread since we won't be returning a handle.
                 let _ = watcher_stop_tx.send(());
-                let _ = watcher_thread.join();
+                join_thread_best_effort(watcher_thread, "workspace.watcher_thread.cleanup");
                 *self
                     .watcher_command_store
                     .lock()
-                    .expect("workspace watcher command store mutex poisoned") = None;
+                    .recover_poisoned() = None;
                 return Err(err).context("failed to spawn workspace watcher driver thread");
             }
         };
@@ -1631,6 +1491,8 @@ impl WorkspaceEngine {
             return;
         }
 
+        let estimated_paths = events.len().saturating_mul(2);
+
         // Normalize incoming watcher paths so:
         // - drive letter case on Windows (`c:` vs `C:`) doesn't affect prefix checks
         // - dot segments (`a/../b`) don't prevent directory-event expansion
@@ -1643,33 +1505,153 @@ impl WorkspaceEngine {
         // emitting per-file events for the contained files. We expand those directory events into
         // file-level operations here to preserve stable `FileId` mappings and open-document
         // overlays.
-        let mut move_events: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let mut other_paths: HashSet<PathBuf> = HashSet::new();
-        let mut module_info_changes: HashSet<PathBuf> = HashSet::new();
+        // Avoid pathological pre-allocation when the watcher backend delivers very large batches
+        // (e.g. bulk checkouts). These collections may still grow beyond this capacity as needed;
+        // this simply avoids an immediate large allocation when many events are filtered out.
+        const MAX_BATCH_PREALLOC_CAPACITY: usize = 32 * 1024;
 
-        // Helper: return the set of *known* local file paths that are under `dir`.
-        // This must not allocate new `FileId`s.
-        let known_files_under_dir = |dir: &Path| -> Vec<PathBuf> {
-            let dir = normalize_watch_path(dir.to_path_buf());
-            let mut files = Vec::new();
-            for file_id in self.vfs.all_file_ids() {
-                let Some(vfs_path) = self.vfs.path_for_id(file_id) else {
-                    continue;
-                };
-                let Some(local) = vfs_path.as_local_path() else {
-                    continue;
-                };
-                if local == dir.as_path() {
-                    // Defensive: skip ids accidentally allocated for directories.
-                    continue;
-                }
-                if local.starts_with(&dir) {
-                    files.push(local.to_path_buf());
+        let initial_vec_capacity = events.len().min(MAX_BATCH_PREALLOC_CAPACITY);
+        let mut raw_move_events: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(initial_vec_capacity);
+        let mut raw_path_events: Vec<PathBuf> = Vec::with_capacity(initial_vec_capacity);
+        let mut raw_deleted_no_ext_events: Vec<PathBuf> = Vec::with_capacity(initial_vec_capacity);
+        let mut raw_deleted_file_events: Vec<PathBuf> = Vec::with_capacity(initial_vec_capacity);
+        let mut raw_deleted_dir_events: Vec<PathBuf> = Vec::with_capacity(initial_vec_capacity);
+        let mut move_events: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(initial_vec_capacity);
+
+        let initial_set_capacity = estimated_paths.min(MAX_BATCH_PREALLOC_CAPACITY);
+        let mut other_paths: HashSet<PathBuf> = HashSet::with_capacity(initial_set_capacity);
+        let mut module_info_changes: HashSet<PathBuf> =
+            HashSet::with_capacity(initial_set_capacity);
+
+        struct KnownLocalFilesIndex<'a> {
+            vfs: &'a Vfs<LocalFs>,
+            known_files: Option<Vec<PathBuf>>,
+            dir_queries: usize,
+        }
+
+        impl<'a> KnownLocalFilesIndex<'a> {
+            fn new(vfs: &'a Vfs<LocalFs>) -> Self {
+                Self {
+                    vfs,
+                    known_files: None,
+                    dir_queries: 0,
                 }
             }
-            files.sort();
-            files.dedup();
-            files
+
+            fn for_each_known_file_under_dir_slow<F>(&self, dir: &PathBuf, f: &mut F) -> usize
+            where
+                F: FnMut(PathBuf),
+            {
+                let mut count = 0usize;
+                self.vfs.for_each_local_path(|local| {
+                    if local == dir.as_path() {
+                        // Defensive: skip ids accidentally allocated for directories.
+                        return;
+                    }
+                    if local.starts_with(dir) {
+                        count += 1;
+                        f(local.to_path_buf());
+                    }
+                });
+                count
+            }
+
+            fn ensure_known_files(&mut self) -> &[PathBuf] {
+                self.known_files
+                    .get_or_insert_with(|| {
+                        let mut files = Vec::new();
+                        self.vfs
+                            .for_each_local_path(|local| files.push(local.to_path_buf()));
+                        files.sort();
+                        files
+                    })
+                    .as_slice()
+            }
+
+            /// Calls `f` for each *known* local file path that is under `dir`.
+            ///
+            /// This must not allocate new `FileId`s.
+            ///
+            /// Invariant: `dir` is already normalized via `normalize_watch_path`.
+            fn for_each_known_file_under_dir(
+                &mut self,
+                dir: &PathBuf,
+                mut f: impl FnMut(PathBuf),
+            ) -> usize {
+                self.dir_queries += 1;
+
+                // Optimization: most watcher batches contain at most one directory-level change.
+                // In that case, scanning for matches without sorting *all* known files is cheaper.
+                //
+                // Once we see multiple directory queries in a single batch, switch to a sorted
+                // snapshot so subsequent lookups are fast.
+                if self.known_files.is_none() && self.dir_queries == 1 {
+                    return self.for_each_known_file_under_dir_slow(dir, &mut f);
+                }
+
+                let files = self.ensure_known_files();
+                let start = files.partition_point(|path| path < dir);
+                let mut count = 0usize;
+                for path in &files[start..] {
+                    if path == dir {
+                        // Defensive: skip ids accidentally allocated for directories.
+                        continue;
+                    }
+                    if path.starts_with(dir) {
+                        count += 1;
+                        f(path.clone());
+                        continue;
+                    }
+                    break;
+                }
+                count
+            }
+        }
+
+        let mut known_files_index = KnownLocalFilesIndex::new(&self.vfs);
+        const MAX_VFS_IS_KNOWN_CACHE_ENTRIES: usize = 32 * 1024;
+        let mut vfs_is_known_cache: HashMap<PathBuf, bool> =
+            HashMap::with_capacity(estimated_paths.min(MAX_VFS_IS_KNOWN_CACHE_ENTRIES));
+        let mut is_known_vfs_path = |path: &PathBuf| -> bool {
+            if let Some(is_known) = vfs_is_known_cache.get(path) {
+                return *is_known;
+            }
+            let vfs_path = VfsPath::Local(path.clone());
+            let is_known = self.vfs.get_id(&vfs_path).is_some();
+            let VfsPath::Local(path) = vfs_path else {
+                unreachable!("VfsPath::Local constructed a non-local path");
+            };
+            if vfs_is_known_cache.len() < MAX_VFS_IS_KNOWN_CACHE_ENTRIES {
+                vfs_is_known_cache.insert(path, is_known);
+            }
+            is_known
+        };
+
+        let mut logged_watch_path_metadata_error = false;
+        let mut dir_cache = BatchDirCache::with_capacity(initial_set_capacity);
+        let mut is_dir_best_effort = |path: &PathBuf, context: &'static str| -> bool {
+            match dir_cache.stat_with_error_hook(path, |err| {
+                if logged_watch_path_metadata_error {
+                    return;
+                }
+                tracing::debug!(
+                    target = "nova.workspace",
+                    context,
+                    path = %path.display(),
+                    error = %err,
+                    error_kind = ?err.kind(),
+                    raw_os_error = err.raw_os_error(),
+                    "failed to stat path while processing watch events"
+                );
+                logged_watch_path_metadata_error = true;
+            }) {
+                DirStat::IsDir(is_dir) => is_dir,
+                DirStat::NotFound => false,
+                DirStat::Error {
+                    kind: _,
+                    raw_os_error: _,
+                } => false,
+            }
         };
 
         for event in events {
@@ -1678,114 +1660,168 @@ impl WorkspaceEngine {
                     let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
                         continue;
                     };
-                    let from = normalize_watch_path(from.to_path_buf());
-                    let to = normalize_watch_path(to.to_path_buf());
+                    let from = normalize_watch_path(from);
+                    let to = normalize_watch_path(to);
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
                     if is_module_info_java(&to) {
                         module_info_changes.insert(to.clone());
                     }
-
-                    // Directory moves can arrive as a single watcher event. Expand to per-file moves
-                    // using the currently-known VFS paths under `from`.
-                    let from_is_dir = fs::metadata(&from).map(|m| m.is_dir()).unwrap_or(false);
-                    let to_is_dir = fs::metadata(&to).map(|m| m.is_dir()).unwrap_or(false);
-                    let from_vfs = VfsPath::local(from.clone());
-                    let to_vfs = VfsPath::local(to.clone());
-                    let from_known_as_file = self.vfs.get_id(&from_vfs).is_some();
-                    let to_known_as_file = self.vfs.get_id(&to_vfs).is_some();
-
-                    let dir_move_files = if from_is_dir || to_is_dir {
-                        known_files_under_dir(&from)
-                    } else if !from_known_as_file {
-                        // The directory might already be gone by the time we observe the event. Fall
-                        // back to checking whether we have any known file paths nested under `from`.
-                        known_files_under_dir(&from)
-                    } else {
-                        Vec::new()
-                    };
-
-                    if !dir_move_files.is_empty() {
-                        for from_file in dir_move_files {
-                            let rel = match from_file.strip_prefix(&from) {
-                                Ok(rel) => rel.to_path_buf(),
-                                Err(_) => continue,
-                            };
-                            let to_file = to.join(rel);
-                            if is_module_info_java(&from_file) {
-                                module_info_changes.insert(from_file.clone());
-                            }
-                            if is_module_info_java(&to_file) {
-                                module_info_changes.insert(to_file.clone());
-                            }
-                            move_events.push((from_file, to_file));
-                        }
-                    } else {
-                        let from_java =
-                            from.extension().and_then(|ext| ext.to_str()) == Some("java");
-                        let to_java = to.extension().and_then(|ext| ext.to_str()) == Some("java");
-                        // Avoid allocating ids for non-Java, untracked file moves. Directory moves
-                        // are handled above by expanding into moves for already-known paths.
-                        if from_java || to_java || from_known_as_file || to_known_as_file {
-                            move_events.push((from, to));
-                        }
-                    }
+                    raw_move_events.push((from, to));
                 }
                 FileChange::Created { path } | FileChange::Modified { path } => {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_watch_path(path.to_path_buf());
+                    let path = normalize_watch_path(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
-
-                    // If a directory event makes it through categorization, ignore it. We only
-                    // care about directory moves/deletes; treating a directory as a file would
-                    // allocate a bogus `FileId`.
-                    if fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false) {
-                        continue;
-                    }
-
-                    let vfs_path = VfsPath::local(path.clone());
-                    let is_known = self.vfs.get_id(&vfs_path).is_some();
-                    let is_java = path.extension().and_then(|ext| ext.to_str()) == Some("java");
-                    if is_java || is_known {
-                        other_paths.insert(path);
-                    }
+                    raw_path_events.push(path);
                 }
                 FileChange::Deleted { path } => {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_watch_path(path.to_path_buf());
+                    let path = normalize_watch_path(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
+                    if path.extension().is_none() {
+                        raw_deleted_no_ext_events.push(path);
+                    } else {
+                        raw_deleted_file_events.push(path);
+                    }
+                }
+            }
+        }
 
-                    // Directory deletes can arrive as a single watcher event without per-file
-                    // deletes. If the deleted path isn't a known file but *is* a prefix of known
-                    // file paths, expand it as a directory deletion.
-                    let vfs_path = VfsPath::local(path.clone());
-                    let is_known_file = self.vfs.get_id(&vfs_path).is_some();
-                    if !is_known_file {
-                        let dir_files = known_files_under_dir(&path);
-                        if !dir_files.is_empty() {
-                            for file in dir_files {
-                                if is_module_info_java(&file) {
-                                    module_info_changes.insert(file.clone());
-                                }
-                                other_paths.insert(file);
-                            }
-                            continue;
+        // Partition extension-less deletes into either file deletions (known paths) or directory-like
+        // expansions. This runs before any move processing so VFS ids reflect the pre-batch state.
+        raw_deleted_no_ext_events.sort();
+        raw_deleted_no_ext_events.dedup();
+        for path in raw_deleted_no_ext_events {
+            if is_known_vfs_path(&path) {
+                raw_path_events.push(path);
+            } else {
+                raw_deleted_dir_events.push(path);
+            }
+        }
+
+        // Deleted events for unknown files must not allocate new FileIds. Only keep deleted file paths
+        // that are already tracked by the VFS.
+        raw_deleted_file_events.sort();
+        raw_deleted_file_events.dedup();
+        for path in raw_deleted_file_events {
+            if is_known_vfs_path(&path) {
+                other_paths.insert(path);
+            }
+        }
+
+        // De-dupe "file-ish" path events before doing any VFS/id/stat work.
+        raw_path_events.sort();
+        raw_path_events.dedup();
+        for path in raw_path_events {
+            let is_known = is_known_vfs_path(&path);
+            let is_java = path.extension().and_then(|ext| ext.to_str()) == Some("java");
+            if !is_java && !is_known {
+                continue;
+            }
+
+            // Ignore directory create/modify events that slip through categorization. Treating a
+            // directory as a file would allocate bogus `FileId`s and corrupt stable-id behavior.
+            if is_dir_best_effort(&path, "watch path event") {
+                continue;
+            }
+
+            other_paths.insert(path);
+        }
+
+        // Dedupe directory-like delete events before scanning the VFS. Some watcher backends emit
+        // duplicate delete notifications; expanding each duplicate would repeatedly scan for known
+        // files under the same directory.
+        raw_deleted_dir_events.sort();
+        raw_deleted_dir_events.dedup();
+        prune_nested_watch_paths(&mut raw_deleted_dir_events);
+        for path in raw_deleted_dir_events {
+            let found = known_files_index.for_each_known_file_under_dir(&path, |file| {
+                if is_module_info_java(&file) {
+                    module_info_changes.insert(file.clone());
+                }
+                other_paths.insert(file);
+            });
+            if found == 0 {
+                continue;
+            }
+        }
+
+        // Dedupe move events before doing any directory expansion work. Watcher backends can emit
+        // duplicate move notifications; expanding each duplicate into per-file moves would
+        // repeatedly scan the VFS and redundantly `stat()` the same paths.
+        raw_move_events.sort();
+        raw_move_events.dedup();
+        prune_redundant_directory_move_events(&mut raw_move_events);
+
+        for (from, to) in raw_move_events {
+            // Directory moves can arrive as a single watcher event. Expand to per-file moves using
+            // the currently-known VFS paths under `from`.
+            let (from_is_dir, to_is_dir) = if looks_like_file(&from) && looks_like_file(&to) {
+                // Fast-path: obvious file moves (e.g. `A.java` -> `B.java`) should not require
+                // `metadata` stats. Directory moves are guarded by extension-less/dot-dir paths.
+                (false, false)
+            } else {
+                (
+                    is_dir_best_effort(&from, "watch moved from"),
+                    is_dir_best_effort(&to, "watch moved to"),
+                )
+            };
+            let from_known_as_file = is_known_vfs_path(&from);
+            let to_known_as_file = is_known_vfs_path(&to);
+
+            let dir_move_found = if from_is_dir
+                || to_is_dir
+                || (!from_known_as_file && (from.extension().is_none() || to.extension().is_none()))
+            {
+                // The directory might already be gone by the time we observe the event. Fall back
+                // to checking whether we have any known file paths nested under `from`.
+                //
+                // Guard this scan behind a directory-like heuristic (`no extension`) to avoid
+                // turning untracked file moves into an O(n_files) walk over the entire VFS.
+                known_files_index.for_each_known_file_under_dir(&from, |from_file| {
+                    let rel = match from_file.strip_prefix(&from) {
+                        Ok(rel) => rel,
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.workspace",
+                                from = %from.display(),
+                                from_file = %from_file.display(),
+                                error = %err,
+                                "directory move expansion failed to strip prefix"
+                            );
+                            return;
                         }
+                    };
+                    let to_file = to.join(rel);
+                    if is_module_info_java(&from_file) {
+                        module_info_changes.insert(from_file.clone());
                     }
+                    if is_module_info_java(&to_file) {
+                        module_info_changes.insert(to_file.clone());
+                    }
+                    move_events.push((from_file, to_file));
+                })
+            } else {
+                0
+            };
 
-                    let is_java = path.extension().and_then(|ext| ext.to_str()) == Some("java");
-                    if is_java || is_known_file {
-                        other_paths.insert(path);
-                    }
+            if dir_move_found == 0 {
+                let from_java = from.extension().and_then(|ext| ext.to_str()) == Some("java");
+                let to_java = to.extension().and_then(|ext| ext.to_str()) == Some("java");
+                // Avoid allocating ids for non-Java, untracked file moves. Directory moves are
+                // handled above by expanding into moves for already-known paths.
+                if from_java || to_java || from_known_as_file || to_known_as_file {
+                    move_events.push((from, to));
                 }
             }
         }
@@ -1801,13 +1837,13 @@ impl WorkspaceEngine {
             other_paths.remove(&from);
             other_paths.remove(&to);
 
-            self.apply_move_event(&from, &to);
+            self.apply_move_event(from, to);
         }
 
         let mut remaining: Vec<PathBuf> = other_paths.into_iter().collect();
         remaining.sort();
         for path in remaining {
-            self.apply_path_event(&path);
+            self.apply_path_event(path);
         }
 
         if !module_info_changes.is_empty() {
@@ -1829,10 +1865,7 @@ impl WorkspaceEngine {
 
         let (root, delay) = {
             let now = Instant::now();
-            let mut state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let mut state = self.project_state.lock().recover_poisoned();
             state.pending_build_changes.extend(changed_files);
             let root = state.workspace_root.clone();
 
@@ -1876,9 +1909,7 @@ impl WorkspaceEngine {
                 let _ctx = scheduler.request_context_with_token("workspace/reload_project", token);
 
                 let changed = {
-                    let mut state = project_state
-                        .lock()
-                        .expect("workspace project state mutex poisoned");
+                    let mut state = project_state.lock().recover_poisoned();
                     state.last_reload_started_at = Some(Instant::now());
                     state.pending_build_changes.drain().collect::<Vec<_>>()
                 };
@@ -1929,10 +1960,7 @@ impl WorkspaceEngine {
 
     pub fn reload_project_now(&self, changed_files: &[PathBuf]) -> Result<()> {
         let root = {
-            let state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let state = self.project_state.lock().recover_poisoned();
             state
                 .workspace_root
                 .clone()
@@ -2127,10 +2155,9 @@ impl WorkspaceEngine {
             }
         };
 
-        let text_for_db = self
-            .vfs
-            .open_document_text_arc(path)
-            .or_else(|| self.vfs.read_to_string(path).ok().map(Arc::new));
+        let text_for_db = self.vfs.open_document_text_arc(path).or_else(|| {
+            read_to_string_best_effort(&self.vfs, path, "workspace.apply_changes").map(Arc::new)
+        });
         if let Some(text_for_db) = text_for_db {
             self.ensure_file_inputs(file_id, path);
             self.closed_file_texts.on_open_document(file_id);
@@ -2226,11 +2253,7 @@ impl WorkspaceEngine {
     }
 
     pub fn trigger_indexing(&self) {
-        let enable = self
-            .config
-            .read()
-            .expect("workspace config lock poisoned")
-            .enable_indexing;
+        let enable = self.config.read().recover_poisoned().enable_indexing;
         if !enable {
             return;
         }
@@ -2241,6 +2264,20 @@ impl WorkspaceEngine {
                 "Indexing paused due to memory pressure".to_string(),
             )));
             return;
+        }
+
+        struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+        impl<T> AbortOnDrop<T> {
+            fn abort(&self) {
+                self.0.abort();
+            }
+        }
+
+        impl<T> Drop for AbortOnDrop<T> {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
         }
 
         // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
@@ -2285,7 +2322,7 @@ impl WorkspaceEngine {
                 let projects: Vec<ProjectId> = {
                     let state = project_state
                         .lock()
-                        .expect("workspace project state mutex poisoned");
+                        .recover_poisoned();
                     if state.projects.is_empty() {
                         vec![ProjectId::from_raw(0)]
                     } else {
@@ -2307,7 +2344,7 @@ impl WorkspaceEngine {
                     BackgroundIndexingMode::Full => project_files.clone(),
                     BackgroundIndexingMode::Reduced => {
                         Self::background_indexing_plan(degraded, project_files.clone(), &open_files)
-                            .unwrap_or_default()
+                            .expect("plan should be present in Reduced mode")
                     }
                     BackgroundIndexingMode::Paused => Vec::new(),
                 };
@@ -2328,10 +2365,10 @@ impl WorkspaceEngine {
                 // If this indexing request is cancelled while Salsa is in-flight, request Salsa
                 // cancellation so queries unwind at the next checkpoint (best-effort).
                 let query_db_for_cancel = query_db.clone();
-                let cancel_handle = scheduler.io_handle().spawn(async move {
+                let cancel_handle = AbortOnDrop(scheduler.io_handle().spawn(async move {
                     token_for_cancel.cancelled().await;
                     query_db_for_cancel.request_cancellation();
-                });
+                }));
 
                 // Periodically enforce memory budgets while indexing runs. If we hit critical
                 // pressure, request Salsa cancellation and mark the run as aborted.
@@ -2345,7 +2382,7 @@ impl WorkspaceEngine {
                 let aborted_for_task = Arc::clone(&aborted_due_to_memory);
                 let memory_for_task = memory.clone();
                 let query_db_for_task = query_db.clone();
-                let enforcer_handle = scheduler.io_handle().spawn(async move {
+                let enforcer_handle = AbortOnDrop(scheduler.io_handle().spawn(async move {
                     loop {
                         tokio::time::sleep(ENFORCE_INTERVAL).await;
                         if stop_for_task.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2360,7 +2397,7 @@ impl WorkspaceEngine {
                             break;
                         }
                     }
-                });
+                }));
 
                 if degraded == BackgroundIndexingMode::Full {
                     for file_id in project_files.iter().copied() {
@@ -2491,11 +2528,38 @@ impl WorkspaceEngine {
                 if degraded == BackgroundIndexingMode::Full {
                     // Best-effort persistence: indexing results are still valid even if we fail to
                     // write them to disk.
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if projects.len() == 1 {
-                            let _ = query_db.persist_project_indexes(projects[0]);
+                    static PERSIST_PROJECT_INDEXES_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                    static PERSIST_PROJECT_INDEXES_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+
+                    if projects.len() == 1 {
+                        let project = projects[0];
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            query_db.persist_project_indexes(project)
+                        })) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                if PERSIST_PROJECT_INDEXES_ERROR_LOGGED.set(()).is_ok() {
+                                    tracing::warn!(
+                                        target = "nova.workspace",
+                                        project = ?project,
+                                        error = %err,
+                                        "failed to persist project indexes; continuing without persistence"
+                                    );
+                                }
+                            }
+                            Err(panic) => {
+                                if PERSIST_PROJECT_INDEXES_PANIC_LOGGED.set(()).is_ok() {
+                                    let message = panic_payload_to_str(panic.as_ref());
+                                    tracing::error!(
+                                        target = "nova.workspace",
+                                        project = ?project,
+                                        panic = %message,
+                                        "persist_project_indexes panicked; continuing without persistence"
+                                    );
+                                }
+                            }
                         }
-                    }));
+                    }
                 }
 
                 progress.finish(Some("Done".to_string()));
@@ -2508,20 +2572,29 @@ impl WorkspaceEngine {
     }
 
     pub fn debug_configurations(&self, root: &Path) -> Vec<DebugConfiguration> {
-        let mut project = self
-            .ide_project
-            .write()
-            .expect("workspace project lock poisoned");
+        static DEBUG_CONFIG_PROJECT_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let mut project = self.ide_project.write().recover_poisoned();
         if project.is_none() {
-            if let Ok(loaded) = Project::load_from_dir(root) {
-                *project = Some(loaded);
+            match Project::load_from_dir(root) {
+                Ok(loaded) => *project = Some(loaded),
+                Err(err) => {
+                    if DEBUG_CONFIG_PROJECT_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            root = %root.display(),
+                            error = %err,
+                            "failed to load ide project; returning no debug configurations"
+                        );
+                    }
+                }
             }
         }
 
         project
             .as_ref()
             .map(Project::discover_debug_configurations)
-            .unwrap_or_default()
+            .unwrap_or_else(Vec::new)
     }
 
     pub(crate) fn salsa_file_content(&self, file_id: FileId) -> Option<Arc<String>> {
@@ -2541,10 +2614,11 @@ impl WorkspaceEngine {
         ensure_file_inputs(file_id, path, &self.query_db, &self.project_state);
     }
 
-    fn apply_path_event(&self, path: &Path) {
-        let vfs_path = VfsPath::local(path.to_path_buf());
-        let was_known = self.vfs.get_id(&vfs_path).is_some();
-        let file_id = self.vfs.file_id(vfs_path.clone());
+    fn apply_path_event(&self, path: PathBuf) {
+        let vfs_path = VfsPath::Local(path);
+        let id = self.vfs.get_id(&vfs_path);
+        let was_known = id.is_some();
+        let file_id = id.unwrap_or_else(|| self.vfs.file_id(vfs_path.clone()));
         self.ensure_file_inputs(file_id, &vfs_path);
 
         let mut exists = self.vfs.exists(&vfs_path);
@@ -2556,7 +2630,11 @@ impl WorkspaceEngine {
                 self.closed_file_texts.on_open_document(file_id);
                 // The file is open in the editor; keep overlay contents but update dirty state if the
                 // file was saved to disk (or modified externally).
-                let disk_text = fs::read_to_string(path);
+                let disk_text = fs::read_to_string(
+                    vfs_path
+                        .as_local_path()
+                        .expect("apply_path_event uses local vfs path"),
+                );
                 let overlay_text = self.vfs.open_document_text_arc(&vfs_path);
                 let is_dirty = match (disk_text, overlay_text) {
                     (Ok(disk), Some(overlay)) => disk.as_str() != overlay.as_str(),
@@ -2564,7 +2642,11 @@ impl WorkspaceEngine {
                 };
                 self.query_db.set_file_is_dirty(file_id, is_dirty);
             } else {
-                match fs::read_to_string(path) {
+                match fs::read_to_string(
+                    vfs_path
+                        .as_local_path()
+                        .expect("apply_path_event uses local vfs path"),
+                ) {
                     Ok(text) => {
                         let text_arc = Arc::new(text);
                         self.query_db
@@ -2612,9 +2694,9 @@ impl WorkspaceEngine {
         self.publish_diagnostics(vfs_path);
     }
 
-    fn apply_move_event(&self, from: &Path, to: &Path) {
-        let from_vfs = VfsPath::local(from.to_path_buf());
-        let to_vfs = VfsPath::local(to.to_path_buf());
+    fn apply_move_event(&self, from: PathBuf, to: PathBuf) {
+        let from_vfs = VfsPath::Local(from);
+        let to_vfs = VfsPath::Local(to);
 
         let id_from = self.vfs.get_id(&from_vfs);
         let id_to = self.vfs.get_id(&to_vfs);
@@ -2626,7 +2708,7 @@ impl WorkspaceEngine {
         self.sync_overlay_documents_memory();
 
         self.ensure_file_inputs(file_id, &to_vfs);
-        let exists = self.vfs.exists(&to_vfs);
+        let mut exists = self.vfs.exists(&to_vfs);
         self.query_db.set_file_exists(file_id, exists);
         if !exists && !open_docs.is_open(file_id) {
             self.query_db.set_file_is_dirty(file_id, false);
@@ -2639,21 +2721,33 @@ impl WorkspaceEngine {
                 // or because it was moved there from `from`). Ensure Salsa sees the overlay contents
                 // so workspace analysis doesn't accidentally use stale disk state.
                 let overlay_text = self.vfs.open_document_text_arc(&to_vfs);
-                let text = overlay_text
-                    .as_ref()
-                    .map(Arc::clone)
-                    .or_else(|| self.vfs.read_to_string(&to_vfs).ok().map(Arc::new));
+                let text = overlay_text.as_ref().map(Arc::clone).or_else(|| {
+                    read_to_string_best_effort(
+                        &self.vfs,
+                        &to_vfs,
+                        "workspace.apply_move_event.overlay",
+                    )
+                    .map(Arc::new)
+                });
                 if let Some(text) = text {
                     self.query_db.set_file_content(file_id, text);
                 }
-                let disk_text = fs::read_to_string(to);
+                let disk_text = fs::read_to_string(
+                    to_vfs
+                        .as_local_path()
+                        .expect("apply_move_event uses local destination vfs path"),
+                );
                 let is_dirty = match (disk_text, overlay_text) {
                     (Ok(disk), Some(overlay)) => disk.as_str() != overlay.as_str(),
                     _ => true,
                 };
                 self.query_db.set_file_is_dirty(file_id, is_dirty);
             } else {
-                match fs::read_to_string(to) {
+                match fs::read_to_string(
+                    to_vfs
+                        .as_local_path()
+                        .expect("apply_move_event uses local destination vfs path"),
+                ) {
                     Ok(text) => {
                         let text_arc = Arc::new(text);
                         self.query_db
@@ -2662,13 +2756,28 @@ impl WorkspaceEngine {
                         self.closed_file_texts
                             .track_closed_file_content(file_id, &text_arc);
                     }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        exists = false;
+                        self.query_db.set_file_exists(file_id, false);
+                        self.query_db.set_file_is_dirty(file_id, false);
+                        self.query_db
+                            .set_file_content(file_id, empty_file_content());
+                        self.closed_file_texts.clear(file_id);
+                    }
                     Err(_) if is_new_id => {
                         self.query_db
                             .set_file_content(file_id, Arc::new(String::new()));
                         self.query_db.set_file_is_dirty(file_id, true);
                         self.closed_file_texts.clear(file_id);
                     }
-                    Err(_) => {}
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            path = %to_vfs,
+                            error = %err,
+                            "failed to read moved file contents; keeping previous contents"
+                        );
+                    }
                 }
             }
         } else if !open_docs.is_open(file_id) {
@@ -2750,13 +2859,16 @@ impl WorkspaceEngine {
         let Some(file_id) = self.vfs.get_id(&file) else {
             self.publish(WorkspaceEvent::DiagnosticsUpdated {
                 file,
-                diagnostics: Vec::new(),
+                diagnostics: empty_diagnostics(),
             });
             return;
         };
         let report = self.memory_report_for_work();
         let diagnostics = self.compute_diagnostics(&file, file_id, report.degraded);
-        self.publish(WorkspaceEvent::DiagnosticsUpdated { file, diagnostics });
+        self.publish(WorkspaceEvent::DiagnosticsUpdated {
+            file,
+            diagnostics: Arc::new(diagnostics),
+        });
     }
 
     fn publish(&self, event: WorkspaceEvent) {
@@ -2775,10 +2887,7 @@ impl WorkspaceEngine {
 
         let now = Instant::now();
         let should_enforce = {
-            let mut last = self
-                .last_memory_enforce
-                .lock()
-                .expect("workspace memory enforce mutex poisoned");
+            let mut last = self.last_memory_enforce.lock().recover_poisoned();
             match *last {
                 Some(prev) if now.duration_since(prev) < ENFORCE_INTERVAL => false,
                 _ => {
@@ -2833,7 +2942,13 @@ impl WorkspaceEngine {
         // best-effort syntax diagnostics for the current on-disk contents. Fall back to reading
         // from the VFS for evicted files only.
         let vfs_text = (text.is_empty() && self.closed_file_texts.is_evicted(file_id))
-            .then(|| self.vfs.read_to_string(file).ok())
+            .then(|| {
+                read_to_string_best_effort(
+                    &self.vfs,
+                    file,
+                    "workspace.syntax_diagnostics_only.evicted",
+                )
+            })
             .flatten();
         let text = vfs_text.as_deref().unwrap_or(text.as_str());
 
@@ -2876,6 +2991,27 @@ fn is_java_vfs_path(path: &VfsPath) -> bool {
         // Decompiled virtual docs are always Java.
         VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => true,
         VfsPath::Uri(uri) => uri.ends_with(".java"),
+    }
+}
+
+fn read_to_string_best_effort(
+    vfs: &Vfs<LocalFs>,
+    path: &VfsPath,
+    context: &'static str,
+) -> Option<String> {
+    match vfs.read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.workspace",
+                context,
+                path = %path,
+                error = %err,
+                "failed to read file from VFS"
+            );
+            None
+        }
     }
 }
 
@@ -2952,8 +3088,14 @@ fn synthetic_single_edit(old: &str, new: &str) -> Option<TextEdit> {
         return None;
     }
 
-    let start = u32::try_from(prefix).ok()?;
-    let end = u32::try_from(old_end).ok()?;
+    let start = match u32::try_from(prefix) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let end = match u32::try_from(old_end) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
 
     Some(TextEdit::new(
         TextRange::new(TextSize::from(start), TextSize::from(end)),
@@ -2962,13 +3104,12 @@ fn synthetic_single_edit(old: &str, new: &str) -> Option<TextEdit> {
 }
 
 fn publish_to_subscribers(
-    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    subscribers: &Arc<Mutex<Vec<Sender<Arc<WorkspaceEvent>>>>>,
     event: WorkspaceEvent,
 ) {
-    let mut subs = subscribers
-        .lock()
-        .expect("workspace subscriber mutex poisoned");
-    subs.retain(|tx| match tx.try_send(event.clone()) {
+    let event = Arc::new(event);
+    let mut subs = subscribers.lock().recover_poisoned();
+    subs.retain(|tx| match tx.try_send(Arc::clone(&event)) {
         Ok(()) => true,
         Err(async_channel::TrySendError::Full(_)) => true,
         Err(async_channel::TrySendError::Closed(_)) => false,
@@ -2976,7 +3117,7 @@ fn publish_to_subscribers(
 }
 
 fn publish_watch_root_error(
-    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    subscribers: &Arc<Mutex<Vec<Sender<Arc<WorkspaceEvent>>>>>,
     err: WatchRootError,
 ) {
     match err {
@@ -3034,13 +3175,104 @@ fn order_move_events(mut moves: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBu
     ordered
 }
 
+/// Prune a sorted, deduplicated list of watch paths so nested paths are removed.
+///
+/// Example:
+/// - input:  [`/a`, `/a/b`, `/a/c`, `/d`]
+/// - output: [`/a`, `/d`]
+///
+/// This is used to coalesce directory-like delete events so we don't repeatedly scan
+/// the VFS for known files under nested directories.
+fn prune_nested_watch_paths(paths: &mut Vec<PathBuf>) {
+    let mut write = 0usize;
+    let mut last_kept: Option<usize> = None;
+    let len = paths.len();
+
+    for i in 0..len {
+        let keep = match last_kept {
+            Some(prev_idx) => !paths[i].starts_with(paths[prev_idx].as_path()),
+            None => true,
+        };
+        if !keep {
+            continue;
+        }
+
+        if write != i {
+            let moved = std::mem::take(&mut paths[i]);
+            paths[write] = moved;
+        }
+
+        last_kept = Some(write);
+        write += 1;
+    }
+
+    paths.truncate(write);
+}
+
+/// Prune redundant nested directory-move events.
+///
+/// Some watcher backends emit both:
+/// - a directory move (`a/` -> `b/`), and
+/// - additional directory moves nested within it (`a/x/` -> `b/x/`).
+///
+/// The nested move is redundant when it is implied by the ancestor move, so we can drop it to
+/// avoid redundant VFS scans during directory expansion.
+fn prune_redundant_directory_move_events(moves: &mut Vec<(PathBuf, PathBuf)>) {
+    let mut write = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    let len = moves.len();
+
+    for i in 0..len {
+        let (from, to) = &moves[i];
+
+        while stack
+            .last()
+            .is_some_and(|&idx| !from.starts_with(moves[idx].0.as_path()))
+        {
+            stack.pop();
+        }
+
+        let is_file_like = looks_like_file(from) || looks_like_file(to);
+        let is_redundant_dir_move = !is_file_like
+            && stack.iter().rev().any(|&idx| {
+                let (ancestor_from, ancestor_to) = &moves[idx];
+                let Ok(rel_from) = from.strip_prefix(ancestor_from.as_path()) else {
+                    return false;
+                };
+                let Ok(rel_to) = to.strip_prefix(ancestor_to.as_path()) else {
+                    return false;
+                };
+                rel_from == rel_to
+            });
+
+        if is_redundant_dir_move {
+            continue;
+        }
+
+        if write != i {
+            let moved = std::mem::take(&mut moves[i]);
+            moves[write] = moved;
+        }
+
+        if !is_file_like {
+            stack.push(write);
+        }
+        write += 1;
+    }
+
+    moves.truncate(write);
+}
+
 fn is_module_info_java(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|name| name == "module-info.java")
 }
 
 fn rel_path_for_workspace(workspace_root: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(workspace_root).ok()?;
+    let rel = match path.strip_prefix(workspace_root) {
+        Ok(rel) => rel,
+        Err(_) => return None,
+    };
     let rel = rel.to_string_lossy();
     Some(normalize_rel_path(rel.as_ref()))
 }
@@ -3089,9 +3321,7 @@ fn ensure_file_inputs(
     project_state: &Arc<Mutex<ProjectState>>,
 ) {
     let (workspace_root, project_roots) = {
-        let state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
+        let state = project_state.lock().recover_poisoned();
         (state.workspace_root.clone(), state.project_roots.clone())
     };
 
@@ -3132,9 +3362,7 @@ fn update_project_files_membership(
     let is_java = local.extension().and_then(|ext| ext.to_str()) == Some("java");
 
     let (workspace_root, project_roots, mut projects) = {
-        let state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
+        let state = project_state.lock().recover_poisoned();
         (
             state.workspace_root.clone(),
             state.project_roots.clone(),
@@ -3360,11 +3588,10 @@ fn should_refresh_build_config(
     // lexical `.`/`..` resolution). This avoids missing prefix matches when module roots are
     // recorded with `..` segments (e.g. `../included`) but file change events arrive in a
     // normalized form.
-    let workspace_root = normalize_watch_path(workspace_root.to_path_buf());
+    let workspace_root = normalize_watch_path(workspace_root);
     let module_roots: Vec<(PathBuf, usize)> = module_roots
         .iter()
-        .cloned()
-        .map(normalize_watch_path)
+        .map(|root| normalize_watch_path(root))
         .map(|root| {
             let len = root.components().count();
             (root, len)
@@ -3372,7 +3599,7 @@ fn should_refresh_build_config(
         .collect();
 
     changed_files.iter().any(|path| {
-        let path = normalize_watch_path(path.clone());
+        let path = normalize_watch_path(path);
 
         // Many build inputs are detected based on path components (e.g. ignoring `build/` output
         // directories). Use paths relative to the workspace root (or module roots) so absolute
@@ -3612,15 +3839,58 @@ fn cached_java_compile_config(
     cache_root: &Path,
 ) -> Option<nova_build::JavaCompileConfig> {
     let files = match kind {
-        BuildSystemKind::Maven => nova_build::collect_maven_build_files(workspace_root).ok()?,
-        BuildSystemKind::Gradle => nova_build::collect_gradle_build_files(workspace_root).ok()?,
+        BuildSystemKind::Maven => match nova_build::collect_maven_build_files(workspace_root) {
+            Ok(files) => files,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.workspace",
+                    workspace_root = %workspace_root.display(),
+                    error = %err,
+                    "failed to collect Maven build files for cached compile config"
+                );
+                return None;
+            }
+        },
+        BuildSystemKind::Gradle => match nova_build::collect_gradle_build_files(workspace_root) {
+            Ok(files) => files,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.workspace",
+                    workspace_root = %workspace_root.display(),
+                    error = %err,
+                    "failed to collect Gradle build files for cached compile config"
+                );
+                return None;
+            }
+        },
     };
-    let fingerprint = BuildFileFingerprint::from_files(workspace_root, files).ok()?;
+    let fingerprint = match BuildFileFingerprint::from_files(workspace_root, files) {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.workspace",
+                workspace_root = %workspace_root.display(),
+                kind = ?kind,
+                error = %err,
+                "failed to compute build file fingerprint for cached compile config"
+            );
+            return None;
+        }
+    };
     let cache = BuildCache::new(cache_root);
-    let module = cache
-        .get_module(workspace_root, kind, &fingerprint, "<root>")
-        .ok()
-        .flatten()?;
+    let module = match cache.get_module(workspace_root, kind, &fingerprint, "<root>") {
+        Ok(module) => module?,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.workspace",
+                workspace_root = %workspace_root.display(),
+                kind = ?kind,
+                error = %err,
+                "failed to read build cache module for cached compile config"
+            );
+            return None;
+        }
+    };
 
     module.java_compile_config.or_else(|| {
         module
@@ -3642,7 +3912,7 @@ fn reload_project_and_sync(
     project_state: &Arc<Mutex<ProjectState>>,
     watch_config: &Arc<RwLock<WatchConfig>>,
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
-    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    subscribers: &Arc<Mutex<Vec<Sender<Arc<WorkspaceEvent>>>>>,
     build_runner: &Arc<dyn CommandRunner>,
     build_runner_is_default: bool,
     cancellation: Option<CancellationToken>,
@@ -3654,9 +3924,7 @@ fn reload_project_and_sync(
         .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
 
     let (previous_maven_mode, previous_gradle_mode) = {
-        let state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
+        let state = project_state.lock().recover_poisoned();
         (
             state.load_options.nova_config.build.maven_mode(),
             state.load_options.nova_config.build.gradle_mode(),
@@ -3666,15 +3934,25 @@ fn reload_project_and_sync(
     // Load Nova config early so build integration gating/timeouts pick up changes to `nova.toml`
     // during the current reload.
     let nova_config_path = nova_config::discover_config_path(workspace_root);
-    let (workspace_config, loaded_config_path) = nova_config::load_for_workspace(workspace_root)
-        .unwrap_or_else(|_| {
-            // If config loading fails, fall back to defaults; the workspace should still open.
-            (nova_config::NovaConfig::default(), nova_config_path.clone())
-        });
+    let (workspace_config, loaded_config_path) =
+        match nova_config::load_for_workspace(workspace_root) {
+            Ok(config) => config,
+            Err(err) => {
+                static NOVA_CONFIG_LOAD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                if NOVA_CONFIG_LOAD_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.workspace",
+                        workspace_root = %workspace_root.display(),
+                        error = %err,
+                        "failed to load nova config; using defaults"
+                    );
+                }
+                // If config loading fails, fall back to defaults; the workspace should still open.
+                (nova_config::NovaConfig::default(), nova_config_path.clone())
+            }
+        };
     {
-        let mut state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
+        let mut state = project_state.lock().recover_poisoned();
         state.load_options.nova_config = workspace_config.clone();
         state.load_options.nova_config_path = loaded_config_path.clone();
     }
@@ -3684,9 +3962,7 @@ fn reload_project_and_sync(
     // Capture the previous per-project configs/indexes (when possible) so Maven/Gradle build-derived
     // config fields can be reused on reloads that do not modify build inputs.
     let (projects, previous_configs, previous_classpath_indexes) = {
-        let mut loader = workspace_loader
-            .lock()
-            .expect("workspace loader mutex poisoned");
+        let mut loader = workspace_loader.lock().recover_poisoned();
 
         let should_reload = loader
             .workspace_root()
@@ -3906,8 +4182,21 @@ fn reload_project_and_sync(
                                             &fingerprint,
                                             &module_key,
                                         )
-                                        .ok()
-                                        .flatten();
+                                        .unwrap_or_else(|err| {
+                                            static BUILD_CACHE_GET_MODULE_ERROR_LOGGED: OnceLock<()> =
+                                                OnceLock::new();
+                                            if BUILD_CACHE_GET_MODULE_ERROR_LOGGED.set(()).is_ok() {
+                                                tracing::debug!(
+                                                    target = "nova.workspace",
+                                                    build_system = "maven",
+                                                    workspace_root = %workspace_root.display(),
+                                                    module_key = %module_key,
+                                                    error = ?err,
+                                                    "failed to read cached build module (best effort)"
+                                                );
+                                            }
+                                            None
+                                        });
                                     let Some(module) = module else {
                                         continue;
                                     };
@@ -4008,7 +4297,19 @@ fn reload_project_and_sync(
             .cloned()
             .collect();
 
-        let canonicalize = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonicalize = |path: &Path| match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.workspace",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize path"
+                );
+                path.to_path_buf()
+            }
+        };
 
         if !gradle_projects.is_empty() {
             if refresh_gradle {
@@ -4035,10 +4336,43 @@ fn reload_project_and_sync(
                                 BuildFileFingerprint::from_files(workspace_root, files)
                             {
                                 let cache = BuildCache::new(cache_dir.as_path());
+                                static BUILD_CACHE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                                let get_module_best_effort = |key: &str| {
+                                    cache
+                                        .get_module(
+                                            workspace_root,
+                                            BuildSystemKind::Gradle,
+                                            &fingerprint,
+                                            key,
+                                        )
+                                        .unwrap_or_else(|err| {
+                                            if BUILD_CACHE_ERROR_LOGGED.set(()).is_ok() {
+                                                tracing::debug!(
+                                                    target = "nova.workspace",
+                                                    build_system = "gradle",
+                                                    workspace_root = %workspace_root.display(),
+                                                    module_key = %key,
+                                                    error = ?err,
+                                                    "failed to read cached build module (best effort)"
+                                                );
+                                            }
+                                            None
+                                        })
+                                };
                                 let data = cache
                                     .load(workspace_root, BuildSystemKind::Gradle, &fingerprint)
-                                    .ok()
-                                    .flatten();
+                                    .unwrap_or_else(|err| {
+                                        if BUILD_CACHE_ERROR_LOGGED.set(()).is_ok() {
+                                            tracing::debug!(
+                                                target = "nova.workspace",
+                                                build_system = "gradle",
+                                                workspace_root = %workspace_root.display(),
+                                                error = ?err,
+                                                "failed to load build cache metadata (best effort)"
+                                            );
+                                        }
+                                        None
+                                    });
                                 if let Some(data) = data {
                                     if let Some(projects) = data.projects {
                                         let mut dir_to_path: HashMap<PathBuf, String> =
@@ -4064,36 +4398,10 @@ fn reload_project_and_sync(
                                             };
 
                                             let module = if project_path.as_str() == ":" {
-                                                cache
-                                                    .get_module(
-                                                        workspace_root,
-                                                        BuildSystemKind::Gradle,
-                                                        &fingerprint,
-                                                        ":",
-                                                    )
-                                                    .ok()
-                                                    .flatten()
-                                                    .or_else(|| {
-                                                        cache
-                                                            .get_module(
-                                                                workspace_root,
-                                                                BuildSystemKind::Gradle,
-                                                                &fingerprint,
-                                                                "<root>",
-                                                            )
-                                                            .ok()
-                                                            .flatten()
-                                                    })
+                                                get_module_best_effort(":")
+                                                    .or_else(|| get_module_best_effort("<root>"))
                                             } else {
-                                                cache
-                                                    .get_module(
-                                                        workspace_root,
-                                                        BuildSystemKind::Gradle,
-                                                        &fingerprint,
-                                                        project_path,
-                                                    )
-                                                    .ok()
-                                                    .flatten()
+                                                get_module_best_effort(project_path)
                                             };
                                             let Some(module) = module else {
                                                 continue;
@@ -4169,15 +4477,52 @@ fn reload_project_and_sync(
                             // Map module roots to Gradle project paths using cached Gradle project
                             // directories (written by `java_compile_configs_all_gradle`).
                             let gradle_dir_map: Option<HashMap<PathBuf, String>> = (|| {
-                                let files =
-                                    nova_build::collect_gradle_build_files(workspace_root).ok()?;
-                                let fingerprint =
-                                    BuildFileFingerprint::from_files(workspace_root, files).ok()?;
+                                let files = match nova_build::collect_gradle_build_files(
+                                    workspace_root,
+                                ) {
+                                    Ok(files) => files,
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            target = "nova.workspace",
+                                            workspace_root = %workspace_root.display(),
+                                            error = %err,
+                                            "failed to collect Gradle build files for project dir map"
+                                        );
+                                        return None;
+                                    }
+                                };
+                                let fingerprint = match BuildFileFingerprint::from_files(
+                                    workspace_root,
+                                    files,
+                                ) {
+                                    Ok(fingerprint) => fingerprint,
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            target = "nova.workspace",
+                                            workspace_root = %workspace_root.display(),
+                                            error = %err,
+                                            "failed to compute build file fingerprint for project dir map"
+                                        );
+                                        return None;
+                                    }
+                                };
                                 let cache = BuildCache::new(&cache_dir);
-                                let data = cache
-                                    .load(workspace_root, BuildSystemKind::Gradle, &fingerprint)
-                                    .ok()
-                                    .flatten()?;
+                                let data = match cache.load(
+                                    workspace_root,
+                                    BuildSystemKind::Gradle,
+                                    &fingerprint,
+                                ) {
+                                    Ok(data) => data?,
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            target = "nova.workspace",
+                                            workspace_root = %workspace_root.display(),
+                                            error = %err,
+                                            "failed to load Gradle build cache for project dir map"
+                                        );
+                                        return None;
+                                    }
+                                };
                                 let projects = data.projects?;
                                 let mut map = HashMap::new();
                                 for project in projects {
@@ -4245,9 +4590,7 @@ fn reload_project_and_sync(
 
     // 3) Collect per-project roots and watcher roots based on loaded configs.
     let (project_roots, watch_source_roots, watch_generated_roots, watch_module_roots) = {
-        let mut loader = workspace_loader
-            .lock()
-            .expect("workspace loader mutex poisoned");
+        let mut loader = workspace_loader.lock().recover_poisoned();
 
         let mut watch_source_roots = Vec::new();
         let mut watch_generated_roots = Vec::new();
@@ -4303,17 +4646,13 @@ fn reload_project_and_sync(
     };
 
     {
-        let mut state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
+        let mut state = project_state.lock().recover_poisoned();
         state.projects = projects.clone();
         state.project_roots = project_roots;
     }
 
     {
-        let mut cfg = watch_config
-            .write()
-            .expect("workspace watch config lock poisoned");
+        let mut cfg = watch_config.write().recover_poisoned();
         *cfg = WatchConfig::with_roots(
             workspace_root.to_path_buf(),
             watch_source_roots.clone(),
@@ -4326,11 +4665,7 @@ fn reload_project_and_sync(
     // If the watcher is running, schedule a refresh so it reconciles watched paths/roots with the
     // latest `watch_config` (adds new external roots, removes stale ones, and picks up changes to
     // the config-path watch).
-    if let Some(tx) = watcher_command_store
-        .lock()
-        .expect("workspace watcher command store mutex poisoned")
-        .clone()
-    {
+    if let Some(tx) = watcher_command_store.lock().recover_poisoned().clone() {
         // Never block the calling thread (this can run inside debounced background tasks).
         // If the queue is full, a watch update is already pending and will pick up the latest
         // `watch_config` state when it runs.
@@ -4390,8 +4725,21 @@ fn reload_project_and_sync(
     let should_discover_jdk = jdk_config.home.is_some() || !jdk_config.toolchains.is_empty();
     if should_discover_jdk {
         let jdk_index =
-            nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
-                .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
+            match nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release) {
+                Ok(index) => index,
+                Err(err) => {
+                    static JDK_DISCOVERY_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                    if JDK_DISCOVERY_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            requested_release = ?requested_release,
+                            error = %err,
+                            "failed to discover JDK index; falling back to empty index"
+                        );
+                    }
+                    nova_jdk::JdkIndex::new()
+                }
+            };
         let jdk_index = Arc::new(jdk_index);
         for project in &projects {
             query_db.set_jdk_index(*project, Arc::clone(&jdk_index));
@@ -4406,8 +4754,22 @@ fn reload_project_and_sync(
         };
         ensure_file_inputs(file_id, &path, query_db, project_state);
         query_db.set_file_exists(file_id, true);
-        if let Ok(text) = vfs.read_to_string(&path) {
-            query_db.set_file_content(file_id, Arc::new(text));
+        match vfs.read_to_string(&path) {
+            Ok(text) => query_db.set_file_content(file_id, Arc::new(text)),
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound {
+                    static OPEN_DOCUMENT_READ_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                    if OPEN_DOCUMENT_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            file_id = ?file_id,
+                            path = ?path,
+                            error = %err,
+                            "failed to refresh open-document disk contents; keeping existing overlay contents"
+                        );
+                    }
+                }
+            }
         }
         update_project_files_membership(&path, file_id, true, query_db, project_state);
     }
@@ -4492,7 +4854,78 @@ mod tests {
     use tokio::task::yield_now;
     use tokio::time::timeout;
 
+    use crate::watch::categorize_event;
+
     use super::*;
+
+    #[test]
+    fn prune_nested_watch_paths_removes_nested_prefixes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let a = root.join("a");
+        let a_b = a.join("b");
+        let a_b_c = a_b.join("c");
+        let a2 = root.join("a2");
+        let d = root.join("d");
+        let d_e = d.join("e");
+
+        let mut paths = vec![
+            a_b.clone(),
+            a.clone(),
+            a_b_c.clone(),
+            a2.clone(),
+            d_e.clone(),
+            d.clone(),
+        ];
+        paths.sort();
+        paths.dedup();
+
+        prune_nested_watch_paths(&mut paths);
+
+        assert_eq!(paths, vec![a, a2, d]);
+        assert!(!paths.contains(&a_b));
+        assert!(!paths.contains(&a_b_c));
+        assert!(!paths.contains(&d_e));
+    }
+
+    #[test]
+    fn prune_redundant_directory_move_events_drops_nested_moves_with_matching_dest_prefix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let from_root = root.join("from");
+        let to_root = root.join("to");
+
+        let a = from_root.join("a");
+        let a_x = a.join("x");
+        let a_x_y = a_x.join("y");
+
+        let a_to = to_root.join("a");
+        let a_x_to = a_to.join("x");
+        let a_x_y_to = a_x_to.join("y");
+
+        let mut moves = vec![
+            (a_x.clone(), a_x_to.clone()),
+            (a_x_y.clone(), a_x_y_to.clone()),
+            // The ancestor directory move makes the two above redundant.
+            (a.clone(), a_to.clone()),
+            // But a move with a different destination prefix is *not* redundant.
+            (a_x.join("other"), to_root.join("other-dest")),
+            // And file-ish moves should not be pruned even if they are implied.
+            (a.join("File.java"), a_to.join("File.java")),
+        ];
+        moves.sort();
+        moves.dedup();
+
+        prune_redundant_directory_move_events(&mut moves);
+
+        assert!(moves.contains(&(a, a_to)));
+        assert!(moves.contains(&(a_x.join("other"), to_root.join("other-dest"))));
+        assert!(moves.contains(&(from_root.join("a/File.java"), to_root.join("a/File.java"))));
+        assert!(!moves.contains(&(from_root.join("a/x"), to_root.join("a/x"))));
+        assert!(!moves.contains(&(from_root.join("a/x/y"), to_root.join("a/x/y"))));
+    }
 
     #[test]
     fn build_config_refresh_is_triggered_by_gradle_version_catalogs_script_plugins_and_lockfiles() {
@@ -4765,7 +5198,7 @@ mod tests {
             }
         }
     }
-    async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
+    async fn wait_for_indexing_ready(rx: &async_channel::Receiver<Arc<WorkspaceEvent>>) {
         let mut saw_started = false;
         let mut saw_progress = false;
 
@@ -4774,7 +5207,7 @@ mod tests {
                 .recv()
                 .await
                 .expect("workspace event channel unexpectedly closed");
-            match event {
+            match event.as_ref() {
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted) => {
                     saw_started = true;
                 }
@@ -4898,18 +5331,26 @@ mode = "off"
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::{collections::HashMap, process::ExitStatus};
 
+        use std::sync::Mutex;
+
         #[derive(Debug)]
         struct MavenEvaluateRoutingRunner {
             calls: Arc<AtomicUsize>,
+            missing_expressions: Arc<Mutex<Vec<String>>>,
             outputs: HashMap<String, nova_build::CommandOutput>,
         }
 
         impl MavenEvaluateRoutingRunner {
             fn new(
                 calls: Arc<AtomicUsize>,
+                missing_expressions: Arc<Mutex<Vec<String>>>,
                 outputs: HashMap<String, nova_build::CommandOutput>,
             ) -> Self {
-                Self { calls, outputs }
+                Self {
+                    calls,
+                    missing_expressions,
+                    outputs,
+                }
             }
         }
 
@@ -4923,17 +5364,36 @@ mode = "off"
                 self.calls.fetch_add(1, Ordering::Relaxed);
                 let expression = args
                     .iter()
-                    .find_map(|arg| arg.strip_prefix("-Dexpression="))
-                    .unwrap_or_default();
+                    .find_map(|arg| arg.strip_prefix("-Dexpression="));
 
-                Ok(self.outputs.get(expression).cloned().unwrap_or_else(|| {
-                    nova_build::CommandOutput {
+                let Some(expression) = expression else {
+                    self.missing_expressions
+                        .lock()
+                        .expect("missing_expressions lock")
+                        .push("<missing -Dexpression=>".to_string());
+                    return Ok(nova_build::CommandOutput {
                         status: success_status(),
                         stdout: String::new(),
                         stderr: String::new(),
                         truncated: false,
+                    });
+                };
+
+                match self.outputs.get(expression).cloned() {
+                    Some(out) => Ok(out),
+                    None => {
+                        self.missing_expressions
+                            .lock()
+                            .expect("missing_expressions lock")
+                            .push(expression.to_string());
+                        Ok(nova_build::CommandOutput {
+                            status: success_status(),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            truncated: false,
+                        })
                     }
-                }))
+                }
             }
         }
 
@@ -5009,10 +5469,45 @@ mode = "off"
             list_output(&["src/test/java"]),
         );
         outputs.insert("maven.compiler.target".to_string(), scalar_output("1.8"));
+        outputs.insert(
+            "project.build.directory".to_string(),
+            scalar_output("target"),
+        );
+        outputs.insert(
+            "project.build.outputDirectory".to_string(),
+            scalar_output("target/classes"),
+        );
+        outputs.insert(
+            "project.build.testOutputDirectory".to_string(),
+            scalar_output("target/test-classes"),
+        );
+        outputs.insert("maven.compiler.release".to_string(), scalar_output("8"));
+        outputs.insert("maven.compiler.source".to_string(), scalar_output("1.8"));
+        outputs.insert("maven.compiler.compilerArgs".to_string(), list_output(&[]));
+        outputs.insert(
+            "maven.compiler.compilerArgument".to_string(),
+            scalar_output(""),
+        );
+        outputs.insert(
+            "project.compileModulePathElements".to_string(),
+            list_output(&[]),
+        );
+        outputs.insert(
+            "project.compileModulepathElements".to_string(),
+            list_output(&[]),
+        );
+        outputs.insert(
+            "project.testCompileModulePathElements".to_string(),
+            list_output(&[]),
+        );
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let runner: Arc<dyn nova_build::CommandRunner> =
-            Arc::new(MavenEvaluateRoutingRunner::new(Arc::clone(&calls), outputs));
+        let missing_expressions = Arc::new(Mutex::new(Vec::new()));
+        let runner: Arc<dyn nova_build::CommandRunner> = Arc::new(MavenEvaluateRoutingRunner::new(
+            Arc::clone(&calls),
+            Arc::clone(&missing_expressions),
+            outputs,
+        ));
 
         let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
         let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
@@ -5045,6 +5540,14 @@ mode = "off"
         let config_path = root.join("nova.toml");
         fs::write(&config_path, "[build]\nmode = \"on\"\n").unwrap();
         engine.reload_project_now(&[config_path]).unwrap();
+
+        let missing = missing_expressions
+            .lock()
+            .expect("missing_expressions lock");
+        assert!(
+            missing.is_empty(),
+            "test runner missing outputs for expressions: {missing:?}"
+        );
 
         assert!(
             calls.load(Ordering::Relaxed) > 0,
@@ -5263,23 +5766,7 @@ mode = "off"
     }
 
     fn current_rss_bytes() -> Option<u64> {
-        #[cfg(target_os = "linux")]
-        {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            for line in status.lines() {
-                let line = line.trim_start();
-                if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
-                    return Some(kb.saturating_mul(1024));
-                }
-            }
-            None
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
+        nova_memory::current_rss_bytes()
     }
 
     fn test_memory_budget_total() -> u64 {
@@ -5389,12 +5876,12 @@ mode = "off"
         }
 
         fn set_bytes(&self, bytes: u64) {
-            *self.bytes.lock().unwrap() = bytes;
+            *self.bytes.lock().expect("bytes mutex poisoned") = bytes;
             self.tracker.get().unwrap().set_bytes(bytes);
         }
 
         fn bytes(&self) -> u64 {
-            *self.bytes.lock().unwrap()
+            *self.bytes.lock().expect("bytes mutex poisoned")
         }
 
         fn evict_calls(&self) -> usize {
@@ -5413,7 +5900,7 @@ mode = "off"
 
         fn evict(&self, request: EvictionRequest) -> EvictionResult {
             self.evict_calls.fetch_add(1, Ordering::Relaxed);
-            let mut bytes = self.bytes.lock().unwrap();
+            let mut bytes = self.bytes.lock().expect("bytes mutex poisoned");
             let before = *bytes;
             let after = before.min(request.target_bytes);
             *bytes = after;
@@ -5686,11 +6173,7 @@ mode = "off"
         let workspace = crate::Workspace::open(&workspace_root).unwrap();
         let engine = workspace.engine_for_tests();
 
-        let watch_config = engine
-            .watch_config
-            .read()
-            .expect("workspace watch config lock poisoned")
-            .clone();
+        let watch_config = engine.watch_config.read().recover_poisoned().clone();
 
         assert!(
             watch_config.module_roots.contains(&external_root),
@@ -6428,6 +6911,31 @@ mode = "off"
     }
 
     #[test]
+    fn delete_event_for_unknown_file_does_not_allocate_file_id() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let file_path = root.join("src/Deleted.java");
+        let vfs_path = VfsPath::local(file_path.clone());
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        assert!(engine.vfs.get_id(&vfs_path).is_none());
+
+        engine.apply_filesystem_events(vec![FileChange::Deleted {
+            path: vfs_path.clone(),
+        }]);
+
+        assert!(
+            engine.vfs.get_id(&vfs_path).is_none(),
+            "deleted, unknown paths must not allocate a new FileId"
+        );
+    }
+
+    #[test]
     fn close_document_releases_open_document_pins() {
         use nova_db::salsa::{
             HasItemTreeStore, HasJavaParseStore, HasSyntaxTreeStore, NovaSemantic, NovaSyntax,
@@ -6756,10 +7264,7 @@ mode = "off"
             build_runner: None,
         });
         {
-            let mut state = engine
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let mut state = engine.project_state.lock().recover_poisoned();
             state.workspace_root = Some(root.clone());
             state.projects.clear();
             state.project_roots.clear();
@@ -7234,14 +7739,23 @@ mode = "off"
     fn maven_build_integration_populates_classpath_from_nova_build() {
         use std::{collections::HashMap, process::ExitStatus};
 
+        use std::sync::Mutex;
+
         #[derive(Debug)]
         struct MavenEvaluateRoutingRunner {
+            missing_expressions: Arc<Mutex<Vec<String>>>,
             outputs: HashMap<String, nova_build::CommandOutput>,
         }
 
         impl MavenEvaluateRoutingRunner {
-            fn new(outputs: HashMap<String, nova_build::CommandOutput>) -> Self {
-                Self { outputs }
+            fn new(
+                missing_expressions: Arc<Mutex<Vec<String>>>,
+                outputs: HashMap<String, nova_build::CommandOutput>,
+            ) -> Self {
+                Self {
+                    missing_expressions,
+                    outputs,
+                }
             }
         }
 
@@ -7254,17 +7768,36 @@ mode = "off"
             ) -> std::io::Result<nova_build::CommandOutput> {
                 let expression = args
                     .iter()
-                    .find_map(|arg| arg.strip_prefix("-Dexpression="))
-                    .unwrap_or_default();
+                    .find_map(|arg| arg.strip_prefix("-Dexpression="));
 
-                Ok(self.outputs.get(expression).cloned().unwrap_or_else(|| {
-                    nova_build::CommandOutput {
+                let Some(expression) = expression else {
+                    self.missing_expressions
+                        .lock()
+                        .expect("missing_expressions lock")
+                        .push("<missing -Dexpression=>".to_string());
+                    return Ok(nova_build::CommandOutput {
                         status: success_status(),
                         stdout: String::new(),
                         stderr: String::new(),
                         truncated: false,
+                    });
+                };
+
+                match self.outputs.get(expression).cloned() {
+                    Some(out) => Ok(out),
+                    None => {
+                        self.missing_expressions
+                            .lock()
+                            .expect("missing_expressions lock")
+                            .push(expression.to_string());
+                        Ok(nova_build::CommandOutput {
+                            status: success_status(),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            truncated: false,
+                        })
                     }
-                }))
+                }
             }
         }
 
@@ -7343,9 +7876,43 @@ mode = "off"
             list_output(&["src/test/java"]),
         );
         outputs.insert("maven.compiler.target".to_string(), scalar_output("1.8"));
+        outputs.insert(
+            "project.build.directory".to_string(),
+            scalar_output("target"),
+        );
+        outputs.insert(
+            "project.build.outputDirectory".to_string(),
+            scalar_output("target/classes"),
+        );
+        outputs.insert(
+            "project.build.testOutputDirectory".to_string(),
+            scalar_output("target/test-classes"),
+        );
+        outputs.insert("maven.compiler.release".to_string(), scalar_output("8"));
+        outputs.insert("maven.compiler.source".to_string(), scalar_output("1.8"));
+        outputs.insert("maven.compiler.compilerArgs".to_string(), list_output(&[]));
+        outputs.insert(
+            "maven.compiler.compilerArgument".to_string(),
+            scalar_output(""),
+        );
+        outputs.insert(
+            "project.compileModulePathElements".to_string(),
+            list_output(&[]),
+        );
+        outputs.insert(
+            "project.compileModulepathElements".to_string(),
+            list_output(&[]),
+        );
+        outputs.insert(
+            "project.testCompileModulePathElements".to_string(),
+            list_output(&[]),
+        );
 
-        let runner: Arc<dyn nova_build::CommandRunner> =
-            Arc::new(MavenEvaluateRoutingRunner::new(outputs));
+        let missing_expressions = Arc::new(Mutex::new(Vec::new()));
+        let runner: Arc<dyn nova_build::CommandRunner> = Arc::new(MavenEvaluateRoutingRunner::new(
+            Arc::clone(&missing_expressions),
+            outputs,
+        ));
 
         let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
         let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
@@ -7359,6 +7926,14 @@ mode = "off"
         });
 
         engine.set_workspace_root(&root).unwrap();
+
+        let missing = missing_expressions
+            .lock()
+            .expect("missing_expressions lock");
+        assert!(
+            missing.is_empty(),
+            "test runner missing outputs for expressions: {missing:?}"
+        );
 
         engine.query_db.with_snapshot(|snap| {
             let project = ProjectId::from_raw(0);
@@ -7781,16 +8356,15 @@ mode = "off"
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("maven-multi");
         copy_dir_all(&fixture_root("maven-multi"), &root);
-        let root = root.canonicalize().unwrap_or(root);
+        let root = root
+            .canonicalize()
+            .expect("failed to canonicalize maven-multi fixture root");
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         let (app_project, lib_project) = {
-            let loader = engine
-                .workspace_loader
-                .lock()
-                .expect("workspace loader mutex poisoned");
+            let loader = engine.workspace_loader.lock().recover_poisoned();
             (
                 loader
                     .project_id_for_module("maven:com.example:app")
@@ -7847,16 +8421,15 @@ mode = "off"
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("gradle-multi");
         copy_dir_all(&fixture_root("gradle-multi"), &root);
-        let root = root.canonicalize().unwrap_or(root);
+        let root = root
+            .canonicalize()
+            .expect("failed to canonicalize gradle-multi fixture root");
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         let (app_project, lib_project) = {
-            let loader = engine
-                .workspace_loader
-                .lock()
-                .expect("workspace loader mutex poisoned");
+            let loader = engine.workspace_loader.lock().recover_poisoned();
             (
                 loader
                     .project_id_for_module("gradle::app")
@@ -7895,16 +8468,15 @@ mode = "off"
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("maven-multi");
         copy_dir_all(&fixture_root("maven-multi"), &root);
-        let root = root.canonicalize().unwrap_or(root);
+        let root = root
+            .canonicalize()
+            .expect("failed to canonicalize maven-multi fixture root");
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         let app_project = {
-            let loader = engine
-                .workspace_loader
-                .lock()
-                .expect("workspace loader mutex poisoned");
+            let loader = engine.workspace_loader.lock().recover_poisoned();
             loader
                 .project_id_for_module("maven:com.example:app")
                 .expect("app project")
@@ -8061,10 +8633,7 @@ enabled = false
             let workspace = crate::Workspace::open(&root).unwrap();
             let engine = workspace.engine_for_tests();
 
-            let state = engine
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let state = engine.project_state.lock().recover_poisoned();
             let build = &state.load_options.nova_config.build;
             assert_eq!(build.enabled, Some(true));
             assert_eq!(build.timeout_ms, 1234);
@@ -8149,11 +8718,7 @@ enabled = false
             path: VfsPath::local(generated_file.clone()),
         };
 
-        let stale_config = engine
-            .watch_config
-            .read()
-            .expect("workspace watch config lock poisoned")
-            .clone();
+        let stale_config = engine.watch_config.read().recover_poisoned().clone();
         assert!(
             !stale_config.source_roots.is_empty()
                 || !stale_config.generated_source_roots.is_empty(),
@@ -8190,11 +8755,7 @@ enabled = false
 
         engine.reload_project_now(&[snapshot_path]).unwrap();
 
-        let current_config = engine
-            .watch_config
-            .read()
-            .expect("workspace watch config lock poisoned")
-            .clone();
+        let current_config = engine.watch_config.read().recover_poisoned().clone();
         assert!(
             current_config
                 .generated_source_roots
@@ -8273,10 +8834,7 @@ enabled = false
         );
 
         let mut changed_files = {
-            let mut state = engine
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let mut state = engine.project_state.lock().recover_poisoned();
             state.pending_build_changes.drain().collect::<Vec<_>>()
         };
         changed_files.sort();
@@ -8482,10 +9040,10 @@ enabled = false
             if let WorkspaceEvent::DiagnosticsUpdated {
                 file: updated,
                 diagnostics: diags,
-            } = evt
+            } = evt.as_ref()
             {
-                if updated == file {
-                    diagnostics = Some(diags);
+                if updated == &file {
+                    diagnostics = Some(Arc::clone(diags));
                     break;
                 }
             }
@@ -8647,8 +9205,8 @@ public class Bar {}"#;
                     .recv()
                     .await
                     .expect("workspace event channel unexpectedly closed");
-                match event {
-                    WorkspaceEvent::FileChanged { file } if file == vfs_path_for_wait => break,
+                match event.as_ref() {
+                    WorkspaceEvent::FileChanged { file } if file == &vfs_path_for_wait => break,
                     WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
                         panic!("workspace watcher error: {err}");
                     }
@@ -8702,17 +9260,21 @@ public class Bar {}"#;
                     continue;
                 };
 
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
-                        snap.file_exists(file_id)
-                            && snap.file_content(file_id).as_str() == text
-                            && snap.file_rel_path(file_id).as_str() == "src/Main.java"
-                            && snap
-                                .project_files(ProjectId::from_raw(0))
-                                .contains(&file_id)
-                    })
-                }))
-                .unwrap_or(false);
+                let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                    if !snap.all_file_ids().as_ref().contains(&file_id) {
+                        return false;
+                    }
+
+                    snap.file_exists(file_id)
+                        && snap.file_content(file_id).as_str() == text
+                        && snap.file_rel_path(file_id).as_str() == "src/Main.java"
+                        && snap
+                            .project_files(ProjectId::from_raw(0))
+                            .contains(&file_id)
+                }) {
+                    Ok(ready) => ready,
+                    Err(_) => false,
+                };
 
                 if ready {
                     break;
@@ -8726,7 +9288,7 @@ public class Bar {}"#;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn manual_watcher_directory_move_triggers_rescan_fallback() {
+    async fn manual_watcher_directory_move_is_expanded_into_file_moves_without_rescan() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
@@ -8736,6 +9298,7 @@ public class Bar {}"#;
         let project_root = project_root.canonicalize().unwrap();
 
         let workspace = crate::Workspace::open(&project_root).unwrap();
+        let rx = workspace.subscribe();
         let engine = workspace.engine.clone();
 
         let old_path = VfsPath::local(project_root.join("src/Main.java"));
@@ -8764,32 +9327,39 @@ public class Bar {}"#;
             })
             .unwrap();
 
-        // The watcher should detect the directory-level move and fall back to a full rescan,
-        // discovering the file at its new path.
+        // The watcher thread should forward the directory move as a source change so
+        // `apply_filesystem_events` can expand it into a file move for already-known paths.
         let vfs_path = VfsPath::local(project_root.join("src2/Main.java"));
-        timeout(Duration::from_secs(5), async move {
+        timeout(Duration::from_secs(5), async {
             loop {
+                while let Ok(event) = rx.try_recv() {
+                    if let WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) =
+                        event.as_ref()
+                    {
+                        panic!("workspace watcher error: {err}");
+                    }
+                }
+
                 let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
                     yield_now().await;
                     continue;
                 };
+                if file_id != old_id {
+                    yield_now().await;
+                    continue;
+                }
 
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
-                        snap.file_exists(file_id)
-                            && snap.file_content(file_id).as_str() == text
-                            && snap.file_rel_path(file_id).as_str() == "src2/Main.java"
-                            && snap
-                                .project_files(ProjectId::from_raw(0))
-                                .contains(&file_id)
-                            && (file_id == old_id
-                                || (!snap.file_exists(old_id)
-                                    && !snap
-                                        .project_files(ProjectId::from_raw(0))
-                                        .contains(&old_id)))
-                    })
-                }))
-                .unwrap_or(false);
+                let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                    snap.file_exists(file_id)
+                        && snap.file_content(file_id).as_str() == text
+                        && snap.file_rel_path(file_id).as_str() == "src2/Main.java"
+                        && snap
+                            .project_files(ProjectId::from_raw(0))
+                            .contains(&file_id)
+                }) {
+                    Ok(ready) => ready,
+                    Err(_) => false,
+                };
 
                 if ready {
                     break;
@@ -8799,11 +9369,100 @@ public class Bar {}"#;
             }
         })
         .await
-        .expect("timed out waiting for directory-move-triggered project reload");
+        .expect("timed out waiting for directory move to update workspace state");
+        assert_eq!(engine.vfs.get_id(&old_path), None);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn manual_watcher_directory_move_with_missing_metadata_triggers_rescan_fallback() {
+    async fn manual_watcher_directory_move_into_source_tree_triggers_rescan_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        // Create an external source tree that will be moved into the workspace's source root.
+        let incoming_dir = dir.path().join("incoming");
+        fs::create_dir_all(&incoming_dir).unwrap();
+        let added_text = "class Added { int x; }";
+        fs::write(incoming_dir.join("Added.java"), added_text.as_bytes()).unwrap();
+        let incoming_dir = incoming_dir.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let rx = workspace.subscribe();
+        let engine = workspace.engine.clone();
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Move the directory *into* the workspace's source tree, but only send the directory move
+        // event (no per-file events). The workspace must fall back to a rescan to discover new
+        // files that were previously outside the watched roots.
+        let dest_dir = project_root.join("src").join("incoming");
+        fs::rename(&incoming_dir, &dest_dir).unwrap();
+
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Moved {
+                    from: VfsPath::local(incoming_dir),
+                    to: VfsPath::local(dest_dir.clone()),
+                }],
+            })
+            .unwrap();
+
+        let added_file = dest_dir.join("Added.java");
+        let vfs_path = VfsPath::local(added_file);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Ok(event) = rx.try_recv() {
+                if let WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) = event.as_ref()
+                {
+                    panic!("workspace watcher error: {err}");
+                }
+            }
+
+            if Instant::now() > deadline {
+                panic!("timed out waiting for directory-move-into-tree-triggered rescan");
+            }
+
+            let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                yield_now().await;
+                continue;
+            };
+
+            let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                if !snap.all_file_ids().as_ref().contains(&file_id) {
+                    return false;
+                }
+
+                snap.file_exists(file_id)
+                    && snap.file_content(file_id).as_str() == added_text
+                    && snap.file_rel_path(file_id).as_str() == "src/incoming/Added.java"
+                    && snap
+                        .project_files(ProjectId::from_raw(0))
+                        .contains(&file_id)
+            }) {
+                Ok(ready) => ready,
+                Err(_) => false,
+            };
+            if ready {
+                break;
+            }
+
+            yield_now().await;
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_move_with_missing_metadata_is_expanded_and_clears_file() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
@@ -8849,15 +9508,15 @@ public class Bar {}"#;
 
         timeout(Duration::from_secs(5), async move {
             loop {
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
-                        !snap.file_exists(file_id)
-                            && !snap
-                                .project_files(ProjectId::from_raw(0))
-                                .contains(&file_id)
-                    })
-                }))
-                .unwrap_or(false);
+                let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                    !snap.file_exists(file_id)
+                        && !snap
+                            .project_files(ProjectId::from_raw(0))
+                            .contains(&file_id)
+                }) {
+                    Ok(ready) => ready,
+                    Err(_) => false,
+                };
 
                 if ready {
                     break;
@@ -8867,7 +9526,7 @@ public class Bar {}"#;
             }
         })
         .await
-        .expect("timed out waiting for missing-metadata directory move to trigger rescan");
+        .expect("timed out waiting for missing-metadata directory move to update workspace state");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8884,6 +9543,7 @@ public class Bar {}"#;
         let project_root = project_root.canonicalize().unwrap();
 
         let workspace = crate::Workspace::open(&project_root).unwrap();
+        let rx = workspace.subscribe();
         let engine = workspace.engine.clone();
 
         let manual = ManualFileWatcher::new();
@@ -8909,34 +9569,46 @@ public class Bar {}"#;
             .unwrap();
 
         let vfs_path = VfsPath::local(gen_file.clone());
-        timeout(Duration::from_secs(5), async move {
-            loop {
-                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
-                    yield_now().await;
-                    continue;
-                };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Ok(event) = rx.try_recv() {
+                if let WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) = event.as_ref()
+                {
+                    panic!("workspace watcher error: {err}");
+                }
+            }
 
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
-                        snap.file_exists(file_id)
-                            && snap.file_content(file_id).as_str() == gen_text
-                            && snap.file_rel_path(file_id).as_str() == "src/gen/Generated.java"
-                            && snap
-                                .project_files(ProjectId::from_raw(0))
-                                .contains(&file_id)
-                    })
-                }))
-                .unwrap_or(false);
+            if Instant::now() > deadline {
+                panic!("timed out waiting for directory-create-triggered project reload");
+            }
 
-                if ready {
-                    break;
+            let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                yield_now().await;
+                continue;
+            };
+
+            let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                if !snap.all_file_ids().as_ref().contains(&file_id) {
+                    return false;
                 }
 
-                yield_now().await;
+                snap.file_exists(file_id)
+                    && snap.file_content(file_id).as_str() == gen_text
+                    && snap.file_rel_path(file_id).as_str() == "src/gen/Generated.java"
+                    && snap
+                        .project_files(ProjectId::from_raw(0))
+                        .contains(&file_id)
+            }) {
+                Ok(ready) => ready,
+                Err(_) => false,
+            };
+
+            if ready {
+                break;
             }
-        })
-        .await
-        .expect("timed out waiting for directory-create-triggered project reload");
+
+            yield_now().await;
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8953,6 +9625,7 @@ public class Bar {}"#;
         let project_root = project_root.canonicalize().unwrap();
 
         let workspace = crate::Workspace::open(&project_root).unwrap();
+        let rx = workspace.subscribe();
         let engine = workspace.engine.clone();
 
         let manual = ManualFileWatcher::new();
@@ -8977,34 +9650,63 @@ public class Bar {}"#;
             .unwrap();
 
         let vfs_path = VfsPath::local(new_file);
-        timeout(Duration::from_secs(5), async move {
-            loop {
-                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
-                    yield_now().await;
-                    continue;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Ok(event) = rx.try_recv() {
+                if let WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) = event.as_ref()
+                {
+                    panic!("workspace watcher error: {err}");
+                }
+            }
+
+            if Instant::now() > deadline {
+                let vfs_new = engine.vfs.get_id(&vfs_path);
+                let state = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                    let all_ids = snap.all_file_ids();
+                    let file_id_in_salsa = vfs_new.is_some_and(|id| all_ids.as_ref().contains(&id));
+                    let file_rel = vfs_new.and_then(|id| {
+                        file_id_in_salsa.then(|| snap.file_rel_path(id).as_str().to_string())
+                    });
+                    let in_project = vfs_new.is_some_and(|id| {
+                        file_id_in_salsa && snap.project_files(ProjectId::from_raw(0)).contains(&id)
+                    });
+                    (all_ids.len(), file_id_in_salsa, file_rel, in_project)
+                }) {
+                    Ok(state) => state,
+                    Err(_) => (0, false, None, false),
                 };
+                panic!(
+                    "timed out waiting for directory-modified-triggered project reload; vfs_new={vfs_new:?} state={state:?}"
+                );
+            }
 
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
-                        snap.file_exists(file_id)
-                            && snap.file_content(file_id).as_str() == new_text
-                            && snap.file_rel_path(file_id).as_str() == "src/Added.java"
-                            && snap
-                                .project_files(ProjectId::from_raw(0))
-                                .contains(&file_id)
-                    })
-                }))
-                .unwrap_or(false);
+            let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                yield_now().await;
+                continue;
+            };
 
-                if ready {
-                    break;
+            let ready = match engine.query_db.with_snapshot_catch_cancelled(|snap| {
+                if !snap.all_file_ids().as_ref().contains(&file_id) {
+                    return false;
                 }
 
-                yield_now().await;
+                snap.file_exists(file_id)
+                    && snap.file_content(file_id).as_str() == new_text
+                    && snap.file_rel_path(file_id).as_str() == "src/Added.java"
+                    && snap
+                        .project_files(ProjectId::from_raw(0))
+                        .contains(&file_id)
+            }) {
+                Ok(ready) => ready,
+                Err(_) => false,
+            };
+
+            if ready {
+                break;
             }
-        })
-        .await
-        .expect("timed out waiting for directory-modified-triggered project reload");
+
+            yield_now().await;
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -9023,11 +9725,7 @@ public class Bar {}"#;
         let workspace = crate::Workspace::open(&project_root).unwrap();
         let engine = workspace.engine.clone();
 
-        let config = engine
-            .watch_config
-            .read()
-            .expect("workspace watch config lock poisoned")
-            .clone();
+        let config = engine.watch_config.read().recover_poisoned().clone();
         let expected_src = normalize_watch_path(project_root.join("src"));
         assert!(
             config.source_roots.contains(&expected_src),
@@ -9086,7 +9784,80 @@ public class Bar {}"#;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn manual_watcher_directory_delete_triggers_rescan_fallback() {
+    async fn manual_watcher_no_roots_noisy_directory_event_does_not_trigger_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        fs::write(project_root.join("Main.java"), "class Main {}".as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        // Force the watcher-thread "no configured roots" behavior so we exercise the fallback path.
+        {
+            let mut cfg = engine.watch_config.write().recover_poisoned();
+            cfg.source_roots.clear();
+            cfg.generated_source_roots.clear();
+        }
+        let cfg = engine.watch_config.read().recover_poisoned().clone();
+        assert!(
+            cfg.source_roots.is_empty() && cfg.generated_source_roots.is_empty(),
+            "expected watch_config to have no configured roots (got source_roots={:?} generated_source_roots={:?})",
+            cfg.source_roots,
+            cfg.generated_source_roots
+        );
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Create a new source file but do not send any file-level watcher event for it. If the
+        // noisy directory event incorrectly triggers a rescan, the workspace would discover this file.
+        let added_file = project_root.join("Added.java");
+        fs::write(&added_file, "class Added {}".as_bytes()).unwrap();
+        let added_vfs_path = VfsPath::local(added_file);
+        assert!(
+            engine.vfs.get_id(&added_vfs_path).is_none(),
+            "expected Added.java to be undiscovered before any watcher event"
+        );
+
+        // Emit a directory-level create event under `target/` (common during builds). Even without
+        // configured source roots, this should not force a full rescan.
+        let target_dir = project_root.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Created {
+                    path: VfsPath::local(target_dir),
+                }],
+            })
+            .unwrap();
+
+        let engine_for_wait = engine.clone();
+        let added_for_wait = added_vfs_path.clone();
+        let res = timeout(Duration::from_secs(1), async move {
+            loop {
+                if engine_for_wait.vfs.get_id(&added_for_wait).is_some() {
+                    panic!(
+                        "unexpected rescan: noisy directory event should not discover Added.java"
+                    );
+                }
+                yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            res.is_err(),
+            "expected test to time out (file should remain undiscovered)"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_delete_is_expanded_without_rescan() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
@@ -9108,7 +9879,8 @@ public class Bar {}"#;
             .unwrap();
 
         // Delete the directory on disk, then inject a directory-level watcher delete event. The
-        // workspace should fall back to a full rescan and remove the file from `project_files`.
+        // workspace should expand the delete into per-file operations for already-known paths,
+        // removing the file from `project_files` without requiring a full rescan.
         let src_dir = project_root.join("src");
         fs::remove_dir_all(&src_dir).unwrap();
 
@@ -9120,17 +9892,20 @@ public class Bar {}"#;
             })
             .unwrap();
 
+        let engine_for_wait = engine.clone();
         timeout(Duration::from_secs(5), async move {
             loop {
-                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.query_db.with_snapshot(|snap| {
+                let ready = match engine_for_wait
+                    .query_db
+                    .with_snapshot_catch_cancelled(|snap| {
                         !snap.file_exists(file_id)
                             && !snap
                                 .project_files(ProjectId::from_raw(0))
                                 .contains(&file_id)
-                    })
-                }))
-                .unwrap_or(false);
+                    }) {
+                    Ok(ready) => ready,
+                    Err(_) => false,
+                };
 
                 if ready {
                     break;
@@ -9140,7 +9915,13 @@ public class Bar {}"#;
             }
         })
         .await
-        .expect("timed out waiting for directory-delete-triggered project reload");
+        .expect("timed out waiting for directory delete to update workspace state");
+
+        assert_eq!(
+            engine.vfs.get_id(&vfs_path),
+            Some(file_id),
+            "FileId should remain stable after directory delete"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -9170,7 +9951,7 @@ public class Bar {}"#;
         let config_path = engine
             .watch_config
             .read()
-            .expect("workspace watch config lock poisoned")
+            .recover_poisoned()
             .nova_config_path
             .clone()
             .expect("expected discover_config_path to use NOVA_CONFIG_PATH");
@@ -9261,10 +10042,7 @@ public class Bar {}"#;
         .expect("timed out waiting for config change to enqueue project reload");
 
         let mut changed_files = {
-            let mut state = engine
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
+            let mut state = engine.project_state.lock().recover_poisoned();
             state.pending_build_changes.drain().collect::<Vec<_>>()
         };
         changed_files.sort();
@@ -9347,15 +10125,9 @@ public class Bar {}"#;
 
         // Establish initial roots (workspace root only).
         let _ = watch_root_manager.set_desired_roots(
-            compute_watch_roots(
-                &root,
-                &engine
-                    .watch_config
-                    .read()
-                    .expect("workspace watch config lock poisoned"),
-            )
-            .into_iter()
-            .collect(),
+            compute_watch_roots(&root, &engine.watch_config.read().recover_poisoned())
+                .into_iter()
+                .collect(),
             t0,
             &mut watcher,
         );
@@ -9381,10 +10153,7 @@ public class Bar {}"#;
         engine.reload_project_now(&[config_path]).unwrap();
 
         {
-            let cfg = engine
-                .watch_config
-                .read()
-                .expect("workspace watch config lock poisoned");
+            let cfg = engine.watch_config.read().recover_poisoned();
             assert!(
                 cfg.generated_source_roots.contains(&external),
                 "expected reload to update watcher config with external root"
@@ -9393,15 +10162,9 @@ public class Bar {}"#;
 
         // One "watch loop" step should reconcile roots against the updated config.
         let _ = watch_root_manager.set_desired_roots(
-            compute_watch_roots(
-                &root,
-                &engine
-                    .watch_config
-                    .read()
-                    .expect("workspace watch config lock poisoned"),
-            )
-            .into_iter()
-            .collect(),
+            compute_watch_roots(&root, &engine.watch_config.read().recover_poisoned())
+                .into_iter()
+                .collect(),
             t0,
             &mut watcher,
         );

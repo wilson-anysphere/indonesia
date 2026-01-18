@@ -864,8 +864,7 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Name);
         let name = name_node
             .as_ref()
-            .map(|n| self.collect_non_trivia_text(n))
-            .unwrap_or_default();
+            .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
         ast::PackageDecl {
             name,
             range: self.spans.map_node(node),
@@ -883,8 +882,7 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Name);
         let mut path = name_node
             .as_ref()
-            .map(|n| self.collect_non_trivia_text(n))
-            .unwrap_or_default();
+            .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
         let mut is_star = false;
         if path.ends_with(".*") {
             is_star = true;
@@ -914,8 +912,7 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Name);
         let name = name_node
             .as_ref()
-            .map(|n| self.collect_non_trivia_text(n))
-            .unwrap_or_default();
+            .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
         let name_range = name_node
             .as_ref()
             .and_then(|n| self.non_trivia_span(n))
@@ -928,8 +925,7 @@ impl Lowerer {
 
         let directives = body
             .as_ref()
-            .map(|body| self.lower_module_directives(body))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |body| self.lower_module_directives(body));
 
         ast::ModuleDecl {
             name,
@@ -982,8 +978,7 @@ impl Lowerer {
                     .children()
                     .find(|child| child.kind() == SyntaxKind::Name)
                     .as_ref()
-                    .map(|n| self.collect_non_trivia_text(n))
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
 
                 Some(ast::ModuleDirective::Requires {
                     module,
@@ -1002,8 +997,7 @@ impl Lowerer {
 
                 let head = names
                     .first()
-                    .map(|n| self.collect_non_trivia_text(n))
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
                 let tail = names
                     .iter()
                     .skip(1)
@@ -1036,8 +1030,7 @@ impl Lowerer {
                     .children()
                     .find(|child| child.kind() == SyntaxKind::Name)
                     .as_ref()
-                    .map(|n| self.collect_non_trivia_text(n))
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
 
                 Some(ast::ModuleDirective::Uses {
                     service,
@@ -1072,8 +1065,7 @@ impl Lowerer {
         let name_token = self.last_ident_like_before(node, body_kind);
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -1084,8 +1076,7 @@ impl Lowerer {
                 .children()
                 .find(|child| child.kind() == SyntaxKind::ParameterList)
                 .as_ref()
-                .map(|list| self.lower_param_list(list))
-                .unwrap_or_default(),
+                .map_or_else(Vec::new, |list| self.lower_param_list(list)),
             _ => Vec::new(),
         };
 
@@ -1265,8 +1256,7 @@ impl Lowerer {
                 let name_token = self.first_ident_like_token(&decl);
                 let name = name_token
                     .as_ref()
-                    .map(|tok| tok.text().to_string())
-                    .unwrap_or_default();
+                    .map_or_else(String::new, |tok| tok.text().to_string());
                 let name_range = name_token
                     .as_ref()
                     .map(|tok| self.spans.map_token(tok))
@@ -1295,8 +1285,7 @@ impl Lowerer {
 
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -1328,8 +1317,7 @@ impl Lowerer {
 
         let params = param_list
             .as_ref()
-            .map(|list| self.lower_param_list(list))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |list| self.lower_param_list(list));
 
         let body = node
             .children()
@@ -1363,8 +1351,7 @@ impl Lowerer {
 
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -1377,8 +1364,7 @@ impl Lowerer {
 
         let params = param_list
             .as_ref()
-            .map(|list| self.lower_param_list(list))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |list| self.lower_param_list(list));
 
         let body_node = node
             .children()
@@ -1662,8 +1648,7 @@ impl Lowerer {
             let name_token = self.first_ident_like_token(&decl);
             let name = name_token
                 .as_ref()
-                .map(|tok| tok.text().to_string())
-                .unwrap_or_default();
+                .map_or_else(String::new, |tok| tok.text().to_string());
             let name_range = name_token
                 .as_ref()
                 .map(|tok| self.spans.map_token(tok))
@@ -1742,8 +1727,7 @@ impl Lowerer {
             .and_then(|decl| self.first_ident_like_token(decl));
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -1782,8 +1766,7 @@ impl Lowerer {
         let name_token = self.first_ident_like_token(&declarator);
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -1850,8 +1833,7 @@ impl Lowerer {
                 .find(|tok| tok.kind().is_identifier_like());
             let name = name_token
                 .as_ref()
-                .map(|tok| tok.text().to_string())
-                .unwrap_or_default();
+                .map_or_else(String::new, |tok| tok.text().to_string());
             let name_range = name_token
                 .as_ref()
                 .map(|tok| self.spans.map_token(tok))
@@ -2142,8 +2124,7 @@ impl Lowerer {
         let arms = node
             .children()
             .find(|child| child.kind() == SyntaxKind::SwitchBlock)
-            .map(|block| self.lower_switch_expr_arms(&block))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |block| self.lower_switch_expr_arms(&block));
 
         ast::Expr::Switch(ast::SwitchExpr {
             selector: Box::new(selector),
@@ -2365,8 +2346,7 @@ impl Lowerer {
 
         let name = name_token
             .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |tok| tok.text().to_string());
         let name_range = name_token
             .as_ref()
             .map(|tok| self.spans.map_token(tok))
@@ -2855,7 +2835,7 @@ impl Lowerer {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         if let Some(name_token) = name_token {
             let name_range = self.spans.map_token(&name_token);
@@ -2878,7 +2858,7 @@ impl Lowerer {
                     .map(|expr| self.lower_expr(&expr))
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         ast::Expr::Call(ast::CallExpr {
             callee: Box::new(callee),
@@ -3015,7 +2995,7 @@ impl Lowerer {
                     .map(|expr| self.lower_expr(&expr))
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         ast::Expr::New(ast::NewExpr {
             class,
@@ -3054,7 +3034,7 @@ impl Lowerer {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         let extra_dims = node
             .children()
@@ -3101,7 +3081,7 @@ impl Lowerer {
                     .filter(|expr| !matches!(expr, ast::Expr::Missing(_)))
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         ast::Expr::ArrayInitializer(ast::ArrayInitializerExpr { items, range })
     }
@@ -3263,7 +3243,7 @@ impl Lowerer {
                         .map(|single| vec![single])
                 }
             })
-            .unwrap_or_default()
+            .unwrap_or_else(Vec::new)
             .into_iter()
             .filter_map(|param| {
                 let name = self.first_ident_like_token(&param).or_else(|| {
@@ -3352,8 +3332,7 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Name);
         let name = name_node
             .as_ref()
-            .map(|n| self.collect_non_trivia_text(n))
-            .unwrap_or_default();
+            .map_or_else(String::new, |n| self.collect_non_trivia_text(n));
 
         Some(ast::AnnotationUse {
             name,

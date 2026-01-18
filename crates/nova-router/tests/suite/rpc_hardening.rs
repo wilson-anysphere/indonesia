@@ -31,7 +31,7 @@ impl EnvVarGuard {
     fn set(key: &'static str, value: impl Into<OsString>) -> Self {
         let lock = MAX_MESSAGE_SIZE_ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .expect("env lock mutex poisoned");
         let previous = std::env::var_os(key);
         std::env::set_var(key, value.into());
         Self {

@@ -366,7 +366,7 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
     let mut stdout = BufReader::new(stdout);
 
     {
-        let mut stdin = stdin.lock().expect("lock stdin");
+        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
         write_jsonrpc_message(
             &mut *stdin,
             &initialize_request_with_root_uri(1, root_uri.as_str().to_string()),
@@ -374,12 +374,12 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
     }
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
     {
-        let mut stdin = stdin.lock().expect("lock stdin");
+        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
         write_jsonrpc_message(&mut *stdin, &initialized_notification());
     }
 
     {
-        let mut stdin = stdin.lock().expect("lock stdin");
+        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
         write_jsonrpc_message(
             &mut *stdin,
             &jsonrpc_request(
@@ -406,7 +406,7 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
                 break;
             }
             {
-                let mut stdin = cancel_stdin.lock().expect("lock stdin");
+                let mut stdin = cancel_stdin.lock().expect("stdin mutex poisoned");
                 write_jsonrpc_message(
                     &mut *stdin,
                     &jsonrpc_notification(
@@ -436,12 +436,12 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
     cancel_thread.join().expect("cancel thread");
 
     {
-        let mut stdin = stdin.lock().expect("lock stdin");
+        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
         write_jsonrpc_message(&mut *stdin, &shutdown_request(3));
     }
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     {
-        let mut stdin = stdin.lock().expect("lock stdin");
+        let mut stdin = stdin.lock().expect("stdin mutex poisoned");
         write_jsonrpc_message(&mut *stdin, &exit_notification());
     }
     drop(stdin);

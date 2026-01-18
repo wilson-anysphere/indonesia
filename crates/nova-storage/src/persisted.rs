@@ -521,8 +521,24 @@ fn max_uncompressed_len_bytes() -> u64 {
 }
 
 fn env_u64(key: &str) -> Option<u64> {
-    let value = std::env::var(key).ok()?;
-    value.parse::<u64>().ok()
+    let Some(value) = std::env::var_os(key) else {
+        return None;
+    };
+    let value = value.to_string_lossy();
+    let trimmed = value.trim();
+    match trimmed.parse::<u64>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.storage",
+                key,
+                value = trimmed,
+                error = %err,
+                "failed to parse u64 env var"
+            );
+            None
+        }
+    }
 }
 
 fn env_flag_enabled(key: &str) -> bool {

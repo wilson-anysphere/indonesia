@@ -216,7 +216,19 @@ fn discover_project_root(path: &Path) -> PathBuf {
 }
 
 fn canonicalize_root(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for quarkus analysis"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 fn collect_java_files(

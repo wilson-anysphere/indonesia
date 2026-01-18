@@ -717,19 +717,27 @@ fn inline_at_site(
         let init_text = local
             .initializer
             .as_ref()
-            .map(|expr| slice_span(source, expr.range()).trim().to_string());
-        let init_text = init_text.as_deref().unwrap_or_default().to_string();
+            .map(|expr| slice_span(source, expr.range()).trim().to_string())
+            .filter(|text| !text.is_empty());
 
-        let mut mapping = combined_mapping(&param_map, &local_map);
-        let init_text = substitute_idents(&init_text, &mut mapping);
-
-        inlined_lines.push(format!(
-            "{indent}{ty} {name} = {init};",
-            indent = site.stmt_indent,
-            ty = local.ty.text,
-            name = name,
-            init = init_text
-        ));
+        if let Some(init_text) = init_text {
+            let mut mapping = combined_mapping(&param_map, &local_map);
+            let init_text = substitute_idents(&init_text, &mut mapping);
+            inlined_lines.push(format!(
+                "{indent}{ty} {name} = {init};",
+                indent = site.stmt_indent,
+                ty = local.ty.text,
+                name = name,
+                init = init_text
+            ));
+        } else {
+            inlined_lines.push(format!(
+                "{indent}{ty} {name};",
+                indent = site.stmt_indent,
+                ty = local.ty.text,
+                name = name
+            ));
+        }
     }
 
     // 3) Return statement.

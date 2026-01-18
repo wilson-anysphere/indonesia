@@ -1,5 +1,6 @@
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use nova_core::FileId;
 
@@ -73,21 +74,40 @@ impl<F: FileSystem> Vfs<F> {
         self.open_docs.clone()
     }
 
+    #[track_caller]
+    fn lock_ids(&self) -> MutexGuard<'_, FileIdRegistry> {
+        match self.ids.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.vfs",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     /// Returns the stable id for `path`, allocating one if needed.
     pub fn file_id(&self, path: VfsPath) -> FileId {
-        let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+        let mut ids = self.lock_ids();
         ids.file_id(path)
     }
 
     /// Returns the id for `path` if it has been interned.
     pub fn get_id(&self, path: &VfsPath) -> Option<FileId> {
-        let ids = self.ids.lock().expect("file id registry mutex poisoned");
+        let ids = self.lock_ids();
         ids.get_id(path)
     }
 
     /// Reverse lookup for an interned file id.
     pub fn path_for_id(&self, id: FileId) -> Option<VfsPath> {
-        let ids = self.ids.lock().expect("file id registry mutex poisoned");
+        let ids = self.lock_ids();
         ids.get_path(id).cloned()
     }
 
@@ -112,7 +132,7 @@ impl<F: FileSystem> Vfs<F> {
         }
 
         let id = {
-            let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+            let mut ids = self.lock_ids();
             ids.rename_path(from, to)
         };
 
@@ -134,8 +154,22 @@ impl<F: FileSystem> Vfs<F> {
 
     /// Returns all currently-tracked file ids (sorted).
     pub fn all_file_ids(&self) -> Vec<FileId> {
-        let ids = self.ids.lock().expect("file id registry mutex poisoned");
+        let ids = self.lock_ids();
         ids.all_file_ids()
+    }
+
+    /// Returns all currently-tracked file ids (unsorted).
+    ///
+    /// This is intended for callers that will impose their own ordering and want to avoid the
+    /// extra `FileId` sort.
+    pub fn all_file_ids_unsorted(&self) -> Vec<FileId> {
+        let ids = self.lock_ids();
+        ids.all_file_ids_unsorted()
+    }
+
+    pub fn for_each_local_path(&self, f: impl FnMut(&Path)) {
+        let ids = self.lock_ids();
+        ids.for_each_local_path(f);
     }
 
     /// Opens an in-memory overlay document and returns its `FileId`.

@@ -42,6 +42,8 @@ pub enum MoveMemberError {
     UnsupportedCallSite { method: String, file: PathBuf },
     #[error("unsupported construct in moved method '{method}': {reason}")]
     UnsupportedMethod { method: String, reason: String },
+    #[error("internal error: missing file contents for '{0}'")]
+    MissingFileContents(PathBuf),
     #[error(transparent)]
     Edit(#[from] crate::edit::EditError),
 }
@@ -275,7 +277,9 @@ pub fn move_static_member(
 
     let mut out = RefactoringEdit::default();
     for (path, mut edits) in edits_by_file {
-        let original = files.get(&path).map(String::as_str).unwrap_or_default();
+        let Some(original) = files.get(&path).map(String::as_str) else {
+            return Err(MoveMemberError::MissingFileContents(path));
+        };
         let updated = apply_local_edits(original, {
             edits.sort_by(|a, b| b.range.start.cmp(&a.range.start));
             edits
@@ -705,7 +709,9 @@ pub fn move_method(
 
     let mut out = RefactoringEdit::default();
     for (path, edits) in edits_by_file {
-        let original = files.get(&path).map(String::as_str).unwrap_or_default();
+        let Some(original) = files.get(&path).map(String::as_str) else {
+            return Err(MoveMemberError::MissingFileContents(path));
+        };
         let updated = apply_local_edits(original, edits);
         if updated != original {
             out.file_edits.push(FileEdit {

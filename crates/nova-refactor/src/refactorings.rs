@@ -8,7 +8,7 @@ use nova_syntax::ast::{self, AstNode};
 use nova_syntax::{parse_java, SyntaxKind};
 use thiserror::Error;
 
-use crate::edit::{apply_text_edits, FileId, TextEdit, TextRange, WorkspaceEdit};
+use crate::edit::{apply_text_edits, EditError, FileId, TextEdit, TextRange, WorkspaceEdit};
 use crate::java::{JavaSymbolKind, SymbolId};
 use crate::materialize::{materialize, MaterializeError};
 use crate::semantic::{Conflict, RefactorDatabase, ReferenceKind, SemanticChange};
@@ -433,10 +433,10 @@ fn annotation_value_shorthand_updates(
                 }
 
                 let value_range = syntax_range(value.syntax());
-                let value_text = source
-                    .get(value_range.start..value_range.end)
-                    .unwrap_or_default()
-                    .trim();
+                let Some(value_text) = source.get(value_range.start..value_range.end) else {
+                    continue;
+                };
+                let value_text = value_text.trim();
                 if value_text.is_empty() {
                     continue;
                 }
@@ -1075,21 +1075,29 @@ fn rename_field_with_accessors(
             };
             let range = syntax_token_range(&name_tok);
             let name = name_tok.text().to_string();
-            let param_types: Vec<String> = method
-                .parameter_list()
-                .map(|list| {
-                    list.parameters()
-                        .filter_map(|p| p.ty())
-                        .map(|ty| {
-                            let r = syntax_range(ty.syntax());
-                            text.get(r.start..r.end)
-                                .unwrap_or_default()
-                                .trim()
-                                .to_string()
+            let mut param_types: Vec<String> = Vec::new();
+            if let Some(list) = method.parameter_list() {
+                for param in list.parameters() {
+                    let Some(ty) = param.ty() else {
+                        param_types.push("__invalid__".to_string());
+                        continue;
+                    };
+
+                    let r = syntax_range(ty.syntax());
+                    let slice = text.get(r.start..r.end).ok_or_else(|| {
+                        RefactorError::Edit(EditError::InvalidRange {
+                            file: file.clone(),
+                            range: r,
                         })
-                        .collect()
-                })
-                .unwrap_or_default();
+                    })?;
+                    let trimmed = slice.trim();
+                    if trimmed.is_empty() {
+                        param_types.push("__invalid__".to_string());
+                    } else {
+                        param_types.push(trimmed.to_string());
+                    }
+                }
+            }
             method_decls.insert(range, MethodDeclInfo { name, param_types });
         }
 
@@ -2109,7 +2117,12 @@ pub fn inline_variable(
     let init_range = syntax_range(init_expr.syntax());
     let init_text = text
         .get(init_range.start..init_range.end)
-        .unwrap_or_default()
+        .ok_or_else(|| {
+            RefactorError::Edit(EditError::InvalidRange {
+                file: def.file.clone(),
+                range: init_range,
+            })
+        })?
         .trim();
     if init_text.is_empty() {
         return Err(RefactorError::InlineNotSupported);
@@ -2592,7 +2605,18 @@ pub fn inline_variable(
 
         // 1) Ensure the usage statement is the immediate next statement after the declaration.
         // Side-effectful inlining is only sound when we preserve statement-level evaluation order.
-        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        //
+        // If this fails, report `InlineSideEffects` (not `InlineNotSupported`) since the rejection
+        // is about side-effect ordering/conditionality rather than missing structure.
+        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file).map_err(
+            |err| {
+                if matches!(err, RefactorError::InlineNotSupported) {
+                    RefactorError::InlineSideEffects
+                } else {
+                    err
+                }
+            },
+        )?;
 
         // 2) Reject when the usage is nested under an execution boundary relative to the
         // declaration (conservative).
@@ -2734,10 +2758,10 @@ pub fn inline_variable(
 
                 // If a newline immediately follows the statement, consume it too (preserve CRLF as a
                 // unit).
-                let tail = text.get(end..).unwrap_or_default();
-                if tail.starts_with("\r\n") {
+                let bytes = text.as_bytes();
+                if bytes.get(end..end + 2) == Some(&b"\r\n"[..]) {
                     end += 2;
-                } else if tail.starts_with('\n') || tail.starts_with('\r') {
+                } else if matches!(bytes.get(end), Some(b'\n' | b'\r')) {
                     end += 1;
                 } else if let Some(comment_end) =
                     statement_end_including_trailing_inline_comment(text, end)
@@ -3280,10 +3304,15 @@ fn lexical_resolve_local_or_param_decl_offset(
         return None;
     }
 
-    let element = parsed.covering_element(nova_syntax::TextRange {
-        start: u32::try_from(offset).ok()?,
-        end: u32::try_from(offset + 1).ok()?,
-    });
+    let start = match u32::try_from(offset) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let end = match u32::try_from(offset + 1) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let element = parsed.covering_element(nova_syntax::TextRange { start, end });
 
     let node = match element {
         nova_syntax::SyntaxElement::Node(node) => node,
@@ -3820,10 +3849,15 @@ fn unary_is_inc_or_dec(expr: &ast::UnaryExpression) -> bool {
 }
 
 fn to_syntax_range(range: TextRange) -> Option<nova_syntax::TextRange> {
-    Some(nova_syntax::TextRange {
-        start: u32::try_from(range.start).ok()?,
-        end: u32::try_from(range.end).ok()?,
-    })
+    let start = match u32::try_from(range.start) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let end = match u32::try_from(range.end) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    Some(nova_syntax::TextRange { start, end })
 }
 
 pub struct OrganizeImportsParams {
@@ -3895,11 +3929,10 @@ pub fn organize_imports(
             continue;
         }
         if let Some((pkg, _)) = import.split_package_and_name() {
-            if usage
-                .unqualified
-                .contains(import.simple_name().unwrap_or_default())
-            {
-                *explicit_by_package.entry(pkg.to_string()).or_default() += 1;
+            if let Some(simple) = import.simple_name() {
+                if usage.unqualified.contains(simple) {
+                    *explicit_by_package.entry(pkg.to_string()).or_default() += 1;
+                }
             }
         }
     }
@@ -6505,10 +6538,11 @@ fn parenthesize_initializer(text: &str, expr: &ast::Expression) -> String {
 
 fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usize {
     let mut offset = stmt_end.min(text.len());
+    let bytes = text.as_bytes();
 
     // Consume trailing spaces/tabs at end-of-line so we don't leave whitespace-only lines behind.
     while offset < text.len() {
-        match text.as_bytes()[offset] {
+        match bytes[offset] {
             b' ' | b'\t' => offset += 1,
             _ => break,
         }
@@ -6516,23 +6550,23 @@ fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usiz
 
     let newline = NewlineStyle::detect(text);
     let newline_str = newline.as_str();
+    let newline_bytes = newline_str.as_bytes();
 
-    if text
-        .get(offset..)
-        .unwrap_or_default()
-        .starts_with(newline_str)
+    if bytes
+        .get(offset..offset + newline_bytes.len())
+        .is_some_and(|b| b == newline_bytes)
     {
-        return offset + newline_str.len();
+        return offset + newline_bytes.len();
     }
 
     // Mixed-newline fallback.
-    if text.get(offset..).unwrap_or_default().starts_with("\r\n") {
+    if bytes.get(offset..offset + 2) == Some(&b"\r\n"[..]) {
         return offset + 2;
     }
-    if text.get(offset..).unwrap_or_default().starts_with('\n') {
+    if matches!(bytes.get(offset), Some(b'\n')) {
         return offset + 1;
     }
-    if text.get(offset..).unwrap_or_default().starts_with('\r') {
+    if matches!(bytes.get(offset), Some(b'\r')) {
         return offset + 1;
     }
 
@@ -6675,12 +6709,29 @@ fn check_order_sensitive_inline_order(
 
         let usage_stmt = find_innermost_statement_containing_range(root, target.range)
             .ok_or(RefactorError::InlineNotSupported)?;
-        let (usage_container, usage_index) = statement_list_container_and_index(&usage_stmt)
-            .ok_or(RefactorError::InlineNotSupported)?;
 
-        if usage_container != decl_container {
-            return Err(RefactorError::InlineNotSupported);
-        }
+        // If the usage is nested (e.g. inside an `if` body), the innermost statement containing the
+        // usage range lives in a different statement list container. For order checks we want the
+        // *enclosing* statement in the declaration's container (e.g. the `if` statement itself),
+        // so we walk outward until the statement list container matches.
+        let mut stmt = usage_stmt;
+        let usage_index = loop {
+            let Some((container, idx)) = statement_list_container_and_index(&stmt) else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+            if container == decl_container {
+                break idx;
+            }
+            let Some(parent_stmt) = stmt
+                .syntax()
+                .ancestors()
+                .skip(1)
+                .find_map(ast::Statement::cast)
+            else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+            stmt = parent_stmt;
+        };
 
         earliest_usage_index = Some(match earliest_usage_index {
             Some(existing) => existing.min(usage_index),

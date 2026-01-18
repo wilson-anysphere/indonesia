@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use rkyv::ser::serializers::{
     AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch, SharedSerializeMap,
@@ -139,10 +140,7 @@ where
                 }
 
                 rename_overwrite(&tmp_path, path).map_err(StorageError::from)?;
-                #[cfg(unix)]
-                {
-                    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-                }
+                sync_dir_best_effort(parent, "storage.write_archive.sync_parent_dir");
                 Ok(())
             }
             SelectedCompression::Zstd { level } => {
@@ -181,28 +179,84 @@ where
                 })();
 
                 // Best-effort cleanup of the intermediate uncompressed temp file.
-                let _ = fs::remove_file(&tmp_path);
+                if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                    if remove_err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.storage",
+                            path = %tmp_path.display(),
+                            error = %remove_err,
+                            "failed to remove temporary file after compression"
+                        );
+                    }
+                }
 
                 if let Err(err) = compressed_result {
-                    let _ = fs::remove_file(&compressed_path);
+                    if let Err(remove_err) = fs::remove_file(&compressed_path) {
+                        if remove_err.kind() != std::io::ErrorKind::NotFound {
+                            tracing::debug!(
+                                target = "nova.storage",
+                                path = %compressed_path.display(),
+                                error = %remove_err,
+                                "failed to remove compressed file after write failure"
+                            );
+                        }
+                    }
                     return Err(err);
                 }
 
-                #[cfg(unix)]
-                {
-                    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-                }
+                sync_dir_best_effort(parent, "storage.write_archive.sync_parent_dir");
                 Ok(())
             }
         }
     })();
 
     if let Err(err) = result {
-        let _ = fs::remove_file(&tmp_path);
+        if let Err(remove_err) = fs::remove_file(&tmp_path) {
+            if remove_err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.storage",
+                    path = %tmp_path.display(),
+                    error = %remove_err,
+                    "failed to remove temporary file after write failure"
+                );
+            }
+        }
         return Err(err);
     }
 
     Ok(())
+}
+
+#[track_caller]
+fn sync_dir_best_effort(dir: &Path, reason: &'static str) {
+    #[cfg(unix)]
+    static SYNC_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    #[cfg(unix)]
+    {
+        match fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if SYNC_DIR_ERROR_LOGGED.set(()).is_ok() {
+                    let loc = std::panic::Location::caller();
+                    tracing::debug!(
+                        target = "nova.storage",
+                        dir = %dir.display(),
+                        reason,
+                        file = loc.file(),
+                        line = loc.line(),
+                        column = loc.column(),
+                        error = %err,
+                        "failed to sync directory (best effort)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (dir, reason);
 }
 
 fn write_uncompressed_archive<T>(

@@ -12,6 +12,7 @@ description = "Lightweight runtime metrics (counters + latency histograms) for N
 hdrhistogram = "7.5"
 parking_lot = "0.12"
 serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

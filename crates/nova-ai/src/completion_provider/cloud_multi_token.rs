@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing::{debug, warn};
 
 #[derive(Clone)]
@@ -290,29 +291,23 @@ fn parse_completions(
             continue;
         };
 
-        let insert_text = obj
+        let Some(insert_text) = obj
             .get("insert_text")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if insert_text.is_empty() {
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
             continue;
-        }
-
-        let insert_text = clamp_chars(insert_text, max_insert_text_chars);
+        };
+        let insert_text = clamp_chars(insert_text.to_string(), max_insert_text_chars);
 
         let label = obj
             .get("label")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let label = if label.is_empty() {
-            default_label(&insert_text)
-        } else {
-            clamp_chars(label, max_label_chars)
-        };
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| clamp_chars(s.to_string(), max_label_chars))
+            .unwrap_or_else(|| default_label(&insert_text));
 
         let format = match obj
             .get("format")
@@ -344,14 +339,32 @@ fn parse_completions(
 }
 
 fn extract_json(text: &str) -> Option<Value> {
+    static JSON_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        if looks_like_completion_payload(&value) {
-            return Some(value);
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => {
+            if looks_like_completion_payload(&value) {
+                return Some(value);
+            }
+        }
+        Err(err) => {
+            // Most model outputs are not pure JSON; only log when the payload *looks* like a full
+            // JSON object/array but still fails to parse (likely a truncation/escaping bug).
+            let looks_like_full_json = (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+            if looks_like_full_json && JSON_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                debug!(
+                    target = "nova.ai",
+                    text_len = trimmed.len(),
+                    error = ?err,
+                    "failed to parse model output as JSON completion payload"
+                );
+            }
         }
     }
 
@@ -378,12 +391,44 @@ fn looks_like_completion_payload(value: &Value) -> bool {
 }
 
 fn clamp_confidence(value: Option<&Value>) -> f32 {
-    let conf = match value {
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
-        Some(Value::String(s)) => s.parse::<f64>().unwrap_or(0.0),
-        _ => 0.0,
+    static INVALID_CONFIDENCE_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let value_type = match value {
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(_) => "other",
+        None => "missing",
     };
-    let conf = if conf.is_finite() { conf } else { 0.0 };
+
+    let parsed = match value {
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .or_else(|| n.as_i64().map(|v| v as f64))
+            .or_else(|| n.as_u64().map(|v| v as f64)),
+        Some(Value::String(s)) => s.parse::<f64>().ok(),
+        Some(_) | None => None,
+    };
+
+    let Some(conf) = parsed else {
+        if value.is_some() && INVALID_CONFIDENCE_LOGGED.set(()).is_ok() {
+            debug!(
+                target = "nova.ai",
+                value_type, "invalid confidence value in model output; treating as 0.0"
+            );
+        }
+        return 0.0;
+    };
+
+    if !conf.is_finite() {
+        if INVALID_CONFIDENCE_LOGGED.set(()).is_ok() {
+            debug!(
+                target = "nova.ai",
+                value_type, conf, "non-finite confidence value in model output; treating as 0.0"
+            );
+        }
+        return 0.0;
+    }
+
     conf.clamp(0.0, 1.0) as f32
 }
 

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use nova_core::JdkConfig;
@@ -149,7 +150,21 @@ pub(crate) fn src_zip_from_root(root: &Path) -> Option<PathBuf> {
 
 pub(crate) fn spec_release_from_root(root: &Path) -> Option<u16> {
     let release_path = root.join("release");
-    let contents = std::fs::read_to_string(release_path).ok()?;
+    let contents = match std::fs::read_to_string(&release_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            // Candidate roots may not be real JDKs; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    release_path = %release_path.display(),
+                    error = %err,
+                    "failed to read JDK release file"
+                );
+            }
+            return None;
+        }
+    };
 
     let spec = parse_release_property(&contents, "JAVA_SPEC_VERSION")
         .and_then(|v| parse_java_release(&v))
@@ -187,6 +202,8 @@ fn parse_release_property(contents: &str, key: &str) -> Option<String> {
 }
 
 fn parse_java_release(raw: &str) -> Option<u16> {
+    static PARSE_JAVA_RELEASE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let raw = raw.trim();
     let raw = raw
         .strip_prefix('"')
@@ -196,11 +213,39 @@ fn parse_java_release(raw: &str) -> Option<u16> {
     // Legacy `JAVA_VERSION` / `JAVA_SPEC_VERSION` values use the "1.x" format.
     if let Some(rest) = raw.strip_prefix("1.") {
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        return digits.parse::<u16>().ok();
+        return match digits.parse::<u16>() {
+            Ok(v) => Some(v),
+            Err(err) => {
+                if PARSE_JAVA_RELEASE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.jdk",
+                        raw = %raw,
+                        digits = %digits,
+                        error = %err,
+                        "failed to parse legacy java release"
+                    );
+                }
+                None
+            }
+        };
     }
 
     let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse::<u16>().ok()
+    match digits.parse::<u16>() {
+        Ok(v) => Some(v),
+        Err(err) => {
+            if PARSE_JAVA_RELEASE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    raw = %raw,
+                    digits = %digits,
+                    error = %err,
+                    "failed to parse java release"
+                );
+            }
+            None
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -235,8 +280,22 @@ fn discover_from_java_command() -> Option<PathBuf> {
         max_bytes: 1024 * 1024,
         ..RunOptions::default()
     };
-    let output = run_command(Path::new("."), Path::new("java"), &args, opts).ok()?;
+    let output = match run_command(Path::new("."), Path::new("java"), &args, opts) {
+        Ok(output) => output,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                error = %err,
+                "failed to run `java` for JDK discovery"
+            );
+            return None;
+        }
+    };
     if output.timed_out {
+        tracing::debug!(
+            target = "nova.jdk",
+            "timed out running `java` for JDK discovery"
+        );
         return None;
     }
 
@@ -257,7 +316,18 @@ fn discover_from_java_command() -> Option<PathBuf> {
 
 fn discover_from_java_symlink() -> Option<PathBuf> {
     let java_bin = find_java_on_path()?;
-    let java_bin = java_bin.canonicalize().ok()?;
+    let java_bin = match java_bin.canonicalize() {
+        Ok(java_bin) => java_bin,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                java_bin = %java_bin.display(),
+                error = %err,
+                "failed to canonicalize java binary for JDK discovery"
+            );
+            return None;
+        }
+    };
     let root = java_bin.parent()?.parent()?.to_path_buf();
     coerce_to_jdk_root(root)
 }

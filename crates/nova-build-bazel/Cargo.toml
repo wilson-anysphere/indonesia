@@ -17,6 +17,7 @@ nova-build-model = { path = "../nova-build-model" }
 nova-process = { path = "../nova-process" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.10.1"

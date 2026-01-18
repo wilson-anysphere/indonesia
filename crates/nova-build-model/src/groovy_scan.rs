@@ -157,7 +157,34 @@ pub fn strip_gradle_comments(contents: &str) -> String {
         i += 1;
     }
 
-    String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
+    // `contents` is valid UTF-8 and we only copy bytes from it, so the result should remain valid.
+    // Use a lossy conversion anyway so we never fall back to the un-stripped input if something
+    // goes wrong, which would re-introduce false positives for downstream regex scanners.
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_gradle_comments_preserves_string_literals_and_removes_line_comments_with_unicode() {
+        let src = "val s = \"// not a comment café\"\n// 日本語 comment\nval x = 1\n";
+        let stripped = strip_gradle_comments(src);
+        assert!(stripped.contains("// not a comment café"));
+        assert!(!stripped.contains("日本語 comment"));
+        assert!(stripped.contains("val x = 1"));
+    }
+
+    #[test]
+    fn strip_gradle_comments_removes_block_comments_with_unicode() {
+        let src = "val x = 1 /* 日本語 café */\nval y = 2\n";
+        let stripped = strip_gradle_comments(src);
+        assert!(!stripped.contains("日本語"));
+        assert!(!stripped.contains("café"));
+        assert!(stripped.contains("val x = 1"));
+        assert!(stripped.contains("val y = 2"));
+    }
 }
 
 pub fn gradle_string_literal_ranges(contents: &str) -> Vec<Range<usize>> {

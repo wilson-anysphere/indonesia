@@ -14,6 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractMethodCommandArgs {
@@ -30,6 +31,8 @@ pub struct ExtractMethodCommandArgs {
 /// collect additional input (method name, visibility) before the edit can be
 /// generated.
 pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> Option<CodeAction> {
+    static EXTRACT_METHOD_ANALYZE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let index = LineIndex::new(source);
     let range = TextRange::new(
         index
@@ -55,7 +58,20 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let analysis = probe.analyze(source).ok()?;
+    let analysis = match probe.analyze(source) {
+        Ok(analysis) => analysis,
+        Err(err) => {
+            if EXTRACT_METHOD_ANALYZE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.ide",
+                    uri = ?uri,
+                    error = %err,
+                    "extract method analysis failed; skipping extract-method code action"
+                );
+            }
+            return None;
+        }
+    };
     let extractable = analysis
         .issues
         .iter()
@@ -69,6 +85,17 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
             visibility: probe.visibility,
             insertion_strategy: probe.insertion_strategy,
         };
+        let args_value = match serde_json::to_value(args) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    error = %err,
+                    "failed to serialize extract-method command args"
+                );
+                return None;
+            }
+        };
 
         Some(CodeAction {
             title: "Extract method…".to_string(),
@@ -76,7 +103,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
             command: Some(Command {
                 title: "Extract method".to_string(),
                 command: "nova.extractMethod".to_string(),
-                arguments: Some(vec![serde_json::to_value(args).ok()?]),
+                arguments: Some(vec![args_value]),
             }),
             ..Default::default()
         })
@@ -1404,6 +1431,8 @@ fn line_start_and_indent(source: &str, offset: usize) -> Option<(usize, &str)> {
 }
 
 fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize) -> &'static str {
+    static INFER_DEFAULT_VALUE_REGEX_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let before_offset = before_offset.min(source.len());
     let prefix = &source[..before_offset];
 
@@ -1413,15 +1442,32 @@ fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize)
         r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?(?P<ty>byte|short|int|long|float|double|boolean|char)(?P<array1>(?:\[\])*)\s+{}\b",
         regex::escape(name)
     );
-    let re = Regex::new(&pat).ok();
+    let re = match Regex::new(&pat) {
+        Ok(re) => Some(re),
+        Err(err) => {
+            if INFER_DEFAULT_VALUE_REGEX_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.ide",
+                    error = %err,
+                    pattern = %pat,
+                    "failed to compile primitive-local regex (best effort)"
+                );
+            }
+            None
+        }
+    };
 
     if let Some(re) = re {
         for line in prefix.lines().rev() {
             let Some(caps) = re.captures(line) else {
                 continue;
             };
-            let ty = caps.name("ty").map(|m| m.as_str()).unwrap_or("");
-            let array1 = caps.name("array1").map(|m| m.as_str()).unwrap_or("");
+            let Some(ty) = caps.name("ty").map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(array1) = caps.name("array1").map(|m| m.as_str()) else {
+                continue;
+            };
 
             // Handle the alternative Java array syntax: `int x[];` (brackets after the name).
             let array2 = line.contains(&format!("{name}[]"));

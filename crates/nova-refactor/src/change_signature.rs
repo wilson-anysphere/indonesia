@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
 
 use crate::edit::{
     EditError, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange,
@@ -426,8 +427,7 @@ fn transitive_interface_supertypes(index: &Index, iface: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack: Vec<String> = index
         .interface_extends(iface)
-        .map(|v| v.to_vec())
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |v| v.to_vec());
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(cur) = stack.pop() {
         if !seen.insert(cur.clone()) {
@@ -572,22 +572,45 @@ fn compute_new_params(
 }
 
 fn method_param_types_for_signature(index: &Index, method: &ParsedMethod) -> Vec<String> {
-    index
+    static METHOD_SIGNATURE_MISMATCH_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let fallback = || {
+        method
+            .params
+            .iter()
+            .map(|p| normalize_type_signature(&p.ty))
+            .collect()
+    };
+
+    let Some(sig) = index
         .method_signature(SymbolId(method.method_id.0))
         .map(<[String]>::to_vec)
-        .unwrap_or_else(|| {
-            method
-                .params
-                .iter()
-                .map(|p| normalize_type_signature(&p.ty))
-                .collect()
-        })
+    else {
+        return fallback();
+    };
+
+    if sig.len() != method.params.len() {
+        if METHOD_SIGNATURE_MISMATCH_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.refactor",
+                method = method.method_id.0,
+                sig_len = sig.len(),
+                param_len = method.params.len(),
+                "index method signature arity mismatch; falling back to parsed parameter types"
+            );
+        }
+        return fallback();
+    }
+
+    sig
 }
 
 fn compute_new_param_types_for_signature(
     old_param_types: &[String],
     ops: &[ParameterOperation],
 ) -> Vec<String> {
+    static SIGNATURE_PARAM_FALLBACK_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut out = Vec::new();
     for op in ops {
         match op {
@@ -598,7 +621,20 @@ fn compute_new_param_types_for_signature(
             } => {
                 let ty = match new_type {
                     Some(ty) => normalize_type_signature(ty),
-                    None => old_param_types.get(*old_index).cloned().unwrap_or_default(),
+                    None => match old_param_types.get(*old_index) {
+                        Some(ty) => ty.clone(),
+                        None => {
+                            if SIGNATURE_PARAM_FALLBACK_LOGGED.set(()).is_ok() {
+                                tracing::debug!(
+                                    target = "nova.refactor",
+                                    old_index,
+                                    len = old_param_types.len(),
+                                    "missing old parameter type for signature; using sentinel type"
+                                );
+                            }
+                            "__invalid__".to_string()
+                        }
+                    },
                 };
                 out.push(ty);
             }
@@ -1030,10 +1066,10 @@ fn collect_annotation_value_rename_updates(
                     continue;
                 };
                 let value_range = syntax_node_range(value.syntax());
-                let value_text = text
-                    .get(value_range.start..value_range.end)
-                    .unwrap_or_default()
-                    .trim();
+                let Some(value_text) = text.get(value_range.start..value_range.end) else {
+                    continue;
+                };
+                let value_text = value_text.trim();
                 if value_text.is_empty() {
                     continue;
                 }
@@ -1109,6 +1145,8 @@ fn overload_candidates_after_change(
     expected_param_types: &[Option<String>],
     new_param_types: &[String],
 ) -> Vec<MethodId> {
+    static METHOD_SIGNATURE_MISSING_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut by_sig: HashMap<Vec<String>, MethodId> = HashMap::new();
     let expected_param_count = expected_param_types.len();
 
@@ -1120,10 +1158,18 @@ fn overload_candidates_after_change(
             let param_types = if affected.contains(&id) {
                 new_param_types.to_vec()
             } else {
-                index
-                    .method_signature(sym_id)
-                    .map(<[String]>::to_vec)
-                    .unwrap_or_default()
+                let Some(sig) = index.method_signature(sym_id).map(<[String]>::to_vec) else {
+                    if METHOD_SIGNATURE_MISSING_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.refactor",
+                            class,
+                            name = new_name,
+                            "missing method signature while checking overload candidates; skipping candidate"
+                        );
+                    }
+                    continue;
+                };
+                sig
             };
             if param_types.len() == expected_param_count
                 && param_types_match_expected(&param_types, expected_param_types)
@@ -1829,10 +1875,13 @@ fn check_return_type_compatibility(
     let rel_call_start = call_start - line_start;
     let before = &line[..rel_call_start];
 
-    let assign_re = regex::Regex::new(
-        r"(?x)^\s*(?P<ty>[A-Za-z_][A-Za-z0-9_<>,\[\]]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*$",
-    )
-    .ok()?;
+    static ASSIGN_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let assign_re = ASSIGN_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?x)^\s*(?P<ty>[A-Za-z_][A-Za-z0-9_<>,\[\]]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*$",
+        )
+        .expect("valid regex")
+    });
     let expected = assign_re
         .captures(before)
         .and_then(|c| c.name("ty"))

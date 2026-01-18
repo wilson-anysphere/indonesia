@@ -1,6 +1,7 @@
 use nova_classfile::{
     parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature,
 };
+use std::sync::OnceLock;
 
 /// Formats a JVM field signature (descriptor) and optional generic signature into a Java source
 /// type string.
@@ -26,7 +27,22 @@ pub fn java_type_from_signatures(signature: &str, generic_signature: Option<&str
 }
 
 fn java_type_from_generic_signature(sig: &str) -> Option<String> {
-    let parsed = parse_field_signature(sig).ok()?;
+    static GENERIC_SIGNATURE_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let parsed = match parse_field_signature(sig) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            if GENERIC_SIGNATURE_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    sig_len = sig.len(),
+                    error = ?err,
+                    "failed to parse generic field signature; falling back to erased descriptor"
+                );
+            }
+            return None;
+        }
+    };
     Some(fmt_type_signature(&parsed))
 }
 

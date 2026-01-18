@@ -93,7 +93,12 @@ impl JdwpClient for MockJdwpClient {
     }
 
     fn stack_frames(&mut self, thread_id: ThreadId) -> Result<Vec<StackFrameInfo>, JdwpError> {
-        Ok(self.frames.get(&thread_id).cloned().unwrap_or_default())
+        match self.frames.get(&thread_id) {
+            Some(frames) => Ok(frames.clone()),
+            None => Err(JdwpError::Other(format!(
+                "no mock stack frames configured for thread {thread_id}"
+            ))),
+        }
     }
 
     fn r#continue(&mut self, _thread_id: ThreadId) -> Result<(), JdwpError> {

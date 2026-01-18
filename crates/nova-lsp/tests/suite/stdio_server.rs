@@ -1479,11 +1479,11 @@ exit 1
             .and_then(|v| v.as_u64()),
         Some(4)
     );
-    assert!(diag
+    let message = diag
         .get("message")
         .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .contains("cannot find symbol"));
+        .expect("diagnostic message");
+    assert!(message.contains("cannot find symbol"));
 
     write_jsonrpc_message(&mut stdin, &shutdown_request(i64::from(next_id)));
     let _shutdown_resp = read_response_with_id(&mut stdout, i64::from(next_id));
@@ -2092,11 +2092,11 @@ esac
     perms.set_mode(0o755);
     fs::set_permissions(&mvn_path, perms).expect("chmod mvn");
 
-    let system_path = std::env::var("PATH").unwrap_or_default();
-    let combined_path = if system_path.is_empty() {
-        bin_dir.to_string_lossy().to_string()
-    } else {
-        format!("{}:{}", bin_dir.to_string_lossy(), system_path)
+    let combined_path = match std::env::var("PATH").ok() {
+        Some(system_path) if !system_path.is_empty() => {
+            format!("{}:{}", bin_dir.to_string_lossy(), system_path)
+        }
+        _ => bin_dir.to_string_lossy().to_string(),
     };
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))

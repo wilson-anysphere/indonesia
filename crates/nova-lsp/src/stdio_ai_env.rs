@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn load_ai_config_from_env_exposes_privacy_opt_ins() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::poison::lock(&ENV_LOCK, "stdio_ai_env/test/load_ai_config_from_env");
 
         let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
         let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");

@@ -11,6 +11,7 @@ watch-notify = ["dep:notify"]
 [dependencies]
 nova-core = { path = "../nova-core" }
 nova-archive = { path = "../nova-archive" }
+tracing = { workspace = true }
 lru = "0.12"
 lsp-types = { version = "0.97.0", optional = true }
 crossbeam-channel = "0.5"

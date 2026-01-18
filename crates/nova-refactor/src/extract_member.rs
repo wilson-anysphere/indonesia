@@ -1336,11 +1336,11 @@ fn find_equivalent_expressions(
     selected: &ast::Expression,
     kind: ExtractKind,
 ) -> Vec<TextRange> {
-    let selected_norm = normalize_expr_text(
-        source
-            .get(syntax_range(selected.syntax()).start..syntax_range(selected.syntax()).end)
-            .unwrap_or_default(),
-    );
+    let selected_range = syntax_range(selected.syntax());
+    let Some(selected_text) = source.get(selected_range.start..selected_range.end) else {
+        return Vec::new();
+    };
+    let selected_norm = normalize_expr_text(selected_text);
 
     let mut ranges = Vec::new();
     for expr in class_body

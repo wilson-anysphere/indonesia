@@ -152,6 +152,23 @@ struct CachedProjectConfigKeys {
 }
 
 impl QuarkusAnalyzer {
+    fn read_to_string_best_effort(path: &std::path::Path, context: &'static str) -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.framework.quarkus",
+                    context,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read quarkus project file"
+                );
+                None
+            }
+        }
+    }
+
     fn project_analysis(
         &self,
         db: &dyn Database,
@@ -177,7 +194,8 @@ impl QuarkusAnalyzer {
         for file in java_files.iter().copied() {
             let text = db.file_text(file).map(Cow::Borrowed).or_else(|| {
                 let path = db.file_path(file)?;
-                std::fs::read_to_string(path).ok().map(Cow::Owned)
+                Self::read_to_string_best_effort(path, "project_analysis.java_source")
+                    .map(Cow::Owned)
             });
             let Some(text) = text else {
                 continue;
@@ -239,7 +257,9 @@ impl QuarkusAnalyzer {
                     let Some(path) = db.file_path(file.id) else {
                         continue;
                     };
-                    let Ok(text) = std::fs::read_to_string(path) else {
+                    let Some(text) =
+                        Self::read_to_string_best_effort(path, "project_config_keys.config_file")
+                    else {
                         continue;
                     };
                     Cow::Owned(text)
@@ -292,9 +312,23 @@ impl QuarkusAnalyzer {
         }
 
         let mut keys = BTreeSet::<String>::new();
+        let mut logged_read_error = false;
         for (path, kind) in &files {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    if !logged_read_error {
+                        tracing::debug!(
+                            target = "nova.framework.quarkus",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read quarkus config file"
+                        );
+                        logged_read_error = true;
+                    }
+                    continue;
+                }
             };
             match kind {
                 ConfigFileKind::Properties => {
@@ -477,7 +511,10 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
             match std::fs::metadata(path) {
                 Ok(meta) => {
                     meta.len().hash(&mut hasher);
-                    hash_mtime(&mut hasher, meta.modified().ok());
+                    hash_mtime(
+                        &mut hasher,
+                        modified_best_effort(&meta, path, "fingerprint_project_sources"),
+                    );
                 }
                 Err(_) => {
                     0u64.hash(&mut hasher);
@@ -631,9 +668,11 @@ fn collect_project_config_files(db: &dyn Database, project: ProjectId) -> Vec<Co
 
 fn fingerprint_config_files(db: &dyn Database, files: &[ConfigFile]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
+    use std::io::ErrorKind;
 
     let mut hasher = DefaultHasher::new();
     files.len().hash(&mut hasher);
+    let mut logged_stat_error = false;
     for file in files {
         file.path.hash(&mut hasher);
         file.id.to_raw().hash(&mut hasher);
@@ -647,9 +686,25 @@ fn fingerprint_config_files(db: &dyn Database, files: &[ConfigFile]) -> u64 {
                 let Some(path) = db.file_path(file.id) else {
                     continue;
                 };
-                if let Ok(meta) = std::fs::metadata(path) {
-                    meta.len().hash(&mut hasher);
-                    hash_mtime(&mut hasher, meta.modified().ok());
+                match std::fs::metadata(path) {
+                    Ok(meta) => {
+                        meta.len().hash(&mut hasher);
+                        hash_mtime(
+                            &mut hasher,
+                            modified_best_effort(&meta, path, "fingerprint_config_files"),
+                        );
+                    }
+                    Err(err) => {
+                        if err.kind() != ErrorKind::NotFound && !logged_stat_error {
+                            logged_stat_error = true;
+                            tracing::debug!(
+                                target = "nova.framework.quarkus",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to stat config file for fingerprinting"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -675,9 +730,11 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
 
 fn fingerprint_fs_config_files(files: &[(std::path::PathBuf, ConfigFileKind)]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
+    use std::io::ErrorKind;
 
     let mut hasher = DefaultHasher::new();
     files.len().hash(&mut hasher);
+    let mut logged_stat_error = false;
 
     for (path, kind) in files {
         path.hash(&mut hasher);
@@ -689,9 +746,21 @@ fn fingerprint_fs_config_files(files: &[(std::path::PathBuf, ConfigFileKind)]) -
         match std::fs::metadata(path) {
             Ok(meta) => {
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, path, "fingerprint_fs_config_files"),
+                );
             }
-            Err(_) => {
+            Err(err) => {
+                if err.kind() != ErrorKind::NotFound && !logged_stat_error {
+                    logged_stat_error = true;
+                    tracing::debug!(
+                        target = "nova.framework.quarkus",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to stat config file for fingerprinting"
+                    );
+                }
                 0u64.hash(&mut hasher);
                 0u32.hash(&mut hasher);
             }
@@ -701,6 +770,26 @@ fn fingerprint_fs_config_files(files: &[(std::path::PathBuf, ConfigFileKind)]) -
     hasher.finish()
 }
 
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &std::path::Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.quarkus",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
+    }
+}
+
 fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     let Some(time) = time else {
         0u64.hash(hasher);
@@ -708,9 +797,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.framework.quarkus",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
@@ -776,10 +874,36 @@ fn collect_config_files_inner(
 
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.quarkus",
+                root = %root.display(),
+                error = %err,
+                "failed to scan config directory"
+            );
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    let mut logged_entry_error = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.framework.quarkus",
+                        root = %root.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning config files"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
         if out.len() >= limit {
             break;
         }

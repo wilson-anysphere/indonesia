@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 thread_local! {
     static TRIGRAM_SCRATCH: RefCell<TrigramCandidateScratch> =
@@ -62,6 +62,8 @@ impl<'de> Deserialize<'de> for Symbol {
     where
         D: serde::Deserializer<'de>,
     {
+        use serde::de::Error as _;
+
         #[derive(Deserialize)]
         #[serde(rename_all = "snake_case")]
         struct SymbolWire {
@@ -90,7 +92,7 @@ impl<'de> Deserialize<'de> for Symbol {
         let location = wire
             .location
             .or_else(|| wire.locations.into_iter().next())
-            .unwrap_or_default();
+            .ok_or_else(|| D::Error::custom("symbol is missing `location`/`locations[0]`"))?;
         let ast_id = wire.ast_id.unwrap_or(0);
 
         Ok(Self {
@@ -987,11 +989,11 @@ impl WorkspaceSymbolSearcher {
     ///
     /// Intended for regression tests and diagnostics.
     pub fn build_count(&self) -> u64 {
-        self.inner.lock().unwrap().build_count
+        self.lock_inner().build_count
     }
 
     pub fn has_index(&self) -> bool {
-        self.inner.lock().unwrap().index.is_some()
+        self.lock_inner().index.is_some()
     }
 
     /// Force a rebuild of the underlying [`SymbolSearchIndex`] from a list of symbols.
@@ -1001,7 +1003,7 @@ impl WorkspaceSymbolSearcher {
         let bytes = index.estimated_bytes();
 
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             inner.symbol_count = symbol_count;
             inner.build_count = inner.build_count.saturating_add(1);
             inner.index = Some(index);
@@ -1030,7 +1032,7 @@ impl WorkspaceSymbolSearcher {
             );
         }
 
-        let index = self.inner.lock().unwrap().index.clone();
+        let index = self.lock_inner().index.clone();
         let Some(index) = index else {
             return (
                 Vec::new(),
@@ -1065,11 +1067,30 @@ impl WorkspaceSymbolSearcher {
         index.search_with_stats(query, limit)
     }
 
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, WorkspaceSymbolSearcherInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.index",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     fn ensure_index(&self, symbols: &SymbolIndex, force_rebuild: bool) -> Arc<SymbolSearchIndex> {
         let symbol_count: usize = symbols.symbols.values().map(|entries| entries.len()).sum();
 
         let (index, bytes) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
 
             let needs_rebuild =
                 force_rebuild || inner.index.is_none() || inner.symbol_count != symbol_count;
@@ -1152,7 +1173,7 @@ impl MemoryEvictor for WorkspaceSymbolSearcher {
             || matches!(request.pressure, nova_memory::MemoryPressure::Critical);
 
         if should_drop {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             inner.index = None;
             inner.symbol_count = 0;
             if let Some(tracker) = self.tracker.get() {

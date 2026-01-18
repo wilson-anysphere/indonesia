@@ -24,7 +24,7 @@ impl TestRunner {
     }
 
     fn calls(&self) -> Vec<Vec<String>> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().expect("calls mutex poisoned").clone()
     }
 }
 
@@ -33,7 +33,7 @@ impl CommandRunner for TestRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls mutex poisoned")
             .push(args.iter().map(|s| s.to_string()).collect());
 
         match args.first().copied() {
@@ -55,7 +55,7 @@ impl CommandRunner for TestRunner {
         assert_eq!(program, "bazel");
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls mutex poisoned")
             .push(args.iter().map(|s| s.to_string()).collect());
 
         match args.first().copied() {

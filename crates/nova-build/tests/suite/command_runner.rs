@@ -31,17 +31,23 @@ impl FakeCommandRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().unwrap().clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
 impl CommandRunner for FakeCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
-        self.invocations.lock().unwrap().push(Invocation {
-            cwd: cwd.to_path_buf(),
-            program: program.to_path_buf(),
-            args: args.to_vec(),
-        });
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .push(Invocation {
+                cwd: cwd.to_path_buf(),
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+            });
         Ok(self.output.clone())
     }
 }
@@ -61,19 +67,27 @@ impl RoutingCommandRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().unwrap().clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
 impl CommandRunner for RoutingCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
-        self.invocations.lock().unwrap().push(Invocation {
-            cwd: cwd.to_path_buf(),
-            program: program.to_path_buf(),
-            args: args.to_vec(),
-        });
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .push(Invocation {
+                cwd: cwd.to_path_buf(),
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+            });
 
-        let task = args.last().cloned().unwrap_or_default();
+        let Some(task) = args.last().cloned() else {
+            return Err(std::io::Error::other("missing gradle task argument"));
+        };
         self.outputs
             .get(&task)
             .cloned()
@@ -98,22 +112,30 @@ impl MavenExpressionCommandRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().unwrap().clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
 impl CommandRunner for MavenExpressionCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
-        self.invocations.lock().unwrap().push(Invocation {
-            cwd: cwd.to_path_buf(),
-            program: program.to_path_buf(),
-            args: args.to_vec(),
-        });
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .push(Invocation {
+                cwd: cwd.to_path_buf(),
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+            });
 
-        let expr = args
+        let Some(expr) = args
             .iter()
             .find_map(|arg| arg.strip_prefix("-Dexpression="))
-            .unwrap_or_default();
+        else {
+            return Err(std::io::Error::other("missing -Dexpression=... argument"));
+        };
         Ok(self
             .outputs
             .get(expr)

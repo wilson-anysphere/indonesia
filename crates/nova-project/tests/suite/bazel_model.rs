@@ -36,7 +36,11 @@ impl MockRunner {
             args.iter().map(|s| s.to_string()).collect(),
         );
         {
-            let mut guard = self.inner.responses.lock().expect("responses lock");
+            let mut guard = self
+                .inner
+                .responses
+                .lock()
+                .expect("responses mutex poisoned");
             guard.insert(
                 key,
                 CommandOutput {
@@ -55,7 +59,11 @@ impl CommandRunner for MockRunner {
             program.to_string(),
             args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
         );
-        let guard = self.inner.responses.lock().expect("responses lock");
+        let guard = self
+            .inner
+            .responses
+            .lock()
+            .expect("responses mutex poisoned");
         guard
             .get(&key)
             .cloned()

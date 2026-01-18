@@ -3,6 +3,7 @@ use crate::stdio_extensions_db::SingleFileDb;
 use crate::stdio_text::offset_to_position_utf16;
 use crate::ServerState;
 
+use nova_core::panic_payload_to_str;
 use nova_db::Database;
 use nova_db::FileId as DbFileId;
 use nova_ext::ProjectId;
@@ -64,23 +65,13 @@ pub(super) fn flush_publish_diagnostics(
                 })) {
                     Ok(value) => value,
                     Err(panic) => {
-                        match crate::panic_util::panic_payload_to_string(panic.as_ref()) {
-                            Some(message) => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    uri = uri.as_str(),
-                                    panic = %message,
-                                    "panic while computing publishDiagnostics"
-                                );
-                            }
-                            None => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    uri = uri.as_str(),
-                                    "panic while computing publishDiagnostics"
-                                );
-                            }
-                        }
+                        let message = panic_payload_to_str(panic.as_ref());
+                        tracing::error!(
+                            target = "nova.lsp",
+                            uri = uri.as_str(),
+                            panic = %message,
+                            "panic while computing publishDiagnostics"
+                        );
                         Vec::new()
                     }
                 }

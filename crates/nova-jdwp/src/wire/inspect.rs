@@ -229,7 +229,22 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
                     (_, Some(array_id)) => jdwp
                         .array_reference_get_values(array_id, 0, sample_len as i32)
                         .await
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|err| {
+                            // Sampling is best-effort; avoid failing preview rendering.
+                            // Also avoid log spam by reporting only the first failure.
+                            static REPORTED_ARRAYLIST_SAMPLE_ERROR: std::sync::OnceLock<()> =
+                                std::sync::OnceLock::new();
+                            if REPORTED_ARRAYLIST_SAMPLE_ERROR.set(()).is_ok() {
+                                tracing::debug!(
+                                    target = "nova.jdwp",
+                                    array_id,
+                                    sample_len,
+                                    error = %err,
+                                    "failed to read ArrayList sample values"
+                                );
+                            }
+                            Vec::new()
+                        }),
                     _ => Vec::new(),
                 };
 
@@ -498,7 +513,21 @@ async fn array_list_children(
         let values = jdwp
             .array_reference_get_values(array_id, 0, sample_len as i32)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|err| {
+                // Best-effort: failures should not prevent variable rendering.
+                static REPORTED_ARRAY_CHILD_VALUES_ERROR: std::sync::OnceLock<()> =
+                    std::sync::OnceLock::new();
+                if REPORTED_ARRAY_CHILD_VALUES_ERROR.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.jdwp",
+                        array_id,
+                        sample_len,
+                        error = %err,
+                        "failed to read array child sample values"
+                    );
+                }
+                Vec::new()
+            });
         for (idx, value) in values.into_iter().enumerate() {
             vars.push((format!("[{idx}]"), value, element_type.clone()));
         }
@@ -739,9 +768,25 @@ async fn hashmap_entries(
     type_id: ReferenceTypeId,
     entry_limit: usize,
 ) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
-    let children = instance_fields_with_type(jdwp, object_id, type_id)
-        .await
-        .ok()?;
+    let children = match instance_fields_with_type(jdwp, object_id, type_id).await {
+        Ok(children) => children,
+        Err(err) => {
+            // Best-effort: this is only used for HashMap previews and should not
+            // fail rendering when JDWP introspection fails.
+            static REPORTED_HASHMAP_FIELDS_ERROR: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            if REPORTED_HASHMAP_FIELDS_ERROR.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.jdwp",
+                    object_id,
+                    type_id,
+                    error = %err,
+                    "failed to inspect HashMap instance fields"
+                );
+            }
+            return None;
+        }
+    };
     let size = children
         .iter()
         .find_map(|(name, value, _ty)| match (name.as_str(), value) {

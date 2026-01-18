@@ -555,7 +555,18 @@ fn main() {
 
 fn load_config_from_cli(cli: &Cli) -> NovaConfig {
     if let Some(path) = cli.config.as_ref() {
-        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let resolved = match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.clone(),
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to canonicalize config path {}: {}",
+                    path.display(),
+                    err
+                );
+                path.clone()
+            }
+        };
         env::set_var(NOVA_CONFIG_ENV_VAR, &resolved);
         match NovaConfig::load_from_path(&resolved)
             .with_context(|| format!("load config from {}", resolved.display()))
@@ -1214,7 +1225,18 @@ fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Resul
 }
 
 fn resolve_adjacent_binary(binary_name: &str) -> Option<PathBuf> {
-    let exe_path = std::env::current_exe().ok()?;
+    let exe_path = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cli",
+                binary_name,
+                error = %err,
+                "failed to resolve current executable path; cannot search for adjacent binary"
+            );
+            return None;
+        }
+    };
     let exe_dir = exe_path.parent()?;
 
     fn candidate(dir: &Path, binary_name: &str) -> PathBuf {
@@ -1629,10 +1651,22 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
 }
 
 fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymbol>> {
-    let workspace_root = args
-        .path
-        .canonicalize()
-        .unwrap_or_else(|_| args.path.clone());
+    let workspace_root = match args.path.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            static WORKSPACE_ROOT_CANONICALIZE_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            if WORKSPACE_ROOT_CANONICALIZE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cli",
+                    path = %args.path.display(),
+                    error = %err,
+                    "failed to canonicalize workspace root; using the provided path"
+                );
+            }
+            args.path.clone()
+        }
+    };
     let worker_command = args
         .distributed_worker_command
         .clone()
@@ -1680,7 +1714,17 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
                 Err(err) => Err(err),
             };
 
-            let _ = router.shutdown().await;
+            static ROUTER_SHUTDOWN_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            if let Err(err) = router.shutdown().await {
+                if ROUTER_SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.cli",
+                        error = ?err,
+                        "distributed router shutdown failed (best effort)"
+                    );
+                }
+            }
             result
         })?;
 
@@ -1692,8 +1736,23 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
             }
             let path = sym.path;
             let file_path = PathBuf::from(path.as_str());
-            let file =
-                path_relative_to(&workspace_root, &file_path).unwrap_or_else(|_| path.clone());
+            let file = match path_relative_to(&workspace_root, &file_path) {
+                Ok(file) => file,
+                Err(err) => {
+                    static SYMBOL_PATH_RELATIVE_ERROR_LOGGED: std::sync::OnceLock<()> =
+                        std::sync::OnceLock::new();
+                    if SYMBOL_PATH_RELATIVE_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.cli",
+                            workspace_root = %workspace_root.display(),
+                            file_path = %file_path.display(),
+                            error = %err,
+                            "failed to relativize workspace symbol path; using raw path"
+                        );
+                    }
+                    path.clone()
+                }
+            };
 
             out.push(WorkspaceSymbol {
                 qualified_name: name.clone(),
@@ -1713,8 +1772,24 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
     })();
 
     // Best-effort cleanup: avoid leaving behind stale sockets/cache data if the CLI crashes.
-    let _ = std::fs::remove_dir_all(&cleanup_dir);
+    remove_dir_all_best_effort(&cleanup_dir, "cli.distributed.cleanup_dir");
     result
+}
+
+fn remove_dir_all_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cli",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove directory (best effort)"
+            );
+        }
+    }
 }
 
 fn default_worker_command() -> PathBuf {
@@ -1740,10 +1815,21 @@ fn distributed_run_dir() -> PathBuf {
     let base = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    static DISTRIBUTED_RUN_DIR_TIMESTAMP_ERROR_LOGGED: std::sync::OnceLock<()> =
+        std::sync::OnceLock::new();
+    let ts = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(err) => {
+            if DISTRIBUTED_RUN_DIR_TIMESTAMP_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cli",
+                    error = ?err,
+                    "failed to compute timestamp for distributed run dir (best effort)"
+                );
+            }
+            0
+        }
+    };
     base.join(format!("nova-distributed-{}-{ts}", std::process::id()))
 }
 
@@ -1754,10 +1840,24 @@ fn distributed_listen_addr(run_dir: &Path) -> ListenAddr {
 
 #[cfg(windows)]
 fn distributed_listen_addr(_run_dir: &Path) -> ListenAddr {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    static DISTRIBUTED_LISTEN_ADDR_TIMESTAMP_ERROR_LOGGED: std::sync::OnceLock<()> =
+        std::sync::OnceLock::new();
+    let ts = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(err) => {
+            if DISTRIBUTED_LISTEN_ADDR_TIMESTAMP_ERROR_LOGGED
+                .set(())
+                .is_ok()
+            {
+                tracing::debug!(
+                    target = "nova.cli",
+                    error = ?err,
+                    "failed to compute timestamp for distributed listen addr (best effort)"
+                );
+            }
+            0
+        }
+    };
     ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
 }
 
@@ -2210,7 +2310,7 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
                     d.code
                         .as_ref()
                         .map(|c| format!("[{c}]"))
-                        .unwrap_or_default(),
+                        .unwrap_or_else(String::new),
                     d.message
                 );
             }
@@ -2249,8 +2349,8 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
                     .get("location")
                     .or_else(|| value.get("locations").and_then(|v| v.get(0)))?;
                 let file = json_string(loc, "file")?.to_string();
-                let line = json_u32(loc, "line").unwrap_or(0);
-                let column = json_u32(loc, "column").unwrap_or(0);
+                let line = json_u32(loc, "line")?;
+                let column = json_u32(loc, "column")?;
                 Some((file, line, column))
             }
 

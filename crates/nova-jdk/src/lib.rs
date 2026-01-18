@@ -219,7 +219,19 @@ impl Default for JdkIndexInfo {
 }
 
 fn canonicalize_best_effort(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize path"
+            );
+            path.to_path_buf()
+        }
+    }
 }
 
 impl From<&JdkFieldStub> for FieldStub {
@@ -667,7 +679,7 @@ impl JdkIndex {
                             .cloned()
                             .collect::<Vec<_>>()
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 out.sort();
                 Ok(out)
             }
@@ -713,7 +725,18 @@ impl JdkIndex {
     /// or the type cannot be found.
     pub fn module_of_type(&self, binary_or_internal: &str) -> Option<ModuleName> {
         let symbols = self.symbols.as_ref()?;
-        symbols.module_of_type(binary_or_internal).ok().flatten()
+        match symbols.module_of_type(binary_or_internal) {
+            Ok(module) => module,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    binary_or_internal,
+                    error = %err,
+                    "failed to resolve module for type"
+                );
+                None
+            }
+        }
     }
 
     fn from_jdk_root_with_cache_and_stats_policy(
@@ -877,7 +900,19 @@ impl TypeIndex for JdkIndex {
 
         let symbols = self.symbols.as_ref()?;
         let needle = name.as_str();
-        let stub = symbols.lookup_type(owner.as_str()).ok().flatten()?;
+        let stub = match symbols.lookup_type(owner.as_str()) {
+            Ok(stub) => stub,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    owner = %owner.as_str(),
+                    error = %err,
+                    "failed to look up type while resolving static member"
+                );
+                return None;
+            }
+        };
+        let stub = stub?;
 
         let found = stub
             .fields
@@ -942,7 +977,19 @@ impl TypeIndex for JdkIndex {
 
 impl TypeProvider for JdkIndex {
     fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub> {
-        let stub = JdkIndex::lookup_type(self, binary_name).ok().flatten()?;
+        let stub = match JdkIndex::lookup_type(self, binary_name) {
+            Ok(stub) => stub,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    binary_name,
+                    error = %err,
+                    "failed to look up type in JDK index"
+                );
+                return None;
+            }
+        };
+        let stub = stub?;
         Some(TypeDefStub::from(stub.as_ref()))
     }
 }
@@ -1046,7 +1093,17 @@ fn cache_policy_from_env() -> Option<CachePolicy> {
     }
 
     let config = CacheConfig::from_env();
-    let deps = nova_cache::deps_cache_dir(&config).ok()?;
+    let deps = match nova_cache::deps_cache_dir(&config) {
+        Ok(deps) => deps,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                error = %err,
+                "failed to resolve deps cache directory; skipping JDK persistence"
+            );
+            return None;
+        }
+    };
     Some(CachePolicy {
         dir: deps.join("jdk"),
         allow_write: mode.allows_write(),

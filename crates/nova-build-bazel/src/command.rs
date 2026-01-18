@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use nova_process::{run_command, CommandFailure, CommandSpec, RunOptions};
 use std::{
+    env::VarError,
     io::{self, BufRead, BufReader, Read},
     ops::ControlFlow,
     path::Path,
@@ -26,7 +27,23 @@ const DEFAULT_BAZEL_QUERY_TIMEOUT: Duration = Duration::from_secs(55);
 /// - values <= 0 => treated as unset and fall back to [`DEFAULT_BAZEL_QUERY_TIMEOUT`] to avoid
 ///   accidentally disabling timeouts and hanging forever.
 fn default_bazel_query_timeout() -> Duration {
-    let raw = std::env::var(ENV_BAZEL_QUERY_TIMEOUT_SECS).unwrap_or_default();
+    static ENV_TIMEOUT_READ_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let raw = match std::env::var(ENV_BAZEL_QUERY_TIMEOUT_SECS) {
+        Ok(raw) => raw,
+        Err(VarError::NotPresent) => String::new(),
+        Err(err) => {
+            if ENV_TIMEOUT_READ_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    key = ENV_BAZEL_QUERY_TIMEOUT_SECS,
+                    error = ?err,
+                    "failed to read env override; using default bazel query timeout"
+                );
+            }
+            String::new()
+        }
+    };
     let raw = raw.trim();
     if raw.is_empty() {
         return DEFAULT_BAZEL_QUERY_TIMEOUT;
@@ -34,10 +51,25 @@ fn default_bazel_query_timeout() -> Duration {
 
     let secs: i64 = match raw.parse() {
         Ok(secs) => secs,
-        Err(_) => return DEFAULT_BAZEL_QUERY_TIMEOUT,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build.bazel",
+                key = ENV_BAZEL_QUERY_TIMEOUT_SECS,
+                value = raw,
+                error = %err,
+                "invalid env override; using default bazel query timeout"
+            );
+            return DEFAULT_BAZEL_QUERY_TIMEOUT;
+        }
     };
 
     if secs <= 0 {
+        tracing::debug!(
+            target = "nova.build.bazel",
+            key = ENV_BAZEL_QUERY_TIMEOUT_SECS,
+            value = raw,
+            "non-positive env override; using default bazel query timeout"
+        );
         return DEFAULT_BAZEL_QUERY_TIMEOUT;
     }
 
@@ -285,18 +317,50 @@ impl CommandRunner for DefaultCommandRunner {
             let _ = io::copy(&mut stdout_reader, &mut sink);
         }
 
+        #[track_caller]
+        fn join_thread_best_effort<T>(
+            handle: thread::JoinHandle<T>,
+            reason: &'static str,
+        ) -> Option<T> {
+            static JOIN_PANIC_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+            match handle.join() {
+                Ok(value) => Some(value),
+                Err(panic) => {
+                    if JOIN_PANIC_LOGGED.set(()).is_ok() {
+                        let loc = std::panic::Location::caller();
+                        let message = panic
+                            .downcast_ref::<&'static str>()
+                            .copied()
+                            .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                            .unwrap_or("<non-string panic>");
+
+                        tracing::debug!(
+                            target = "nova.build.bazel",
+                            reason,
+                            file = loc.file(),
+                            line = loc.line(),
+                            column = loc.column(),
+                            panic = %message,
+                            "background thread panicked (best effort join)"
+                        );
+                    }
+                    None
+                }
+            }
+        }
+
         let status_message = status_rx.recv();
-        let stderr = match stderr_handle.join() {
-            Ok(Ok(stderr)) => stderr,
-            Ok(Err(_)) => String::new(),
-            Err(_) => String::new(),
+        let stderr = match join_thread_best_effort(stderr_handle, "bazel_command.stderr_reader") {
+            Some(Ok(stderr)) => stderr,
+            Some(Err(_)) | None => String::new(),
         };
 
         // Cancel timeout enforcement now that the process has exited (or we've given up on
         // waiting).
         let _ = cancel_tx.send(());
-        let _ = timeout_handle.join();
-        let _ = wait_handle.join();
+        let _ = join_thread_best_effort(timeout_handle, "bazel_command.timeout_enforcer");
+        let _ = join_thread_best_effort(wait_handle, "bazel_command.wait_thread");
 
         let status_result =
             status_message.map_err(|_| anyhow!("failed to wait for `{program}`"))?;

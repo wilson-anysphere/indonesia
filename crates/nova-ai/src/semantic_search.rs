@@ -16,6 +16,18 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+fn cmp_scores_desc(a: f32, b: f32) -> Ordering {
+    // Make ordering deterministic and NaN-safe:
+    // - NaN always sorts last (lowest priority)
+    // - Otherwise use a total order for stable ordering across platforms
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => b.total_cmp(&a),
+    }
+}
+
 /// Semantic search interface.
 ///
 /// When built with the `embeddings` Cargo feature, `nova-ai` includes a local
@@ -176,12 +188,13 @@ impl SemanticSearch for TrigramSemanticSearch {
             })
             .collect();
 
-        results.sort_by(
-            |a, b| match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
-                Ordering::Equal => a.path.cmp(&b.path),
-                other => other,
-            },
-        );
+        results.sort_by(|a, b| {
+            let by_score = cmp_scores_desc(a.score, b.score);
+            if by_score == Ordering::Equal {
+                return a.path.cmp(&b.path);
+            }
+            by_score
+        });
 
         results.truncate(50);
         results
@@ -199,7 +212,7 @@ fn normalize(text: &str) -> String {
         }
     }
     // Safe because `out` only contains ASCII bytes.
-    String::from_utf8(out).unwrap_or_default()
+    String::from_utf8(out).expect("normalize only emits ASCII bytes")
 }
 
 fn unique_sorted_trigrams(text: &str) -> Vec<u32> {
@@ -307,7 +320,7 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 
 #[cfg(feature = "embeddings")]
 mod embeddings {
-    use super::{SearchResult, SemanticSearch};
+    use super::{cmp_scores_desc, SearchResult, SemanticSearch};
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
@@ -427,8 +440,13 @@ mod embeddings {
             self
         }
 
+        #[track_caller]
+        fn lock_index(&self) -> std::sync::MutexGuard<'_, EmbeddedIndex> {
+            crate::poison::lock(&self.index, "EmbeddingSemanticSearch.index")
+        }
+
         fn invalidate_index(&self) {
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             index.hnsw = None;
             index.dims = 0;
             index.id_to_doc.clear();
@@ -524,7 +542,7 @@ mod embeddings {
     impl<E: Embedder> SemanticSearch for EmbeddingSemanticSearch<E> {
         fn clear(&mut self) {
             self.docs_by_path.clear();
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             *index = EmbeddedIndex::empty();
         }
 
@@ -577,7 +595,7 @@ mod embeddings {
             }
             l2_normalize(&mut query_embedding);
 
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             if index.dirty {
                 self.rebuild_index_locked(&mut index);
             }
@@ -623,27 +641,27 @@ mod embeddings {
             }
 
             results.sort_by(|a, b| {
-                match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
-                    Ordering::Equal => {
-                        let by_path = a.path.cmp(&b.path);
-                        if by_path != Ordering::Equal {
-                            return by_path;
-                        }
-
-                        let by_start = a.range.start.cmp(&b.range.start);
-                        if by_start != Ordering::Equal {
-                            return by_start;
-                        }
-
-                        let by_end = a.range.end.cmp(&b.range.end);
-                        if by_end != Ordering::Equal {
-                            return by_end;
-                        }
-
-                        a.kind.cmp(&b.kind)
-                    }
-                    other => other,
+                let by_score = cmp_scores_desc(a.score, b.score);
+                if by_score != Ordering::Equal {
+                    return by_score;
                 }
+
+                let by_path = a.path.cmp(&b.path);
+                if by_path != Ordering::Equal {
+                    return by_path;
+                }
+
+                let by_start = a.range.start.cmp(&b.range.start);
+                if by_start != Ordering::Equal {
+                    return by_start;
+                }
+
+                let by_end = a.range.end.cmp(&b.range.end);
+                if by_end != Ordering::Equal {
+                    return by_end;
+                }
+
+                a.kind.cmp(&b.kind)
             });
             results.truncate(50);
             results
@@ -682,7 +700,7 @@ mod embeddings {
                 continue;
             }
 
-            let doc = find_doc_comment_before_offset(source, start).unwrap_or_default();
+            let doc = find_doc_comment_before_offset(source, start).unwrap_or_else(String::new);
             let signature = extract_signature(method_text);
             let body = extract_body_preview(method_text);
             let snippet = preview(method_text, 2_000);
@@ -796,3 +814,48 @@ mod embeddings {
 
 #[cfg(feature = "embeddings")]
 pub use embeddings::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn nan_scores_sort_last() {
+        let mut results = vec![
+            SearchResult {
+                path: PathBuf::from("a"),
+                range: 0..1,
+                kind: "file".to_string(),
+                score: f32::NAN,
+                snippet: String::new(),
+            },
+            SearchResult {
+                path: PathBuf::from("b"),
+                range: 0..1,
+                kind: "file".to_string(),
+                score: 0.5,
+                snippet: String::new(),
+            },
+            SearchResult {
+                path: PathBuf::from("c"),
+                range: 0..1,
+                kind: "file".to_string(),
+                score: 0.2,
+                snippet: String::new(),
+            },
+        ];
+
+        results.sort_by(|a, b| {
+            let by_score = cmp_scores_desc(a.score, b.score);
+            if by_score == Ordering::Equal {
+                return a.path.cmp(&b.path);
+            }
+            by_score
+        });
+
+        assert_eq!(results[0].path, PathBuf::from("b"));
+        assert_eq!(results[1].path, PathBuf::from("c"));
+        assert_eq!(results[2].path, PathBuf::from("a"));
+    }
+}

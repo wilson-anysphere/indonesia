@@ -2111,15 +2111,18 @@ fn jpms_resolve_compilation_env_uses_persistence_classpath_cache_dir() {
     .unwrap();
     let classpath_dir = cache_dir.classpath_dir();
 
-    let has_entry_cache = std::fs::read_dir(&classpath_dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("classpath-entry-")
-        });
+    let mut has_entry_cache = false;
+    for entry in std::fs::read_dir(&classpath_dir).unwrap() {
+        let entry = entry.expect("read classpath cache dir entry");
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("classpath-entry-")
+        {
+            has_entry_cache = true;
+            break;
+        }
+    }
 
     assert!(
         has_entry_cache,

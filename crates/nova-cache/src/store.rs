@@ -10,6 +10,9 @@ use std::ffi::{OsStr, OsString};
 #[cfg(feature = "s3")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "s3")]
+use std::sync::OnceLock;
+
 use crate::error::{CacheError, Result};
 
 pub trait CacheStore {
@@ -174,6 +177,8 @@ async fn open_unique_tmp_file(dest: &Path) -> io::Result<(PathBuf, tokio::fs::Fi
 
 #[cfg(feature = "s3")]
 fn sync_parent_dir_best_effort(dest: &Path) {
+    static SYNC_PARENT_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     // Best-effort durability: after publishing a new file via rename, fsync the directory entry
     // so the rename survives a crash/power loss.
     #[cfg(unix)]
@@ -183,7 +188,20 @@ fn sync_parent_dir_best_effort(dest: &Path) {
         } else {
             parent
         };
-        let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        match std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if SYNC_PARENT_DIR_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        dir = %parent.display(),
+                        error = %err,
+                        "failed to sync cache parent directory (best effort)"
+                    );
+                }
+            }
+        }
     }
 
     #[cfg(not(unix))]
@@ -220,7 +238,16 @@ async fn stream_async_read_to_path(
 
         file.flush().await?;
         // Best-effort: ensure bytes are on disk before we publish the final path.
-        let _ = file.sync_all().await;
+        static TMP_FILE_SYNC_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        if let Err(err) = file.sync_all().await {
+            if TMP_FILE_SYNC_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cache",
+                    error = %err,
+                    "failed to sync cache download temp file (best effort)"
+                );
+            }
+        }
         drop(file);
 
         if let Some(max_bytes) = max_bytes {
@@ -261,7 +288,17 @@ async fn stream_async_read_to_path(
                     let mut dest_file = tokio::fs::File::create(dest).await?;
                     tokio::io::copy(&mut tmp_reader, &mut dest_file).await?;
                     dest_file.flush().await?;
-                    let _ = dest_file.sync_all().await;
+                    static DEST_FILE_SYNC_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+                    if let Err(err) = dest_file.sync_all().await {
+                        if DEST_FILE_SYNC_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.cache",
+                                path = %dest.display(),
+                                error = %err,
+                                "failed to sync cache download destination file (best effort)"
+                            );
+                        }
+                    }
                     Ok::<(), std::io::Error>(())
                 }
                 .await;

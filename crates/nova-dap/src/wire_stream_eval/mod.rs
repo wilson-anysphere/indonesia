@@ -156,7 +156,7 @@ pub(crate) async fn compile_and_inject_helper_with_compiler(
 
     // --- Source generation -------------------------------------------------
     let class_sig = jdwp.reference_type_signature(location.class_id).await?;
-    let package = package_from_signature(&class_sig).unwrap_or_default();
+    let package = package_from_signature(&class_sig).unwrap_or_else(String::new);
     let declaring_class_fqcn = java_types::java_type_from_signatures(&class_sig, None);
 
     let (instance_method_names, static_method_names) =
@@ -342,10 +342,21 @@ async fn invoke_helper_method(
 async fn format_thrown_exception_best_effort(jdwp: &JdwpClient, exception: ObjectId) -> String {
     let mut inspector = Inspector::new(jdwp.clone());
 
-    let runtime_type = inspector
-        .runtime_type_name(exception)
-        .await
-        .unwrap_or_else(|_| "Exception".to_string());
+    let runtime_type = match inspector.runtime_type_name(exception).await {
+        Ok(name) => name,
+        Err(err) => {
+            static RUNTIME_TYPE_NAME_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            if RUNTIME_TYPE_NAME_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    error = %err,
+                    "failed to resolve exception runtime type name"
+                );
+            }
+            "Exception".to_string()
+        }
+    };
 
     let message_id = inspector
         .object_children(exception)

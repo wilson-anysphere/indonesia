@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
 
@@ -178,7 +178,7 @@ impl CompletionEnvCache {
 
         // Cache hit.
         {
-            let mut cache = lock_unpoison(&self.entries);
+            let mut cache = crate::poison::lock(&self.entries, "CompletionCache.env_for_root/read");
             if let Some(entry) = cache.get_cloned(&key) {
                 if entry.fingerprint == fingerprint {
                     return entry.env;
@@ -192,14 +192,15 @@ impl CompletionEnvCache {
             fingerprint,
             env: Arc::clone(&env),
         };
-        lock_unpoison(&self.entries).insert_with_evict_predicate(key, entry, |cached| {
-            // Avoid evicting entries that are currently in use by other callers.
-            //
-            // Integration tests run in parallel and may build completion envs for many distinct
-            // roots, causing a global LRU to churn. `Arc::ptr_eq` assertions expect the env for a
-            // root to remain cached at least while a caller is actively holding onto it.
-            Arc::strong_count(&cached.env) == 1
-        });
+        crate::poison::lock(&self.entries, "CompletionCache.env_for_root/write")
+            .insert_with_evict_predicate(key, entry, |cached| {
+                // Avoid evicting entries that are currently in use by other callers.
+                //
+                // Integration tests run in parallel and may build completion envs for many distinct
+                // roots, causing a global LRU to churn. `Arc::ptr_eq` assertions expect the env for a
+                // root to remain cached at least while a caller is actively holding onto it.
+                Arc::strong_count(&cached.env) == 1
+            });
         env
     }
 }
@@ -503,9 +504,17 @@ where
 }
 
 fn normalize_root_for_cache(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
-}
-
-fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for completion cache"
+            );
+            root.to_path_buf()
+        }
+    }
 }

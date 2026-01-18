@@ -30,11 +30,29 @@ fn root_project_has_sources(root: &Path) -> bool {
 
     // Custom Gradle source sets (e.g. `src/integrationTest/java`).
     let src_dir = root.join("src");
-    let Ok(entries) = std::fs::read_dir(&src_dir) else {
+    let Ok(mut entries) = std::fs::read_dir(&src_dir) else {
         return false;
     };
 
-    entries.filter_map(|entry| entry.ok()).any(|entry| {
+    let mut logged_entry_error = false;
+    entries.any(|entry| {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %src_dir.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning Gradle source sets"
+                    );
+                    logged_entry_error = true;
+                }
+                return false;
+            }
+        };
+
         let Ok(source_set) = entry.file_name().into_string() else {
             return false;
         };
@@ -69,7 +87,10 @@ fn maybe_insert_buildsrc_module_ref(
             .map(|name| buildsrc_root.join(name))
             .find(|p| p.is_file());
         if let Some(settings_path) = buildsrc_settings_path {
-            if let Ok(contents) = std::fs::read_to_string(&settings_path) {
+            if let Some(contents) = read_text_best_effort(
+                &settings_path,
+                "read buildSrc settings.gradle for module discovery",
+            ) {
                 for module_ref in parse_gradle_settings_projects(&contents) {
                     let module_root = if module_ref.dir_rel == "." {
                         buildsrc_root.clone()
@@ -137,13 +158,49 @@ fn gradle_snapshot_path(workspace_root: &Path) -> PathBuf {
 
 fn load_gradle_snapshot(workspace_root: &Path) -> Option<GradleSnapshotFile> {
     let path = gradle_snapshot_path(workspace_root);
-    let bytes = std::fs::read(&path).ok()?;
-    let snapshot: GradleSnapshotFile = serde_json::from_slice(&bytes).ok()?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            // Cache misses are expected; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read gradle snapshot file"
+                );
+            }
+            return None;
+        }
+    };
+    let snapshot: GradleSnapshotFile = match serde_json::from_slice(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                path = %path.display(),
+                error = %err,
+                "failed to decode gradle snapshot file"
+            );
+            return None;
+        }
+    };
     if snapshot.schema_version != GRADLE_SNAPSHOT_SCHEMA_VERSION {
         return None;
     }
 
-    let fingerprint = gradle_build_fingerprint(workspace_root).ok()?;
+    let fingerprint = match gradle_build_fingerprint(workspace_root) {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                workspace_root = %workspace_root.display(),
+                error = %err,
+                "failed to compute gradle build fingerprint for snapshot validation"
+            );
+            return None;
+        }
+    };
     if snapshot.build_fingerprint != fingerprint.digest {
         return None;
     }
@@ -295,7 +352,7 @@ pub(crate) fn load_gradle_project(
     // When a Gradle snapshot exists, its Java config (if present) is authoritative.
     // Otherwise, we aggregate Java level across discovered modules by taking the max
     // `source`/`target` and OR-ing `enable_preview`.
-    let mut root_java = parse_gradle_java_config(root).unwrap_or_default();
+    let mut root_java = parse_gradle_java_config(root).unwrap_or_else(JavaConfig::default);
     let snapshot_java = snapshot.as_ref().and_then(java_config_from_snapshot);
     let aggregate_java_across_modules = snapshot_java.is_none();
     if let Some(java) = snapshot_java {
@@ -1362,7 +1419,7 @@ fn append_included_build_module_refs(
     // in `/.` (which would otherwise produce a base name of `"."`).
     let mut existing_build_roots: BTreeSet<PathBuf> = module_refs
         .iter()
-        .filter_map(|m| std::fs::canonicalize(workspace_root.join(&m.dir_rel)).ok())
+        .map(|m| canonicalize_or_fallback(&workspace_root.join(&m.dir_rel)))
         .collect();
 
     let mut added = Vec::new();
@@ -1376,7 +1433,7 @@ fn append_included_build_module_refs(
             continue;
         }
 
-        let canonical_build_root = std::fs::canonicalize(&build_root).unwrap_or(build_root);
+        let canonical_build_root = canonicalize_or_fallback(&build_root);
         if existing_build_roots.contains(&canonical_build_root) {
             continue;
         }
@@ -1432,7 +1489,10 @@ fn append_included_build_subproject_module_refs(
         let Some(settings_path) = settings_path else {
             continue;
         };
-        let Ok(contents) = std::fs::read_to_string(&settings_path) else {
+        let Some(contents) = read_text_best_effort(
+            &settings_path,
+            "read included build settings.gradle for module discovery",
+        ) else {
             continue;
         };
 
@@ -1669,9 +1729,10 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
         }
 
         let args = if bytes[idx] == b'(' {
-            extract_balanced_parens(contents, idx)
-                .map(|(args, _end)| args)
-                .unwrap_or_default()
+            let Some((args, _end)) = extract_balanced_parens(contents, idx) else {
+                continue;
+            };
+            args
         } else {
             extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
@@ -1705,9 +1766,10 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
         }
 
         let args = if bytes[idx] == b'(' {
-            extract_balanced_parens(contents, idx)
-                .map(|(args, _end)| args)
-                .unwrap_or_default()
+            let Some((args, _end)) = extract_balanced_parens(contents, idx) else {
+                continue;
+            };
+            args
         } else {
             extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
@@ -1917,6 +1979,24 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
     overrides
 }
 
+fn read_text_best_effort(path: &Path, context: &'static str) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Some(contents),
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    path = %path.display(),
+                    context,
+                    error = %err,
+                    "failed to read file"
+                );
+            }
+            None
+        }
+    }
+}
+
 fn parse_gradle_java_config(root: &Path) -> Option<JavaConfig> {
     let candidates = ["build.gradle.kts", "build.gradle"]
         .into_iter()
@@ -1925,10 +2005,13 @@ fn parse_gradle_java_config(root: &Path) -> Option<JavaConfig> {
         .collect::<Vec<_>>();
 
     for path in candidates {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Some(java) = extract_java_config_from_build_script(&contents) {
-                return Some(java);
-            }
+        let Some(contents) =
+            read_text_best_effort(&path, "read Gradle build script for Java config")
+        else {
+            continue;
+        };
+        if let Some(java) = extract_java_config_from_build_script(&contents) {
+            return Some(java);
         }
     }
 
@@ -1943,10 +2026,13 @@ fn parse_gradle_java_config_with_path(root: &Path) -> Option<(JavaConfig, PathBu
         .collect::<Vec<_>>();
 
     for path in candidates {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Some(java) = extract_java_config_from_build_script(&contents) {
-                return Some((java, path));
-            }
+        let Some(contents) =
+            read_text_best_effort(&path, "read Gradle build script for Java config")
+        else {
+            continue;
+        };
+        if let Some(java) = extract_java_config_from_build_script(&contents) {
+            return Some((java, path));
         }
     }
 
@@ -1961,9 +2047,23 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
     //    `--enable-preview`.
     let contents = strip_gradle_comments(contents);
     let string_ranges = gradle_string_literal_ranges(&contents);
-    let enable_preview = contents
-        .match_indices("--enable-preview")
-        .any(|(idx, _)| !is_index_inside_string_ranges(idx, &string_ranges));
+    // `--enable-preview` almost always appears inside a string literal (e.g.
+    // `options.compilerArgs += "--enable-preview"`). We still want to detect that, but avoid
+    // false positives from unrelated string constants.
+    //
+    // Heuristic:
+    // - If `--enable-preview` appears on a line that also mentions `options` + `compilerArgs`,
+    //   treat it as enabled (even if it's inside a string literal).
+    // - Otherwise, only treat it as enabled if it appears outside string literals.
+    let enable_preview_from_compiler_args = contents.lines().any(|line| {
+        line.contains("--enable-preview")
+            && line.contains("compilerArgs")
+            && line.contains("options")
+    });
+    let enable_preview = enable_preview_from_compiler_args
+        || contents
+            .match_indices("--enable-preview")
+            .any(|(idx, _)| !is_index_inside_string_ranges(idx, &string_ranges));
 
     let mut source = None;
     let mut target = None;
@@ -2066,7 +2166,7 @@ type GradleProperties = HashMap<String, String>;
 
 fn load_gradle_properties(workspace_root: &Path) -> GradleProperties {
     let path = workspace_root.join("gradle.properties");
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Some(contents) = read_text_best_effort(&path, "read gradle.properties") else {
         return GradleProperties::new();
     };
     parse_gradle_properties_from_text(&contents)
@@ -2074,7 +2174,7 @@ fn load_gradle_properties(workspace_root: &Path) -> GradleProperties {
 
 fn load_gradle_module_properties(module_root: &Path) -> GradleProperties {
     let path = module_root.join("gradle.properties");
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Some(contents) = read_text_best_effort(&path, "read gradle.properties") else {
         return GradleProperties::new();
     };
     parse_gradle_properties_from_text(&contents)
@@ -2231,17 +2331,50 @@ fn load_gradle_version_catalog(
         workspace_root.join("gradle").join("libs.versions.toml"),
         workspace_root.join("libs.versions.toml"),
     ];
-    let contents = candidates
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok())?;
-    parse_gradle_version_catalog_from_toml(&contents, gradle_properties)
+    for path in candidates {
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                // Many projects won't use version catalogs; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read Gradle version catalog"
+                    );
+                }
+                continue;
+            }
+        };
+
+        if let Some(catalog) =
+            parse_gradle_version_catalog_from_toml(&path, &contents, gradle_properties)
+        {
+            return Some(catalog);
+        }
+    }
+
+    None
 }
 
 fn parse_gradle_version_catalog_from_toml(
+    source_path: &Path,
     contents: &str,
     gradle_properties: &GradleProperties,
 ) -> Option<GradleVersionCatalog> {
-    let root: Value = toml::from_str(contents).ok()?;
+    let root: Value = match toml::from_str(contents) {
+        Ok(root) => root,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                source_path = %source_path.display(),
+                error = %err,
+                "failed to parse Gradle version catalog TOML"
+            );
+            return None;
+        }
+    };
     let root = root.as_table()?;
 
     let mut catalog = GradleVersionCatalog::default();
@@ -2380,7 +2513,9 @@ fn parse_gradle_dependencies(
 
     let mut out = Vec::new();
     for path in candidates {
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Some(contents) =
+            read_text_best_effort(&path, "read Gradle build script for dependency parsing")
+        else {
             continue;
         };
 
@@ -2434,7 +2569,10 @@ fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
 
     let mut out = Vec::new();
     for path in candidates {
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Some(contents) = read_text_best_effort(
+            &path,
+            "read Gradle build script for project dependency parsing",
+        ) else {
             continue;
         };
         let contents = strip_gradle_comments(&contents);
@@ -2636,7 +2774,10 @@ fn parse_gradle_root_subprojects_allprojects_dependencies(
     let mut allprojects = Vec::new();
 
     for path in candidates {
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Some(contents) = read_text_best_effort(
+            &path,
+            "read Gradle build script for allprojects/subprojects dependency parsing",
+        ) else {
             continue;
         };
 
@@ -2716,7 +2857,10 @@ fn parse_gradle_local_classpath_entries(module_root: &Path) -> Vec<ClasspathEntr
 
     let mut out = Vec::new();
     for path in candidates {
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Some(contents) = read_text_best_effort(
+            &path,
+            "read Gradle build script for local classpath parsing",
+        ) else {
             continue;
         };
         out.extend(parse_gradle_local_classpath_entries_from_text(
@@ -2818,7 +2962,23 @@ fn parse_gradle_local_classpath_entries_from_text(
             return;
         }
 
-        for entry in WalkDir::new(&dir_path).into_iter().filter_map(Result::ok) {
+        let mut logged_walk_error = false;
+        for entry in WalkDir::new(&dir_path).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    if !logged_walk_error {
+                        tracing::debug!(
+                            target = "nova.project",
+                            path = %dir_path.display(),
+                            error = %err,
+                            "failed to walk Gradle fileTree directory while collecting classpath entries"
+                        );
+                        logged_walk_error = true;
+                    }
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -2910,9 +3070,10 @@ fn parse_gradle_local_classpath_entries_from_text(
                     }
 
                     let args = if arg_bytes[j] == b'(' {
-                        extract_balanced_parens(&args_expr, j)
-                            .map(|(args, _end)| args)
-                            .unwrap_or_default()
+                        let Some((args, _end)) = extract_balanced_parens(&args_expr, j) else {
+                            continue;
+                        };
+                        args
                     } else {
                         extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
                     };
@@ -2933,9 +3094,10 @@ fn parse_gradle_local_classpath_entries_from_text(
                     }
 
                     let args = if arg_bytes[j] == b'(' {
-                        extract_balanced_parens(&args_expr, j)
-                            .map(|(args, _end)| args)
-                            .unwrap_or_default()
+                        let Some((args, _end)) = extract_balanced_parens(&args_expr, j) else {
+                            continue;
+                        };
+                        args
                     } else {
                         extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
                     };
@@ -2990,9 +3152,10 @@ fn parse_gradle_local_classpath_entries_from_text(
             }
 
             let args_expr = if bytes[idx] == b'(' {
-                extract_balanced_parens(contents, idx)
-                    .map(|(args, _end)| args)
-                    .unwrap_or_default()
+                let Some((args, _end)) = extract_balanced_parens(contents, idx) else {
+                    continue;
+                };
+                args
             } else {
                 extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
             };
@@ -3008,9 +3171,10 @@ fn parse_gradle_local_classpath_entries_from_text(
                 }
 
                 let args = if arg_bytes[j] == b'(' {
-                    extract_balanced_parens(&args_expr, j)
-                        .map(|(args, _end)| args)
-                        .unwrap_or_default()
+                    let Some((args, _end)) = extract_balanced_parens(&args_expr, j) else {
+                        continue;
+                    };
+                    args
                 } else {
                     extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
                 };
@@ -3031,9 +3195,10 @@ fn parse_gradle_local_classpath_entries_from_text(
                 }
 
                 let args = if arg_bytes[j] == b'(' {
-                    extract_balanced_parens(&args_expr, j)
-                        .map(|(args, _end)| args)
-                        .unwrap_or_default()
+                    let Some((args, _end)) = extract_balanced_parens(&args_expr, j) else {
+                        continue;
+                    };
+                    args
                 } else {
                     extract_unparenthesized_args_until_eol_or_continuation(&args_expr, j)
                 };
@@ -3403,7 +3568,10 @@ fn scrub_gradle_dependency_constraint_blocks(contents: &str) -> String {
         }
     }
 
-    String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
+    // `contents` is valid UTF-8 and we only replace bytes with ASCII spaces/newlines, so this
+    // should remain valid UTF-8. Use a lossy conversion anyway so the caller never falls back to
+    // an un-scrubbed script (which would re-introduce false positives) if something goes wrong.
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn resolve_version_catalog_dependencies(
@@ -3742,7 +3910,23 @@ fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec
     let mut fallback = Vec::new();
     let mut others = Vec::new();
 
-    for entry in WalkDir::new(&base).into_iter().filter_map(Result::ok) {
+    let mut logged_walk_error = false;
+    for entry in WalkDir::new(&base).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                if !logged_walk_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %base.display(),
+                        error = %err,
+                        "failed to walk Gradle cache directory while resolving dependency jars"
+                    );
+                    logged_walk_error = true;
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -3752,10 +3936,10 @@ fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec
             continue;
         }
 
-        let file_name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
+        let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+            others.push(path);
+            continue;
+        };
 
         if file_name.starts_with(&preferred_prefix) {
             preferred.push(path);
@@ -3810,14 +3994,44 @@ fn push_source_root(
 
 fn append_source_set_java_roots(out: &mut Vec<SourceRoot>, module_root: &Path) {
     let src_dir = module_root.join("src");
-    let Ok(entries) = std::fs::read_dir(src_dir) else {
-        return;
+    let entries = match std::fs::read_dir(&src_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.project",
+                path = %src_dir.display(),
+                error = %err,
+                "failed to list Gradle source set directory"
+            );
+            return;
+        }
     };
 
-    let mut source_sets = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect::<Vec<_>>();
+    let mut logged_entry_error = false;
+    let mut source_sets = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.project",
+                        path = %src_dir.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning Gradle source sets"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        source_sets.push(name);
+    }
     source_sets.sort();
 
     for source_set in source_sets {
@@ -3963,7 +4177,22 @@ fn retain_dependencies_not_in(deps: &mut Vec<Dependency>, remove: &[Dependency])
 }
 
 fn canonicalize_or_fallback(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) => {
+            // Canonicalization failures are expected for missing paths (races / deleted files).
+            // Only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize path; using fallback"
+                );
+            }
+            path.to_path_buf()
+        }
+    }
 }
 
 fn sort_dedup_modules(modules: &mut Vec<Module>, workspace_root: &Path) {
@@ -4014,6 +4243,7 @@ fn sort_dedup_workspace_modules(modules: &mut Vec<WorkspaceModuleConfig>) {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::path::Path;
 
     use super::{
         append_included_build_module_refs, default_gradle_user_home,
@@ -4573,6 +4803,40 @@ dependencies {
     }
 
     #[test]
+    fn parses_gradle_dependencies_from_text_ignores_constraints_blocks_with_unicode() {
+        let script = r#"
+dependencies {
+  constraints {
+    // Non-ASCII inside constraints: café ⚙️ 日本語
+    implementation("com.example:ignored:1")
+  }
+  implementation("com.example:kept:4")
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored".to_string(),
+                Some("1".to_string())
+            )),
+            "constraints block should not contribute dependencies"
+        );
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "kept".to_string(),
+            Some("4".to_string())
+        )));
+    }
+
+    #[test]
     fn parses_gradle_dependencies_from_text_add_calls() {
         let script = r#"
 dependencies {
@@ -4622,8 +4886,12 @@ junit = { module = "junit:junit", version = { ref = "junit" } }
 [bundles]
 test = ["junit", "guava"]
 "#;
-        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
-            .expect("parse catalog");
+        let catalog = parse_gradle_version_catalog_from_toml(
+            Path::new("libs.versions.toml"),
+            catalog_toml,
+            &gradle_properties,
+        )
+        .expect("parse catalog");
 
         let build_script = r#"
 dependencies {
@@ -5032,8 +5300,12 @@ junit = { module = "junit:junit", version = { ref = "junit" } }
 [bundles]
         test = ["junit", "guava"]
 "#;
-        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
-            .expect("parse catalog");
+        let catalog = parse_gradle_version_catalog_from_toml(
+            Path::new("libs.versions.toml"),
+            catalog_toml,
+            &gradle_properties,
+        )
+        .expect("parse catalog");
 
         let build_script = r#"
 dependencies {
@@ -5086,8 +5358,12 @@ junit = { module = "junit:junit", version = { ref = "junit" } }
 [bundles]
 test = ["junit", "guava"]
 "#;
-        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
-            .expect("parse catalog");
+        let catalog = parse_gradle_version_catalog_from_toml(
+            Path::new("libs.versions.toml"),
+            catalog_toml,
+            &gradle_properties,
+        )
+        .expect("parse catalog");
 
         let build_script = r#"
 dependencies {
@@ -5213,6 +5489,26 @@ java {
             !cfg.enable_preview,
             "expected --enable-preview inside a string to be ignored"
         );
+    }
+
+    #[test]
+    fn extract_java_config_detects_enable_preview_in_compiler_args_strings() {
+        let script = r#"
+tasks.withType(JavaCompile) {
+  options.compilerArgs += '--enable-preview'
+}
+
+java {
+  toolchain {
+    languageVersion.set(JavaLanguageVersion.of(21))
+  }
+}
+"#;
+
+        let cfg = extract_java_config_from_build_script(script).expect("expected config");
+        assert_eq!(cfg.source, JavaVersion::parse("21").expect("parse"));
+        assert_eq!(cfg.target, JavaVersion::parse("21").expect("parse"));
+        assert!(cfg.enable_preview);
     }
 
     #[test]
@@ -5432,8 +5728,12 @@ guava = "32.0.0"
 foo = { module = "com.example:foo", version = { ref = "foo" } }
 guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
 "#;
-        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
-            .expect("parse catalog");
+        let catalog = parse_gradle_version_catalog_from_toml(
+            Path::new("libs.versions.toml"),
+            catalog_toml,
+            &gradle_properties,
+        )
+        .expect("parse catalog");
 
         let build_script = r#"
 val ignored = "implementation(libs.foo)"

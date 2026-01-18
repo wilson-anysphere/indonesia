@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub const CACHE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const CACHE_METADATA_JSON_FILENAME: &str = "metadata.json";
@@ -187,11 +188,30 @@ impl CacheMetadata {
     }
 }
 fn compute_metadata_fingerprints(snapshot: &ProjectSnapshot) -> BTreeMap<String, Fingerprint> {
+    static METADATA_FINGERPRINT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut fingerprints = BTreeMap::new();
     for (path, content_fingerprint) in snapshot.file_fingerprints() {
         let full_path = snapshot.project_root().join(path);
-        let fingerprint = Fingerprint::from_file_metadata(full_path)
-            .unwrap_or_else(|_| content_fingerprint.clone());
+        let fingerprint = match Fingerprint::from_file_metadata(&full_path) {
+            Ok(fp) => fp,
+            Err(err) => {
+                match &err {
+                    CacheError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => {
+                        if METADATA_FINGERPRINT_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.cache",
+                                path = %full_path.display(),
+                                error = %err,
+                                "failed to fingerprint file by mtime/size for cache metadata; falling back to content fingerprint"
+                            );
+                        }
+                    }
+                }
+                content_fingerprint.clone()
+            }
+        };
         fingerprints.insert(path.clone(), fingerprint);
     }
     fingerprints

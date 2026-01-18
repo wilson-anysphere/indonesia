@@ -196,6 +196,38 @@ async fn invalid_json_gracefully_degrades_to_empty() {
     assert!(out.is_empty());
 }
 
+#[tokio::test]
+async fn invalid_confidence_is_treated_as_zero() {
+    let server = MockServer::start();
+    let completion_payload = r#"{"completions":[{"label":"badconf","insert_text":"map(x -> x)","format":"plain","additional_edits":[],"confidence":"NaN"}]}"#;
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": completion_payload }));
+    });
+
+    let provider = provider_for_server(&server);
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
+
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 3,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+
+    mock.assert();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].label, "badconf");
+    assert_eq!(out[0].insert_text, "map(x -> x)");
+    assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
+    assert!((out[0].confidence - 0.0).abs() < f32::EPSILON);
+}
+
 #[derive(Default)]
 struct CapturingLlm {
     prompt: std::sync::Mutex<Option<String>>,
@@ -212,8 +244,8 @@ impl LlmClient for CapturingLlm {
             .messages
             .first()
             .map(|msg| msg.content.clone())
-            .unwrap_or_default();
-        *self.prompt.lock().expect("prompt mutex") = Some(content);
+            .expect("chat request must include at least one message");
+        *self.prompt.lock().expect("prompt mutex poisoned") = Some(content);
 
         Ok(r#"{"completions":[{"label":"x","insert_text":"y","format":"plain","additional_edits":[],"confidence":0.5}]}"#.to_string())
     }
@@ -271,7 +303,7 @@ async fn sanitization_respects_comment_redaction_flag() {
     let captured = llm
         .prompt
         .lock()
-        .expect("prompt mutex")
+        .expect("prompt mutex poisoned")
         .clone()
         .expect("captured prompt");
     assert!(

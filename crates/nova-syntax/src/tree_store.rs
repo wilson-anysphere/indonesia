@@ -3,7 +3,7 @@ use nova_core::FileId;
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use nova_vfs::OpenDocuments;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 #[derive(Debug, Clone)]
 struct StoredTree {
@@ -127,7 +127,7 @@ impl SyntaxTreeStore {
 
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<ParseResult>) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = self.prune_closed_files_locked(&mut inner);
 
             // Only keep parses for documents that are currently open; otherwise we'd retain parse
@@ -151,7 +151,7 @@ impl SyntaxTreeStore {
     /// This uses pointer identity (`Arc::ptr_eq`) to avoid expensive hashing.
     pub fn get_if_current(&self, file: FileId, text: &Arc<String>) -> Option<Arc<ParseResult>> {
         let (cached, removed) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let mut removed = self.prune_closed_files_locked(&mut inner);
 
             if !self.open_docs.is_open(file) {
@@ -198,13 +198,32 @@ impl SyntaxTreeStore {
         self.get_if_current(file, text)
     }
 
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, HashMap<FileId, StoredTree>> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.syntax",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
+
     pub fn contains(&self, file: FileId) -> bool {
-        self.inner.lock().unwrap().contains_key(&file)
+        self.lock_inner().contains_key(&file)
     }
 
     pub fn remove(&self, file: FileId) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = inner.remove(&file);
             if removed.is_some() {
                 self.update_tracker_locked(&inner);
@@ -220,7 +239,7 @@ impl SyntaxTreeStore {
 
     pub fn release_closed_files(&self) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = self.prune_closed_files_locked(&mut inner);
             if !removed.is_empty() {
                 self.update_tracker_locked(&inner);
@@ -236,7 +255,7 @@ impl SyntaxTreeStore {
 
     fn clear_all(&self) {
         let removed: Vec<(FileId, u64)> = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = inner
                 .iter()
                 .map(|(file, stored)| (*file, stored.parse.root.text_len as u64))

@@ -176,7 +176,7 @@ class A {
                 lsp_types::NumberOrString::Number(n) => n.to_string(),
                 lsp_types::NumberOrString::String(s) => s.clone(),
             })
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         (
             diag.range.start.line,
             diag.range.start.character,

@@ -12,7 +12,7 @@ use tempfile::TempDir;
 
 use crate::support::{
     exit_notification, file_uri, initialize_request_empty, initialized_notification,
-    jsonrpc_request, read_response_with_id, shutdown_request, stdio_server_lock,
+    jsonrpc_request, jsonrpc_result_as, read_response_with_id, shutdown_request, stdio_server_lock,
     write_jsonrpc_message,
 };
 
@@ -74,9 +74,7 @@ class C {
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
-    let actions: Vec<CodeActionOrCommand> =
-        serde_json::from_value(code_action_resp.get("result").cloned().unwrap_or_default())
-            .expect("code actions array");
+    let actions: Vec<CodeActionOrCommand> = jsonrpc_result_as(&code_action_resp);
     let args = actions
         .iter()
         .find_map(|action| match action {

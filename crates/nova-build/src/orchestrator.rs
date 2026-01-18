@@ -40,7 +40,7 @@ impl BuildRequest {
                 module_relative
                     .as_ref()
                     .map(|p| format!(" ({})", p.display()))
-                    .unwrap_or_default()
+                    .unwrap_or_else(String::new)
             ),
             BuildRequest::Gradle { project_path, task } => format!(
                 "gradle {:?}{}",
@@ -49,7 +49,7 @@ impl BuildRequest {
                     .as_deref()
                     .filter(|p| !p.is_empty())
                     .map(|p| format!(" ({p})"))
-                    .unwrap_or_default()
+                    .unwrap_or_else(String::new)
             ),
         }
     }
@@ -306,8 +306,7 @@ impl BuildOrchestrator {
                 Some(last.id),
                 last.result
                     .as_ref()
-                    .map(|r| r.diagnostics.clone())
-                    .unwrap_or_default(),
+                    .map_or_else(Vec::new, |r| r.diagnostics.clone()),
                 last.error.clone(),
             ),
             None => (None, Vec::new(), None),

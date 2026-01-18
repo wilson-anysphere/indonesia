@@ -43,7 +43,7 @@ fn write_origin_config(config_path: &Path, origin: &str) {
 fn project_hash_uses_git_origin_for_repo_root() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -70,7 +70,7 @@ fn project_hash_uses_git_origin_for_repo_root() {
 fn project_hash_finds_git_origin_from_parent_directory() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -96,7 +96,7 @@ fn project_hash_finds_git_origin_from_parent_directory() {
 fn project_hash_supports_worktree_gitdir_file() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -121,7 +121,7 @@ fn project_hash_supports_worktree_gitdir_file() {
 fn project_hash_supports_worktree_commondir() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().expect("ENV_LOCK mutex poisoned");
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();

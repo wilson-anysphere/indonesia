@@ -759,7 +759,7 @@ impl Index {
         self.method_symbols
             .get(&(class_name.to_string(), method_name.to_string()))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(Vec::new)
     }
 
     /// Return all method overloads matching `class_name.method_name` with the given arity.
@@ -1982,7 +1982,7 @@ fn parse_param_list(params_src: &str) -> (Vec<String>, Vec<String>) {
     let mut param_types = Vec::new();
     let mut param_names = Vec::new();
 
-    for part in split_top_level(params_src, b',') {
+    for (idx, part) in split_top_level(params_src, b',').into_iter().enumerate() {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -1990,7 +1990,7 @@ fn parse_param_list(params_src: &str) -> (Vec<String>, Vec<String>) {
 
         let (ty, name) = parse_single_param(part);
         param_types.push(ty);
-        param_names.push(name.unwrap_or_default());
+        param_names.push(name.unwrap_or_else(|| format!("arg{}", idx + 1)));
     }
 
     (param_types, param_names)

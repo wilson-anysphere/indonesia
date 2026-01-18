@@ -338,7 +338,7 @@ impl InheritanceIndex {
             .subtypes
             .get(base)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(Vec::new)
             .into_iter()
             .collect();
 

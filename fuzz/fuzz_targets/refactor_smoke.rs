@@ -40,7 +40,7 @@ fn runner() -> &'static Runner {
                             .edits_by_file()
                             .get(&file)
                             .map(|edits| edits.iter().copied().cloned().collect())
-                            .unwrap_or_default();
+                            .unwrap_or_else(Vec::new);
                         let _ = nova_refactor::apply_text_edits(text, &edits);
                     }
                 }
@@ -60,7 +60,7 @@ fn runner() -> &'static Runner {
                                     .edits_by_file()
                                     .get(&file)
                                     .map(|edits| edits.iter().copied().cloned().collect())
-                                    .unwrap_or_default();
+                                    .unwrap_or_else(Vec::new);
                                 let _ = nova_refactor::apply_text_edits(text, &edits);
                             }
                         }

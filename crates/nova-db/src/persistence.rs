@@ -50,6 +50,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use nova_cache::{
     AstArtifactCache, CacheConfig, CacheDir, DerivedArtifactCache, FileAstArtifacts, Fingerprint,
@@ -194,6 +195,8 @@ impl Persistence {
     /// If the cache directory cannot be initialized (e.g. missing `HOME`), the persistence helpers
     /// degrade gracefully: cache reads become misses and cache writes become no-ops.
     pub fn new(project_root: impl AsRef<Path>, config: PersistenceConfig) -> Self {
+        static CACHE_DIR_INIT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let mode = config.mode;
 
         // If persistence is fully disabled, avoid even attempting to create cache directories.
@@ -201,7 +204,21 @@ impl Persistence {
             return Self::new_disabled();
         }
 
-        let cache_dir = CacheDir::new(project_root, config.cache).ok();
+        let project_root = project_root.as_ref();
+        let cache_dir = match CacheDir::new(project_root, config.cache) {
+            Ok(dir) => Some(dir),
+            Err(err) => {
+                if CACHE_DIR_INIT_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.db",
+                        project_root = %project_root.display(),
+                        error = ?err,
+                        "failed to initialize persistence cache directory (best effort)"
+                    );
+                }
+                None
+            }
+        };
         let (ast_cache, derived_cache) = match &cache_dir {
             Some(dir) => (
                 Some(AstArtifactCache::new(dir.ast_dir())),
@@ -265,7 +282,19 @@ impl Persistence {
             return None;
         };
 
-        match cache.load(file_path, fingerprint).ok().flatten() {
+        let loaded = match cache.load(file_path, fingerprint) {
+            Ok(loaded) => loaded,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.db",
+                    file_path,
+                    error = %err,
+                    "failed to load persisted AST artifacts; treating as cache miss"
+                );
+                None
+            }
+        };
+        match loaded {
             Some(artifacts) => {
                 self.inner
                     .stats

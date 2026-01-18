@@ -103,5 +103,17 @@ pub fn debug_configuration_for_request(req: &TestDebugRequest) -> Result<TestDeb
 }
 
 fn canonicalize_fallback(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.testing",
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize test project root"
+            );
+            path.to_path_buf()
+        }
+    }
 }

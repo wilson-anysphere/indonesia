@@ -38,7 +38,7 @@ fn runner() -> &'static Runner {
 
 fn run_input(input: &[u8]) {
     let mode = input.first().copied().unwrap_or(0);
-    let payload = input.get(1..).unwrap_or_default();
+    let payload = input.get(1..).unwrap_or(&[]);
 
     if mode & 1 == 0 {
         // In zip mode, feed the *entire* input to the archive reader so seeds

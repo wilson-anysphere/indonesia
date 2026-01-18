@@ -12,8 +12,8 @@ use tempfile::TempDir;
 
 use crate::support::{
     did_open_notification, exit_notification, initialize_request_with_root_uri,
-    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
-    stdio_server_lock, write_jsonrpc_message,
+    initialized_notification, jsonrpc_request, jsonrpc_result_as, read_response_with_id,
+    shutdown_request, stdio_server_lock, write_jsonrpc_message,
 };
 
 fn uri_for_path(path: &Path) -> Uri {
@@ -127,11 +127,7 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
     );
 
     let prepare_resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_resp:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_resp);
     assert!(
         !items.is_empty(),
         "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
@@ -144,9 +140,7 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
         &jsonrpc_request(outgoing_params(item), 3, "callHierarchy/outgoingCalls"),
     );
     let outgoing_resp = read_response_with_id(&mut stdout, 3);
-    let outgoing: Vec<CallHierarchyOutgoingCall> =
-        serde_json::from_value(outgoing_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected outgoingCalls result array: {outgoing_resp:#}"));
+    let outgoing: Vec<CallHierarchyOutgoingCall> = jsonrpc_result_as(&outgoing_resp);
     assert!(
         outgoing.iter().any(|call| call.to.name == "callee"),
         "expected outgoing calls to include callee: {outgoing_resp:#}"
@@ -170,9 +164,7 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
         ),
     );
     let incoming_resp = read_response_with_id(&mut stdout, 4);
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    let incoming: Vec<CallHierarchyIncomingCall> = jsonrpc_result_as(&incoming_resp);
     assert!(
         incoming.iter().any(|call| call.from.name == "caller"),
         "expected incoming calls to include caller: {incoming_resp:#}"
@@ -251,11 +243,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
         ),
     );
     let prepare_int = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_int.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_int:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_int);
     assert_eq!(
         items.len(),
         1,
@@ -279,11 +267,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
         ),
     );
     let outgoing_int_resp = read_response_with_id(&mut stdout, 3);
-    let outgoing_int: Vec<CallHierarchyOutgoingCall> =
-        serde_json::from_value(outgoing_int_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected outgoingCalls result array: {outgoing_int_resp:#}")
-            });
+    let outgoing_int: Vec<CallHierarchyOutgoingCall> = jsonrpc_result_as(&outgoing_int_resp);
     assert!(
         outgoing_int.iter().any(|call| call.to.name == "bar"),
         "expected foo(int) outgoing calls to include bar: {outgoing_int_resp:#}"
@@ -305,11 +289,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
         ),
     );
     let prepare_string = read_response_with_id(&mut stdout, 4);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_string.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_string:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_string);
     assert_eq!(
         items.len(),
         1,
@@ -333,13 +313,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
         ),
     );
     let outgoing_string_resp = read_response_with_id(&mut stdout, 5);
-    let outgoing_string: Vec<CallHierarchyOutgoingCall> = serde_json::from_value(
-        outgoing_string_resp
-            .get("result")
-            .cloned()
-            .unwrap_or_default(),
-    )
-    .unwrap_or_else(|_| panic!("expected outgoingCalls result array: {outgoing_string_resp:#}"));
+    let outgoing_string: Vec<CallHierarchyOutgoingCall> = jsonrpc_result_as(&outgoing_string_resp);
     assert!(
         outgoing_string.iter().any(|call| call.to.name == "baz"),
         "expected foo(String) outgoing calls to include baz: {outgoing_string_resp:#}"
@@ -422,11 +396,7 @@ fn stdio_server_call_hierarchy_incoming_calls_for_overloads_is_non_empty() {
         ),
     );
     let prepare_resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_resp:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_resp);
     assert_eq!(
         items.len(),
         1,
@@ -447,9 +417,7 @@ fn stdio_server_call_hierarchy_incoming_calls_for_overloads_is_non_empty() {
         &jsonrpc_request(incoming_params(bar_item), 3, "callHierarchy/incomingCalls"),
     );
     let incoming_resp = read_response_with_id(&mut stdout, 3);
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    let incoming: Vec<CallHierarchyIncomingCall> = jsonrpc_result_as(&incoming_resp);
     assert!(
         incoming.iter().any(|call| call.from.name == "callInt"),
         "expected incoming calls to include callInt: {incoming_resp:#}"
@@ -538,11 +506,7 @@ fn stdio_server_supports_call_hierarchy_across_files() {
     );
 
     let prepare_resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_resp:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_resp);
     assert!(
         !items.is_empty(),
         "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
@@ -555,9 +519,7 @@ fn stdio_server_supports_call_hierarchy_across_files() {
         &jsonrpc_request(outgoing_params(item), 3, "callHierarchy/outgoingCalls"),
     );
     let outgoing_resp = read_response_with_id(&mut stdout, 3);
-    let outgoing: Vec<CallHierarchyOutgoingCall> =
-        serde_json::from_value(outgoing_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected outgoingCalls result array: {outgoing_resp:#}"));
+    let outgoing: Vec<CallHierarchyOutgoingCall> = jsonrpc_result_as(&outgoing_resp);
 
     let callee_call = outgoing
         .iter()
@@ -591,9 +553,7 @@ fn stdio_server_supports_call_hierarchy_across_files() {
         ),
     );
     let incoming_resp = read_response_with_id(&mut stdout, 4);
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    let incoming: Vec<CallHierarchyIncomingCall> = jsonrpc_result_as(&incoming_resp);
     assert!(
         incoming
             .iter()
@@ -680,11 +640,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
     );
 
     let prepare_resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_resp:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_resp);
     assert!(
         !items.is_empty(),
         "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
@@ -716,9 +672,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         ),
     );
     let incoming_resp = read_response_with_id(&mut stdout, 3);
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    let incoming: Vec<CallHierarchyIncomingCall> = jsonrpc_result_as(&incoming_resp);
     let caller_call = incoming
         .iter()
         .find(|call| call.from.name == "caller" && call.from.uri == foo_uri)
@@ -814,11 +768,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_inherited_receiverless_call_site
     );
 
     let prepare_resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| {
-                panic!("expected prepareCallHierarchy result array: {prepare_resp:#}")
-            });
+    let items: Vec<CallHierarchyItem> = jsonrpc_result_as(&prepare_resp);
     assert!(
         !items.is_empty(),
         "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
@@ -847,9 +797,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_inherited_receiverless_call_site
     );
 
     let incoming_resp = read_response_with_id(&mut stdout, 3);
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming_resp.get("result").cloned().unwrap_or_default())
-            .unwrap_or_else(|_| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    let incoming: Vec<CallHierarchyIncomingCall> = jsonrpc_result_as(&incoming_resp);
 
     let foo_call = incoming
         .iter()

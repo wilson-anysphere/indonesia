@@ -11,8 +11,8 @@ use tempfile::TempDir;
 
 use crate::support::{
     did_open_notification, exit_notification, initialize_request_with_root_uri,
-    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
-    stdio_server_lock, write_jsonrpc_message,
+    initialized_notification, jsonrpc_request, jsonrpc_result_as, read_response_with_id,
+    shutdown_request, stdio_server_lock, write_jsonrpc_message,
 };
 
 fn uri_for_path(path: &Path) -> Uri {
@@ -153,9 +153,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let help: SignatureHelp =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("signatureHelp result");
+    let help: SignatureHelp = jsonrpc_result_as(&resp);
     assert!(!help.signatures.is_empty(), "expected non-empty signatures");
     assert!(
         help.signatures[0].label.contains("foo"),
@@ -186,9 +184,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let locations: Vec<lsp_types::Location> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("references result array");
+    let locations: Vec<lsp_types::Location> = jsonrpc_result_as(&resp);
     assert!(
         locations.len() >= 2,
         "expected at least 2 reference locations (including declaration)"
@@ -254,9 +250,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 6);
-    let help: SignatureHelp =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("signatureHelp result");
+    let help: SignatureHelp = jsonrpc_result_as(&resp);
     assert!(!help.signatures.is_empty(), "expected non-empty signatures");
     assert!(
         help.signatures[0].label.contains("foo"),
@@ -287,9 +281,7 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 7);
-    let locations: Vec<lsp_types::Location> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("references result array");
+    let locations: Vec<lsp_types::Location> = jsonrpc_result_as(&resp);
     assert!(
         locations.len() >= 2,
         "expected at least 2 reference locations (including declaration)"

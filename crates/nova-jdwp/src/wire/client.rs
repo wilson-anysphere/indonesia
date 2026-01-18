@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
     time::Duration,
 };
@@ -96,7 +96,7 @@ impl Drop for PendingGuard {
             return;
         }
 
-        let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = super::poison::lock(&self.inner.pending, "PendingGuard.drop");
         pending.remove(&self.id);
     }
 }
@@ -129,8 +129,18 @@ impl JdwpClient {
     }
 
     pub async fn connect_with_config(addr: SocketAddr, config: JdwpClientConfig) -> Result<Self> {
+        static TCP_NODELAY_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let mut stream = TcpStream::connect(addr).await?;
-        let _ = stream.set_nodelay(true);
+        if let Err(err) = stream.set_nodelay(true) {
+            if TCP_NODELAY_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.jdwp",
+                    error = %err,
+                    "failed to enable TCP_NODELAY (best effort)"
+                );
+            }
+        }
 
         tokio::time::timeout(config.handshake_timeout, stream.write_all(HANDSHAKE))
             .await
@@ -244,7 +254,8 @@ impl JdwpClient {
         let mut pending_guard = PendingGuard::new(self.inner.clone(), id);
 
         {
-            let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending =
+                super::poison::lock(&self.inner.pending, "JdwpClient.send_command_raw");
             pending.insert(id, tx);
         }
 
@@ -294,7 +305,7 @@ impl JdwpClient {
     }
 
     fn remove_pending(&self, id: u32) {
-        let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = super::poison::lock(&self.inner.pending, "JdwpClient.remove_pending");
         pending.remove(&id);
     }
 
@@ -2147,7 +2158,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         if (flags & FLAG_REPLY) != 0 {
             let error_code = u16::from_be_bytes([header[9], header[10]]);
             let tx = {
-                let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending = super::poison::lock(&inner.pending, "jdwp_reader_loop.reply");
                 pending.remove(&id)
             };
 
@@ -2175,7 +2186,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
 
     if let Some(err) = terminated_with_error {
         let pending = {
-            let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = super::poison::lock(&inner.pending, "jdwp_reader_loop.terminate");
             std::mem::take(&mut *pending)
         };
         for (_id, tx) in pending {
@@ -2593,7 +2604,15 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(client.inner.pending.lock().unwrap().len(), 0);
+        assert_eq!(
+            client
+                .inner
+                .pending
+                .lock()
+                .expect("pending mutex poisoned")
+                .len(),
+            0
+        );
 
         let client_for_task = client.clone();
         let task = tokio::spawn(async move {
@@ -2602,7 +2621,14 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if client.inner.pending.lock().unwrap().len() == 1 {
+                if client
+                    .inner
+                    .pending
+                    .lock()
+                    .expect("pending mutex poisoned")
+                    .len()
+                    == 1
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2616,7 +2642,13 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if client.inner.pending.lock().unwrap().is_empty() {
+                if client
+                    .inner
+                    .pending
+                    .lock()
+                    .expect("pending mutex poisoned")
+                    .is_empty()
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;

@@ -19,7 +19,7 @@ fn build_cache_store_is_safe_under_concurrent_writers() {
     let mut data_a = cache
         .load(project_root.as_path(), kind, fingerprint.as_ref())
         .unwrap()
-        .unwrap_or_default();
+        .unwrap_or_else(Default::default);
     data_a
         .modules
         .insert("module-a".to_string(), Default::default());
@@ -28,7 +28,7 @@ fn build_cache_store_is_safe_under_concurrent_writers() {
     let mut data_b = cache
         .load(project_root.as_path(), kind, fingerprint.as_ref())
         .unwrap()
-        .unwrap_or_default();
+        .unwrap_or_else(Default::default);
     data_b
         .modules
         .insert("module-b".to_string(), Default::default());
@@ -118,7 +118,7 @@ fn build_cache_keys_are_stable_when_project_root_is_a_symlink() {
     let mut data = cache
         .load(&link_root, kind, &fingerprint)
         .unwrap()
-        .unwrap_or_default();
+        .unwrap_or_else(Default::default);
     data.modules
         .insert("module-a".to_string(), Default::default());
     cache.store(&link_root, kind, &fingerprint, &data).unwrap();

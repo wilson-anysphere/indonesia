@@ -129,11 +129,8 @@ struct ConfigEntry {
 }
 
 fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default();
-    if ext.eq_ignore_ascii_case("properties") {
+    let ext = path.extension().and_then(|e| e.to_str());
+    if ext.is_some_and(|ext| ext.eq_ignore_ascii_case("properties")) {
         return nova_properties::parse(text)
             .entries
             .into_iter()
@@ -146,7 +143,7 @@ fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
             .collect();
     }
 
-    if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
+    if ext.is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")) {
         return nova_yaml::parse(text)
             .entries
             .into_iter()

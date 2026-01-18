@@ -31,6 +31,10 @@ pub struct RefactoringPreview {
     pub files: Vec<FilePreview>,
 }
 
+fn file_text_or_empty<'a>(files: &'a BTreeMap<FileId, String>, file: &FileId) -> &'a str {
+    files.get(file).map(String::as_str).unwrap_or("")
+}
+
 pub fn generate_preview(
     db: &dyn RefactorDatabase,
     edit: &WorkspaceEdit,
@@ -112,14 +116,14 @@ pub fn generate_preview(
                         from: from.clone(),
                         to: file.clone(),
                     },
-                    original_files.get(from).cloned().unwrap_or_default(),
-                    modified_files.get(&file).cloned().unwrap_or_default(),
+                    file_text_or_empty(&original_files, from),
+                    file_text_or_empty(&modified_files, &file),
                     from.0.clone(),
                     file.0.clone(),
                 )
             } else {
-                let original = original_files.get(&file).cloned().unwrap_or_default();
-                let modified = modified_files.get(&file).cloned().unwrap_or_default();
+                let original = file_text_or_empty(&original_files, &file);
+                let modified = file_text_or_empty(&modified_files, &file);
 
                 let change = match (
                     original_files.contains_key(&file),
@@ -136,7 +140,7 @@ pub fn generate_preview(
             continue;
         }
 
-        let diff = TextDiff::from_lines(&original, &modified);
+        let diff = TextDiff::from_lines(original, modified);
         let unified_diff = diff
             .unified_diff()
             .context_radius(3)
@@ -152,8 +156,8 @@ pub fn generate_preview(
         files.push(FilePreview {
             file: file.clone(),
             change,
-            original,
-            modified,
+            original: original.to_string(),
+            modified: modified.to_string(),
             unified_diff,
             edit_count,
         });

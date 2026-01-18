@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Nova Debug Adapter Protocol server (experimental).
 ///
@@ -151,7 +151,16 @@ async fn run_tcp(addr: ListenAddr) -> anyhow::Result<()> {
     let (stream, _) = listener.accept().await?;
     // Accept exactly one connection: stop listening once a client has connected.
     drop(listener);
-    stream.set_nodelay(true).ok();
+    static TCP_NODELAY_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    if let Err(err) = stream.set_nodelay(true) {
+        if TCP_NODELAY_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.dap",
+                error = %err,
+                "failed to enable TCP_NODELAY (best effort)"
+            );
+        }
+    }
     let (reader, writer) = stream.into_split();
 
     nova_dap::wire_server::run(reader, writer)

@@ -8,7 +8,7 @@ use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_C
 use anyhow::Context;
 use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
-use nova_core::{AttachConfig, LaunchConfig};
+use nova_core::{panic_payload_to_str, AttachConfig, LaunchConfig};
 use nova_db::InMemoryFileStore;
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
 use serde::Deserialize;
@@ -118,10 +118,13 @@ impl<C: JdwpClient> DapServer<C> {
                     },
                     wait_for_stop: false,
                 },
-                Err(_) => {
+                Err(panic) => {
                     did_panic = true;
+                    let message = panic_payload_to_str(panic.as_ref());
                     tracing::error!(
                         target = "nova.dap",
+                        command = %command,
+                        panic = %message,
                         "panic in DAP request handler; recovering workspace state"
                     );
                     self.recover_after_panic();
@@ -151,7 +154,19 @@ impl<C: JdwpClient> DapServer<C> {
             }
 
             if outgoing.wait_for_stop {
-                let Some(event) = self.session.jdwp_mut().wait_for_event().ok().flatten() else {
+                let event = match self.session.jdwp_mut().wait_for_event() {
+                    Ok(event) => event,
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.dap",
+                            command = %command,
+                            error = %err,
+                            "failed to wait for JDWP event"
+                        );
+                        None
+                    }
+                };
+                let Some(event) = event else {
                     continue;
                 };
 
@@ -261,12 +276,16 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn launch(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
-        let args: LaunchConfig = request
-            .arguments
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        let args: LaunchConfig = match request.arguments.clone() {
+            Some(args) => serde_json::from_value(args)?,
+            None => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    "launch request missing arguments; using default launch config"
+                );
+                LaunchConfig::default()
+            }
+        };
 
         if let Some(port) = args.port {
             let host = args.host.as_deref().unwrap_or("127.0.0.1");
@@ -340,10 +359,22 @@ impl<C: JdwpClient> DapServer<C> {
         // `setBreakpoints` is frequently re-sent by clients (e.g. on focus
         // changes). The legacy adapter cannot clear JDWP breakpoints, so we track
         // which ones we've already installed and avoid sending duplicates.
-        let mut installed_breakpoints = self.breakpoints.remove(&path_buf).unwrap_or_default();
+        let mut installed_breakpoints = self.breakpoints.remove(&path_buf).unwrap_or_else(Vec::new);
 
         // Load file text. DAP clients typically provide absolute paths.
-        let text = std::fs::read_to_string(&path_buf).unwrap_or_default();
+        let text = match std::fs::read_to_string(&path_buf) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    path = %path_buf.display(),
+                    error = %err,
+                    "failed to read source file for breakpoints; using empty text"
+                );
+                String::new()
+            }
+        };
         let file_id = self.db.file_id_for_path(&path_buf);
         self.db.set_file_text(file_id, text);
 
@@ -547,7 +578,19 @@ impl<C: JdwpClient> DapServer<C> {
             return self.simple_ok(request, Some(json!({ "targets": [] })));
         };
 
-        let text = std::fs::read_to_string(&source_path).unwrap_or_default();
+        let text = match std::fs::read_to_string(&source_path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    path = %source_path.display(),
+                    error = %err,
+                    "failed to read source file for step-in targets; using empty text"
+                );
+                String::new()
+            }
+        };
         let line_text = frame
             .line
             .checked_sub(1)
@@ -829,12 +872,10 @@ impl<C: JdwpClient> DapServer<C> {
             reproduction: Option<String>,
         }
 
-        let args: Args = request
-            .arguments
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        let args: Args = match request.arguments.clone() {
+            Some(args) => serde_json::from_value(args)?,
+            None => Args::default(),
+        };
 
         let cfg = NovaConfig::default();
         let log_buffer = nova_config::init_tracing_with_config(&cfg);
@@ -848,10 +889,27 @@ impl<C: JdwpClient> DapServer<C> {
         let bundle = BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
             .options(options)
             .extra_attachments(|dir| {
-                if let Ok(metrics_json) = serde_json::to_string_pretty(
+                match serde_json::to_string_pretty(
                     &nova_metrics::MetricsRegistry::global().snapshot(),
                 ) {
-                    let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                    Ok(metrics_json) => {
+                        let path = dir.join("metrics.json");
+                        if let Err(err) = std::fs::write(&path, metrics_json) {
+                            tracing::debug!(
+                                target = "nova.dap",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to write bugreport attachment"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.dap",
+                            error = %err,
+                            "failed to serialize bugreport metrics attachment"
+                        );
+                    }
                 }
                 Ok(())
             })
@@ -884,13 +942,24 @@ impl<C: JdwpClient> DapServer<C> {
             terminate_debuggee: Option<bool>,
         }
 
-        let args: Option<Args> = request
+        let args: Option<Args> = match request
             .arguments
             .clone()
             .map(serde_json::from_value)
             .transpose()
-            .ok()
-            .flatten();
+        {
+            Ok(args) => args,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.dap",
+                    command = %request.command,
+                    request_seq = request.seq,
+                    error = %err,
+                    "failed to parse DAP terminate arguments"
+                );
+                None
+            }
+        };
         let _terminate_debuggee = args.as_ref().and_then(|args| args.terminate_debuggee);
 
         self.disconnect(request)
@@ -950,45 +1019,84 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn jdwp_event_to_dap_messages(&mut self, event: JdwpEvent) -> Option<Vec<serde_json::Value>> {
+        fn report_serde_json_error(context: &'static str, err: &serde_json::Error) {
+            // Serialization errors here should be impossible (we only serialize owned strings),
+            // but if it happens, we want it to be observable without log spam.
+            static REPORTED_DAP_SERDE_ERROR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            if REPORTED_DAP_SERDE_ERROR.set(()).is_ok() {
+                tracing::error!(
+                    target = "nova.dap",
+                    context,
+                    error = %err,
+                    "failed to serialize DAP event"
+                );
+            }
+        }
+
         match event {
             JdwpEvent::Stopped(stopped) => {
                 let mut messages = Vec::new();
 
                 if let Some(return_value) = &stopped.return_value {
                     if let Ok(formatted) = self.session.format_value(return_value) {
-                        messages.push(
-                            serde_json::to_value(Event::new(
+                        let params = match serde_json::to_value(crate::dap::types::OutputEvent {
+                            category: Some("console".to_string()),
+                            output: format!("Return value: {formatted}\n"),
+                        }) {
+                            Ok(params) => Some(params),
+                            Err(err) => {
+                                report_serde_json_error("serialize return-value OutputEvent", &err);
+                                None
+                            }
+                        };
+                        if let Some(params) = params {
+                            match serde_json::to_value(Event::new(
                                 self.alloc_seq(),
                                 "output",
-                                Some(
-                                    serde_json::to_value(crate::dap::types::OutputEvent {
-                                        category: Some("console".to_string()),
-                                        output: format!("Return value: {formatted}\n"),
-                                    })
-                                    .ok()?,
-                                ),
-                            ))
-                            .ok()?,
-                        );
+                                Some(params),
+                            )) {
+                                Ok(event) => messages.push(event),
+                                Err(err) => {
+                                    report_serde_json_error(
+                                        "serialize return-value output Event",
+                                        &err,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
 
                 if let Some(expr_value) = &stopped.expression_value {
                     if let Ok(formatted) = self.session.format_value(expr_value) {
-                        messages.push(
-                            serde_json::to_value(Event::new(
+                        let params = match serde_json::to_value(crate::dap::types::OutputEvent {
+                            category: Some("console".to_string()),
+                            output: format!("Expression value: {formatted}\n"),
+                        }) {
+                            Ok(params) => Some(params),
+                            Err(err) => {
+                                report_serde_json_error(
+                                    "serialize expression-value OutputEvent",
+                                    &err,
+                                );
+                                None
+                            }
+                        };
+                        if let Some(params) = params {
+                            match serde_json::to_value(Event::new(
                                 self.alloc_seq(),
                                 "output",
-                                Some(
-                                    serde_json::to_value(crate::dap::types::OutputEvent {
-                                        category: Some("console".to_string()),
-                                        output: format!("Expression value: {formatted}\n"),
-                                    })
-                                    .ok()?,
-                                ),
-                            ))
-                            .ok()?,
-                        );
+                                Some(params),
+                            )) {
+                                Ok(event) => messages.push(event),
+                                Err(err) => {
+                                    report_serde_json_error(
+                                        "serialize expression-value output Event",
+                                        &err,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1053,7 +1161,12 @@ mod tests {
         }
 
         fn stack_frames(&mut self, thread_id: u64) -> Result<Vec<StackFrameInfo>, JdwpError> {
-            Ok(self.frames.get(&thread_id).cloned().unwrap_or_default())
+            match self.frames.get(&thread_id) {
+                Some(frames) => Ok(frames.clone()),
+                None => Err(JdwpError::Other(format!(
+                    "no mock stack frames configured for thread {thread_id}"
+                ))),
+            }
         }
 
         fn r#continue(&mut self, _thread_id: u64) -> Result<(), JdwpError> {

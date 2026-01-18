@@ -938,7 +938,9 @@ impl RefactorJavaDatabase {
             }
 
             // Syntax-only references that are not lowered into `hir::Body`.
-            let text = files.get(file).map(|s| s.as_ref()).unwrap_or_default();
+            let Some(text) = files.get(file).map(|s| s.as_ref()) else {
+                continue;
+            };
             record_syntax_only_references(
                 file,
                 text,
@@ -2148,10 +2150,10 @@ impl RefactorDatabase for RefactorJavaDatabase {
     }
 
     fn find_references(&self, symbol: SymbolId) -> Vec<Reference> {
-        self.references
-            .get(symbol.as_usize())
-            .cloned()
-            .unwrap_or_default()
+        match self.references.get(symbol.as_usize()) {
+            Some(refs) => refs.clone(),
+            None => Vec::new(),
+        }
     }
 
     fn resolve_name_expr(&self, file: &FileId, range: TextRange) -> Option<SymbolId> {
@@ -5551,7 +5553,7 @@ fn resolve_static_import_member_in_type(
                 .map(|m| m.id)
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(Vec::new);
     methods.sort();
 
     match (field, methods.as_slice()) {

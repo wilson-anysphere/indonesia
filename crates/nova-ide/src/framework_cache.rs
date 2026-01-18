@@ -1002,15 +1002,59 @@ where
 }
 
 fn canonicalize_root(root: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(root).ok()
+    match std::fs::canonicalize(root) {
+        Ok(path) => Some(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root"
+            );
+            None
+        }
+    }
 }
 
 fn normalize_root_for_cache(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for framework cache"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
+    crate::poison::lock(mutex, "framework_cache")
+}
+
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
+    }
 }
 
 pub(crate) fn build_marker_fingerprint(root: &Path) -> u64 {
@@ -1045,9 +1089,23 @@ pub(crate) fn build_marker_fingerprint(root: &Path) -> u64 {
             Ok(meta) => {
                 true.hash(&mut hasher);
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, &path, "marker_mtime"),
+                );
             }
-            Err(_) => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                false.hash(&mut hasher);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    root = %root.display(),
+                    marker,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read build marker metadata"
+                );
                 false.hash(&mut hasher);
             }
         }
@@ -1059,19 +1117,47 @@ pub(crate) fn build_marker_fingerprint(root: &Path) -> u64 {
     //
     // Keep this best-effort and bounded: scan only the immediate workspace root directory.
     let mut bazelrc_fragments = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if file_name.starts_with(".bazelrc.") {
-                bazelrc_fragments.push(path);
-                // Avoid pathological roots with huge numbers of dotfiles.
-                if bazelrc_fragments.len() >= 128 {
-                    break;
+    match std::fs::read_dir(root) {
+        Ok(entries) => {
+            let mut logged_entry_error = false;
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => {
+                        if !logged_entry_error {
+                            tracing::debug!(
+                                target = "nova.ide",
+                                root = %root.display(),
+                                error = %err,
+                                "failed to read directory entry while scanning bazelrc fragments"
+                            );
+                            logged_entry_error = true;
+                        }
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if file_name.starts_with(".bazelrc.") {
+                    bazelrc_fragments.push(path);
+                    // Avoid pathological roots with huge numbers of dotfiles.
+                    if bazelrc_fragments.len() >= 128 {
+                        break;
+                    }
                 }
             }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to scan workspace root directory for bazelrc fragments"
+            );
         }
     }
     bazelrc_fragments.sort();
@@ -1083,9 +1169,22 @@ pub(crate) fn build_marker_fingerprint(root: &Path) -> u64 {
             Ok(meta) => {
                 true.hash(&mut hasher);
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, &path, "bazelrc_fragment_mtime"),
+                );
             }
-            Err(_) => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                false.hash(&mut hasher);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    root = %root.display(),
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read bazelrc fragment metadata"
+                );
                 false.hash(&mut hasher);
             }
         }
@@ -1115,9 +1214,22 @@ fn spring_metadata_fingerprint(root: &Path, config: Option<&nova_project::Projec
                     Ok(meta) => {
                         true.hash(&mut hasher);
                         meta.len().hash(&mut hasher);
-                        hash_mtime(&mut hasher, meta.modified().ok());
+                        hash_mtime(
+                            &mut hasher,
+                            modified_best_effort(&meta, &path, "spring_metadata_mtime"),
+                        );
                     }
-                    Err(_) => {
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        false.hash(&mut hasher);
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target = "nova.ide",
+                            output_dir = %output_dir.path.display(),
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read spring metadata file metadata"
+                        );
                         false.hash(&mut hasher);
                     }
                 }
@@ -1134,9 +1246,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.ide",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }

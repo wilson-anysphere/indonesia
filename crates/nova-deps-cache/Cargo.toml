@@ -13,6 +13,7 @@ sha2 = "0.10"
 tar = "0.4"
 thiserror = "1"
 walkdir = "2.5"
+tracing = { workspace = true }
 
 nova-cache = { path = "../nova-cache" }
 nova-storage = { path = "../nova-storage" }

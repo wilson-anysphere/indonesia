@@ -5,6 +5,7 @@ use lsp_types::{
 };
 use nova_types::{Diagnostic, Span};
 use regex::Regex;
+use std::sync::OnceLock;
 
 /// Produce quick-fix code actions for a selection span given diagnostics.
 ///
@@ -662,6 +663,8 @@ fn initialize_unassigned_local_action(
 }
 
 fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize) -> &'static str {
+    static INFER_DEFAULT_VALUE_REGEX_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let before_offset = before_offset.min(source.len());
     let prefix = &source[..before_offset];
 
@@ -671,15 +674,32 @@ fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize)
         r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?(?P<ty>byte|short|int|long|float|double|boolean|char)(?P<array1>(?:\[\])*)\s+{}\b",
         regex::escape(name)
     );
-    let re = Regex::new(&pat).ok();
+    let re = match Regex::new(&pat) {
+        Ok(re) => Some(re),
+        Err(err) => {
+            if INFER_DEFAULT_VALUE_REGEX_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.ide",
+                    error = %err,
+                    pattern = %pat,
+                    "failed to compile primitive-local regex (best effort)"
+                );
+            }
+            None
+        }
+    };
 
     if let Some(re) = re {
         for line in prefix.lines().rev() {
             let Some(caps) = re.captures(line) else {
                 continue;
             };
-            let ty = caps.name("ty").map(|m| m.as_str()).unwrap_or("");
-            let array1 = caps.name("array1").map(|m| m.as_str()).unwrap_or("");
+            let Some(ty) = caps.name("ty").map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(array1) = caps.name("array1").map(|m| m.as_str()) else {
+                continue;
+            };
 
             // Handle the alternative Java array syntax: `int x[];` (brackets after the name).
             let array2 = line.contains(&format!("{name}[]"));

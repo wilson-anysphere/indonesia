@@ -12,6 +12,7 @@ nova-types = { path = "../nova-types" }
 nova-framework-parse = { path = "../nova-framework-parse" }
 nova-vfs = { path = "../nova-vfs" }
 nova-project = { path = "../nova-project" }
+tracing = { workspace = true }
 
 tree-sitter = "0.20"
 

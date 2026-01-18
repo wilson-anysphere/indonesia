@@ -157,7 +157,10 @@ impl FakeBspServer {
 
     #[allow(dead_code)]
     pub fn requests(&self) -> Vec<Value> {
-        self.requests.lock().unwrap().clone()
+        self.requests
+            .lock()
+            .expect("requests mutex poisoned")
+            .clone()
     }
 }
 
@@ -173,7 +176,10 @@ pub fn spawn_fake_bsp_server(
         let mut writer = server.write;
 
         while let Ok(Some(msg)) = read_message(&mut reader) {
-            requests_for_thread.lock().unwrap().push(msg.clone());
+            requests_for_thread
+                .lock()
+                .expect("requests mutex poisoned")
+                .push(msg.clone());
             let method = msg.get("method").and_then(Value::as_str);
             let id = msg.get("id").and_then(Value::as_i64);
 
@@ -223,7 +229,7 @@ pub fn spawn_fake_bsp_server(
                         .inverse_sources
                         .get(&params.text_document.uri)
                         .cloned()
-                        .unwrap_or_default();
+                        .unwrap_or_else(Vec::new);
                     let result = serde_json::json!({ "targets": targets });
                     let _ = write_message(
                         &mut writer,

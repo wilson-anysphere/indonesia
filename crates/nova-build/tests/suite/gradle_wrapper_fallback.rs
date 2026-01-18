@@ -24,7 +24,10 @@ impl RecordingRunner {
     }
 
     fn invocations(&self) -> Vec<Invocation> {
-        self.invocations.lock().expect("lock poisoned").clone()
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .clone()
     }
 }
 
@@ -32,7 +35,7 @@ impl CommandRunner for RecordingRunner {
     fn run(&self, _cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
-            .expect("lock poisoned")
+            .expect("invocations mutex poisoned")
             .push(Invocation {
                 program: program.to_path_buf(),
                 args: args.to_vec(),

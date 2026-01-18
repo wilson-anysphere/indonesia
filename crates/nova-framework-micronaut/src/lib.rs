@@ -47,7 +47,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -411,6 +411,26 @@ fn may_have_micronaut_file_diagnostics(text: &str) -> bool {
 }
 
 fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, Vec<ConfigFile>) {
+    fn file_text_from_db_or_disk(db: &dyn Database, file: FileId, path: &Path) -> Option<String> {
+        if let Some(text) = db.file_text(file) {
+            return Some(text.to_string());
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.framework.micronaut",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read micronaut project file"
+                );
+                None
+            }
+        }
+    }
+
     let mut sources = Vec::new();
     let mut config_files = Vec::new();
 
@@ -418,11 +438,7 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
         match db.file_path(file) {
             Some(path) => {
                 if path.extension().and_then(|e| e.to_str()) == Some("java") {
-                    let text = db
-                        .file_text(file)
-                        .map(str::to_string)
-                        .or_else(|| std::fs::read_to_string(path).ok());
-                    let Some(text) = text else {
+                    let Some(text) = file_text_from_db_or_disk(db, file, path) else {
                         continue;
                     };
 
@@ -433,11 +449,7 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
                 let Some(kind) = config_file_kind(path) else {
                     continue;
                 };
-                let text = db
-                    .file_text(file)
-                    .map(str::to_string)
-                    .or_else(|| std::fs::read_to_string(path).ok());
-                let Some(text) = text else {
+                let Some(text) = file_text_from_db_or_disk(db, file, path) else {
                     continue;
                 };
                 let path = path.to_string_lossy().to_string();
@@ -503,12 +515,26 @@ fn collect_config_files_from_filesystem(root: &Path) -> (u64, Vec<ConfigFile>) {
 
     let mut hasher = DefaultHasher::new();
     let mut out = Vec::new();
+    let mut logged_read_error = false;
     for path in paths {
         let Some(kind) = config_file_kind(&path) else {
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_read_error {
+                    tracing::debug!(
+                        target = "nova.framework.micronaut",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read Micronaut config file"
+                    );
+                    logged_read_error = true;
+                }
+                continue;
+            }
         };
 
         path.hash(&mut hasher);
@@ -544,10 +570,36 @@ fn collect_config_file_paths_inner(root: &Path, out: &mut Vec<PathBuf>, limit: u
 
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.micronaut",
+                root = %root.display(),
+                error = %err,
+                "failed to scan config directory"
+            );
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    let mut logged_entry_error = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.framework.micronaut",
+                        root = %root.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning config files"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
         if out.len() >= limit {
             break;
         }
@@ -592,7 +644,10 @@ fn project_fingerprint(db: &dyn Database, file_ids: &[FileId]) -> u64 {
                     match std::fs::metadata(path) {
                         Ok(meta) => {
                             meta.len().hash(&mut hasher);
-                            hash_mtime(&mut hasher, meta.modified().ok());
+                            hash_mtime(
+                                &mut hasher,
+                                modified_best_effort(&meta, path, "project_fingerprint"),
+                            );
                         }
                         Err(_) => {
                             0u64.hash(&mut hasher);
@@ -623,7 +678,8 @@ fn single_file_fingerprint(db: &dyn Database, file: FileId) -> u64 {
     let mut hasher = DefaultHasher::new();
 
     file.to_raw().hash(&mut hasher);
-    if let Some(path) = db.file_path(file) {
+    let path_opt = db.file_path(file);
+    if let Some(path) = path_opt {
         path.to_string_lossy().hash(&mut hasher);
     }
     if let Some(text) = db.file_text(file) {
@@ -631,11 +687,32 @@ fn single_file_fingerprint(db: &dyn Database, file: FileId) -> u64 {
     } else {
         match db
             .file_path(file)
-            .and_then(|path| std::fs::metadata(path).ok())
-        {
+            .and_then(|path| match std::fs::metadata(path) {
+                Ok(meta) => Some(meta),
+                Err(err) => {
+                    // Fingerprinting can run in hot paths; log at most once for unexpected metadata
+                    // errors and treat missing files as "no data".
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        static REPORTED: OnceLock<()> = OnceLock::new();
+                        if REPORTED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.framework.micronaut",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to stat file while computing fallback fingerprint"
+                            );
+                        }
+                    }
+                    None
+                }
+            }) {
             Some(meta) => {
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                let path = path_opt.unwrap_or(Path::new("<unknown>"));
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, path, "single_file_fingerprint"),
+                );
             }
             None => {
                 0u64.hash(&mut hasher);
@@ -664,6 +741,26 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     }
 }
 
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.micronaut",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
+    }
+}
+
 fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     let Some(time) = time else {
         0u64.hash(hasher);
@@ -671,9 +768,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.framework.micronaut",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }

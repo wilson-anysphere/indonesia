@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod codec;
 mod json_mut;
-mod panic_util;
 mod poison;
 mod project_root;
 mod rename_lsp;
@@ -52,6 +51,7 @@ mod test_support;
 pub(crate) use stdio_state::ServerState;
 
 use lsp_server::Connection;
+use nova_core::panic_payload_to_str;
 use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -233,23 +233,13 @@ fn main() -> std::io::Result<()> {
                     }
                     Err(panic) => {
                         did_panic = true;
-                        match panic_util::panic_payload_to_string(panic.as_ref()) {
-                            Some(message) => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    method,
-                                    panic = %message,
-                                    "panic while handling request"
-                                );
-                            }
-                            None => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    method,
-                                    "panic while handling request"
-                                );
-                            }
-                        }
+                        let message = panic_payload_to_str(panic.as_ref());
+                        tracing::error!(
+                            target = "nova.lsp",
+                            method,
+                            panic = %message,
+                            "panic while handling request"
+                        );
                         stdio_jsonrpc::response_error(request_id, -32603, "Internal error (panic)")
                     }
                 };
@@ -306,23 +296,13 @@ fn main() -> std::io::Result<()> {
                     }
                     Err(panic) => {
                         did_panic = true;
-                        match panic_util::panic_payload_to_string(panic.as_ref()) {
-                            Some(message) => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    method,
-                                    panic = %message,
-                                    "panic while handling notification"
-                                );
-                            }
-                            None => {
-                                tracing::error!(
-                                    target = "nova.lsp",
-                                    method,
-                                    "panic while handling notification"
-                                );
-                            }
-                        }
+                        let message = panic_payload_to_str(panic.as_ref());
+                        tracing::error!(
+                            target = "nova.lsp",
+                            method,
+                            panic = %message,
+                            "panic while handling notification"
+                        );
                     }
                 }
 

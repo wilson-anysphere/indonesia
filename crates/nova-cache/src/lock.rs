@@ -3,7 +3,7 @@ use fs2::FileExt as _;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// A filesystem-backed lock that is safe to share across multiple Nova processes.
 ///
@@ -24,9 +24,7 @@ impl CacheLock {
     /// This call blocks until the lock is available.
     pub fn lock_exclusive(path: &Path) -> Result<Self, CacheError> {
         let mutex = process_lock_for_path(path);
-        let guard = mutex
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = lock_with_path(mutex, "CacheLock.lock_exclusive", path);
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -58,9 +56,7 @@ fn process_lock_for_path(path: &Path) -> &'static Mutex<()> {
     static PROCESS_LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
     let locks = PROCESS_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
 
-    let mut map = locks
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = lock_with_path(locks, "CacheLock.process_lock_for_path.map", path);
     if let Some(existing) = map.get(path) {
         return existing;
     }
@@ -68,4 +64,29 @@ fn process_lock_for_path(path: &Path) -> &'static Mutex<()> {
     let mutex: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));
     map.insert(path.to_path_buf(), mutex);
     mutex
+}
+
+#[track_caller]
+fn lock_with_path<'a, T>(
+    mutex: &'a Mutex<T>,
+    context: &'static str,
+    path: &Path,
+) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.cache",
+                context,
+                path = %path.display(),
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
 }

@@ -93,7 +93,7 @@ impl<'env> TyContext<'env> {
                     let bounds = ctx
                         .type_param(id)
                         .map(|tp| tp.upper_bounds.clone())
-                        .unwrap_or_default();
+                        .unwrap_or_else(Vec::new);
                     let replacement = match bounds.len() {
                         0 => object.clone(),
                         1 => bounds[0].clone(),
@@ -226,7 +226,7 @@ impl<'env> TyContext<'env> {
             let mut upper_bounds = self
                 .type_param(formal)
                 .map(|tp| tp.upper_bounds.clone())
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if upper_bounds.is_empty() {
                 upper_bounds.push(object.clone());
             }

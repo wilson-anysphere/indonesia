@@ -24,6 +24,7 @@ tokio-util = "0.7"
 base64 = "0.22"
 libc = "0.2"
 tempfile = { workspace = true }
+parking_lot = "0.12"
 
 nova-core = { path = "../nova-core" }
 nova-classfile = { path = "../nova-classfile" }

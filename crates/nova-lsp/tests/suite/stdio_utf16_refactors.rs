@@ -922,9 +922,7 @@ class C {
     );
 
     let code_action_resp = read_response_with_id(&mut stdout, 2);
-    let actions: Vec<CodeActionOrCommand> =
-        serde_json::from_value(code_action_resp.get("result").cloned().unwrap_or_default())
-            .expect("code actions array");
+    let actions: Vec<CodeActionOrCommand> = crate::support::jsonrpc_result_as(&code_action_resp);
     let args = actions
         .iter()
         .find_map(|action| match action {

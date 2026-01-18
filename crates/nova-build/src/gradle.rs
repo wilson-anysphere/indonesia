@@ -1,5 +1,6 @@
-use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
+use crate::cache::{BuildCache, BuildFileFingerprint, CachedBuildData, CachedProjectInfo};
 use crate::command::format_command;
+use crate::fs_cleanup::{remove_file_best_effort, sync_dir_best_effort};
 use crate::jpms::{
     compiler_args_looks_like_jpms, infer_module_path_entries, main_source_roots_have_module_info,
 };
@@ -17,11 +18,23 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
 const NOVA_GRADLE_TASK: &str = "printNovaJavaCompileConfig";
+
+static GRADLE_TEMP_SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn gradle_temp_script_token() -> u128 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_else(|err| err.duration())
+        .as_nanos();
+    let counter = GRADLE_TEMP_SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+    let pid = std::process::id() as u128;
+    (nanos << 32) ^ (pid << 16) ^ counter
+}
 
 /// Gradle's special `buildSrc/` build is modeled in `nova-project` as a synthetic
 /// project with Gradle path `:__buildSrc`. It is not a real subproject of the
@@ -161,7 +174,7 @@ impl GradleBuild {
 
         let mut data = cache
             .load(project_root, BuildSystemKind::Gradle, &fingerprint)?
-            .unwrap_or_default();
+            .unwrap_or_else(CachedBuildData::default);
         data.projects = Some(cached_projects);
 
         // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
@@ -354,7 +367,7 @@ impl GradleBuild {
         // Batch update the cache in a single write.
         let mut data = cache
             .load(project_root, BuildSystemKind::Gradle, &fingerprint)?
-            .unwrap_or_default();
+            .unwrap_or_else(CachedBuildData::default);
 
         // Also refresh cached project directories (used by other helpers).
         let mut cached_projects: Vec<CachedProjectInfo> = projects
@@ -382,7 +395,7 @@ impl GradleBuild {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
         let mut snapshot_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig> =
             BTreeMap::new();
 
@@ -522,6 +535,34 @@ impl GradleBuild {
         project_path: Option<&str>,
         cache: &BuildCache,
     ) -> Result<JavaCompileConfig> {
+        let mut logged_project_dir_cache_error = false;
+
+        let mut gradle_project_dir_cached_best_effort = |project_path_for_snapshot: &str,
+                                                         fingerprint: &BuildFileFingerprint|
+         -> Option<PathBuf> {
+            match gradle_project_dir_cached(
+                project_root,
+                Some(project_path_for_snapshot),
+                cache,
+                fingerprint,
+            ) {
+                Ok(dir) => Some(dir),
+                Err(err) => {
+                    if !logged_project_dir_cache_error {
+                        logged_project_dir_cache_error = true;
+                        tracing::debug!(
+                            target = "nova.build",
+                            project_root = %project_root.display(),
+                            project_path = project_path_for_snapshot,
+                            error = %err,
+                            "failed to read cached Gradle project dir; skipping snapshot update"
+                        );
+                    }
+                    None
+                }
+            }
+        };
+
         let project_path = project_path.filter(|p| *p != ":");
         let fingerprint = gradle_build_fingerprint(project_root)?;
         let module_key = project_path.unwrap_or("<root>");
@@ -555,13 +596,10 @@ impl GradleBuild {
                             .clone()
                             .or_else(|| infer_gradle_project_dir_from_java_compile_config(&cfg))
                             .or_else(|| {
-                                gradle_project_dir_cached(
-                                    project_root,
-                                    Some(project_path_for_snapshot),
-                                    cache,
+                                gradle_project_dir_cached_best_effort(
+                                    project_path_for_snapshot,
                                     &fingerprint,
                                 )
-                                .ok()
                             })
                     };
                     if let Some(project_dir) = project_dir {
@@ -605,13 +643,10 @@ impl GradleBuild {
                         Some(project_root.to_path_buf())
                     } else {
                         cached_project_dir.clone().or_else(|| {
-                            gradle_project_dir_cached(
-                                project_root,
-                                Some(project_path_for_snapshot),
-                                cache,
+                            gradle_project_dir_cached_best_effort(
+                                project_path_for_snapshot,
                                 &fingerprint,
                             )
-                            .ok()
                         })
                     };
                     if let Some(project_dir) = project_dir {
@@ -665,13 +700,10 @@ impl GradleBuild {
                                 .clone()
                                 .or_else(|| infer_gradle_project_dir_from_java_compile_config(&cfg))
                                 .or_else(|| {
-                                    gradle_project_dir_cached(
-                                        project_root,
-                                        Some(project_path_for_snapshot),
-                                        cache,
+                                    gradle_project_dir_cached_best_effort(
+                                        project_path_for_snapshot,
                                         &fingerprint,
                                     )
-                                    .ok()
                                 })
                         };
                         if let Some(project_dir) = project_dir {
@@ -712,13 +744,10 @@ impl GradleBuild {
                             Some(project_root.to_path_buf())
                         } else {
                             cached_project_dir.clone().or_else(|| {
-                                gradle_project_dir_cached(
-                                    project_root,
-                                    Some(project_path_for_snapshot),
-                                    cache,
+                                gradle_project_dir_cached_best_effort(
+                                    project_path_for_snapshot,
                                     &fingerprint,
                                 )
-                                .ok()
                             })
                         };
                         if let Some(project_dir) = project_dir {
@@ -1109,7 +1138,10 @@ impl GradleBuild {
         args.push(task);
 
         let output = self.runner.run(project_root, &program, &args);
-        let _ = std::fs::remove_file(&init_script);
+        remove_file_best_effort(
+            &init_script,
+            "gradle.run_print_java_compile_config.init_script",
+        );
         Ok((program, args, output?))
     }
 
@@ -1148,7 +1180,10 @@ impl GradleBuild {
         args.push(task);
 
         let output = self.runner.run(project_root, &program, &args);
-        let _ = std::fs::remove_file(&init_script);
+        remove_file_best_effort(
+            &init_script,
+            "gradle.run_print_annotation_processing.init_script",
+        );
         Ok((program, args, output?))
     }
 
@@ -1167,7 +1202,7 @@ impl GradleBuild {
         args.push("printNovaProjects".into());
 
         let output = self.runner.run(project_root, &program, &args);
-        let _ = std::fs::remove_file(&init_script);
+        remove_file_best_effort(&init_script, "gradle.run_print_projects.init_script");
         Ok((program, args, output?))
     }
 
@@ -1186,7 +1221,10 @@ impl GradleBuild {
         args.push(NOVA_GRADLE_ALL_TASK.to_string());
 
         let output = self.runner.run(project_root, &program, &args);
-        let _ = std::fs::remove_file(&init_script);
+        remove_file_best_effort(
+            &init_script,
+            "gradle.run_print_all_java_compile_configs.init_script",
+        );
         Ok((program, args, output?))
     }
 
@@ -1245,7 +1283,7 @@ impl GradleBuild {
                 args.push(root_task.to_string());
 
                 let output = self.runner.run(project_root, &program, &args);
-                let _ = std::fs::remove_file(&init_script);
+                remove_file_best_effort(&init_script, "gradle.run_compile.init_script");
                 Ok((program, args, output?))
             }
         }
@@ -1466,8 +1504,19 @@ fn gradle_settings_suggest_multi_project(project_root: &Path) -> bool {
         if !path.is_file() {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read Gradle settings file for multi-project detection"
+                    );
+                }
+                continue;
+            }
         };
         if gradle_settings_contains_includes(&contents) {
             return true;
@@ -1636,11 +1685,38 @@ fn discover_conventional_gradle_source_roots(project_dir: &Path) -> (Vec<PathBuf
     let mut main_roots = Vec::new();
     let mut test_roots = Vec::new();
 
-    let Ok(entries) = std::fs::read_dir(&src_dir) else {
-        return (main_roots, test_roots);
+    let entries = match std::fs::read_dir(&src_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (main_roots, test_roots),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build",
+                path = %src_dir.display(),
+                error = %err,
+                "failed to scan conventional Gradle source roots"
+            );
+            return (main_roots, test_roots);
+        }
     };
 
-    for entry in entries.flatten() {
+    let mut logged_entry_error = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %src_dir.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning conventional Gradle source roots"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -1974,7 +2050,10 @@ NOVA_JSON_END
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations.lock().expect("lock poisoned").clone()
+            self.invocations
+                .lock()
+                .expect("invocations mutex poisoned")
+                .clone()
         }
     }
 
@@ -1987,7 +2066,7 @@ NOVA_JSON_END
         ) -> std::io::Result<CommandOutput> {
             self.invocations
                 .lock()
-                .expect("lock poisoned")
+                .expect("invocations mutex poisoned")
                 .push(args.to_vec());
             Ok(self.output.clone())
         }
@@ -2474,7 +2553,7 @@ fn extract_nova_json_block(output: &str) -> Result<String> {
 
 fn strings_to_paths(value: Option<Vec<String>>) -> Vec<PathBuf> {
     value
-        .unwrap_or_default()
+        .unwrap_or_else(Vec::new)
         .into_iter()
         .filter_map(|s| {
             let s = s.trim();
@@ -2539,10 +2618,7 @@ struct GradleAllJavaCompileConfigProjectJson {
 
 fn write_init_script(project_root: &Path) -> Result<PathBuf> {
     let mut path = std::env::temp_dir();
-    let token = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let token = gradle_temp_script_token();
     path.push(format!("nova_gradle_init_{token}.gradle"));
 
     // Best-effort init script that registers tasks for emitting:
@@ -2760,10 +2836,7 @@ allprojects { proj ->
 
 fn write_compile_all_java_init_script(project_root: &Path) -> Result<PathBuf> {
     let mut path = std::env::temp_dir();
-    let token = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let token = gradle_temp_script_token();
     path.push(format!("nova_gradle_compile_all_{token}.gradle"));
 
     // Register a root task that depends on all `compileJava` tasks we can find.
@@ -2806,10 +2879,7 @@ gradle.rootProject { root ->
 
 fn write_compile_all_test_java_init_script(project_root: &Path) -> Result<PathBuf> {
     let mut path = std::env::temp_dir();
-    let token = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let token = gradle_temp_script_token();
     path.push(format!("nova_gradle_compile_all_test_{token}.gradle"));
 
     // Register a root task that depends on all `compileTestJava` tasks we can find.
@@ -2859,6 +2929,7 @@ pub fn collect_gradle_build_files(root: &Path) -> Result<Vec<PathBuf>> {
 // -----------------------------------------------------------------------------
 
 static GRADLE_SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static GRADLE_SNAPSHOT_UPDATE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
 
 fn gradle_snapshot_path(project_root: &Path) -> PathBuf {
     project_root.join(GRADLE_SNAPSHOT_REL_PATH)
@@ -2937,17 +3008,17 @@ fn update_gradle_snapshot(
     update: impl FnOnce(&mut GradleSnapshotFile),
 ) -> std::io::Result<()> {
     let path = gradle_snapshot_path(project_root);
-    let mut snapshot = read_gradle_snapshot_file(&path).unwrap_or_default();
-    if snapshot.schema_version != GRADLE_SNAPSHOT_SCHEMA_VERSION
-        || snapshot.build_fingerprint != fingerprint.digest
-    {
-        snapshot = GradleSnapshotFile {
+    let mut snapshot = read_gradle_snapshot_file(&path)
+        .filter(|snapshot| {
+            snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                && snapshot.build_fingerprint == fingerprint.digest
+        })
+        .unwrap_or_else(|| GradleSnapshotFile {
             schema_version: GRADLE_SNAPSHOT_SCHEMA_VERSION,
             build_fingerprint: fingerprint.digest.clone(),
             projects: Vec::new(),
             java_compile_configs: BTreeMap::new(),
-        };
-    }
+        });
 
     update(&mut snapshot);
     snapshot.schema_version = GRADLE_SNAPSHOT_SCHEMA_VERSION;
@@ -2964,14 +3035,71 @@ fn update_gradle_snapshot(
         sort_dedup_paths(&mut cfg.test_source_roots);
     }
 
-    let json = serde_json::to_vec_pretty(&snapshot)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    write_file_atomic(&path, &json)
+    let json = match serde_json::to_vec_pretty(&snapshot) {
+        Ok(json) => json,
+        Err(err) => {
+            if GRADLE_SNAPSHOT_UPDATE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to serialize gradle snapshot file"
+                );
+            }
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
+        }
+    };
+
+    if let Err(err) = write_file_atomic(&path, &json) {
+        if GRADLE_SNAPSHOT_UPDATE_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.build",
+                path = %path.display(),
+                error = %err,
+                "failed to write gradle snapshot file"
+            );
+        }
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 fn read_gradle_snapshot_file(path: &Path) -> Option<GradleSnapshotFile> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    static GRADLE_SNAPSHOT_READ_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    static GRADLE_SNAPSHOT_DECODE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            // Cache misses are expected; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound
+                && GRADLE_SNAPSHOT_READ_ERROR_LOGGED.set(()).is_ok()
+            {
+                tracing::debug!(
+                    target = "nova.build",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read gradle snapshot file"
+                );
+            }
+            return None;
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(snapshot) => Some(snapshot),
+        Err(err) => {
+            if GRADLE_SNAPSHOT_DECODE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to decode gradle snapshot file"
+                );
+            }
+            None
+        }
+    }
 }
 
 fn sort_dedup_paths(paths: &mut Vec<PathBuf>) {
@@ -2998,20 +3126,17 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })();
     if let Err(err) = write_result {
         drop(file);
-        let _ = std::fs::remove_file(&tmp_path);
+        remove_file_best_effort(&tmp_path, "gradle.write_file_atomic.write_failed");
         return Err(err);
     }
     drop(file);
 
     if let Err(err) = rename_overwrite(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
+        remove_file_best_effort(&tmp_path, "gradle.write_file_atomic.rename_failed");
         return Err(err);
     }
 
-    #[cfg(unix)]
-    {
-        let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-    }
+    sync_dir_best_effort(parent, "gradle.write_file_atomic.sync_parent");
 
     Ok(())
 }

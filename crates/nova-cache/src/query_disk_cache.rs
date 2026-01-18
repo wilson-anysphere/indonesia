@@ -2,10 +2,11 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{
     atomic_write_with, bincode_options, bincode_options_limited, now_millis,
-    BINCODE_PAYLOAD_LIMIT_BYTES,
+    remove_file_best_effort, BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
 use serde::Serialize;
+use std::fmt::Display;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,32 +112,58 @@ impl QueryDiskCache {
     pub fn load(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
         let key_fingerprint = Fingerprint::from_bytes(key.as_bytes());
         let path = self.entry_path(&key_fingerprint);
+        let delete_corrupt = |stage: &'static str, err: &dyn Display| {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                stage,
+                error = %err,
+                "failed to decode query cache entry; deleting"
+            );
+            remove_file_best_effort(&path, stage);
+        };
         // Avoid following symlinks out of the cache directory.
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to stat query cache entry"
+                );
+                return Ok(None);
+            }
         };
         if meta.file_type().is_symlink() {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "symlink");
             return Ok(None);
         }
         if !meta.is_file() {
             return Ok(None);
         }
         if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "oversize_payload_limit");
             return Ok(None);
         }
         if meta.len() > self.policy.max_bytes {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "oversize_policy_limit");
             return Ok(None);
         }
 
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Ok(None),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to open query cache entry"
+                );
+                return Ok(None);
+            }
         };
         let mut reader = BufReader::new(file);
 
@@ -144,63 +171,70 @@ impl QueryDiskCache {
 
         let schema_version: u32 = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("schema_version", &err);
                 return Ok(None);
             }
         };
         let nova_version: String = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("nova_version", &err);
                 return Ok(None);
             }
         };
         if schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
             || nova_version != nova_core::NOVA_VERSION
         {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "version_mismatch");
             return Ok(None);
         }
 
         let saved_at_millis: u64 = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("saved_at_millis", &err);
                 return Ok(None);
             }
         };
         if now_millis().saturating_sub(saved_at_millis) > self.policy.ttl_millis {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "expired");
             return Ok(None);
         }
         let stored_key: String = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("key", &err);
                 return Ok(None);
             }
         };
         let stored_fingerprint: Fingerprint = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("key_fingerprint", &err);
                 return Ok(None);
             }
         };
 
         if stored_fingerprint != key_fingerprint {
-            let _ = std::fs::remove_file(&path);
+            remove_file_best_effort(&path, "fingerprint_mismatch");
             return Ok(None);
         }
         if stored_key != key {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                stored_key,
+                requested_key = key,
+                "query cache entry fingerprint collision; treating as miss"
+            );
             return Ok(None);
         }
 
         let value: Vec<u8> = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
+            Err(err) => {
+                delete_corrupt("value", &err);
                 return Ok(None);
             }
         };
@@ -225,7 +259,21 @@ impl QueryDiskCache {
         {
             return;
         }
-        let _ = self.gc();
+        if let Err(err) = self.gc() {
+            // Allow a retry on the next access rather than waiting out the full GC interval.
+            let _ = self.last_gc_millis.compare_exchange(
+                now,
+                last,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            tracing::debug!(
+                target = "nova.cache",
+                root = %self.root.display(),
+                error = %err,
+                "query disk cache GC failed"
+            );
+        }
     }
 
     pub fn gc(&self) -> Result<(), CacheError> {
@@ -242,12 +290,32 @@ impl QueryDiskCache {
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        root = %self.root.display(),
+                        error = %err,
+                        "failed to read query cache directory entry during GC"
+                    );
+                    continue;
+                }
             };
             let path = entry.path();
             let meta = match std::fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
-                Err(_) => continue,
+                Err(err) => {
+                    // Cache entries can race with GC or be removed concurrently; only log
+                    // unexpected filesystem errors.
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to stat query cache entry during GC"
+                        );
+                    }
+                    continue;
+                }
             };
 
             let file_type = meta.file_type();
@@ -259,7 +327,7 @@ impl QueryDiskCache {
             // leftovers (including crashed atomic-write tempfiles).
             if path.extension().and_then(|s| s.to_str()) != Some("bin") {
                 if file_type.is_file() || file_type.is_symlink() {
-                    let _ = std::fs::remove_file(&path);
+                    remove_file_best_effort(&path, "gc.unexpected_extension");
                 }
                 continue;
             }
@@ -267,14 +335,14 @@ impl QueryDiskCache {
             if file_type.is_symlink() {
                 // Symlinks could point outside the cache directory. Delete them
                 // rather than following.
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.symlink");
                 continue;
             }
 
-            let Some(header) = read_query_cache_header(&path) else {
+            let Some(header) = read_query_cache_header(&path, &meta) else {
                 // Corrupted or unreadable cache entry (including payloads over our
                 // deserialization limit). Treat as stale and delete it.
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.corrupt");
                 continue;
             };
 
@@ -283,23 +351,23 @@ impl QueryDiskCache {
             if header.schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
                 || header.nova_version != nova_core::NOVA_VERSION
             {
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.version_mismatch");
                 continue;
             }
 
             // If the file name doesn't match the stored key fingerprint, treat
             // as corruption and delete.
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.invalid_stem");
                 continue;
             };
             if stem != header.key_fingerprint.as_str() {
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.fingerprint_mismatch");
                 continue;
             }
 
             if now.saturating_sub(header.saved_at_millis) > self.policy.ttl_millis {
-                let _ = std::fs::remove_file(&path);
+                remove_file_best_effort(&path, "gc.expired");
                 continue;
             }
 
@@ -326,7 +394,7 @@ impl QueryDiskCache {
             if total_bytes <= self.policy.max_bytes {
                 break;
             }
-            if std::fs::remove_file(&entry.path).is_ok() {
+            if remove_file_best_effort(&entry.path, "gc.evict") {
                 total_bytes = total_bytes.saturating_sub(entry.len);
             }
         }
@@ -360,8 +428,10 @@ struct PersistedQueryValueHeader {
     key_fingerprint: Fingerprint,
 }
 
-fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
+fn read_query_cache_header(
+    path: &Path,
+    meta: &std::fs::Metadata,
+) -> Option<PersistedQueryValueHeader> {
     if meta.file_type().is_symlink() || !meta.is_file() {
         return None;
     }
@@ -369,18 +439,83 @@ fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
         return None;
     }
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to open query cache entry during GC"
+                );
+            }
+            return None;
+        }
+    };
     let mut reader = BufReader::new(file);
     let opts = bincode_options_limited();
 
     // We intentionally stop before the `value` payload so GC doesn't need to
     // read the full cached value into memory.
-    let schema_version: u32 = opts.deserialize_from(&mut reader).ok()?;
-    let nova_version: String = opts.deserialize_from(&mut reader).ok()?;
-    let saved_at_millis: u64 = opts.deserialize_from(&mut reader).ok()?;
+    let schema_version: u32 = match opts.deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to decode query cache schema version during GC"
+            );
+            return None;
+        }
+    };
+    let nova_version: String = match opts.deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to decode query cache nova version during GC"
+            );
+            return None;
+        }
+    };
+    let saved_at_millis: u64 = match opts.deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to decode query cache saved-at timestamp during GC"
+            );
+            return None;
+        }
+    };
     // Skip the stored `key` (GC only needs the fingerprint).
-    let _: String = opts.deserialize_from(&mut reader).ok()?;
-    let key_fingerprint: Fingerprint = opts.deserialize_from(&mut reader).ok()?;
+    if let Err(err) = opts.deserialize_from::<_, String>(&mut reader) {
+        tracing::debug!(
+            target = "nova.cache",
+            path = %path.display(),
+            error = %err,
+            "failed to decode query cache key during GC"
+        );
+        return None;
+    };
+    let key_fingerprint: Fingerprint = match opts.deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to decode query cache key fingerprint during GC"
+            );
+            return None;
+        }
+    };
 
     Some(PersistedQueryValueHeader {
         schema_version,

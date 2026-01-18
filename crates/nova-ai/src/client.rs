@@ -373,7 +373,13 @@ impl AiClient {
         builder.push_str(self.endpoint.as_str());
         builder.push_str(&self.model);
         builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
-        builder.push_u32(request.temperature.map(|t| t.to_bits()).unwrap_or(0));
+        match request.temperature {
+            Some(temp) => {
+                builder.push_u32(1);
+                builder.push_u32(temp.to_bits());
+            }
+            None => builder.push_u32(0),
+        }
         builder.push_u64(
             request
                 .messages
@@ -903,11 +909,9 @@ fn in_process_endpoint_id(cfg: &nova_config::InProcessLlamaConfig) -> Result<url
     let mut hasher = Sha256::new();
     hasher.update(cfg.model_path.to_string_lossy().as_bytes());
     hasher.update(b"\0");
-    hasher.update(
-        u64::try_from(cfg.context_size)
-            .unwrap_or(u64::MAX)
-            .to_le_bytes(),
-    );
+    // `context_size` is validated and schema-bounded (<= 8192), so this cast is safe and keeps the
+    // endpoint id stable across platforms.
+    hasher.update((cfg.context_size as u64).to_le_bytes());
     hasher.update(cfg.temperature.to_le_bytes());
     hasher.update(cfg.top_p.to_le_bytes());
     hasher.update(cfg.gpu_layers.to_le_bytes());
@@ -928,6 +932,7 @@ mod tests {
     use futures::TryStreamExt;
     use nova_config::AiPrivacyConfig;
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tracing::{field::Visit, Event};
@@ -993,6 +998,26 @@ mod tests {
             self.fields
                 .insert(field.name().to_string(), value.to_string());
         }
+    }
+
+    #[test]
+    fn in_process_endpoint_id_changes_with_context_size() {
+        let base = nova_config::InProcessLlamaConfig {
+            model_path: PathBuf::from("/tmp/model.gguf"),
+            context_size: 2048,
+            threads: None,
+            temperature: 0.2,
+            top_p: 0.95,
+            gpu_layers: 0,
+        };
+        let a = in_process_endpoint_id(&base).expect("endpoint id");
+        let b = in_process_endpoint_id(&nova_config::InProcessLlamaConfig {
+            context_size: 4096,
+            ..base
+        })
+        .expect("endpoint id");
+
+        assert_ne!(a.as_str(), b.as_str());
     }
 
     #[derive(Clone, Default)]
@@ -1108,7 +1133,7 @@ mod tests {
             "dummy returns unsanitized content"
         );
 
-        let events = events.lock().unwrap();
+        let events = events.lock().expect("events mutex poisoned");
         let audit = audit_events(&events);
 
         let request = audit
@@ -1188,7 +1213,7 @@ mod tests {
         let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
         assert_eq!(parts.concat(), format!("chunk {secret}"));
 
-        let events = events.lock().unwrap();
+        let events = events.lock().expect("events mutex poisoned");
         let audit = audit_events(&events);
 
         let response = audit
@@ -1242,7 +1267,11 @@ mod tests {
             request: ChatRequest,
             _cancel: CancellationToken,
         ) -> Result<String, AiError> {
-            *self.captured.request.lock().unwrap() = Some(request);
+            *self
+                .captured
+                .request
+                .lock()
+                .expect("captured request mutex poisoned") = Some(request);
             Ok("ok".to_string())
         }
 
@@ -1251,7 +1280,11 @@ mod tests {
             request: ChatRequest,
             _cancel: CancellationToken,
         ) -> Result<AiStream, AiError> {
-            *self.captured.request.lock().unwrap() = Some(request);
+            *self
+                .captured
+                .request
+                .lock()
+                .expect("captured request mutex poisoned") = Some(request);
             let stream = async_stream::try_stream! {
                 yield "ok".to_string();
             };

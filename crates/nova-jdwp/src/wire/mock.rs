@@ -1265,9 +1265,24 @@ async fn handle_packet(
         }
         // VirtualMachine.SetDefaultStratum
         (1, 19) => {
-            let stratum = r.read_string().unwrap_or_default();
-            *state.last_default_stratum.lock().await = Some(stratum);
-            (0, Vec::new())
+            static SET_DEFAULT_STRATUM_READ_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            match r.read_string() {
+                Ok(stratum) => {
+                    *state.last_default_stratum.lock().await = Some(stratum);
+                    (0, Vec::new())
+                }
+                Err(err) => {
+                    if SET_DEFAULT_STRATUM_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.jdwp",
+                            error = %err,
+                            "failed to decode VirtualMachine.SetDefaultStratum request"
+                        );
+                    }
+                    (1, Vec::new())
+                }
+            }
         }
         // VirtualMachine.AllThreads
         (1, 4) => {
@@ -1288,40 +1303,57 @@ async fn handle_packet(
         }
         // VirtualMachine.ClassesBySignature
         (1, 2) => {
-            let signature = r.read_string().unwrap_or_default();
-            *state.last_classes_by_signature.lock().await = Some(signature.clone());
+            static CLASSES_BY_SIGNATURE_READ_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            match r.read_string() {
+                Ok(signature) => {
+                    *state.last_classes_by_signature.lock().await = Some(signature.clone());
 
-            let mut w = JdwpWriter::new();
-            let outer_prefix = state.config.class_signature.trim_end_matches(';');
-            let nested_prefix = format!("{outer_prefix}$");
-            match signature.as_str() {
-                sig if sig == state.config.class_signature || sig.starts_with(&nested_prefix) => {
-                    if state.all_classes_loaded.load(Ordering::Relaxed) {
-                        w.write_u32(1);
-                        w.write_u8(1); // class
-                        w.write_reference_type_id(CLASS_ID, sizes);
-                        w.write_u32(1);
-                    } else {
-                        w.write_u32(0);
+                    let mut w = JdwpWriter::new();
+                    let outer_prefix = state.config.class_signature.trim_end_matches(';');
+                    let nested_prefix = format!("{outer_prefix}$");
+                    match signature.as_str() {
+                        sig if sig == state.config.class_signature
+                            || sig.starts_with(&nested_prefix) =>
+                        {
+                            if state.all_classes_loaded.load(Ordering::Relaxed) {
+                                w.write_u32(1);
+                                w.write_u8(1); // class
+                                w.write_reference_type_id(CLASS_ID, sizes);
+                                w.write_u32(1);
+                            } else {
+                                w.write_u32(0);
+                            }
+                        }
+                        "Lcom/example/Foo;" => {
+                            w.write_u32(1);
+                            w.write_u8(1); // class
+                            w.write_reference_type_id(FOO_CLASS_ID, sizes);
+                            w.write_u32(1);
+                        }
+                        "Ljava/lang/Throwable;" => {
+                            w.write_u32(1);
+                            w.write_u8(1); // class
+                            w.write_reference_type_id(THROWABLE_CLASS_ID, sizes);
+                            w.write_u32(1);
+                        }
+                        _ => {
+                            w.write_u32(0);
+                        }
                     }
+                    (0, w.into_vec())
                 }
-                "Lcom/example/Foo;" => {
-                    w.write_u32(1);
-                    w.write_u8(1); // class
-                    w.write_reference_type_id(FOO_CLASS_ID, sizes);
-                    w.write_u32(1);
-                }
-                "Ljava/lang/Throwable;" => {
-                    w.write_u32(1);
-                    w.write_u8(1); // class
-                    w.write_reference_type_id(THROWABLE_CLASS_ID, sizes);
-                    w.write_u32(1);
-                }
-                _ => {
-                    w.write_u32(0);
+                Err(err) => {
+                    if CLASSES_BY_SIGNATURE_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.jdwp",
+                            error = %err,
+                            "failed to decode VirtualMachine.ClassesBySignature request"
+                        );
+                    }
+                    (1, Vec::new())
                 }
             }
-            (0, w.into_vec())
         }
         // VirtualMachine.AllClasses
         (1, 3) => {
@@ -1394,16 +1426,30 @@ async fn handle_packet(
         }
         // VirtualMachine.Exit
         (1, 10) => {
-            let exit_code = r.read_i32().unwrap_or_default();
-            state
-                .virtual_machine_exit_calls
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .virtual_machine_exit_codes
-                .lock()
-                .await
-                .push(exit_code);
-            (0, Vec::new())
+            static EXIT_READ_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            match r.read_i32() {
+                Ok(exit_code) => {
+                    state
+                        .virtual_machine_exit_calls
+                        .fetch_add(1, Ordering::Relaxed);
+                    state
+                        .virtual_machine_exit_codes
+                        .lock()
+                        .await
+                        .push(exit_code);
+                    (0, Vec::new())
+                }
+                Err(err) => {
+                    if EXIT_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.jdwp",
+                            error = %err,
+                            "failed to decode VirtualMachine.Exit request"
+                        );
+                    }
+                    (1, Vec::new())
+                }
+            }
         }
         // VirtualMachine.DisposeObjects
         (1, 14) => {
@@ -1452,24 +1498,39 @@ async fn handle_packet(
         }
         // VirtualMachine.CreateString
         (1, 11) => {
-            let value = r.read_string().unwrap_or_default();
-            let object_id = state.alloc_object_id();
-            state
-                .created_strings
-                .lock()
-                .await
-                .insert(object_id, value.clone());
-            state
-                .create_string_calls
-                .lock()
-                .await
-                .push(CreateStringCall {
-                    value,
-                    returned_id: object_id,
-                });
-            let mut w = JdwpWriter::new();
-            w.write_object_id(object_id, sizes);
-            (0, w.into_vec())
+            static CREATE_STRING_READ_ERROR_LOGGED: std::sync::OnceLock<()> =
+                std::sync::OnceLock::new();
+            match r.read_string() {
+                Ok(value) => {
+                    let object_id = state.alloc_object_id();
+                    state
+                        .created_strings
+                        .lock()
+                        .await
+                        .insert(object_id, value.clone());
+                    state
+                        .create_string_calls
+                        .lock()
+                        .await
+                        .push(CreateStringCall {
+                            value,
+                            returned_id: object_id,
+                        });
+                    let mut w = JdwpWriter::new();
+                    w.write_object_id(object_id, sizes);
+                    (0, w.into_vec())
+                }
+                Err(err) => {
+                    if CREATE_STRING_READ_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.jdwp",
+                            error = %err,
+                            "failed to decode VirtualMachine.CreateString request"
+                        );
+                    }
+                    (1, Vec::new())
+                }
+            }
         }
         // ThreadReference.Name
         (11, 1) => {
@@ -1523,11 +1584,8 @@ async fn handle_packet(
                 let length = r.read_i32().unwrap_or(0);
                 let mut w = JdwpWriter::new();
 
-                let frames = state
-                    .smart_step_stack
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let frames =
+                    super::poison::lock(&state.smart_step_stack, "MockState.thread_frames").clone();
                 let available = frames.len().saturating_sub(start);
                 if state.config.thread_frames_strict_length
                     && length >= 0
@@ -1556,11 +1614,8 @@ async fn handle_packet(
         (11, 7) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            let count = state
-                .smart_step_stack
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .len() as u32;
+            let count =
+                super::poison::lock(&state.smart_step_stack, "MockState.frame_count").len() as u32;
             w.write_u32(count);
             (0, w.into_vec())
         }
@@ -3578,7 +3633,17 @@ async fn write_reply(
                     }
 
                     if close_after {
-                        let _ = guard.shutdown().await;
+                        static MOCK_WRITER_SHUTDOWN_ERROR_LOGGED: std::sync::OnceLock<()> =
+                            std::sync::OnceLock::new();
+                        if let Err(err) = guard.shutdown().await {
+                            if MOCK_WRITER_SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+                                tracing::debug!(
+                                    target = "nova.jdwp",
+                                    error = %err,
+                                    "failed to shutdown mock jdwp writer (best effort)"
+                                );
+                            }
+                        }
                         shutdown.cancel();
                     }
                 }
@@ -3748,10 +3813,7 @@ fn make_vm_disconnect_event_packet(
 
 fn smart_step_location(state: &State) -> Location {
     let depth = state.step_depth.load(Ordering::Relaxed);
-    let mut stack = state
-        .smart_step_stack
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut stack = super::poison::lock(&state.smart_step_stack, "MockState.smart_step_location");
 
     match depth {
         // StepDepth::Into

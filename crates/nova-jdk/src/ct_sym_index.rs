@@ -3,7 +3,7 @@
 use std::collections::{hash_map::Entry, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName, JAVA_BASE};
@@ -17,6 +17,26 @@ use crate::index::{
 use crate::persist;
 use crate::stub::{binary_to_internal, internal_to_binary};
 use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+
+#[track_caller]
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.jdk",
+                context,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CtSymSelectedEntry {
@@ -281,10 +301,20 @@ impl CtSymReleaseIndex {
             bytes
         }
 
-        fn lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+        fn lock_best_effort<'a, T>(
+            mutex: &'a Mutex<T>,
+            context: &'static str,
+        ) -> Option<std::sync::MutexGuard<'a, T>> {
             match mutex.lock() {
                 Ok(guard) => Some(guard),
-                Err(poisoned) => Some(poisoned.into_inner()),
+                Err(poisoned) => {
+                    tracing::error!(
+                        target = "nova.jdk",
+                        context,
+                        "mutex poisoned; recovering inner value"
+                    );
+                    Some(poisoned.into_inner())
+                }
             }
         }
 
@@ -334,7 +364,10 @@ impl CtSymReleaseIndex {
             }
         };
 
-        if let Some(map) = lock_best_effort(&self.by_internal) {
+        if let Some(map) = lock_best_effort(
+            &self.by_internal,
+            "ct_sym_index.estimated_bytes.by_internal",
+        ) {
             bytes = bytes
                 .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, stub) in map.iter() {
@@ -343,7 +376,9 @@ impl CtSymReleaseIndex {
             }
         }
 
-        if let Some(map) = lock_best_effort(&self.by_binary) {
+        if let Some(map) =
+            lock_best_effort(&self.by_binary, "ct_sym_index.estimated_bytes.by_binary")
+        {
             bytes = bytes
                 .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, stub) in map.iter() {
@@ -352,7 +387,7 @@ impl CtSymReleaseIndex {
             }
         }
 
-        if let Some(set) = lock_best_effort(&self.missing) {
+        if let Some(set) = lock_best_effort(&self.missing, "ct_sym_index.estimated_bytes.missing") {
             bytes = bytes.saturating_add((set.capacity() * size_of::<String>()) as u64);
             for s in set.iter() {
                 add_string(&mut bytes, s);
@@ -388,23 +423,39 @@ impl CtSymReleaseIndex {
         use std::mem;
         use std::sync::TryLockError;
 
-        fn try_lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+        fn try_lock_best_effort<'a, T>(
+            mutex: &'a Mutex<T>,
+            context: &'static str,
+        ) -> Option<std::sync::MutexGuard<'a, T>> {
             match mutex.try_lock() {
                 Ok(guard) => Some(guard),
-                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    tracing::error!(
+                        target = "nova.jdk",
+                        context,
+                        "mutex poisoned; recovering inner value"
+                    );
+                    Some(poisoned.into_inner())
+                }
                 Err(TryLockError::WouldBlock) => None,
             }
         }
 
-        if let Some(mut map) = try_lock_best_effort(&self.by_internal) {
+        if let Some(mut map) =
+            try_lock_best_effort(&self.by_internal, "ct_sym_index.evict_caches.by_internal")
+        {
             let _ = mem::take(&mut *map);
         }
 
-        if let Some(mut map) = try_lock_best_effort(&self.by_binary) {
+        if let Some(mut map) =
+            try_lock_best_effort(&self.by_binary, "ct_sym_index.evict_caches.by_binary")
+        {
             let _ = mem::take(&mut *map);
         }
 
-        if let Some(mut set) = try_lock_best_effort(&self.missing) {
+        if let Some(mut set) =
+            try_lock_best_effort(&self.missing, "ct_sym_index.evict_caches.missing")
+        {
             let _ = mem::take(&mut *set);
         }
     }
@@ -434,12 +485,7 @@ impl CtSymReleaseIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
-            .contains(&internal)
-        {
+        if lock_mutex(&self.missing, "ct_sym_index.module_of_type.missing").contains(&internal) {
             return Ok(None);
         }
 
@@ -447,10 +493,7 @@ impl CtSymReleaseIndex {
             return Ok(Some(self.modules[module_idx].clone()));
         }
 
-        self.missing
-            .lock()
-            .expect("mutex poisoned")
-            .insert(internal);
+        lock_mutex(&self.missing, "ct_sym_index.module_of_type.missing").insert(internal);
         Ok(None)
     }
 
@@ -469,10 +512,7 @@ impl CtSymReleaseIndex {
             format!("java/lang/{name}")
         };
 
-        if let Some(stub) = self
-            .by_internal
-            .lock()
-            .expect("mutex poisoned")
+        if let Some(stub) = lock_mutex(&self.by_internal, "ct_sym_index.lookup_type.by_internal")
             .get(&internal)
             .cloned()
         {
@@ -483,28 +523,17 @@ impl CtSymReleaseIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
-            .contains(&internal)
-        {
+        if lock_mutex(&self.missing, "ct_sym_index.lookup_type.missing").contains(&internal) {
             return Ok(None);
         }
 
         let Some(zip_path) = self.internal_to_zip_path.get(&internal) else {
-            self.missing
-                .lock()
-                .expect("mutex poisoned")
-                .insert(internal);
+            lock_mutex(&self.missing, "ct_sym_index.lookup_type.missing").insert(internal);
             return Ok(None);
         };
 
         let Some(bytes) = self.read_zip_entry(zip_path)? else {
-            self.missing
-                .lock()
-                .expect("mutex poisoned")
-                .insert(internal);
+            lock_mutex(&self.missing, "ct_sym_index.lookup_type.missing").insert(internal);
             return Ok(None);
         };
 
@@ -526,27 +555,20 @@ impl CtSymReleaseIndex {
             return Ok(None);
         }
 
-        if self
-            .missing
-            .lock()
-            .expect("mutex poisoned")
+        if lock_mutex(&self.missing, "ct_sym_index.read_class_bytes.missing")
             .contains(internal_name)
         {
             return Ok(None);
         }
 
         let Some(zip_path) = self.internal_to_zip_path.get(internal_name) else {
-            self.missing
-                .lock()
-                .expect("mutex poisoned")
+            lock_mutex(&self.missing, "ct_sym_index.read_class_bytes.missing")
                 .insert(internal_name.to_owned());
             return Ok(None);
         };
 
         let Some(bytes) = self.read_zip_entry(zip_path)? else {
-            self.missing
-                .lock()
-                .expect("mutex poisoned")
+            lock_mutex(&self.missing, "ct_sym_index.read_class_bytes.missing")
                 .insert(internal_name.to_owned());
             return Ok(None);
         };
@@ -582,11 +604,11 @@ impl CtSymReleaseIndex {
     }
 
     pub(crate) fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
-        Ok(self.packages_sorted()?.clone())
+        Ok(self.packages_sorted()?.to_vec())
     }
 
     pub(crate) fn binary_package_names(&self) -> Result<&[String], JdkIndexError> {
-        Ok(self.packages_sorted()?.as_slice())
+        Ok(self.packages_sorted()?)
     }
 
     pub(crate) fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
@@ -625,27 +647,23 @@ impl CtSymReleaseIndex {
     }
 
     fn insert_stub(&self, stub: Arc<JdkClassStub>) {
-        self.by_internal
-            .lock()
-            .expect("mutex poisoned")
+        lock_mutex(&self.by_internal, "ct_sym_index.insert_stub.by_internal")
             .insert(stub.internal_name.clone(), stub.clone());
-        self.by_binary
-            .lock()
-            .expect("mutex poisoned")
+        lock_mutex(&self.by_binary, "ct_sym_index.insert_stub.by_binary")
             .insert(stub.binary_name.clone(), stub);
     }
 
     fn read_zip_entry(&self, zip_path: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
-        let mut archive = self.archive.lock().expect("mutex poisoned");
+        let mut archive = lock_mutex(&self.archive, "ct_sym_index.read_zip_entry.archive");
         Ok(ct_sym::read_entry_bytes_from_archive(
             &mut archive,
             zip_path,
         )?)
     }
 
-    fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+    fn packages_sorted(&self) -> Result<&[String], JdkIndexError> {
         if let Some(pkgs) = self.packages.get() {
-            return Ok(pkgs);
+            return Ok(pkgs.as_slice());
         }
 
         let mut set = BTreeSet::new();
@@ -660,12 +678,13 @@ impl CtSymReleaseIndex {
         Ok(self
             .packages
             .get()
-            .expect("packages OnceLock should be initialized"))
+            .expect("packages OnceLock should be initialized")
+            .as_slice())
     }
 
-    pub(crate) fn binary_names_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+    pub(crate) fn binary_names_sorted(&self) -> Result<&[String], JdkIndexError> {
         if let Some(names) = self.binary_names_sorted.get() {
-            return Ok(names);
+            return Ok(names.as_slice());
         }
 
         let mut names: Vec<String> = self
@@ -680,7 +699,8 @@ impl CtSymReleaseIndex {
         Ok(self
             .binary_names_sorted
             .get()
-            .expect("binary_names_sorted OnceLock should be initialized"))
+            .expect("binary_names_sorted OnceLock should be initialized")
+            .as_slice())
     }
 }
 

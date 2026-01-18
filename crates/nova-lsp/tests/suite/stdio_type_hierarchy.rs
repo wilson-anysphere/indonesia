@@ -12,8 +12,8 @@ use lsp_types::{
 
 use crate::support::{
     decode_initialize_result, did_open_notification, exit_notification, initialize_request_empty,
-    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
-    stdio_server_lock, write_jsonrpc_message,
+    initialized_notification, jsonrpc_request, jsonrpc_result_as, read_response_with_id,
+    shutdown_request, stdio_server_lock, write_jsonrpc_message,
 };
 
 fn uri_for_path(path: &Path) -> Uri {
@@ -87,9 +87,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let items: Vec<TypeHierarchyItem> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("prepareTypeHierarchy result array");
+    let items: Vec<TypeHierarchyItem> = jsonrpc_result_as(&resp);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].name, "B");
     let item_b = items[0].clone();
@@ -107,9 +105,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let supers: Vec<TypeHierarchyItem> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("typeHierarchy/supertypes result array");
+    let supers: Vec<TypeHierarchyItem> = jsonrpc_result_as(&resp);
     assert_eq!(supers.len(), 1);
     assert_eq!(supers[0].name, "A");
 
@@ -133,9 +129,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 4);
-    let items: Vec<TypeHierarchyItem> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("prepareTypeHierarchy result array");
+    let items: Vec<TypeHierarchyItem> = jsonrpc_result_as(&resp);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].name, "A");
     let item_a = items[0].clone();
@@ -153,9 +147,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 5);
-    let subs: Vec<TypeHierarchyItem> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("typeHierarchy/subtypes result array");
+    let subs: Vec<TypeHierarchyItem> = jsonrpc_result_as(&resp);
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].name, "B");
 

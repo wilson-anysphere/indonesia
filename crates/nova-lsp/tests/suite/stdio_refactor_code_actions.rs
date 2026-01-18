@@ -589,7 +589,10 @@ fn stdio_server_resolves_extract_variable_code_action() {
         })
         .expect("variable declaration insertion edit");
 
-    let decl_before_eq = decl_edit.new_text.split('=').next().unwrap_or_default();
+    let (decl_before_eq, _) = decl_edit
+        .new_text
+        .split_once('=')
+        .expect("declaration must include `=`");
     let decl_name = decl_before_eq
         .split_whitespace()
         .last()

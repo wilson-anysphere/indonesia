@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 /// Persistent, content-addressed store for canonical ADR0006 decompiled virtual documents.
@@ -131,7 +132,13 @@ impl DecompiledDocumentStore {
 
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Some(text)),
-            Err(_) => {
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.decompile",
+                    path = %path.display(),
+                    error = %err,
+                    "decompiled document is not valid UTF-8; deleting"
+                );
                 remove_corrupt_store_leaf_best_effort(&path);
                 Ok(None)
             }
@@ -163,7 +170,13 @@ impl DecompiledDocumentStore {
 
         let stored: StoredDecompiledMappings = match serde_json::from_slice(&meta_bytes) {
             Ok(value) => value,
-            Err(_) => {
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.decompile",
+                    meta_path = %meta_path.display(),
+                    error = %err,
+                    "failed to decode decompiled symbol mapping sidecar; deleting"
+                );
                 remove_corrupt_store_leaf_best_effort(&meta_path);
                 return Ok(None);
             }
@@ -176,22 +189,55 @@ impl DecompiledDocumentStore {
     ///
     /// Invalid `(content_hash, binary_name)` inputs return `false`.
     pub fn exists(&self, content_hash: &str, binary_name: &str) -> bool {
+        static STORE_ROOT_METADATA_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static STORE_PARENT_METADATA_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let Ok(path) = self.path_for(content_hash, binary_name) else {
             return false;
         };
 
         // Treat any unexpected filesystem state as corruption: delete and report
         // a cache miss.
-        if let Ok(meta) = std::fs::symlink_metadata(&self.root) {
-            if meta.file_type().is_symlink() || !meta.is_dir() {
+        match std::fs::symlink_metadata(&self.root) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    remove_corrupt_path(&self.root);
+                    return false;
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if STORE_ROOT_METADATA_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.decompile",
+                        root = %self.root.display(),
+                        error = %err,
+                        "failed to stat decompiled document store root; treating as cache miss"
+                    );
+                }
                 remove_corrupt_path(&self.root);
                 return false;
             }
         }
 
         if let Some(parent) = path.parent() {
-            if let Ok(meta) = std::fs::symlink_metadata(parent) {
-                if meta.file_type().is_symlink() || !meta.is_dir() {
+            match std::fs::symlink_metadata(parent) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() || !meta.is_dir() {
+                        remove_corrupt_path(parent);
+                        return false;
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    if STORE_PARENT_METADATA_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.decompile",
+                            parent = %parent.display(),
+                            error = %err,
+                            "failed to stat decompiled document parent directory; treating as cache miss"
+                        );
+                    }
                     remove_corrupt_path(parent);
                     return false;
                 }
@@ -407,19 +453,51 @@ fn enumerate_regular_files(root: &Path) -> Result<Vec<FileEntry>, CacheError> {
 }
 
 fn enumerate_regular_files_impl(dir: &Path, out: &mut Vec<FileEntry>) {
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return;
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) => {
+            // Best-effort: the store may be concurrently modified or partially missing.
+            // Missing directories are expected; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.decompile",
+                    dir = %dir.display(),
+                    error = %err,
+                    "failed to read decompiled-store directory"
+                );
+            }
+            return;
+        }
     };
 
     for entry in read_dir {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.decompile",
+                    dir = %dir.display(),
+                    error = %err,
+                    "failed to read decompiled-store directory entry"
+                );
+                continue;
+            }
         };
         let path = entry.path();
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
-            Err(_) => continue,
+            Err(err) => {
+                // Entries can race with deletion; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.decompile",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to stat decompiled-store entry"
+                    );
+                }
+                continue;
+            }
         };
 
         let ft = meta.file_type();
@@ -436,11 +514,34 @@ fn enumerate_regular_files_impl(dir: &Path, out: &mut Vec<FileEntry>) {
             continue;
         }
 
-        let modified_millis = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
+        static MODIFIED_MILLIS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        let modified_millis = match meta.modified() {
+            Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                Ok(duration) => Some(duration.as_millis() as u64),
+                Err(err) => {
+                    if MODIFIED_MILLIS_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.decompile",
+                            path = %path.display(),
+                            error = ?err,
+                            "failed to convert file mtime to millis (best effort)"
+                        );
+                    }
+                    None
+                }
+            },
+            Err(err) => {
+                if MODIFIED_MILLIS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.decompile",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read file mtime (best effort)"
+                    );
+                }
+                None
+            }
+        };
 
         out.push(FileEntry {
             path,
@@ -810,24 +911,86 @@ fn remove_corrupt_store_leaf_best_effort(path: &Path) {
 }
 
 fn remove_corrupt_path(path: &Path) {
-    let meta = std::fs::symlink_metadata(path).ok();
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => Some(meta),
+        Err(err) => {
+            // Corrupt entries can race with GC or external deletion; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.decompile",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to stat corrupt decompiled-store entry before removal"
+                );
+            }
+            None
+        }
+    };
 
     // Never follow symlinks when deleting "corrupt" cache entries; treat them as
     // plain directory entries to unlink.
     if meta.as_ref().is_some_and(|m| m.file_type().is_symlink()) {
         // On some platforms, directory symlinks/junctions may require `remove_dir`
         // instead of `remove_file`. Try both, but never recurse.
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_dir(path);
+        remove_file_best_effort(path, "decompile.remove_corrupt_path.symlink");
+        remove_dir_best_effort(path, "decompile.remove_corrupt_path.symlink");
         return;
     }
 
     if meta.as_ref().is_some_and(|m| m.is_dir()) {
-        let _ = std::fs::remove_dir_all(path);
+        remove_dir_all_best_effort(path, "decompile.remove_corrupt_path.dir");
         return;
     }
 
-    let _ = std::fs::remove_file(path);
+    remove_file_best_effort(path, "decompile.remove_corrupt_path.file");
+}
+
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.decompile",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove file (best effort)"
+            );
+        }
+    }
+}
+
+fn remove_dir_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_dir(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.decompile",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove directory (best effort)"
+            );
+        }
+    }
+}
+
+fn remove_dir_all_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.decompile",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove directory recursively (best effort)"
+            );
+        }
+    }
 }
 
 fn ensure_dir_safe(path: &Path) -> Result<(), CacheError> {
@@ -1030,7 +1193,16 @@ fn atomic_write_store_file(path: &Path, bytes: &[u8]) -> Result<(), CacheError> 
             }
 
             // Best-effort directory fsync (mirrors `nova_cache::atomic_write`).
-            let _ = hash_dir.sync_all();
+            static HASH_DIR_SYNC_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+            if let Err(err) = hash_dir.sync_all() {
+                if HASH_DIR_SYNC_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.decompile",
+                        error = %err,
+                        "failed to sync decompile store directory (best effort)"
+                    );
+                }
+            }
             return Ok(());
         }
 

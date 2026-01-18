@@ -6,6 +6,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+fn canonicalize_best_effort(path: &Path, context: &'static str) -> PathBuf {
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cli",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize path"
+            );
+            path.to_path_buf()
+        }
+    }
+}
+
 pub(crate) struct JavaWorkspaceSnapshot {
     pub(crate) project_root: PathBuf,
     pub(crate) focus_file: FileId,
@@ -13,9 +30,7 @@ pub(crate) struct JavaWorkspaceSnapshot {
 }
 
 pub(crate) fn build_java_workspace_snapshot(focus_file: &Path) -> Result<JavaWorkspaceSnapshot> {
-    let focus_path = focus_file
-        .canonicalize()
-        .unwrap_or_else(|_| focus_file.to_path_buf());
+    let focus_path = canonicalize_best_effort(focus_file, "refactor_apply.focus_file");
     let focus_dir = focus_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -23,9 +38,7 @@ pub(crate) fn build_java_workspace_snapshot(focus_file: &Path) -> Result<JavaWor
 
     let project_root =
         nova_project::workspace_root(focus_dir).unwrap_or_else(|| focus_dir.to_path_buf());
-    let project_root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.clone());
+    let project_root = canonicalize_best_effort(&project_root, "refactor_apply.project_root");
 
     // Only scan the filesystem when we have a credible project root. For ad-hoc paths,
     // `workspace_root` can fall back to filesystem roots which would make recursive scanning

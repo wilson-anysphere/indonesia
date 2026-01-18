@@ -77,7 +77,10 @@ fn timeout_to_epoch_deadline(timeout: Duration) -> u64 {
     let timeout_ms = timeout.as_millis();
     let tick_ms = EPOCH_TICK.as_millis().max(1);
     let ticks = timeout_ms.div_ceil(tick_ms).max(1);
-    u64::try_from(ticks).unwrap_or(u64::MAX)
+    match u64::try_from(ticks) {
+        Ok(ticks) => ticks,
+        Err(_) => u64::MAX,
+    }
 }
 
 fn unpack_ptr_len(v: u64) -> (u32, u32) {
@@ -390,10 +393,14 @@ impl WasmPlugin {
     {
         let req_bytes =
             serde_json::to_vec(request).map_err(|e| WasmCallError::Json(e.to_string()))?;
-        if req_bytes.len() > config.max_request_bytes {
+
+        // The ABI uses 32-bit pointers/lengths. Even if the sandbox config is misconfigured, the
+        // host must cap request/response sizes to the guest address space.
+        let max_request_bytes = config.max_request_bytes.min(u32::MAX as usize);
+        if req_bytes.len() > max_request_bytes {
             return Err(WasmCallError::RequestTooLarge {
                 len: req_bytes.len(),
-                max: config.max_request_bytes,
+                max: max_request_bytes,
             });
         }
 
@@ -416,7 +423,15 @@ impl WasmPlugin {
             .get_typed_func(&mut store, export)
             .map_err(|_| WasmCallError::MissingExport(export))?;
 
-        let req_len_i32 = i32::try_from(req_bytes.len()).unwrap_or(i32::MAX);
+        static FREE_REQUEST_FAILED_LOGGED: OnceLock<()> = OnceLock::new();
+        static FREE_RESPONSE_FAILED_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let req_len_u32 =
+            u32::try_from(req_bytes.len()).map_err(|_| WasmCallError::RequestTooLarge {
+                len: req_bytes.len(),
+                max: u32::MAX as usize,
+            })?;
+        let req_len_i32 = req_len_u32 as i32;
         let req_ptr_i32 = alloc
             .call(&mut store, req_len_i32)
             .map_err(classify_call_error)?;
@@ -427,16 +442,53 @@ impl WasmPlugin {
         }
         let req_ptr = req_ptr_i32 as u32 as usize;
 
-        memory
-            .write(&mut store, req_ptr, &req_bytes)
-            .map_err(|e| WasmCallError::Trap(e.to_string()))?;
+        if let Err(err) = memory.write(&mut store, req_ptr, &req_bytes) {
+            // Best-effort: free the request buffer before propagating the error.
+            if let Err(free_err) = free.call(&mut store, (req_ptr_i32, req_len_i32)) {
+                if FREE_REQUEST_FAILED_LOGGED.set(()).is_ok() {
+                    tracing::warn!(
+                        target = "nova.ext",
+                        plugin_id = %self.id,
+                        export,
+                        error = %free_err,
+                        "wasm guest free(request) failed after write error; continuing best-effort"
+                    );
+                }
+            }
+            return Err(WasmCallError::Trap(err.to_string()));
+        }
 
-        let ret = func
-            .call(&mut store, (req_ptr as i32, req_len_i32))
-            .map_err(classify_call_error)?;
+        let ret = match func.call(&mut store, (req_ptr_i32, req_len_i32)) {
+            Ok(ret) => ret,
+            Err(err) => {
+                // Best-effort: free the request buffer before propagating the error.
+                if let Err(free_err) = free.call(&mut store, (req_ptr_i32, req_len_i32)) {
+                    if FREE_REQUEST_FAILED_LOGGED.set(()).is_ok() {
+                        tracing::warn!(
+                            target = "nova.ext",
+                            plugin_id = %self.id,
+                            export,
+                            error = %free_err,
+                            "wasm guest free(request) failed after call error; continuing best-effort"
+                        );
+                    }
+                }
+                return Err(classify_call_error(err));
+            }
+        };
 
         // Always attempt to free the request buffer.
-        let _ = free.call(&mut store, (req_ptr_i32, req_len_i32));
+        if let Err(err) = free.call(&mut store, (req_ptr_i32, req_len_i32)) {
+            if FREE_REQUEST_FAILED_LOGGED.set(()).is_ok() {
+                tracing::warn!(
+                    target = "nova.ext",
+                    plugin_id = %self.id,
+                    export,
+                    error = %err,
+                    "wasm guest free(request) failed; continuing best-effort"
+                );
+            }
+        }
 
         let (resp_ptr, resp_len) = unpack_ptr_len(ret as u64);
         if resp_len == 0 {
@@ -448,28 +500,142 @@ impl WasmPlugin {
             ));
         }
 
-        let resp_len_usize = usize::try_from(resp_len).unwrap_or(usize::MAX);
-        if resp_len_usize > config.max_response_bytes {
+        let max_response_bytes = config.max_response_bytes.min(u32::MAX as usize);
+        let resp_len_usize = match usize::try_from(resp_len) {
+            Ok(resp_len_usize) => resp_len_usize,
+            Err(_) => {
+                // Best-effort: attempt to free the response buffer even though it's too large to
+                // represent in the host address space.
+                let resp_ptr_i32 = resp_ptr as i32;
+                let resp_len_i32 = resp_len as i32;
+                if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+                    if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                        tracing::warn!(
+                            target = "nova.ext",
+                            plugin_id = %self.id,
+                            export,
+                            error = %err,
+                            "wasm guest free(response) failed after oversized response; continuing best-effort"
+                        );
+                    }
+                }
+                return Err(WasmCallError::ResponseTooLarge {
+                    len: usize::MAX,
+                    max: max_response_bytes,
+                });
+            }
+        };
+        if resp_len_usize > max_response_bytes {
+            // Best-effort: attempt to free the response buffer even though it's too large to read.
+            let resp_ptr_i32 = resp_ptr as i32;
+            let resp_len_i32 = resp_len as i32;
+            if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+                if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                    tracing::warn!(
+                        target = "nova.ext",
+                        plugin_id = %self.id,
+                        export,
+                        error = %err,
+                        "wasm guest free(response) failed after oversized response; continuing best-effort"
+                    );
+                }
+            }
             return Err(WasmCallError::ResponseTooLarge {
                 len: resp_len_usize,
-                max: config.max_response_bytes,
+                max: max_response_bytes,
             });
         }
 
         let resp_ptr_usize = resp_ptr as usize;
-        let data = memory.data(&store);
-        let end = resp_ptr_usize.saturating_add(resp_len_usize);
-        let bytes = data
-            .get(resp_ptr_usize..end)
-            .ok_or(WasmCallError::MemoryOutOfBounds {
+        let memory_len = memory.data(&store).len();
+        let end = match resp_ptr_usize.checked_add(resp_len_usize) {
+            Some(end) => end,
+            None => {
+                // Best-effort: attempt to free the response buffer before returning.
+                let resp_ptr_i32 = resp_ptr as i32;
+                let resp_len_i32 = resp_len as i32;
+                if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+                    if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                        tracing::warn!(
+                            target = "nova.ext",
+                            plugin_id = %self.id,
+                            export,
+                            error = %err,
+                            "wasm guest free(response) failed after out-of-range response end; continuing best-effort"
+                        );
+                    }
+                }
+                return Err(WasmCallError::MemoryOutOfBounds {
+                    ptr: resp_ptr_usize,
+                    len: resp_len_usize,
+                    memory_len,
+                });
+            }
+        };
+        if end > memory_len {
+            // Best-effort: attempt to free the response buffer before returning.
+            let resp_ptr_i32 = resp_ptr as i32;
+            let resp_len_i32 = resp_len as i32;
+            if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+                if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                    tracing::warn!(
+                        target = "nova.ext",
+                        plugin_id = %self.id,
+                        export,
+                        error = %err,
+                        "wasm guest free(response) failed after out-of-bounds response; continuing best-effort"
+                    );
+                }
+            }
+            return Err(WasmCallError::MemoryOutOfBounds {
                 ptr: resp_ptr_usize,
                 len: resp_len_usize,
-                memory_len: data.len(),
-            })?
-            .to_vec();
+                memory_len,
+            });
+        }
+        let bytes = {
+            let data = memory.data(&store);
+            data.get(resp_ptr_usize..end).map(|bytes| bytes.to_vec())
+        };
+        let bytes = match bytes {
+            Some(bytes) => bytes,
+            None => {
+                // Best-effort: attempt to free the response buffer before returning.
+                let resp_ptr_i32 = resp_ptr as i32;
+                let resp_len_i32 = resp_len as i32;
+                if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+                    if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                        tracing::warn!(
+                            target = "nova.ext",
+                            plugin_id = %self.id,
+                            export,
+                            error = %err,
+                            "wasm guest free(response) failed after out-of-bounds response; continuing best-effort"
+                        );
+                    }
+                }
+                return Err(WasmCallError::MemoryOutOfBounds {
+                    ptr: resp_ptr_usize,
+                    len: resp_len_usize,
+                    memory_len,
+                });
+            }
+        };
 
         // Free response memory according to the ABI contract.
-        let _ = free.call(&mut store, (resp_ptr as i32, resp_len as i32));
+        let resp_ptr_i32 = resp_ptr as i32;
+        let resp_len_i32 = resp_len as i32;
+        if let Err(err) = free.call(&mut store, (resp_ptr_i32, resp_len_i32)) {
+            if FREE_RESPONSE_FAILED_LOGGED.set(()).is_ok() {
+                tracing::warn!(
+                    target = "nova.ext",
+                    plugin_id = %self.id,
+                    export,
+                    error = %err,
+                    "wasm guest free(response) failed; continuing best-effort"
+                );
+            }
+        }
 
         serde_json::from_slice::<Vec<Out>>(&bytes).map_err(|e| WasmCallError::Json(e.to_string()))
     }
@@ -537,7 +703,25 @@ struct StoreState {
 
 impl StoreState {
     fn new(config: &WasmPluginConfig) -> Self {
-        let max_memory_bytes = usize::try_from(config.max_memory_bytes).unwrap_or(usize::MAX);
+        static MAX_MEMORY_BYTES_CLAMPED_LOGGED: OnceLock<()> = OnceLock::new();
+        let abi_max_memory_bytes = u32::MAX as u64;
+        let config_max_memory_bytes = config.max_memory_bytes;
+
+        let max_memory_bytes_u64 = if config_max_memory_bytes > abi_max_memory_bytes {
+            if MAX_MEMORY_BYTES_CLAMPED_LOGGED.set(()).is_ok() {
+                tracing::warn!(
+                    target = "nova.ext",
+                    configured = config_max_memory_bytes,
+                    clamped_to = abi_max_memory_bytes,
+                    "wasm memory limit exceeds ABI pointer range; clamping"
+                );
+            }
+            abi_max_memory_bytes
+        } else {
+            config_max_memory_bytes
+        };
+
+        let max_memory_bytes = max_memory_bytes_u64.min(usize::MAX as u64) as usize;
         let limits = StoreLimitsBuilder::new()
             .memory_size(max_memory_bytes)
             .build();
@@ -642,8 +826,21 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        self.try_provide_diagnostics(ctx, params)
-            .unwrap_or_else(|_| Vec::new())
+        static WASM_DIAGNOSTICS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        match self.try_provide_diagnostics(ctx, params) {
+            Ok(diags) => diags,
+            Err(err) => {
+                if WASM_DIAGNOSTICS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        plugin_id = self.id(),
+                        error = %err,
+                        "wasm diagnostics provider failed; returning empty diagnostics"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn try_provide_diagnostics(
@@ -696,8 +893,21 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
-        self.try_provide_completions(ctx, params)
-            .unwrap_or_else(|_| Vec::new())
+        static WASM_COMPLETIONS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        match self.try_provide_completions(ctx, params) {
+            Ok(items) => items,
+            Err(err) => {
+                if WASM_COMPLETIONS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        plugin_id = self.id(),
+                        error = %err,
+                        "wasm completions provider failed; returning empty completions"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn try_provide_completions(
@@ -749,8 +959,21 @@ where
         ctx: ExtensionContext<DB>,
         params: CodeActionParams,
     ) -> Vec<CodeAction> {
-        self.try_provide_code_actions(ctx, params)
-            .unwrap_or_else(|_| Vec::new())
+        static WASM_CODE_ACTIONS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        match self.try_provide_code_actions(ctx, params) {
+            Ok(actions) => actions,
+            Err(err) => {
+                if WASM_CODE_ACTIONS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        plugin_id = self.id(),
+                        error = %err,
+                        "wasm code action provider failed; returning empty code actions"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn try_provide_code_actions(
@@ -801,8 +1024,21 @@ where
         ctx: ExtensionContext<DB>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
-        self.try_provide_navigation(ctx, params)
-            .unwrap_or_else(|_| Vec::new())
+        static WASM_NAVIGATION_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        match self.try_provide_navigation(ctx, params) {
+            Ok(targets) => targets,
+            Err(err) => {
+                if WASM_NAVIGATION_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        plugin_id = self.id(),
+                        error = %err,
+                        "wasm navigation provider failed; returning empty navigation targets"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn try_provide_navigation(
@@ -848,8 +1084,21 @@ where
         ctx: ExtensionContext<DB>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
-        self.try_provide_inlay_hints(ctx, params)
-            .unwrap_or_else(|_| Vec::new())
+        static WASM_INLAY_HINTS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        match self.try_provide_inlay_hints(ctx, params) {
+            Ok(hints) => hints,
+            Err(err) => {
+                if WASM_INLAY_HINTS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.ext",
+                        plugin_id = self.id(),
+                        error = %err,
+                        "wasm inlay hint provider failed; returning empty inlay hints"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn try_provide_inlay_hints(

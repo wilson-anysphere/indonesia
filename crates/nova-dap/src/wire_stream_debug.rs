@@ -18,6 +18,7 @@
 
 use std::{
     future::Future,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -733,6 +734,8 @@ pub(crate) async fn format_stream_sample_value(
 }
 
 fn parse_indexed_child_name(name: &str) -> Option<usize> {
+    static INDEXED_CHILD_NAME_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let name = name.trim();
     if !name.starts_with('[') || !name.ends_with(']') {
         return None;
@@ -741,7 +744,21 @@ fn parse_indexed_child_name(name: &str) -> Option<usize> {
     if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    inner.parse::<usize>().ok()
+    match inner.parse::<usize>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            if INDEXED_CHILD_NAME_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    name = %name,
+                    inner = %inner,
+                    error = %err,
+                    "failed to parse indexed child name (best effort)"
+                );
+            }
+            None
+        }
+    }
 }
 
 /// Convert a list-like object (e.g. `java.util.ArrayList`) into a `StreamSample` using the same
@@ -831,16 +848,23 @@ fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &
     out.push_str(&format!("Generated source: {}\n", source_path.display()));
 
     if let Some((line, col)) = crate::javac::parse_first_formatted_javac_location(diagnostics) {
-        if let Ok(source) = std::fs::read_to_string(source_path) {
-            if let Some(src_line) = source.lines().nth(line.saturating_sub(1)) {
-                let mut preview = src_line.trim_end().to_string();
-                const MAX_PREVIEW_LEN: usize = 200;
-                if preview.len() > MAX_PREVIEW_LEN {
-                    preview.truncate(MAX_PREVIEW_LEN);
-                    preview.push('…');
+        match std::fs::read_to_string(source_path) {
+            Ok(source) => {
+                if let Some(src_line) = source.lines().nth(line.saturating_sub(1)) {
+                    let mut preview = src_line.trim_end().to_string();
+                    const MAX_PREVIEW_LEN: usize = 200;
+                    if preview.len() > MAX_PREVIEW_LEN {
+                        preview.truncate(MAX_PREVIEW_LEN);
+                        preview.push('…');
+                    }
+                    out.push_str(&format!(
+                        "Generated code (line {line}, col {col}): {preview}\n"
+                    ));
                 }
+            }
+            Err(err) => {
                 out.push_str(&format!(
-                    "Generated code (line {line}, col {col}): {preview}\n"
+                    "Failed to read generated source for preview: {err}\n"
                 ));
             }
         }

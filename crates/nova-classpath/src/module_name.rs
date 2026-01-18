@@ -59,11 +59,25 @@ pub(crate) fn zip_manifest_main_attribute<R: Read + Seek>(
         let mut file = match archive.by_name(candidate) {
             Ok(file) => file,
             Err(zip::result::ZipError::FileNotFound) => continue,
-            Err(_) => continue,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.classpath",
+                    candidate,
+                    error = %err,
+                    "failed to open manifest candidate from archive"
+                );
+                continue;
+            }
         };
 
         let mut bytes = Vec::with_capacity(file.size() as usize);
-        if file.read_to_end(&mut bytes).is_err() {
+        if let Err(err) = file.read_to_end(&mut bytes) {
+            tracing::debug!(
+                target = "nova.classpath",
+                candidate,
+                error = %err,
+                "failed to read manifest candidate from archive"
+            );
             continue;
         }
         let manifest = String::from_utf8_lossy(&bytes);

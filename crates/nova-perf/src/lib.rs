@@ -96,10 +96,16 @@ pub fn load_criterion_directory(path: impl AsRef<Path>) -> Result<BenchRun> {
 
     let mut run = BenchRun::default();
 
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-    {
+    for entry in WalkDir::new(root).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                return Err(anyhow!(
+                    "failed to walk criterion directory {}: {err}",
+                    root.display()
+                ));
+            }
+        };
         if entry.file_name() != "sample.json" {
             continue;
         }
@@ -435,8 +441,8 @@ impl Comparison {
                 out.push_str(&format!(
                     "- `{}`: p50 {}, p95 {}\n",
                     diff.id,
-                    diff.p50_change.map(format_pct).unwrap_or_default(),
-                    diff.p95_change.map(format_pct).unwrap_or_default()
+                    diff.p50_change.map(format_pct).unwrap_or_else(String::new),
+                    diff.p95_change.map(format_pct).unwrap_or_else(String::new)
                 ));
             }
         }
@@ -514,8 +520,8 @@ impl RuntimeComparison {
                     diff.id,
                     diff.abs_change
                         .map(|d| format_runtime_delta(&diff.id, d))
-                        .unwrap_or_default(),
-                    diff.pct_change.map(format_pct).unwrap_or_default()
+                        .unwrap_or_else(String::new),
+                    diff.pct_change.map(format_pct).unwrap_or_else(String::new)
                 ));
             }
         }

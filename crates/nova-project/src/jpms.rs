@@ -139,7 +139,22 @@ fn discover_jpms_module_root(module_root: &Path) -> Option<JpmsModuleRoot> {
     ];
 
     let module_info_path = candidates.into_iter().find(|p| p.is_file())?;
-    let src = std::fs::read_to_string(&module_info_path).ok()?;
+    let src = match std::fs::read_to_string(&module_info_path) {
+        Ok(src) => src,
+        Err(err) => {
+            // Best-effort: module roots may appear/disappear during discovery (e.g. file edits).
+            // Missing files are expected; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    module_info_path = %module_info_path.display(),
+                    error = %err,
+                    "failed to read module-info.java while discovering JPMS module roots"
+                );
+            }
+            return None;
+        }
+    };
     let info = lower_module_info_source(&src).info?;
 
     Some(JpmsModuleRoot {
@@ -260,9 +275,29 @@ fn is_stable_named_module(path: &Path) -> bool {
 }
 
 fn read_first_matching_archive_entry(archive: &Archive, candidates: &[&str]) -> Option<Vec<u8>> {
-    candidates
-        .iter()
-        .find_map(|candidate| archive.read(candidate).ok().flatten())
+    let mut first_error: Option<String> = None;
+    for candidate in candidates {
+        match archive.read(candidate) {
+            Ok(Some(bytes)) => return Some(bytes),
+            Ok(None) => continue,
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(err.to_string());
+                }
+            }
+        }
+    }
+
+    if let Some(error) = first_error {
+        tracing::debug!(
+            target = "nova.project",
+            archive_path = %archive.path().display(),
+            error,
+            "failed to read archive entry while inferring JPMS metadata"
+        );
+    }
+
+    None
 }
 
 fn empty_module_info(name: ModuleName) -> ModuleInfo {

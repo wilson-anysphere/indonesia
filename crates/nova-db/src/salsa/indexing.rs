@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use nova_cache::{Fingerprint, ProjectSnapshot};
@@ -158,6 +159,8 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
 
     let fast_snapshot = if can_warm_start {
         let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
+        static INDEXING_METADATA_FINGERPRINT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let mut fingerprints = BTreeMap::new();
 
         for (idx, &file) in db.project_files(project).iter().enumerate() {
@@ -174,8 +177,26 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
                 db.file_fingerprint(file).as_ref().clone()
             } else {
                 let full_path = cache_dir.project_root().join(&path);
-                Fingerprint::from_file_metadata(full_path)
-                    .unwrap_or_else(|_| db.file_fingerprint(file).as_ref().clone())
+                match Fingerprint::from_file_metadata(&full_path) {
+                    Ok(fp) => fp,
+                    Err(err) => {
+                        match &err {
+                            nova_cache::CacheError::Io(io_err)
+                                if io_err.kind() == std::io::ErrorKind::NotFound => {}
+                            _ => {
+                                if INDEXING_METADATA_FINGERPRINT_ERROR_LOGGED.set(()).is_ok() {
+                                    tracing::debug!(
+                                        target = "nova.db",
+                                        path = %full_path.display(),
+                                        error = %err,
+                                        "failed to fingerprint file by mtime/size for warm-start index; falling back to content fingerprint"
+                                    );
+                                }
+                            }
+                        }
+                        db.file_fingerprint(file).as_ref().clone()
+                    }
+                }
             };
             fingerprints.insert(path, fp);
         }

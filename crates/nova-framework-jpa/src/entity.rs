@@ -169,7 +169,7 @@ fn parse_entity_class(node: &SyntaxNode, source: &str, source_idx: usize) -> Opt
     let annotations = modifiers
         .as_ref()
         .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+        .unwrap_or_else(Vec::new);
 
     let is_entity = annotations.iter().any(|ann| ann.simple_name == "Entity");
     if !is_entity {
@@ -312,7 +312,7 @@ fn parse_field_declaration(node: &SyntaxNode, source: &str) -> Vec<Field> {
     let annotations = modifiers
         .as_ref()
         .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+        .unwrap_or_else(Vec::new);
     let is_static = modifiers
         .as_ref()
         .is_some_and(|m| modifier_contains(m, SyntaxKind::StaticKw));
@@ -335,10 +335,10 @@ fn parse_field_declaration(node: &SyntaxNode, source: &str) -> Vec<Field> {
         .find_map(|ann| relationship_from_annotation(ann, source));
 
     let ty_node = node.children().find(|n| n.kind() == SyntaxKind::Type);
-    let ty = ty_node
-        .as_ref()
-        .map(|n| clean_type(node_text(source, n)))
-        .unwrap_or_default();
+    let Some(ty_node) = ty_node else {
+        return Vec::new();
+    };
+    let ty = clean_type(node_text(source, &ty_node));
 
     let mut fields = Vec::new();
     let Some(declarators) = node
@@ -390,7 +390,7 @@ fn parse_method_property(node: &SyntaxNode, source: &str) -> Option<Field> {
     let annotations = modifiers
         .as_ref()
         .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+        .unwrap_or_else(Vec::new);
     let is_static = modifiers
         .as_ref()
         .is_some_and(|m| modifier_contains(m, SyntaxKind::StaticKw));

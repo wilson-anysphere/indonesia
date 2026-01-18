@@ -1,6 +1,6 @@
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 /// A lightweight in-memory cache for cold index artifacts.
 ///
@@ -46,7 +46,7 @@ impl IndexCache {
     }
 
     pub fn insert(&self, key: String, value: Arc<Vec<u8>>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         if let Some(prev) = inner.map.insert(key.clone(), value.clone()) {
             inner.bytes = inner.bytes.saturating_sub(prev.len() as u64);
         }
@@ -59,13 +59,32 @@ impl IndexCache {
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<Vec<u8>>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let value = inner.map.get(key)?.clone();
         if let Some(pos) = inner.order.iter().position(|k| k == key) {
             inner.order.remove(pos);
         }
         inner.order.push_back(key.to_string());
         Some(value)
+    }
+
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, IndexCacheInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.index",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
     }
 
     fn update_tracker_locked(&self, inner: &IndexCacheInner) {
@@ -75,7 +94,7 @@ impl IndexCache {
     }
 
     fn evict_to(&self, target: u64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         while inner.bytes > target {
             let Some(key) = inner.order.pop_front() else {
                 break;
@@ -88,7 +107,7 @@ impl IndexCache {
     }
 
     fn clear(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         inner.map.clear();
         inner.order.clear();
         inner.bytes = 0;

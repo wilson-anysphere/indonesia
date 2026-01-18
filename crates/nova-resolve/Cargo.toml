@@ -16,6 +16,7 @@ nova-types = { path = "../nova-types" }
 thiserror = "1.0"
 unicode-ident = "1"
 walkdir = "2.5.0"
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

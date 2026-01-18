@@ -930,11 +930,38 @@ mod notify_impl {
     }
 
     #[cfg(feature = "watch-notify")]
+    #[track_caller]
+    fn join_notify_thread_best_effort(thread: std::thread::JoinHandle<()>, reason: &'static str) {
+        static JOIN_PANIC_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+        if let Err(panic) = thread.join() {
+            if JOIN_PANIC_LOGGED.set(()).is_ok() {
+                let loc = std::panic::Location::caller();
+                let message = panic
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("<non-string panic>");
+
+                tracing::debug!(
+                    target = "nova.vfs",
+                    reason,
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    panic = %message,
+                    "file watcher drain thread panicked (best effort join)"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "watch-notify")]
     impl Drop for NotifyFileWatcher {
         fn drop(&mut self) {
             let _ = self.stop_tx.send(());
             if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
+                join_notify_thread_best_effort(thread, "vfs.notify_watcher.drop");
             }
         }
     }
@@ -1105,7 +1132,9 @@ mod notify_impl {
             assert_eq!(msg, WatchEvent::Rescan);
 
             let _ = stop_tx.send(());
-            let _ = thread.join();
+            thread
+                .join()
+                .expect("notify drain thread panicked in overflow test");
         }
 
         #[test]
@@ -1199,7 +1228,9 @@ mod notify_impl {
             assert_eq!(msg, WatchEvent::Rescan);
 
             let _ = stop_tx.send(());
-            let _ = thread.join();
+            thread
+                .join()
+                .expect("notify drain thread panicked in rescan-on-overflow test");
         }
 
         #[test]
@@ -1254,7 +1285,9 @@ mod notify_impl {
                 }
             );
 
-            let _ = thread.join();
+            thread
+                .join()
+                .expect("notify drain thread panicked in pending-rename flush test");
         }
 
         #[test]
@@ -1307,7 +1340,9 @@ mod notify_impl {
                 }
             );
 
-            let _ = thread.join();
+            thread
+                .join()
+                .expect("notify drain thread panicked in disconnect flush test");
         }
 
         #[test]
@@ -1340,7 +1375,9 @@ mod notify_impl {
             assert_eq!(msg, WatchEvent::Rescan);
 
             let _ = stop_tx.send(());
-            let _ = thread.join();
+            thread
+                .join()
+                .expect("notify drain thread panicked in rescan-flag test");
         }
 
         #[test]

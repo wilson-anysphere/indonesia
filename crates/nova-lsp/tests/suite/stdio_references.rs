@@ -11,7 +11,7 @@ use lsp_types::{
 
 use crate::support::{
     decode_initialize_result, did_open_notification, exit_notification,
-    initialize_request_with_root_uri, initialized_notification, jsonrpc_request,
+    initialize_request_with_root_uri, initialized_notification, jsonrpc_request, jsonrpc_result_as,
     read_response_with_id, shutdown_request, stdio_server_lock, write_jsonrpc_message,
 };
 
@@ -108,9 +108,7 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let locations: Vec<Location> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("references result array");
+    let locations: Vec<Location> = jsonrpc_result_as(&resp);
 
     assert!(
         locations.iter().any(|loc| {
@@ -150,9 +148,7 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 3);
-    let locations: Vec<Location> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("references result array");
+    let locations: Vec<Location> = jsonrpc_result_as(&resp);
     assert!(
         locations.iter().any(|loc| {
             loc.uri == foo_uri

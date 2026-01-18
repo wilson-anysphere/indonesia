@@ -9,8 +9,11 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use thiserror::Error;
+
+use crate::fs_cleanup::sync_dir_best_effort;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -185,7 +188,16 @@ impl BuildCache {
 
         if let Err(source) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
             drop(file);
-            let _ = fs::remove_file(&tmp_path);
+            if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %tmp_path.display(),
+                        error = %remove_err,
+                        "failed to remove temporary build cache file after write failure"
+                    );
+                }
+            }
             return Err(CacheError::Write {
                 path: tmp_path.clone(),
                 source,
@@ -225,7 +237,16 @@ impl BuildCache {
         })();
 
         if let Err(source) = rename_result {
-            let _ = fs::remove_file(&tmp_path);
+            if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %tmp_path.display(),
+                        error = %remove_err,
+                        "failed to remove temporary build cache file after rename failure"
+                    );
+                }
+            }
             return Err(CacheError::Write {
                 path: path.clone(),
                 source,
@@ -233,10 +254,7 @@ impl BuildCache {
             .into());
         }
 
-        #[cfg(unix)]
-        {
-            let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-        }
+        sync_dir_best_effort(parent, "build_cache.store.sync_parent");
 
         Ok(())
     }
@@ -278,7 +296,15 @@ impl BuildCache {
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.build",
+                        dir = %dir.display(),
+                        error = %err,
+                        "failed to read build cache directory entry"
+                    );
+                    continue;
+                }
             };
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -295,11 +321,30 @@ impl BuildCache {
         for (_, path) in candidates {
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
-                Err(_) => continue,
+                Err(err) => {
+                    // Cache entries can race with deletion; only log unexpected errors.
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::debug!(
+                            target = "nova.build",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read build cache entry"
+                        );
+                    }
+                    continue;
+                }
             };
             let data: CachedBuildData = match serde_json::from_slice(&bytes) {
                 Ok(data) => data,
-                Err(_) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to decode build cache entry"
+                    );
+                    continue;
+                }
             };
             if let Some(module) = data.modules.get(module_key) {
                 return Ok(Some(module.clone()));
@@ -319,7 +364,7 @@ impl BuildCache {
     ) -> Result<()> {
         let mut data = self
             .load(project_root, kind, fingerprint)?
-            .unwrap_or_default();
+            .unwrap_or_else(CachedBuildData::default);
         let entry = data.modules.entry(module_key.to_string()).or_default();
         update(entry);
         self.store(project_root, kind, fingerprint, &data)?;
@@ -327,13 +372,28 @@ impl BuildCache {
     }
 
     fn project_dir(&self, project_root: &Path) -> PathBuf {
+        static PROJECT_ROOT_CANONICALIZE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         // Best-effort canonicalization to keep cache keys stable when callers mix canonical and
         // non-canonical workspace roots (e.g. macOS `/var` vs `/private/var`, or symlinked roots).
         //
         // This mirrors the canonicalization approach used by `nova-build-model::BuildFileFingerprint`.
-        let project_root = project_root
-            .canonicalize()
-            .unwrap_or_else(|_| project_root.to_path_buf());
+        let project_root = match project_root.canonicalize() {
+            Ok(project_root) => project_root,
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound
+                    && PROJECT_ROOT_CANONICALIZE_ERROR_LOGGED.set(()).is_ok()
+                {
+                    tracing::debug!(
+                        target = "nova.build",
+                        project_root = %project_root.display(),
+                        error = %err,
+                        "failed to canonicalize project root for build cache key; using non-canonical path"
+                    );
+                }
+                project_root.to_path_buf()
+            }
+        };
         let mut hasher = Sha256::new();
         hasher.update(project_root.to_string_lossy().as_bytes());
         let digest = hex::encode(hasher.finalize());

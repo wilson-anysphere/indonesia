@@ -27,7 +27,8 @@ fn hot_swap_compile_temp_dirs() -> Vec<PathBuf> {
         return out;
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.expect("failed to read hot-swap temp dir entry");
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -720,7 +721,14 @@ pub(super) async fn dap_hot_swap_can_compile_changed_files_with_javac() {
     let _keep_temp_guard = EnvVarGuard::unset("NOVA_DAP_KEEP_HOT_SWAP_TEMP");
     let hot_swap_base =
         std::env::temp_dir().join(format!("nova-dap-hot-swap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(hot_swap_base);
+    if let Err(err) = std::fs::remove_dir_all(&hot_swap_base) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "failed to remove hot-swap base directory {}: {err}",
+                hot_swap_base.display()
+            );
+        }
+    }
 
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses

@@ -8,7 +8,10 @@ fn apply_edit(source: &str, file: &str, edit: &nova_refactor::WorkspaceEdit) -> 
     let file_id = FileId::new(file.to_string());
     files.insert(file_id.clone(), source.to_string());
     let updated = apply_workspace_edit(&files, edit).expect("apply workspace edit");
-    updated.get(&file_id).cloned().unwrap_or_default()
+    updated
+        .get(&file_id)
+        .cloned()
+        .expect("expected workspace edit to update the source file")
 }
 
 #[test]

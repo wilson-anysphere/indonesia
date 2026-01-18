@@ -2,6 +2,7 @@ use crate::schema::TestItem;
 use crate::Result;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use walkdir::WalkDir;
@@ -13,10 +14,30 @@ struct FileStamp {
 }
 
 impl FileStamp {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
+    fn from_metadata(metadata: &fs::Metadata, path: &Path, context: &'static str) -> Self {
         Self {
-            modified: metadata.modified().ok(),
+            modified: modified_best_effort(metadata, path, context),
             size: metadata.len(),
+        }
+    }
+}
+
+fn modified_best_effort(
+    metadata: &fs::Metadata,
+    path: &Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match metadata.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.testing",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read file mtime"
+            );
+            None
         }
     }
 }
@@ -94,6 +115,8 @@ impl TestDiscoveryIndex {
 
     fn enumerate_java_files(&self) -> Result<HashMap<PathBuf, FileStamp>> {
         let mut out = HashMap::new();
+        let mut logged_walk_error = false;
+        let mut logged_metadata_error = false;
 
         for root in &self.source_roots {
             if !root.is_dir() {
@@ -112,8 +135,20 @@ impl TestDiscoveryIndex {
                     !super::SKIP_DIRS.iter().any(|skip| skip == &name.as_ref())
                 })
             {
-                let Ok(entry) = entry else {
-                    continue;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        if !logged_walk_error {
+                            tracing::debug!(
+                                target = "nova.testing",
+                                root = %root.display(),
+                                error = %err,
+                                "failed to walk source root while discovering tests"
+                            );
+                            logged_walk_error = true;
+                        }
+                        continue;
+                    }
                 };
                 if !entry.file_type().is_file() {
                     continue;
@@ -124,10 +159,31 @@ impl TestDiscoveryIndex {
                     continue;
                 }
 
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(err) => {
+                        if err
+                            .io_error()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                        {
+                            continue;
+                        }
+                        if !logged_metadata_error {
+                            tracing::debug!(
+                                target = "nova.testing",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to read metadata while discovering tests"
+                            );
+                            logged_metadata_error = true;
+                        }
+                        continue;
+                    }
                 };
-                out.insert(path.to_path_buf(), FileStamp::from_metadata(&metadata));
+                out.insert(
+                    path.to_path_buf(),
+                    FileStamp::from_metadata(&metadata, path, "testing.discover_tests"),
+                );
             }
         }
 

@@ -390,31 +390,23 @@ impl<'a> TypeProvider for ChainTypeProvider<'a> {
     }
 
     fn members(&self, binary_name: &str) -> Vec<MemberStub> {
-        self.providers
-            .iter()
-            .find_map(|p| {
-                let m = p.members(binary_name);
-                if m.is_empty() {
-                    None
-                } else {
-                    Some(m)
-                }
-            })
-            .unwrap_or_default()
+        for provider in &self.providers {
+            let members = provider.members(binary_name);
+            if !members.is_empty() {
+                return members;
+            }
+        }
+        Vec::new()
     }
 
     fn supertypes(&self, binary_name: &str) -> Vec<String> {
-        self.providers
-            .iter()
-            .find_map(|p| {
-                let s = p.supertypes(binary_name);
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
-            })
-            .unwrap_or_default()
+        for provider in &self.providers {
+            let supertypes = provider.supertypes(binary_name);
+            if !supertypes.is_empty() {
+                return supertypes;
+            }
+        }
+        Vec::new()
     }
 }
 
@@ -4655,7 +4647,16 @@ fn infer_type_arguments_from_call(
         .type_params
         .iter()
         .map(|tv| {
-            let b = bounds.get(tv).cloned().unwrap_or_default();
+            let b = bounds.remove(tv).unwrap_or_else(|| {
+                debug_assert!(
+                    false,
+                    "missing inference bounds for type param {tv:?}; this should be initialized for every method type param"
+                );
+                InferenceBounds {
+                    lower: Vec::new(),
+                    upper: vec![object.clone()],
+                }
+            });
             let upper_glb = glb_all(env, &b.upper, &object);
             let candidate = if b.lower.is_empty() {
                 upper_glb.clone()

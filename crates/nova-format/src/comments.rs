@@ -197,13 +197,13 @@ impl CommentStore {
     /// Drain comments that attach *before* `token`.
     #[must_use]
     pub fn take_leading(&mut self, token: TokenKey) -> Vec<Comment> {
-        self.leading.remove(&token).unwrap_or_default()
+        self.leading.remove(&token).unwrap_or_else(Vec::new)
     }
 
     /// Drain comments that attach *after* `token`.
     #[must_use]
     pub fn take_trailing(&mut self, token: TokenKey) -> Vec<Comment> {
-        self.trailing.remove(&token).unwrap_or_default()
+        self.trailing.remove(&token).unwrap_or_else(Vec::new)
     }
 
     #[must_use]

@@ -10,6 +10,7 @@ memmap2 = "0.9"
 nova-core = { path = "../nova-core" }
 rkyv = { version = "0.7", features = ["validation"] }
 thiserror = "1"
+tracing = { workspace = true }
 zstd = "0.13"
 
 [dev-dependencies]

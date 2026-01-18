@@ -9,6 +9,7 @@ serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
 thiserror.workspace = true
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true

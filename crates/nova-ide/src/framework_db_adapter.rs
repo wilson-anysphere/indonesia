@@ -118,11 +118,26 @@ impl FrameworkIdeDatabase {
         let root = self.project_root()?;
         let config = crate::framework_cache::project_config(root)?;
 
-        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical_root = match std::fs::canonicalize(root) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    root = %root.display(),
+                    error = %err,
+                    "failed to canonicalize project root for framework classpath cache"
+                );
+                root.to_path_buf()
+            }
+        };
         let fingerprint = crate::framework_cache::build_marker_fingerprint(&canonical_root);
 
         {
-            let cache = CLASSPATH_CACHE.lock().ok()?;
+            let cache = crate::poison::lock(
+                &CLASSPATH_CACHE,
+                "FrameworkIdeDatabase.classpath_index/read_cache",
+            );
             if let Some(entry) = cache.get(&canonical_root) {
                 if entry.fingerprint == fingerprint {
                     return Some(Arc::clone(&entry.index));
@@ -133,7 +148,10 @@ impl FrameworkIdeDatabase {
         // Build outside the lock (classpath indexing can be expensive).
         let built = build_classpath_index(&config)?;
 
-        let mut cache = CLASSPATH_CACHE.lock().ok()?;
+        let mut cache = crate::poison::lock(
+            &CLASSPATH_CACHE,
+            "FrameworkIdeDatabase.classpath_index/write_cache",
+        );
         cache.insert(
             canonical_root,
             CachedClasspathIndex {
@@ -369,6 +387,8 @@ static CLASSPATH_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedClasspathIndex>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn build_classpath_index(config: &nova_project::ProjectConfig) -> Option<Arc<ClasspathIndex>> {
+    static CLASSPATH_INDEX_BUILD_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut entries = Vec::<nova_classpath::ClasspathEntry>::new();
 
     for entry in config.classpath.iter().chain(config.module_path.iter()) {
@@ -388,8 +408,28 @@ fn build_classpath_index(config: &nova_project::ProjectConfig) -> Option<Arc<Cla
     let target_release = Some(config.java.target.0)
         .filter(|release| *release >= 1)
         .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
-    let index =
-        ClasspathIndex::build_with_options(&entries, None, IndexOptions { target_release }).ok()?;
+    let index = match ClasspathIndex::build_with_options(
+        &entries,
+        None,
+        IndexOptions { target_release },
+    ) {
+        Ok(index) => index,
+        Err(err) => {
+            if CLASSPATH_INDEX_BUILD_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.ide",
+                    workspace_root = %config.workspace_root.display(),
+                    classpath_entries = config.classpath.len(),
+                    module_path_entries = config.module_path.len(),
+                    output_dirs = config.output_dirs.len(),
+                    target_release,
+                    error = %err,
+                    "failed to build framework classpath index; continuing without classpath index"
+                );
+            }
+            return None;
+        }
+    };
     Some(Arc::new(index))
 }
 

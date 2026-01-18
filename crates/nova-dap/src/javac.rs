@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -72,6 +73,8 @@ pub(crate) async fn resolve_hot_swap_javac_config(
     jdwp: &JdwpClient,
     project_root: Option<&Path>,
 ) -> HotSwapJavacConfig {
+    static JOIN_PATHS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let mut config = HotSwapJavacConfig {
         javac: "javac".to_string(),
         ..HotSwapJavacConfig::default()
@@ -85,10 +88,34 @@ pub(crate) async fn resolve_hot_swap_javac_config(
             config.enable_preview = build_cfg.enable_preview;
 
             if !build_cfg.compile_classpath.is_empty() {
-                config.classpath = std::env::join_paths(build_cfg.compile_classpath.iter()).ok();
+                config.classpath = match std::env::join_paths(build_cfg.compile_classpath.iter()) {
+                    Ok(paths) => Some(paths),
+                    Err(err) => {
+                        if JOIN_PATHS_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.dap",
+                                error = %err,
+                                "failed to join compile classpath for hotswap javac (best effort)"
+                            );
+                        }
+                        None
+                    }
+                };
             }
             if !build_cfg.module_path.is_empty() {
-                config.module_path = std::env::join_paths(build_cfg.module_path.iter()).ok();
+                config.module_path = match std::env::join_paths(build_cfg.module_path.iter()) {
+                    Ok(paths) => Some(paths),
+                    Err(err) => {
+                        if JOIN_PATHS_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.dap",
+                                error = %err,
+                                "failed to join module path for hotswap javac (best effort)"
+                            );
+                        }
+                        None
+                    }
+                };
             }
         }
     }
@@ -166,6 +193,8 @@ pub(crate) async fn resolve_vm_classpath(
     cancel: &CancellationToken,
     jdwp: &JdwpClient,
 ) -> Option<std::ffi::OsString> {
+    static JOIN_PATHS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let paths = match crate::async_util::budgeted_with_timeout(
         cancel,
         Instant::now(),
@@ -194,7 +223,19 @@ pub(crate) async fn resolve_vm_classpath(
             }
         })
         .collect();
-    std::env::join_paths(entries.iter()).ok()
+    match std::env::join_paths(entries.iter()) {
+        Ok(paths) => Some(paths),
+        Err(err) => {
+            if JOIN_PATHS_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    error = %err,
+                    "failed to join VM classpath entries (best effort)"
+                );
+            }
+            None
+        }
+    }
 }
 
 async fn resolve_build_java_compile_config(
@@ -285,7 +326,7 @@ pub(crate) async fn compile_java_for_hot_swap(
                 }
 
                 // Ensure a clean output directory so we don't accidentally pick up stale classes.
-                let _ = std::fs::remove_dir_all(temp_dir.path());
+                remove_dir_all_best_effort(temp_dir.path(), "dap.javac.retry.cleanup_temp_dir");
                 if let Err(err) = std::fs::create_dir_all(temp_dir.path()) {
                     Err(CompileError::new(format!(
                         "failed to recreate hot swap output directory {}: {err}",
@@ -314,6 +355,22 @@ pub(crate) async fn compile_java_for_hot_swap(
     }
 
     result
+}
+
+fn remove_dir_all_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove directory (best effort)"
+            );
+        }
+    }
 }
 
 pub(crate) async fn compile_java_to_dir(
@@ -434,8 +491,28 @@ pub(crate) async fn compile_java_to_dir(
         }
     };
 
-    let stdout = stdout_task.await.unwrap_or_default();
-    let stderr = stderr_task.await.unwrap_or_default();
+    let stdout = match stdout_task.await {
+        Ok(stdout) => stdout,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                error = %err,
+                "stdout capture task failed; using empty output"
+            );
+            Vec::new()
+        }
+    };
+    let stderr = match stderr_task.await {
+        Ok(stderr) => stderr,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.dap",
+                error = %err,
+                "stderr capture task failed; using empty output"
+            );
+            Vec::new()
+        }
+    };
 
     if !status.success() {
         let output = format_javac_failure(&stdout, &stderr);
@@ -588,7 +665,24 @@ fn collect_class_files_inner(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Res
 }
 
 fn class_name_from_class_file(output_dir: &Path, class_file: &Path) -> Option<String> {
-    let rel = class_file.strip_prefix(output_dir).ok()?;
+    static CLASS_NAME_STRIP_PREFIX_ERROR_LOGGED: std::sync::OnceLock<()> =
+        std::sync::OnceLock::new();
+
+    let rel = match class_file.strip_prefix(output_dir) {
+        Ok(rel) => rel,
+        Err(err) => {
+            if CLASS_NAME_STRIP_PREFIX_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    output_dir = %output_dir.display(),
+                    class_file = %class_file.display(),
+                    error = ?err,
+                    "failed to relativize class file path under output dir"
+                );
+            }
+            return None;
+        }
+    };
     let mut components: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
@@ -635,6 +729,8 @@ pub(crate) fn format_javac_failure(stdout: &[u8], stderr: &[u8]) -> String {
 
 #[cfg(test)]
 pub(crate) fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> {
+    static LOCATION_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     // `format_javac_failure` emits one diagnostic per line in the form:
     // `<file>:<line>:<col>: <message>`
     let line = output.lines().find(|l| !l.trim().is_empty())?;
@@ -649,8 +745,40 @@ pub(crate) fn parse_first_formatted_javac_location(output: &str) -> Option<(usiz
     let line_s = parts.next()?.trim();
     let _file = parts.next()?; // may contain ':' on Windows; rsplitn keeps it intact.
 
-    let line_no = line_s.parse::<usize>().ok()?;
-    let col_no = col_s.parse::<usize>().ok()?;
+    let line_no = match line_s.parse::<usize>() {
+        Ok(line_no) => line_no,
+        Err(err) => {
+            if LOCATION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    line = %line,
+                    location = %location,
+                    line_s = %line_s,
+                    col_s = %col_s,
+                    error = %err,
+                    "failed to parse formatted javac diagnostic location (best effort)"
+                );
+            }
+            return None;
+        }
+    };
+    let col_no = match col_s.parse::<usize>() {
+        Ok(col_no) => col_no,
+        Err(err) => {
+            if LOCATION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.dap",
+                    line = %line,
+                    location = %location,
+                    line_s = %line_s,
+                    col_s = %col_s,
+                    error = %err,
+                    "failed to parse formatted javac diagnostic location (best effort)"
+                );
+            }
+            return None;
+        }
+    };
     Some((line_no, col_no))
 }
 

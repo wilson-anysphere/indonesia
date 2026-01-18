@@ -40,6 +40,30 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
         }
     }
 
+    fn parse_time_seconds_best_effort(raw: &str) -> Option<f64> {
+        static TIME_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        match raw.parse::<f64>() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                if TIME_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.testing",
+                        raw = %raw,
+                        error = %err,
+                        "invalid junit testcase time attribute (best effort)"
+                    );
+                }
+                None
+            }
+        }
+    }
+
     let mut current_case: Option<TempCase> = None;
     let mut in_failure_text = false;
     let mut failure_text = String::new();
@@ -59,7 +83,7 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                         match key {
                             b"classname" => case.classname = Some(value),
                             b"name" => case.name = Some(value),
-                            b"time" => case.time_seconds = value.parse::<f64>().ok(),
+                            b"time" => case.time_seconds = parse_time_seconds_best_effort(&value),
                             _ => {}
                         }
                     }
@@ -109,7 +133,7 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                         match key {
                             b"classname" => case.classname = Some(value),
                             b"name" => case.name = Some(value),
-                            b"time" => case.time_seconds = value.parse::<f64>().ok(),
+                            b"time" => case.time_seconds = parse_time_seconds_best_effort(&value),
                             _ => {}
                         }
                     }

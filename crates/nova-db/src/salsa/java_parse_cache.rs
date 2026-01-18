@@ -87,7 +87,14 @@ impl JavaParseCache {
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, JavaParseCacheInner> {
         match self.inner.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                tracing::error!(
+                    target = "nova.db",
+                    name = %self.name,
+                    "mutex poisoned; recovering java parse cache state"
+                );
+                poisoned.into_inner()
+            }
         }
     }
 

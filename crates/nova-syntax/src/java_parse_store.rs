@@ -3,7 +3,7 @@ use nova_core::FileId;
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use nova_vfs::OpenDocuments;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 type OnRemoveFn = dyn Fn(FileId, u64) + Send + Sync;
 
@@ -133,7 +133,7 @@ impl JavaParseStore {
         text: &Arc<String>,
     ) -> Option<Arc<JavaParseResult>> {
         let (cached, removed) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = self.prune_closed_files_locked(&mut inner);
 
             if !self.open_docs.is_open(file) {
@@ -173,7 +173,7 @@ impl JavaParseStore {
     /// If the file is not open, this removes any existing cached entry for it.
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let mut removed = self.prune_closed_files_locked(&mut inner);
 
             if !self.open_docs.is_open(file) {
@@ -196,7 +196,7 @@ impl JavaParseStore {
 
     pub fn remove(&self, file: FileId) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = inner.remove(&file);
             if removed.is_some() {
                 self.update_tracker_locked(&inner);
@@ -213,7 +213,7 @@ impl JavaParseStore {
 
     pub fn release_closed_files(&self) {
         let removed = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = self.prune_closed_files_locked(&mut inner);
             if !removed.is_empty() {
                 self.update_tracker_locked(&inner);
@@ -224,7 +224,7 @@ impl JavaParseStore {
     }
 
     pub fn contains(&self, file: FileId) -> bool {
-        self.inner.lock().unwrap().contains_key(&file)
+        self.lock_inner().contains_key(&file)
     }
 
     pub fn tracked_bytes(&self) -> u64 {
@@ -233,7 +233,7 @@ impl JavaParseStore {
 
     fn clear_all(&self) {
         let removed: Vec<(FileId, u64)> = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let removed = inner
                 .iter()
                 .map(|(file, entry)| (*file, entry.text.len() as u64))
@@ -258,6 +258,25 @@ impl JavaParseStore {
         // Approximate parse memory by source length.
         let total: u64 = inner.values().map(|entry| entry.text.len() as u64).sum();
         tracker.set_bytes(total);
+    }
+
+    #[track_caller]
+    fn lock_inner(&self) -> MutexGuard<'_, HashMap<FileId, JavaParseEntry>> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = std::panic::Location::caller();
+                tracing::error!(
+                    target = "nova.syntax",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
     }
 }
 

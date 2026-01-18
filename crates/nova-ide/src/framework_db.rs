@@ -582,15 +582,47 @@ where
 }
 
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
+    crate::poison::lock(mutex, "framework_db")
 }
 
 fn normalize_root_for_cache(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for framework db cache"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 fn build_marker_fingerprint(root: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
+
+    fn modified_best_effort(
+        meta: &std::fs::Metadata,
+        path: &Path,
+        context: &'static str,
+    ) -> Option<SystemTime> {
+        match meta.modified() {
+            Ok(time) => Some(time),
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    context,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read mtime"
+                );
+                None
+            }
+        }
+    }
 
     const MARKERS: &[&str] = &[
         // Maven.
@@ -621,9 +653,23 @@ fn build_marker_fingerprint(root: &Path) -> u64 {
             Ok(meta) => {
                 true.hash(&mut hasher);
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, &path, "marker_mtime"),
+                );
             }
-            Err(_) => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                false.hash(&mut hasher);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    root = %root.display(),
+                    marker,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read build marker metadata"
+                );
                 false.hash(&mut hasher);
             }
         }
@@ -635,19 +681,47 @@ fn build_marker_fingerprint(root: &Path) -> u64 {
     //
     // Keep this best-effort and bounded: scan only the immediate workspace root directory.
     let mut bazelrc_fragments = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if file_name.starts_with(".bazelrc.") {
-                bazelrc_fragments.push(path);
-                // Avoid pathological roots with huge numbers of dotfiles.
-                if bazelrc_fragments.len() >= 128 {
-                    break;
+    match std::fs::read_dir(root) {
+        Ok(entries) => {
+            let mut logged_entry_error = false;
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => {
+                        if !logged_entry_error {
+                            tracing::debug!(
+                                target = "nova.ide",
+                                root = %root.display(),
+                                error = %err,
+                                "failed to read directory entry while scanning bazelrc fragments"
+                            );
+                            logged_entry_error = true;
+                        }
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if file_name.starts_with(".bazelrc.") {
+                    bazelrc_fragments.push(path);
+                    // Avoid pathological roots with huge numbers of dotfiles.
+                    if bazelrc_fragments.len() >= 128 {
+                        break;
+                    }
                 }
             }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to scan workspace root directory for bazelrc fragments"
+            );
         }
     }
     bazelrc_fragments.sort();
@@ -659,9 +733,22 @@ fn build_marker_fingerprint(root: &Path) -> u64 {
             Ok(meta) => {
                 true.hash(&mut hasher);
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, &path, "bazelrc_fragment_mtime"),
+                );
             }
-            Err(_) => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                false.hash(&mut hasher);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    root = %root.display(),
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read bazelrc fragment metadata"
+                );
                 false.hash(&mut hasher);
             }
         }
@@ -676,9 +763,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.ide",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
@@ -938,12 +1034,32 @@ fn collect_spring_metadata_synthetic_files(
         let jar_path = entry.path.as_path();
         let file = match std::fs::File::open(jar_path) {
             Ok(file) => file,
-            Err(_) => continue,
+            Err(err) => {
+                // Classpath entries can race with changes or be missing in partial workspaces.
+                // Missing files are expected; only log unexpected filesystem errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.ide",
+                        jar_path = %jar_path.display(),
+                        error = %err,
+                        "failed to open classpath jar while scanning Spring metadata"
+                    );
+                }
+                continue;
+            }
         };
 
         let mut archive = match ZipArchive::new(file) {
             Ok(archive) => archive,
-            Err(_) => continue,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.ide",
+                    jar_path = %jar_path.display(),
+                    error = %err,
+                    "failed to read classpath jar as zip while scanning Spring metadata"
+                );
+                continue;
+            }
         };
 
         for rel in SPRING_META_FILES {
@@ -953,16 +1069,43 @@ fn collect_spring_metadata_synthetic_files(
 
             let mut zip_file = match archive.by_name(rel) {
                 Ok(file) => file,
-                Err(_) => continue,
+                Err(zip::result::ZipError::FileNotFound) => continue,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.ide",
+                        jar_path = %jar_path.display(),
+                        rel,
+                        error = %err,
+                        "failed to open Spring metadata entry in classpath jar"
+                    );
+                    continue;
+                }
             };
 
             let mut bytes = Vec::new();
-            if zip_file.read_to_end(&mut bytes).is_err() {
+            if let Err(err) = zip_file.read_to_end(&mut bytes) {
+                tracing::debug!(
+                    target = "nova.ide",
+                    jar_path = %jar_path.display(),
+                    rel,
+                    error = %err,
+                    "failed to read Spring metadata entry from classpath jar"
+                );
                 continue;
             }
 
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(err) => {
+                    tracing::debug!(
+                        target = "nova.ide",
+                        jar_path = %jar_path.display(),
+                        rel,
+                        error = %err,
+                        "Spring metadata entry is not valid UTF-8"
+                    );
+                    continue;
+                }
             };
 
             let synthetic_path = PathBuf::from(format!("{}!/{rel}", jar_path.display()));

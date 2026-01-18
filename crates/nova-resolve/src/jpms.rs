@@ -314,7 +314,23 @@ impl Workspace {
         let mut graph = ModuleGraph::new();
         let mut module_roots = HashMap::new();
 
-        for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        let mut logged_walk_error = false;
+        for entry in WalkDir::new(root).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    if !logged_walk_error {
+                        tracing::debug!(
+                            target = "nova.resolve",
+                            root = %root.display(),
+                            error = %err,
+                            "failed to walk workspace while loading JPMS fixtures"
+                        );
+                        logged_walk_error = true;
+                    }
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -410,7 +426,24 @@ fn index_java_sources(
     module_root: &Path,
     types: &mut HashMap<String, TypeDef>,
 ) -> Result<(), WorkspaceError> {
-    for entry in WalkDir::new(module_root).into_iter().filter_map(Result::ok) {
+    let mut logged_walk_error = false;
+    for entry in WalkDir::new(module_root).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                if !logged_walk_error {
+                    tracing::debug!(
+                        target = "nova.resolve",
+                        module = %module.as_str(),
+                        root = %module_root.display(),
+                        error = %err,
+                        "failed to walk module root while indexing JPMS fixture sources"
+                    );
+                    logged_walk_error = true;
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -427,7 +460,7 @@ fn index_java_sources(
             source,
         })?;
 
-        let package = parse_package(&src).unwrap_or_default();
+        let package = parse_package(&src).unwrap_or_else(String::new);
         let Some(name) = parse_first_type_name(&src) else {
             continue;
         };

@@ -6,6 +6,7 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Hard upper bound for any bincode-encoded cache payload we will attempt to
@@ -18,10 +19,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const BINCODE_PAYLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(err) => {
+            // This should be extremely rare (system clock set before 1970). Avoid spamming logs
+            // in any hot call sites by logging at most once.
+            static REPORTED: OnceLock<()> = OnceLock::new();
+            if REPORTED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.cache",
+                    error = %err,
+                    "system time is before unix epoch; using 0 for now_millis"
+                );
+            }
+            0
+        }
+    }
 }
 
 pub(crate) fn bincode_options() -> impl bincode::Options + Copy {
@@ -46,24 +59,68 @@ pub(crate) fn bincode_deserialize<T: for<'de> Deserialize<'de>>(
 
 pub(crate) fn read_file_limited(path: &Path) -> Option<Vec<u8>> {
     // Avoid following symlinks out of the cache directory.
-    let meta = std::fs::symlink_metadata(path).ok()?;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            // Cache misses are expected; only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to stat cache file"
+                );
+            }
+            return None;
+        }
+    };
     if meta.file_type().is_symlink() || !meta.is_file() {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "read_file_limited.invalid_type");
         return None;
     }
 
     if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "read_file_limited.oversize_meta");
         return None;
     }
 
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read cache file"
+                );
+            }
+            return None;
+        }
+    };
     if bytes.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "read_file_limited.oversize_read");
         return None;
     }
 
     Some(bytes)
+}
+
+pub(crate) fn remove_file_best_effort(path: &Path, reason: &'static str) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to remove cache file"
+            );
+            false
+        }
+    }
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -98,7 +155,16 @@ pub(crate) fn atomic_write_with(
     })();
     if let Err(err) = write_result {
         drop(file);
-        let _ = fs::remove_file(&tmp_path);
+        if let Err(remove_err) = fs::remove_file(&tmp_path) {
+            if remove_err.kind() != io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %tmp_path.display(),
+                    error = %remove_err,
+                    "failed to remove temporary file after write failure"
+                );
+            }
+        }
         return Err(err);
     }
     drop(file);
@@ -135,17 +201,55 @@ pub(crate) fn atomic_write_with(
 
     match rename_result {
         Ok(()) => {
-            #[cfg(unix)]
-            {
-                let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-            }
+            sync_dir_best_effort(parent, "atomic_write_with.sync_parent_dir");
             Ok(())
         }
         Err(err) => {
-            let _ = fs::remove_file(&tmp_path);
+            if let Err(remove_err) = fs::remove_file(&tmp_path) {
+                if remove_err.kind() != io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        path = %tmp_path.display(),
+                        error = %remove_err,
+                        "failed to remove temporary file after rename failure"
+                    );
+                }
+            }
             Err(CacheError::from(err))
         }
     }
+}
+
+#[track_caller]
+fn sync_dir_best_effort(dir: &Path, reason: &'static str) {
+    #[cfg(unix)]
+    static SYNC_DIR_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    #[cfg(unix)]
+    {
+        match fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if SYNC_DIR_ERROR_LOGGED.set(()).is_ok() {
+                    let loc = std::panic::Location::caller();
+                    tracing::debug!(
+                        target = "nova.cache",
+                        dir = %dir.display(),
+                        reason,
+                        file = loc.file(),
+                        line = loc.line(),
+                        column = loc.column(),
+                        error = %err,
+                        "failed to sync directory (best effort)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (dir, reason);
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {

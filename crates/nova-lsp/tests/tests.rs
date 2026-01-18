@@ -156,16 +156,20 @@ mod suite {
 fn tests_dir_contains_only_tests_rs_at_root() {
     let tests_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
 
-    let mut root_rs_files: Vec<String> = std::fs::read_dir(&tests_dir)
+    let mut root_rs_files: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&tests_dir)
         .unwrap_or_else(|err| panic!("failed to read tests dir `{}`: {err}", tests_dir.display()))
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .filter_map(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .collect();
+    {
+        let entry = entry.expect("failed to read tests dir entry");
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "rs") {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        root_rs_files.push(name.to_string_lossy().into_owned());
+    }
     root_rs_files.sort();
 
     assert_eq!(

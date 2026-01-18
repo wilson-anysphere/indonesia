@@ -340,7 +340,19 @@ fn dagger_code(source: Option<&str>) -> &'static str {
 }
 
 fn normalize_root(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize root for dagger analysis"
+            );
+            path.to_path_buf()
+        }
+    }
 }
 
 fn span_contains_offset(span: Span, offset: usize) -> bool {

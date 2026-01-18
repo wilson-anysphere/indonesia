@@ -69,7 +69,13 @@ fn repo_root() -> Result<PathBuf> {
 }
 
 fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
-    let existing = std::fs::read_to_string(path).ok();
+    let existing = match std::fs::read_to_string(path) {
+        Ok(existing) => Some(existing),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read `{}`", path.display()));
+        }
+    };
     if existing.as_deref() == Some(contents) {
         return Ok(());
     }

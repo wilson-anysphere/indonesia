@@ -1,5 +1,6 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
+use crate::fs_cleanup::remove_file_best_effort;
 use crate::jpms::{
     compiler_arg_looks_like_jpms, infer_module_path_for_compile_config,
     main_source_roots_have_module_info,
@@ -10,7 +11,20 @@ use crate::{
 };
 use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static MAVEN_TEMP_EFFECTIVE_POM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn maven_temp_effective_pom_token() -> u128 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_else(|err| err.duration())
+        .as_nanos();
+    let counter = MAVEN_TEMP_EFFECTIVE_POM_COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+    let pid = std::process::id() as u128;
+    (nanos << 32) ^ (pid << 16) ^ counter
+}
 
 fn maven_compiler_arg_contains_enable_preview(arg: &str) -> bool {
     let arg = arg.trim();
@@ -610,7 +624,7 @@ impl MavenBuild {
         }
 
         let pom_xml = std::fs::read_to_string(&effective_pom)?;
-        let _ = std::fs::remove_file(&effective_pom);
+        remove_file_best_effort(&effective_pom, "maven.annotation_processing.effective_pom");
 
         let maven_repo = self
             .evaluate_scalar_best_effort(project_root, module_relative, "settings.localRepository")?
@@ -869,18 +883,16 @@ pub fn parse_maven_effective_pom_annotation_processing_with_repo(
             .children()
             .filter(|n| n.is_element() && n.has_tag_name("execution"))
         {
-            let goals = child_element(&exec, "goals")
-                .map(|goals| {
-                    goals
-                        .children()
-                        .filter(|n| n.is_element() && n.has_tag_name("goal"))
-                        .filter_map(|n| n.text())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let goals = child_element(&exec, "goals").map_or_else(Vec::new, |goals| {
+                goals
+                    .children()
+                    .filter(|n| n.is_element() && n.has_tag_name("goal"))
+                    .filter_map(|n| n.text())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            });
 
             let Some(config) = child_element(&exec, "configuration") else {
                 continue;
@@ -915,10 +927,7 @@ pub fn parse_maven_effective_pom_annotation_processing_with_repo(
 
 fn write_temp_effective_pom_path() -> PathBuf {
     let mut path = std::env::temp_dir();
-    let token = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let token = maven_temp_effective_pom_token();
     path.push(format!("nova_maven_effective_{token}.xml"));
     path
 }
@@ -1301,29 +1310,75 @@ fn snapshot_jar_value_from_local_metadata(
         "maven-metadata-local.xml".to_string(),
         "maven-metadata.xml".to_string(),
     ];
-    if let Ok(entries) = std::fs::read_dir(version_dir) {
-        let mut extra = Vec::new();
-        for entry in entries.filter_map(|entry| entry.ok()) {
-            let file_name = entry.file_name();
-            let Some(file_name) = file_name.to_str() else {
-                continue;
-            };
-            if file_name == "maven-metadata-local.xml" || file_name == "maven-metadata.xml" {
-                continue;
+    match std::fs::read_dir(version_dir) {
+        Ok(entries) => {
+            let mut extra = Vec::new();
+            let mut logged_entry_error = false;
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => {
+                        if !logged_entry_error {
+                            tracing::debug!(
+                                target = "nova.build",
+                                version_dir = %version_dir.display(),
+                                error = %err,
+                                "failed to read directory entry while scanning Maven snapshot metadata"
+                            );
+                            logged_entry_error = true;
+                        }
+                        continue;
+                    }
+                };
+                let file_name = entry.file_name();
+                let Some(file_name) = file_name.to_str() else {
+                    continue;
+                };
+                if file_name == "maven-metadata-local.xml" || file_name == "maven-metadata.xml" {
+                    continue;
+                }
+                if file_name.starts_with("maven-metadata-") && file_name.ends_with(".xml") {
+                    extra.push(file_name.to_string());
+                }
             }
-            if file_name.starts_with("maven-metadata-") && file_name.ends_with(".xml") {
-                extra.push(file_name.to_string());
+            extra.sort();
+            extra.dedup();
+            metadata_names.extend(extra);
+        }
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.build",
+                    version_dir = %version_dir.display(),
+                    error = %err,
+                    "failed to list Maven snapshot metadata files; ignoring repo-scoped metadata"
+                );
             }
         }
-        extra.sort();
-        extra.dedup();
-        metadata_names.extend(extra);
     }
 
     fn parse_snapshot_timestamp_and_build(value: &str) -> Option<(&str, u32)> {
+        static SNAPSHOT_BUILD_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> =
+            std::sync::OnceLock::new();
+
         let (prefix_and_timestamp, build) = value.rsplit_once('-')?;
         let (_prefix, timestamp) = prefix_and_timestamp.rsplit_once('-')?;
-        let build = build.parse().ok()?;
+        let build: u32 = match build.parse() {
+            Ok(build) => build,
+            Err(err) => {
+                if SNAPSHOT_BUILD_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.build",
+                        value,
+                        build_segment = build,
+                        error = %err,
+                        "failed to parse Maven snapshot build number"
+                    );
+                }
+                return None;
+            }
+        };
         Some((timestamp, build))
     }
 
@@ -1342,11 +1397,31 @@ fn snapshot_jar_value_from_local_metadata(
 
     for file in metadata_names {
         let path = version_dir.join(file);
-        let Ok(xml) = std::fs::read_to_string(&path) else {
-            continue;
+        let xml = match std::fs::read_to_string(&path) {
+            Ok(xml) => xml,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read Maven snapshot metadata file"
+                    );
+                }
+                continue;
+            }
         };
-        let Ok(doc) = roxmltree::Document::parse(&xml) else {
-            continue;
+        let doc = match roxmltree::Document::parse(&xml) {
+            Ok(doc) => doc,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to parse Maven snapshot metadata file"
+                );
+                continue;
+            }
         };
 
         for sv in doc
@@ -1616,9 +1691,25 @@ pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf> {
-    fn parse_modules(pom_xml: &str) -> Vec<PathBuf> {
-        let Ok(doc) = roxmltree::Document::parse(pom_xml) else {
-            return Vec::new();
+    fn parse_modules(
+        pom_path: &Path,
+        pom_xml: &str,
+        logged_parse_error: &mut bool,
+    ) -> Vec<PathBuf> {
+        let doc = match roxmltree::Document::parse(pom_xml) {
+            Ok(doc) => doc,
+            Err(err) => {
+                if !*logged_parse_error {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %pom_path.display(),
+                        error = %err,
+                        "failed to parse pom.xml while discovering Maven modules"
+                    );
+                    *logged_parse_error = true;
+                }
+                return Vec::new();
+            }
         };
         let project = doc.root_element();
         let Some(modules) = child_element(&project, "modules") else {
@@ -1639,10 +1730,21 @@ fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf>
     }
 
     let root_pom = root.join("pom.xml");
-    let Ok(root_pom_xml) = std::fs::read_to_string(&root_pom) else {
-        return Vec::new();
+    let root_pom_xml = match std::fs::read_to_string(&root_pom) {
+        Ok(xml) => xml,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build",
+                path = %root_pom.display(),
+                error = %err,
+                "failed to read root pom.xml while discovering Maven modules"
+            );
+            return Vec::new();
+        }
     };
-    let root_modules = parse_modules(&root_pom_xml);
+    let mut logged_root_parse_error = false;
+    let root_modules = parse_modules(&root_pom, &root_pom_xml, &mut logged_root_parse_error);
     if root_modules.is_empty() {
         return Vec::new();
     }
@@ -1652,6 +1754,8 @@ fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf>
     let mut out = Vec::new();
     let mut stack = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut logged_child_read_error = false;
+    let mut logged_child_parse_error = false;
 
     for module in root_modules {
         if seen.insert(module.clone()) {
@@ -1662,10 +1766,23 @@ fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf>
 
     while let Some(parent_rel) = stack.pop() {
         let child_pom = root.join(&parent_rel).join("pom.xml");
-        let Ok(child_xml) = std::fs::read_to_string(&child_pom) else {
-            continue;
+        let child_xml = match std::fs::read_to_string(&child_pom) {
+            Ok(xml) => xml,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_child_read_error {
+                    tracing::debug!(
+                        target = "nova.build",
+                        path = %child_pom.display(),
+                        error = %err,
+                        "failed to read child pom.xml while discovering Maven modules"
+                    );
+                    logged_child_read_error = true;
+                }
+                continue;
+            }
         };
-        let child_modules = parse_modules(&child_xml);
+        let child_modules = parse_modules(&child_pom, &child_xml, &mut logged_child_parse_error);
         for child in child_modules {
             let rel = parent_rel.join(child);
             if rel.as_os_str().is_empty() {
@@ -2362,7 +2479,10 @@ mod tests {
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations.lock().expect("lock poisoned").clone()
+            self.invocations
+                .lock()
+                .expect("invocations mutex poisoned")
+                .clone()
         }
     }
 
@@ -2389,7 +2509,7 @@ mod tests {
         ) -> std::io::Result<CommandOutput> {
             self.invocations
                 .lock()
-                .expect("lock poisoned")
+                .expect("invocations mutex poisoned")
                 .push(args.to_vec());
 
             let expression = args

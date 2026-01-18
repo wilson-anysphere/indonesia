@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use lsp_types::{Location, Position, Uri};
 use nova_cache::Fingerprint;
-use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex};
+use nova_core::LineIndex;
 use nova_db::{Database, FileId};
 use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
 use nova_index::{InheritanceEdge, InheritanceIndex};
@@ -285,7 +285,19 @@ fn file_navigation_roots(db: &dyn Database, file: FileId) -> (PathBuf, PathBuf) 
 }
 
 fn normalize_root_for_cache(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+    match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.ide",
+                root = %root.display(),
+                error = %err,
+                "failed to canonicalize root for file navigation cache"
+            );
+            root.to_path_buf()
+        }
+    }
 }
 
 fn in_memory_workspace_key(files: &[WorkspaceJavaFile]) -> PathBuf {
@@ -569,7 +581,22 @@ fn mapstruct_target_location(
         });
     }
 
-    let text = std::fs::read_to_string(&target.file).ok()?;
+    let text = match std::fs::read_to_string(&target.file) {
+        Ok(text) => text,
+        Err(err) => {
+            // The target may be outside the current workspace and could race with deletion.
+            // Treat as best-effort and only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.ide",
+                    file = %target.file.display(),
+                    error = %err,
+                    "failed to read mapstruct navigation target file"
+                );
+            }
+            return None;
+        }
+    };
     let line_index = LineIndex::new(&text);
     Some(Location {
         uri: uri_for_path(&target.file).unwrap_or_else(fallback_unknown_uri),
@@ -589,9 +616,7 @@ fn uri_for_file(db: &dyn Database, file_id: FileId) -> Uri {
 }
 
 fn uri_for_path(path: &Path) -> Option<Uri> {
-    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
-    let uri = path_to_file_uri(&abs).ok()?;
-    Uri::from_str(&uri).ok()
+    crate::uri::uri_from_path_best_effort(path, "file_navigation.uri_for_path")
 }
 
 fn fallback_unknown_uri() -> Uri {

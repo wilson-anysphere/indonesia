@@ -30,24 +30,31 @@ impl MavenEvaluateRoutingRunner {
 
 impl CommandRunner for MavenEvaluateRoutingRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
-        self.invocations.lock().unwrap().push(Invocation {
-            cwd: cwd.to_path_buf(),
-            program: program.to_path_buf(),
-            args: args.to_vec(),
-        });
+        self.invocations
+            .lock()
+            .expect("invocations mutex poisoned")
+            .push(Invocation {
+                cwd: cwd.to_path_buf(),
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+            });
 
-        let expression = args
+        let Some(expression) = args
             .iter()
             .find_map(|arg| arg.strip_prefix("-Dexpression="))
-            .unwrap_or_default();
+        else {
+            return Err(std::io::Error::other("missing -Dexpression=... argument"));
+        };
 
         Ok(self
             .outputs
             .get(expression)
             .cloned()
             .unwrap_or_else(|| CommandOutput {
-                status: success_status(),
-                stdout: String::new(),
+                // Simulate `mvn help:evaluate` failing for unsupported expressions so Nova's
+                // `*_best_effort` helpers can fall back to defaults.
+                status: failure_status(),
+                stdout: format!("Unknown expression {expression}\n"),
                 stderr: String::new(),
                 truncated: false,
             }))
@@ -64,6 +71,19 @@ fn success_status() -> ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatus::from_raw(0)
+    }
+}
+
+fn failure_status() -> ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(1 << 8)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(1)
     }
 }
 
@@ -109,6 +129,16 @@ fn maven_java_compile_config_includes_conventional_generated_source_roots() {
     outputs.insert(
         "project.build.directory".to_string(),
         scalar_output("target"),
+    );
+    // `java_compile_config` also evaluates classpaths; keep the test focused by returning empty
+    // lists for these expressions.
+    outputs.insert(
+        "project.compileClasspathElements".to_string(),
+        list_output(&[]),
+    );
+    outputs.insert(
+        "project.testClasspathElements".to_string(),
+        list_output(&[]),
     );
 
     let runner = Arc::new(MavenEvaluateRoutingRunner::new(outputs));

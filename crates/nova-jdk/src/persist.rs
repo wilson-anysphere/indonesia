@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_cache::Fingerprint;
@@ -27,9 +28,9 @@ impl ContainerFingerprint {
         let (mtime_secs, mtime_nanos) = system_time_parts(modified);
         let file_name = path
             .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_owned();
+            .unwrap_or_else(|| path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
 
         Ok(Self {
             file_name,
@@ -99,8 +100,14 @@ pub(crate) fn load_symbol_index(
     ) {
         Ok(Some(archive)) => archive,
         Ok(None) => return None,
-        Err(_) => {
-            let _ = std::fs::remove_file(&cache_path);
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %cache_path.display(),
+                error = %err,
+                "failed to open jdk symbol index cache file"
+            );
+            remove_file_best_effort(&cache_path, "open_failed");
             return None;
         }
     };
@@ -114,7 +121,7 @@ pub(crate) fn load_symbol_index(
     for entry in archive.class_to_container.iter() {
         let container_idx = entry.1;
         if container_idx >= container_count {
-            let _ = std::fs::remove_file(&cache_path);
+            remove_file_best_effort(&cache_path, "invalid_container_index");
             return None;
         }
         class_to_container.insert(entry.0.as_str().to_owned(), container_idx);
@@ -182,8 +189,14 @@ pub(crate) fn load_ct_sym_index(
     ) {
         Ok(Some(archive)) => archive,
         Ok(None) => return None,
-        Err(_) => {
-            let _ = std::fs::remove_file(&cache_path);
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %cache_path.display(),
+                error = %err,
+                "failed to open ct.sym cache file"
+            );
+            remove_file_best_effort(&cache_path, "open_failed");
             return None;
         }
     };
@@ -219,12 +232,12 @@ pub(crate) fn load_ct_sym_index(
     let mut class_to_module = HashMap::with_capacity(archive.class_to_module.len());
     for (internal, module_idx) in archive.class_to_module.iter() {
         if *module_idx >= module_count {
-            let _ = std::fs::remove_file(&cache_path);
+            remove_file_best_effort(&cache_path, "invalid_module_index");
             return None;
         }
         let internal = internal.as_str().to_owned();
         if !internal_to_zip_path.contains_key(&internal) {
-            let _ = std::fs::remove_file(&cache_path);
+            remove_file_best_effort(&cache_path, "missing_zip_path");
             return None;
         }
         class_to_module.insert(internal, *module_idx as usize);
@@ -341,19 +354,68 @@ fn ct_sym_cache_key_path(ct_sym_path: &Path) -> PathBuf {
         }
     }
 
-    std::fs::canonicalize(&key).unwrap_or(key)
+    match std::fs::canonicalize(&key) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => key,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %key.display(),
+                error = %err,
+                "failed to canonicalize ct.sym cache key path"
+            );
+            key
+        }
+    }
 }
 
 fn canonical_path_string(path: &Path) -> String {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %path.display(),
+                error = %err,
+                "failed to canonicalize path"
+            );
+            path.to_path_buf()
+        }
+    };
     path.to_string_lossy().replace('\\', "/")
 }
 
 fn system_time_parts(time: SystemTime) -> (u64, u32) {
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static SYSTEM_TIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if SYSTEM_TIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.jdk",
+                error = %err,
+                "failed to compute duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     (duration.as_secs(), duration.subsec_nanos())
+}
+
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.jdk",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to delete jdk cache file"
+            );
+        }
+    }
 }
 
 fn fingerprints_match(
@@ -388,9 +450,20 @@ fn fingerprint_matches_single(
 }
 
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
+    static NOW_MILLIS_DURATION_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let duration = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(err) => {
+            if NOW_MILLIS_DURATION_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    error = ?err,
+                    "failed to compute epoch millis (time before UNIX_EPOCH?)"
+                );
+            }
+            return 0;
+        }
+    };
+    duration.as_millis().min(u64::MAX as u128) as u64
 }

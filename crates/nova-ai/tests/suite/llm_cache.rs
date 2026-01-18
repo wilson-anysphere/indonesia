@@ -134,3 +134,47 @@ async fn llm_cache_misses_when_temperature_changes() {
 
     mock.assert_hits(2);
 }
+
+#[tokio::test]
+async fn llm_cache_misses_when_temperature_is_unset_vs_zero() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200).json_body(json!({ "completion": "Pong" }));
+    });
+
+    let cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
+    let client = AiClient::from_config(&cfg).unwrap();
+
+    let request_none = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: None,
+    };
+    let request_zero = ChatRequest {
+        temperature: Some(0.0),
+        ..request_none.clone()
+    };
+
+    assert_eq!(
+        client
+            .chat(request_none, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
+    assert_eq!(
+        client
+            .chat(request_zero, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
+
+    // The requests differ in how temperature is specified (unset vs explicitly zero).
+    // These should not share a cache entry.
+    mock.assert_hits(2);
+}

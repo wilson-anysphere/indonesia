@@ -130,7 +130,9 @@ proptest! {
 
     #[test]
     fn framed_rpc_message_roundtrip(msg in arb_rpc_message()) {
-        let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS.lock().unwrap();
+        let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS
+            .lock()
+            .expect("__TRANSPORT_ENV_LOCK_FOR_TESTS mutex poisoned");
         let encoded = transport::encode_framed_message(&msg).unwrap();
         let decoded = transport::decode_framed_message(&encoded).unwrap();
         prop_assert_eq!(decoded, msg);

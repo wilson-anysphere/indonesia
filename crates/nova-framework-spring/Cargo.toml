@@ -18,6 +18,7 @@ nova-framework-parse = { path = "../nova-framework-parse" }
 
 tree-sitter = "0.20"
 zip = "0.6"
+tracing = { workspace = true }
 
 [dev-dependencies]
 insta = "1"

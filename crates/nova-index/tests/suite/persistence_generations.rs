@@ -117,7 +117,10 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
                 }
 
                 save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
-                generations.lock().unwrap().push(indexes.symbols.generation);
+                generations
+                    .lock()
+                    .expect("generations mutex poisoned")
+                    .push(indexes.symbols.generation);
 
                 // Give other writers a chance to start saving while we load.
                 std::thread::sleep(Duration::from_millis(1));
@@ -143,7 +146,7 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
         "expected at least one successful load"
     );
 
-    let generations = generations.lock().unwrap();
+    let generations = generations.lock().expect("generations mutex poisoned");
     let mut unique = generations.clone();
     unique.sort_unstable();
     unique.dedup();

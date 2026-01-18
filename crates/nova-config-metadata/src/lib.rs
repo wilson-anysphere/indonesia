@@ -79,12 +79,12 @@ impl MetadataIndex {
         let raw: RawMetadata = serde_json::from_slice(bytes)
             .with_context(|| "failed to parse Spring configuration metadata JSON")?;
 
-        for prop in raw.properties.unwrap_or_default() {
+        for prop in raw.properties.unwrap_or_else(Vec::new) {
             self.insert_property(prop);
         }
 
         // Hints provide allowed values.
-        for hint in raw.hints.unwrap_or_default() {
+        for hint in raw.hints.unwrap_or_else(Vec::new) {
             if let Some(values) = hint.values {
                 let allowed_values: Vec<String> = values
                     .into_iter()

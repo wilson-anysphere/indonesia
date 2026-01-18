@@ -71,6 +71,7 @@ fn type_at_offset_fully_qualified(
     snapshot: &SalsaSnapshot,
     file: DbFileId,
     offset: u32,
+    elide_java_lang: bool,
 ) -> Option<String> {
     let tree = snapshot.hir_item_tree(file);
     let owners = collect_body_owners(&tree);
@@ -88,10 +89,18 @@ fn type_at_offset_fully_qualified(
 
     let (owner, expr, _) = best?;
     let expr_res = snapshot.type_of_expr_demand_result(file, FileExprId { owner, expr });
-    Some(strip_java_lang_prefix(&format_type_fully_qualified(
+    let ty = format_type_fully_qualified_with_opts(
         &*expr_res.env,
         &expr_res.ty,
-    )))
+        TypeFormatOpts {
+            elide_java_lang: false,
+        },
+    );
+    Some(if elide_java_lang {
+        strip_java_lang_prefix(&ty)
+    } else {
+        ty
+    })
 }
 
 fn strip_java_lang_prefix(ty: &str) -> String {
@@ -119,27 +128,20 @@ fn infer_type_at_offsets(
     typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     offsets: impl IntoIterator<Item = usize>,
+    elide_java_lang: bool,
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) = type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
-        else {
+        let Some(ty) = type_at_offset_fully_qualified(
+            &typeck.snapshot,
+            typeck.file,
+            offset as u32,
+            elide_java_lang,
+        ) else {
             continue;
         };
-        // `type_at_offset_fully_qualified` returns fully-qualified names (e.g.
-        // `java.lang.RuntimeException`). Since `java.lang` is implicitly imported in Java, avoid
-        // emitting the redundant qualifier when it is the *top-level* type.
-        //
-        // Note: we intentionally keep nested `java.lang.*` segments inside generic type arguments
-        // (e.g. `java.util.List<java.lang.String>`) so the type remains fully qualified when the
-        // outer type already requires qualification.
-        let ty = if let Some(rest) = ty.strip_prefix("java.lang.") {
-            rest.to_string()
-        } else {
-            ty
-        };
         if is_valid_signature_type_string(&ty) {
-            return Some(strip_java_lang_qualifiers(&ty));
+            return Some(ty);
         }
     }
     None
@@ -152,16 +154,6 @@ struct TypeFormatOpts {
     /// suite expects we *do not* elide `java.lang` for types that occur inside generic type
     /// arguments, so we thread this option through the formatter.
     elide_java_lang: bool,
-}
-
-fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
-    format_type_fully_qualified_with_opts(
-        env,
-        ty,
-        TypeFormatOpts {
-            elide_java_lang: true,
-        },
-    )
 }
 
 fn format_type_fully_qualified_with_opts(
@@ -290,10 +282,6 @@ fn binary_name_to_source_qualified(binary_name: &str, elide_java_lang: bool) -> 
     } else {
         out
     }
-}
-
-fn strip_java_lang_qualifiers(ty: &str) -> String {
-    ty.strip_prefix("java.lang.").unwrap_or(ty).to_string()
 }
 
 fn item_members<'a>(
@@ -1234,7 +1222,7 @@ impl ExtractMethod {
                 }
             }
             offsets.push(selection.start);
-            if let Some(inferred) = infer_type_at_offsets(&mut typeck, source, offsets) {
+            if let Some(inferred) = infer_type_at_offsets(&mut typeck, source, offsets, true) {
                 return_ty = Some(inferred);
             }
         }
@@ -2218,28 +2206,7 @@ fn collect_declared_types(
                 continue;
             };
             let name_span = span_of_token(&name_tok);
-            // Best-effort: for `var x = new Foo();`, prefer the *source* type text `Foo` over a
-            // fully-qualified type-checker string (`pkg.Foo`) when the initializer type is written
-            // unqualified. This keeps the extracted signature consistent with the user's code and
-            // avoids unnecessary `java.lang.` qualification (e.g. `RuntimeException`).
-            let mut declared_ty = ty_text.clone();
-            if declared_ty.trim() == "var" {
-                if let Some(ast::Expression::NewExpression(new_expr)) = decl.initializer() {
-                    if let Some(init_ty) = new_expr.ty() {
-                        let init_ty_text =
-                            slice_syntax(source, init_ty.syntax()).unwrap_or("").trim();
-                        if init_ty_text
-                            .chars()
-                            .next()
-                            .is_some_and(|c| !c.is_ascii_lowercase())
-                            && !init_ty_text.is_empty()
-                        {
-                            declared_ty = init_ty_text.to_string();
-                        }
-                    }
-                }
-            }
-            types.insert(name_span, declared_ty);
+            types.insert(name_span, ty_text.clone());
 
             if let Some(initializer) = decl.initializer() {
                 initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
@@ -2500,28 +2467,7 @@ fn collect_declared_types_by_name(
             };
             let name = name_tok.text().to_string();
             let offset = u32::from(name_tok.text_range().start()) as usize;
-            let mut decl_ty = ty_text.to_string();
-
-            // Best-effort: for `var e = new RuntimeException();`, treat the declared type as the
-            // unqualified initializer type (`RuntimeException`) so throw-type inference doesn't
-            // fall back to fully-qualified type-checker strings (`java.lang.RuntimeException`).
-            if decl_ty == "var" {
-                if let Some(ast::Expression::NewExpression(new_expr)) = decl.initializer() {
-                    if let Some(init_ty) = new_expr.ty() {
-                        let init_ty_text_full =
-                            slice_syntax(source, init_ty.syntax()).unwrap_or("").trim();
-                        let init_ty_text = strip_type_arguments(init_ty_text_full);
-                        if init_ty_text
-                            .chars()
-                            .next()
-                            .is_some_and(|c| !c.is_ascii_lowercase())
-                            && !init_ty_text.is_empty()
-                        {
-                            decl_ty = init_ty_text.to_string();
-                        }
-                    }
-                }
-            }
+            let decl_ty = ty_text.to_string();
             out.entry(name).or_default().push(DeclaredTypeCandidate {
                 offset,
                 ty: decl_ty,
@@ -2799,9 +2745,8 @@ fn infer_thrown_exception_type_from_expr(
             }
 
             if ty_text == "var" {
-                let inferred = infer_type_at_offsets(typeck, source, [use_offset])?;
+                let inferred = infer_type_at_offsets(typeck, source, [use_offset], false)?;
                 let inferred = strip_type_arguments(inferred.trim());
-                let inferred = strip_java_lang_prefix(inferred);
                 if inferred.is_empty() || inferred.contains('|') {
                     None
                 } else {
@@ -3312,8 +3257,8 @@ fn type_for_local(
         offsets.push(offset);
     }
 
-    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
-        ty = strip_java_lang_prefix(inferred.trim()).to_string();
+    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets, false) {
+        ty = inferred.trim().to_string();
         return ty;
     }
 
@@ -3347,8 +3292,8 @@ fn type_for_decl_span(
     }
     offsets.push(fallback_offset);
 
-    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
-        ty = strip_java_lang_prefix(inferred.trim()).to_string();
+    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets, false) {
+        ty = inferred.trim().to_string();
         return ty;
     }
 
@@ -4744,10 +4689,7 @@ fn infer_expression_return_type(
         }
         ast::Expression::BinaryExpression(_) | ast::Expression::NameExpression(_) => {
             let range = syntax_range(expr.syntax());
-            let text = source
-                .get(range.start..range.end)
-                .unwrap_or_default()
-                .trim();
+            let text = source.get(range.start..range.end)?.trim();
             if text.contains('"') {
                 return Some("String".to_string());
             }

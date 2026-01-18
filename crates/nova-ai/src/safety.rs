@@ -92,6 +92,10 @@ pub enum SafetyError {
     TooManyInsertedChars { chars: usize, max: usize },
     #[error("patch deletes too many characters ({chars} > {max})")]
     TooManyDeletedChars { chars: usize, max: usize },
+    #[error("file '{file}' was not present in the workspace")]
+    MissingFile { file: String },
+    #[error("file '{file}' already exists in the workspace")]
+    FileAlreadyExists { file: String },
     #[error("patch contains too many hunks/edits for '{file}' ({hunks} > {max})")]
     TooManyHunks {
         file: String,
@@ -122,6 +126,16 @@ pub enum SafetyError {
     RenameNotAllowed { from: String, to: String },
     #[error("patch introduces new imports in '{file}': {imports:?}")]
     NewImports { file: String, imports: Vec<String> },
+    #[error(
+        "patch edit range for '{file}' is invalid: start=({start_line}:{start_char}) end=({end_line}:{end_char})"
+    )]
+    InvalidEditRange {
+        file: String,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    },
 }
 
 pub fn enforce_patch_safety(
@@ -146,6 +160,9 @@ pub fn enforce_patch_safety(
                 match op {
                     JsonPatchOp::Create { file, text } => {
                         validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
+                        if resolve_virtual_file(file, workspace, &virtual_files).is_some() {
+                            return Err(SafetyError::FileAlreadyExists { file: file.clone() });
+                        }
                         files.insert(file.clone());
                         new_files.insert(file.clone());
                         inserted_chars = inserted_chars.saturating_add(text.len());
@@ -165,8 +182,8 @@ pub fn enforce_patch_safety(
                         }
                         validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
                         files.insert(file.clone());
-                        let before =
-                            resolve_virtual_file(file, workspace, &virtual_files).unwrap_or("");
+                        let before = resolve_virtual_file(file, workspace, &virtual_files)
+                            .ok_or_else(|| SafetyError::MissingFile { file: file.clone() })?;
                         deleted_chars = deleted_chars.saturating_add(before.len());
                         let span = before.len();
                         if span > config.max_edit_span_chars {
@@ -190,9 +207,13 @@ pub fn enforce_patch_safety(
                         files.insert(from.clone());
                         files.insert(to.clone());
 
-                        let before = resolve_virtual_file(from, workspace, &virtual_files);
+                        if resolve_virtual_file(to, workspace, &virtual_files).is_some() {
+                            return Err(SafetyError::FileAlreadyExists { file: to.clone() });
+                        }
+                        let before = resolve_virtual_file(from, workspace, &virtual_files)
+                            .ok_or_else(|| SafetyError::MissingFile { file: from.clone() })?;
                         virtual_files.insert(from.clone(), None);
-                        virtual_files.insert(to.clone(), before);
+                        virtual_files.insert(to.clone(), Some(before));
                     }
                 }
             }
@@ -208,9 +229,6 @@ pub fn enforce_patch_safety(
                     &denied_exts,
                 )?;
                 files.insert(edit.file.clone());
-                if workspace.get(&edit.file).is_none() && !virtual_files.contains_key(&edit.file) {
-                    new_files.insert(edit.file.clone());
-                }
                 inserted_chars = inserted_chars.saturating_add(edit.text.len());
 
                 let count = edits_per_file.entry(edit.file.clone()).or_default();
@@ -223,22 +241,58 @@ pub fn enforce_patch_safety(
                     });
                 }
 
-                let before =
-                    resolve_virtual_file(&edit.file, workspace, &virtual_files).unwrap_or("");
+                let before = resolve_virtual_file(&edit.file, workspace, &virtual_files);
+                if before.is_none() {
+                    new_files.insert(edit.file.clone());
+                }
+                let before = before.unwrap_or("");
                 let index = LineIndex::new(before);
 
                 let start_pos =
                     CorePosition::new(edit.range.start.line, edit.range.start.character);
                 let end_pos = CorePosition::new(edit.range.end.line, edit.range.end.character);
 
+                let start_tuple = (edit.range.start.line, edit.range.start.character);
+                let end_tuple = (edit.range.end.line, edit.range.end.character);
+                if start_tuple > end_tuple {
+                    return Err(SafetyError::InvalidEditRange {
+                        file: edit.file.clone(),
+                        start_line: edit.range.start.line,
+                        start_char: edit.range.start.character,
+                        end_line: edit.range.end.line,
+                        end_char: edit.range.end.character,
+                    });
+                }
+
                 let start = index
                     .offset_of_position(before, start_pos)
                     .map(u32::from)
-                    .unwrap_or(0);
+                    .ok_or_else(|| SafetyError::InvalidEditRange {
+                        file: edit.file.clone(),
+                        start_line: edit.range.start.line,
+                        start_char: edit.range.start.character,
+                        end_line: edit.range.end.line,
+                        end_char: edit.range.end.character,
+                    })?;
                 let end = index
                     .offset_of_position(before, end_pos)
                     .map(u32::from)
-                    .unwrap_or(0);
+                    .ok_or_else(|| SafetyError::InvalidEditRange {
+                        file: edit.file.clone(),
+                        start_line: edit.range.start.line,
+                        start_char: edit.range.start.character,
+                        end_line: edit.range.end.line,
+                        end_char: edit.range.end.character,
+                    })?;
+                if end < start {
+                    return Err(SafetyError::InvalidEditRange {
+                        file: edit.file.clone(),
+                        start_line: edit.range.start.line,
+                        start_char: edit.range.start.character,
+                        end_line: edit.range.end.line,
+                        end_char: edit.range.end.character,
+                    });
+                }
                 let deleted_len = end.saturating_sub(start) as usize;
                 deleted_chars = deleted_chars.saturating_add(deleted_len);
 
@@ -253,6 +307,11 @@ pub fn enforce_patch_safety(
             }
         }
         Patch::UnifiedDiff(diff) => {
+            let mut exists: BTreeSet<String> = workspace
+                .files()
+                .map(|(path, _text)| path.clone())
+                .collect();
+
             for file in &diff.files {
                 if file.new_path == "/dev/null" && !config.allow_delete_files {
                     return Err(SafetyError::DeleteNotAllowed {
@@ -267,6 +326,38 @@ pub fn enforce_patch_safety(
                     return Err(SafetyError::RenameNotAllowed {
                         from: file.old_path.clone(),
                         to: file.new_path.clone(),
+                    });
+                }
+
+                if file.old_path == "/dev/null" {
+                    if exists.contains(&file.new_path) {
+                        return Err(SafetyError::FileAlreadyExists {
+                            file: file.new_path.clone(),
+                        });
+                    }
+                    exists.insert(file.new_path.clone());
+                } else if file.new_path == "/dev/null" {
+                    if !exists.remove(&file.old_path) {
+                        return Err(SafetyError::MissingFile {
+                            file: file.old_path.clone(),
+                        });
+                    }
+                } else if file.old_path != file.new_path {
+                    if !exists.contains(&file.old_path) {
+                        return Err(SafetyError::MissingFile {
+                            file: file.old_path.clone(),
+                        });
+                    }
+                    if exists.contains(&file.new_path) {
+                        return Err(SafetyError::FileAlreadyExists {
+                            file: file.new_path.clone(),
+                        });
+                    }
+                    exists.remove(&file.old_path);
+                    exists.insert(file.new_path.clone());
+                } else if !exists.contains(&file.new_path) {
+                    return Err(SafetyError::MissingFile {
+                        file: file.new_path.clone(),
                     });
                 }
 
@@ -378,8 +469,18 @@ pub fn enforce_no_new_imports(
 ) -> Result<(), SafetyError> {
     for (after_path, _ranges) in &applied.touched_ranges {
         let before_path = resolve_rename_origin(after_path, &applied.renamed_files);
-        let before_text = before.get(&before_path).unwrap_or("");
-        let after_text = after.get(after_path).unwrap_or("");
+        let after_text = after
+            .get(after_path)
+            .ok_or_else(|| SafetyError::MissingFile {
+                file: after_path.clone(),
+            })?;
+        let before_text = if applied.created_files.contains(after_path) {
+            ""
+        } else {
+            before
+                .get(&before_path)
+                .ok_or_else(|| SafetyError::MissingFile { file: before_path })?
+        };
         let imports = extract_new_imports(before_text, after_text);
         if !imports.is_empty() {
             return Err(SafetyError::NewImports {

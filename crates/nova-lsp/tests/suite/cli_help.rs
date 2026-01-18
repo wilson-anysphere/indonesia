@@ -21,7 +21,7 @@ fn help_documents_distributed_flags() {
             break;
         }
     }
-    let usage_line = usage_line.unwrap_or_default();
+    let usage_line = usage_line.expect("expected a Usage line after `Usage:`");
     assert!(
         usage_line.contains("--distributed"),
         "expected Usage line to include `--distributed`, got:\n{text}"

@@ -1,3 +1,4 @@
+mod poison;
 mod redact;
 
 use nova_config::{LogBuffer, NovaConfig};
@@ -7,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 pub struct BugReportBundle {
@@ -92,10 +93,7 @@ impl CrashStore {
     }
 
     pub fn record(&self, record: CrashRecord) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = crate::poison::lock(&self.inner, "CrashStore.record");
         if inner.len() == self.capacity {
             inner.pop_front();
         }
@@ -103,18 +101,12 @@ impl CrashStore {
     }
 
     pub fn snapshot(&self) -> Vec<CrashRecord> {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let inner = crate::poison::lock(&self.inner, "CrashStore.snapshot");
         inner.iter().cloned().collect()
     }
 
     pub fn clear(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = crate::poison::lock(&self.inner, "CrashStore.clear");
         inner.clear();
     }
 
@@ -246,6 +238,19 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
                     .then(|| format!("{:?}", std::backtrace::Backtrace::force_capture()))
                     .map(|bt| redact::redact_string(&bt));
 
+                // Ensure panics remain visible even when the "previous" hook is non-printing (e.g.
+                // certain test harnesses or third-party hooks). This is best-effort and uses the
+                // redacted message.
+                let thread = std::thread::current();
+                let thread_name = thread.name().unwrap_or("<unnamed>");
+                eprintln!(
+                    "thread '{thread_name}' panicked at {}:\n{message}",
+                    location.as_deref().unwrap_or("<unknown>")
+                );
+                if let Some(bt) = backtrace.as_deref() {
+                    eprintln!("{bt}");
+                }
+
                 tracing::error!(
                     target = "nova.panic",
                     panic.message = %message,
@@ -261,17 +266,18 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
                 };
                 state_for_hook.crash_store.record(record.clone());
 
-                let persisted_path = state_for_hook
-                    .persisted_crash_log_path
-                    .lock()
-                    .ok()
-                    .and_then(|p| p.clone());
+                let persisted_path = crate::poison::lock(
+                    &state_for_hook.persisted_crash_log_path,
+                    "panic_hook.persisted_crash_log_path",
+                )
+                .clone();
                 if let Some(path) = persisted_path.as_ref() {
                     let _ = append_crash_record(path, &record);
                 }
 
                 let notification = "Nova hit an internal error. The server will attempt to continue in safe-mode. Run `nova/bugReport` to generate a diagnostic bundle.";
-                let notifiers = state_for_hook.notifiers.lock().map(|n| n.clone()).unwrap_or_default();
+                let notifiers =
+                    crate::poison::lock(&state_for_hook.notifiers, "panic_hook.notifiers").clone();
                 for notify in notifiers {
                     notify(notification);
                 }
@@ -285,15 +291,12 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
         state.include_backtrace.store(true, Ordering::Relaxed);
     }
 
-    if let Ok(mut path) = state.persisted_crash_log_path.lock() {
-        *path = config.persisted_crash_log_path;
-    }
+    *crate::poison::lock(
+        &state.persisted_crash_log_path,
+        "install_panic_hook.persisted_crash_log_path",
+    ) = config.persisted_crash_log_path;
 
-    state
-        .notifiers
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(notifier);
+    crate::poison::lock(&state.notifiers, "install_panic_hook.notifiers").push(notifier);
 }
 
 fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
@@ -307,10 +310,21 @@ fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
 }
 
 fn unix_ms_now() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::from_secs(0))
-        .as_millis()
+    static UNIX_MS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(err) => {
+            if UNIX_MS_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.bugreport",
+                    error = %err,
+                    "failed to compute unix timestamp; returning 0"
+                );
+            }
+            0
+        }
+    }
 }
 
 /// Default path for the persistent crash log (JSONL).
@@ -354,7 +368,14 @@ pub fn default_crash_log_path() -> PathBuf {
 
 fn append_crash_record(path: &Path, record: &CrashRecord) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::debug!(
+                target = "nova.bugreport",
+                parent = %parent.display(),
+                error = %err,
+                "failed to create crash log directory"
+            );
+        }
     }
 
     let mut file = std::fs::OpenOptions::new()
@@ -370,6 +391,7 @@ fn append_crash_record(path: &Path, record: &CrashRecord) -> std::io::Result<()>
 
 fn read_persisted_crashes(path: &Path, max_records: usize) -> Vec<CrashRecord> {
     const MAX_CRASH_RECORD_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
+    static PERSISTED_CRASH_OPEN_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
 
     fn read_line_limited<R: BufRead>(
         reader: &mut R,
@@ -421,7 +443,19 @@ fn read_persisted_crashes(path: &Path, max_records: usize) -> Vec<CrashRecord> {
 
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
-        Err(_) => return Vec::new(),
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound
+                && PERSISTED_CRASH_OPEN_ERROR_LOGGED.set(()).is_ok()
+            {
+                tracing::debug!(
+                    target = "nova.bugreport",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to open persisted crash log; omitting persisted crashes from report"
+                );
+            }
+            return Vec::new();
+        }
     };
 
     let mut ring = VecDeque::with_capacity(max_records.min(512));
@@ -561,6 +595,9 @@ impl<'a> BugReportBuilder<'a> {
     }
 
     pub fn build(self) -> Result<BugReportBundle, BugReportError> {
+        static AVAILABLE_PARALLELISM_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static TIMESTAMP_FORMAT_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let start = PROCESS_START.get_or_init(Instant::now);
         let uptime_ms = start.elapsed().as_millis() as u64;
 
@@ -575,7 +612,16 @@ impl<'a> BugReportBuilder<'a> {
             nova_bugreport_version: env!("CARGO_PKG_VERSION"),
             timestamp_utc: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| "<unknown>".to_owned()),
+                .unwrap_or_else(|err| {
+                    if TIMESTAMP_FORMAT_ERROR_LOGGED.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.bugreport",
+                            error = %err,
+                            "failed to format UTC timestamp; using <unknown>"
+                        );
+                    }
+                    "<unknown>".to_owned()
+                }),
             timestamp_unix_ms: unix_ms_now(),
             target_triple: env!("NOVA_BUGREPORT_TARGET_TRIPLE"),
             os: std::env::consts::OS,
@@ -584,8 +630,21 @@ impl<'a> BugReportBuilder<'a> {
         };
         write_json(path.join("meta.json"), &meta)?;
 
+        let cpu_count = match std::thread::available_parallelism() {
+            Ok(n) => Some(n.get()),
+            Err(err) => {
+                if AVAILABLE_PARALLELISM_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.bugreport",
+                        error = %err,
+                        "failed to query available parallelism"
+                    );
+                }
+                None
+            }
+        };
         let system = SystemReport {
-            cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
+            cpu_count,
             total_memory_bytes: total_memory_bytes(),
             rss_bytes: current_rss_bytes(),
             uptime_ms,
@@ -608,11 +667,10 @@ impl<'a> BugReportBuilder<'a> {
         perf.safe_mode_active = self.safe_mode_active;
         write_json(path.join("performance.json"), &perf)?;
 
-        let persisted = self
-            .persisted_crash_log_path
-            .as_deref()
-            .map(|path| read_persisted_crashes(path, PERSISTED_CRASH_LIMIT))
-            .unwrap_or_default();
+        let persisted = match self.persisted_crash_log_path.as_deref() {
+            Some(path) => read_persisted_crashes(path, PERSISTED_CRASH_LIMIT),
+            None => Vec::new(),
+        };
         let mut in_memory = self.crash_store.snapshot();
         for record in &mut in_memory {
             sanitize_crash_record(record);
@@ -688,11 +746,43 @@ fn collect_env_snapshot() -> serde_json::Value {
 fn total_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        static MEMTOTAL_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let meminfo = match std::fs::read_to_string("/proc/meminfo") {
+            Ok(meminfo) => meminfo,
+            Err(err) => {
+                // `/proc` may not be available in some sandboxed environments; treat as
+                // best-effort and only log unexpected filesystem errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.bugreport",
+                        error = %err,
+                        "failed to read /proc/meminfo while sampling total memory"
+                    );
+                }
+                return None;
+            }
+        };
         for line in meminfo.lines() {
             let line = line.trim_start();
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+                let Some(kb_str) = rest.split_whitespace().next() else {
+                    return None;
+                };
+                let kb = match kb_str.parse::<u64>() {
+                    Ok(kb) => kb,
+                    Err(err) => {
+                        if MEMTOTAL_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.bugreport",
+                                kb = kb_str,
+                                error = ?err,
+                                "failed to parse MemTotal value from /proc/meminfo"
+                            );
+                        }
+                        return None;
+                    }
+                };
                 return Some(kb.saturating_mul(1024));
             }
         }
@@ -708,11 +798,41 @@ fn total_memory_bytes() -> Option<u64> {
 fn current_rss_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        static VMRSS_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let status = match std::fs::read_to_string("/proc/self/status") {
+            Ok(status) => status,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.bugreport",
+                        error = %err,
+                        "failed to read /proc/self/status while sampling rss"
+                    );
+                }
+                return None;
+            }
+        };
         for line in status.lines() {
             let line = line.trim_start();
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+                let Some(kb_str) = rest.split_whitespace().next() else {
+                    return None;
+                };
+                let kb = match kb_str.parse::<u64>() {
+                    Ok(kb) => kb,
+                    Err(err) => {
+                        if VMRSS_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.bugreport",
+                                kb = kb_str,
+                                error = ?err,
+                                "failed to parse VmRSS value from /proc/self/status"
+                            );
+                        }
+                        return None;
+                    }
+                };
                 return Some(kb.saturating_mul(1024));
             }
         }

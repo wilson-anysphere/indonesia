@@ -279,9 +279,7 @@ fn discover_beans_in_class(
     qualifier_annotations: &HashSet<String>,
 ) -> Option<Vec<Bean>> {
     let modifiers = modifier_node(&node);
-    let class_annotations = modifiers
-        .map(|m| collect_annotations(m, &src.text))
-        .unwrap_or_default();
+    let class_annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, &src.text));
 
     let is_factory = class_annotations.iter().any(|a| a.simple_name == "Factory");
     let is_class_bean = class_annotations.iter().any(|a| {
@@ -410,7 +408,7 @@ fn discover_field_injections(
     let ty_node = infer_field_type_node(&node);
     let ty = ty_node
         .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
-        .unwrap_or_default();
+        .unwrap_or_else(String::new);
 
     let qualifiers = extract_qualifiers(&anns, qualifier_annotations);
 
@@ -445,9 +443,7 @@ fn discover_factory_method_bean(
     factory_qualifiers: &[Qualifier],
 ) -> Option<Bean> {
     let modifiers = modifier_node(&node);
-    let annotations = modifiers
-        .map(|m| collect_annotations(m, &src.text))
-        .unwrap_or_default();
+    let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, &src.text));
     if !annotations.iter().any(|a| a.simple_name == "Bean") {
         return None;
     }
@@ -459,7 +455,7 @@ fn discover_factory_method_bean(
     let return_ty_node = find_named_child(&node, SyntaxKind::Type);
     let return_ty = return_ty_node
         .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
-        .unwrap_or_default();
+        .unwrap_or_else(String::new);
 
     let method_named = extract_named(&annotations);
     let bean_name = method_named.clone().unwrap_or_else(|| method_name.clone());
@@ -519,14 +515,14 @@ fn discover_callable_params_as_injections(
 
         let ty = infer_param_type_node(&child)
             .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
 
         let qualifiers = modifier_node(&child)
             .map(|m| {
                 let anns = collect_annotations(m, &src.text);
                 extract_qualifiers(&anns, qualifier_annotations)
             })
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
 
         out.push(InjectionPoint {
             label: name_token.text().to_string(),

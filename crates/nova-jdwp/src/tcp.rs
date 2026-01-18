@@ -542,7 +542,7 @@ impl TcpJdwpClient {
         &mut self,
         type_id: u64,
         method_id: u64,
-    ) -> Result<&Vec<(u64, u32)>, JdwpError> {
+    ) -> Result<&[(u64, u32)], JdwpError> {
         if !self.cache.line_tables.contains_key(&(type_id, method_id)) {
             let mut body = Vec::new();
             write_id(&mut body, self.id_sizes.reference_type_id, type_id);
@@ -566,7 +566,12 @@ impl TcpJdwpClient {
             self.cache.line_tables.insert((type_id, method_id), entries);
         }
 
-        Ok(self.cache.line_tables.get(&(type_id, method_id)).unwrap())
+        Ok(self
+            .cache
+            .line_tables
+            .get(&(type_id, method_id))
+            .unwrap()
+            .as_slice())
     }
 
     fn variable_table_for_method(
@@ -1283,8 +1288,24 @@ impl JdwpClient for TcpJdwpClient {
                     let sample = if sample_len == 0 {
                         Vec::new()
                     } else {
-                        self.array_get_values(array_id, 0, sample_len as i32)
-                            .unwrap_or_default()
+                        match self.array_get_values(array_id, 0, sample_len as i32) {
+                            Ok(values) => values,
+                            Err(err) => {
+                                // Best-effort preview; avoid failing on transient JDWP errors.
+                                static REPORTED_ARRAYLIST_SAMPLE_ERROR: std::sync::OnceLock<()> =
+                                    std::sync::OnceLock::new();
+                                if REPORTED_ARRAYLIST_SAMPLE_ERROR.set(()).is_ok() {
+                                    tracing::debug!(
+                                        target = "nova.jdwp",
+                                        array_id,
+                                        sample_len,
+                                        error = %err,
+                                        "failed to read ArrayList sample values"
+                                    );
+                                }
+                                Vec::new()
+                            }
+                        }
                     };
 
                     return Ok(ObjectPreview {

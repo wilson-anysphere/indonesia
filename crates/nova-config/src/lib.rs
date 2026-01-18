@@ -628,8 +628,18 @@ impl LoggingConfig {
     }
 
     fn config_env_filter(&self) -> tracing_subscriber::EnvFilter {
+        static ENV_FILTER_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let directives = Self::normalize_level_directives(&self.level);
-        tracing_subscriber::EnvFilter::try_new(directives).unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::try_new(directives.clone()).unwrap_or_else(|err| {
+            if ENV_FILTER_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.config",
+                    directives,
+                    error = %err,
+                    "failed to parse logging.level as EnvFilter; falling back to info"
+                );
+            }
             tracing_subscriber::EnvFilter::default()
                 .add_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
         })
@@ -642,10 +652,26 @@ impl LoggingConfig {
     ///
     /// If `RUST_LOG` is set, it is merged into the resulting filter.
     pub fn env_filter(&self) -> tracing_subscriber::EnvFilter {
-        let env_directives = std::env::var("RUST_LOG")
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
+        static ENV_FILTER_COMBINED_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        static RUST_LOG_READ_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let env_directives = match std::env::var("RUST_LOG") {
+            Ok(value) => {
+                let value = value.trim().to_owned();
+                (!value.is_empty()).then_some(value)
+            }
+            Err(std::env::VarError::NotPresent) => None,
+            Err(err) => {
+                if RUST_LOG_READ_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.config",
+                        error = ?err,
+                        "failed to read RUST_LOG; ignoring (best effort)"
+                    );
+                }
+                None
+            }
+        };
 
         let config_directives = Self::normalize_level_directives(&self.level);
 
@@ -654,7 +680,16 @@ impl LoggingConfig {
                 let combined = format!("{config_directives},{env_directives}");
                 tracing_subscriber::EnvFilter::try_new(combined)
                     .or_else(|_| tracing_subscriber::EnvFilter::try_new(env_directives))
-                    .unwrap_or_else(|_| self.config_env_filter())
+                    .unwrap_or_else(|err| {
+                        if ENV_FILTER_COMBINED_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                            tracing::debug!(
+                                target = "nova.config",
+                                error = %err,
+                                "failed to parse RUST_LOG EnvFilter; falling back to logging.level"
+                            );
+                        }
+                        self.config_env_filter()
+                    })
             }
             None => self.config_env_filter(),
         }
@@ -1366,6 +1401,8 @@ impl NovaConfig {
         text: &str,
         ctx: ConfigValidationContext<'_>,
     ) -> Result<(Self, ConfigDiagnostics), ConfigError> {
+        static DEPRECATION_TOML_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let (config, unknown_keys) =
             diagnostics::deserialize_toml_with_unknown_keys::<NovaConfig>(text)?;
 
@@ -1374,8 +1411,18 @@ impl NovaConfig {
             ..ConfigDiagnostics::default()
         };
 
-        if let Ok(value) = toml::from_str::<toml::Value>(text) {
-            diagnostics.warnings.extend(deprecation_warnings(&value));
+        match toml::from_str::<toml::Value>(text) {
+            Ok(value) => diagnostics.warnings.extend(deprecation_warnings(&value)),
+            Err(err) => {
+                if DEPRECATION_TOML_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target: "nova.config",
+                        text_len = text.len(),
+                        error = %err,
+                        "failed to parse config TOML for deprecation warnings; continuing without deprecation warnings"
+                    );
+                }
+            }
         }
 
         diagnostics.extend_validation(config.validate_with_context(ctx));
@@ -1455,7 +1502,20 @@ pub fn discover_config_path(workspace_root: &Path) -> Option<PathBuf> {
         } else {
             workspace_root.join(candidate)
         };
-        return Some(path.canonicalize().unwrap_or(path));
+        return Some(match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => path,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.config",
+                    workspace_root = %workspace_root.display(),
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize config path override; using fallback"
+                );
+                path
+            }
+        });
     }
 
     let candidates = [
@@ -1469,7 +1529,20 @@ pub fn discover_config_path(workspace_root: &Path) -> Option<PathBuf> {
         .into_iter()
         .map(|name| workspace_root.join(name))
         .find(|path| path.is_file())
-        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => path,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.config",
+                    workspace_root = %workspace_root.display(),
+                    path = %path.display(),
+                    error = %err,
+                    "failed to canonicalize config path; using fallback"
+                );
+                path
+            }
+        })
 }
 
 /// Load the Nova configuration for a workspace root.
@@ -1735,17 +1808,20 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
     TRACING_INIT.call_once(|| {
         let filter = logging.env_filter();
 
-        let base_file = logging
-            .file
-            .as_ref()
-            .and_then(|path| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .ok()
-            })
-            .map(|file| Arc::new(Mutex::new(file)));
+        let mut base_file_open_error: Option<std::io::Error> = None;
+        let base_file = logging.file.as_ref().and_then(|path| {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                Ok(file) => Some(Arc::new(Mutex::new(file))),
+                Err(err) => {
+                    base_file_open_error = Some(err);
+                    None
+                }
+            }
+        });
 
         let audit_path = ai
             .filter(|ai| ai.enabled && ai.audit_log.enabled)
@@ -1756,16 +1832,20 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
                     .unwrap_or_else(|| std::env::temp_dir().join("nova-ai-audit.log"))
             });
         let audit_enabled = audit_path.is_some();
-        let audit_file = audit_path
-            .as_ref()
-            .and_then(|path| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .ok()
-            })
-            .map(|file| Arc::new(Mutex::new(file)));
+        let mut audit_file_open_error: Option<std::io::Error> = None;
+        let audit_file = audit_path.as_ref().and_then(|path| {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                Ok(file) => Some(Arc::new(Mutex::new(file))),
+                Err(err) => {
+                    audit_file_open_error = Some(err);
+                    None
+                }
+            }
+        });
         let audit_open_failed = audit_enabled && audit_file.is_none();
 
         let mut make_writer = BoxMakeWriter::new(LogBufferMakeWriter {
@@ -1836,18 +1916,43 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             .with(filter)
             .with(base_layer)
             .with(audit_layer);
-        if tracing::subscriber::set_global_default(subscriber).is_ok() && audit_open_failed {
-            if let Some(path) = audit_path {
-                tracing::warn!(
-                    target: "nova.config",
-                    path = %path.display(),
-                    "failed to open AI audit log file; audit events will be dropped"
-                );
-            } else {
-                tracing::warn!(
-                    target: "nova.config",
-                    "failed to open AI audit log file; audit events will be dropped"
-                );
+        if tracing::subscriber::set_global_default(subscriber).is_ok() {
+            if let Some(err) = base_file_open_error {
+                if let Some(path) = logging.file.as_ref() {
+                    tracing::warn!(
+                        target: "nova.config",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to open log file; file logging disabled"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "nova.config",
+                        error = %err,
+                        "failed to open log file; file logging disabled"
+                    );
+                }
+            }
+
+            if audit_open_failed {
+                let error = audit_file_open_error
+                    .as_ref()
+                    .map(|err| err.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                if let Some(path) = audit_path {
+                    tracing::warn!(
+                        target: "nova.config",
+                        path = %path.display(),
+                        error,
+                        "failed to open AI audit log file; audit events will be dropped"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "nova.config",
+                        error,
+                        "failed to open AI audit log file; audit events will be dropped"
+                    );
+                }
             }
         }
     });

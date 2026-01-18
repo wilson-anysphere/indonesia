@@ -191,6 +191,23 @@ impl CachedDaggerProject {
 }
 
 impl DaggerAnalyzer {
+    fn read_to_string_best_effort(path: &Path, context: &'static str) -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.framework.dagger",
+                    context,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read dagger project file"
+                );
+                None
+            }
+        }
+    }
+
     fn project_analysis(
         &self,
         db: &dyn Database,
@@ -234,7 +251,7 @@ impl DaggerAnalyzer {
             let text = db
                 .file_text(file_id)
                 .map(str::to_string)
-                .or_else(|| std::fs::read_to_string(&path).ok());
+                .or_else(|| Self::read_to_string_best_effort(&path, "project_analysis.db_java"));
             let Some(text) = text else {
                 continue;
             };
@@ -294,13 +311,15 @@ impl DaggerAnalyzer {
         let mut files: Vec<JavaSourceFile> = Vec::new();
         for path in java_paths {
             let text = if path == current_path_buf {
-                current_text
-                    .map(str::to_string)
-                    .or_else(|| std::fs::read_to_string(&path).ok())
+                current_text.map(str::to_string).or_else(|| {
+                    Self::read_to_string_best_effort(&path, "project_analysis.fs_current")
+                })
             } else {
                 db.file_id(&path)
                     .and_then(|id| db.file_text(id).map(str::to_string))
-                    .or_else(|| std::fs::read_to_string(&path).ok())
+                    .or_else(|| {
+                        Self::read_to_string_best_effort(&path, "project_analysis.fs_other")
+                    })
             };
             let Some(text) = text else {
                 continue;
@@ -347,7 +366,10 @@ fn fingerprint_db_project_sources(db: &dyn Database, files: &[(PathBuf, FileId)]
             None => match std::fs::metadata(path) {
                 Ok(meta) => {
                     meta.len().hash(&mut hasher);
-                    hash_mtime(&mut hasher, meta.modified().ok());
+                    hash_mtime(
+                        &mut hasher,
+                        modified_best_effort(&meta, path, "fingerprint_db_project_sources"),
+                    );
                 }
                 Err(_) => {
                     0u64.hash(&mut hasher);
@@ -374,7 +396,10 @@ fn fingerprint_fs_project_sources(
         match std::fs::metadata(path) {
             Ok(meta) => {
                 meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
+                hash_mtime(
+                    &mut hasher,
+                    modified_best_effort(&meta, path, "fingerprint_fs_project_sources"),
+                );
             }
             Err(_) => {
                 0u64.hash(&mut hasher);
@@ -407,6 +432,26 @@ fn fingerprint_text_samples(text: &str, hasher: &mut impl Hasher) {
     bytes[suffix_start..].hash(hasher);
 }
 
+fn modified_best_effort(
+    meta: &std::fs::Metadata,
+    path: &Path,
+    context: &'static str,
+) -> Option<SystemTime> {
+    match meta.modified() {
+        Ok(time) => Some(time),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.dagger",
+                context,
+                path = %path.display(),
+                error = %err,
+                "failed to read mtime"
+            );
+            None
+        }
+    }
+}
+
 fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     let Some(time) = time else {
         0u64.hash(hasher);
@@ -414,9 +459,18 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         return;
     };
 
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.framework.dagger",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
@@ -447,10 +501,36 @@ fn collect_java_files_inner(root: &Path, out: &mut Vec<PathBuf>) {
 
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.dagger",
+                root = %root.display(),
+                error = %err,
+                "failed to scan java source directory"
+            );
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    let mut logged_entry_error = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_entry_error {
+                    tracing::debug!(
+                        target = "nova.framework.dagger",
+                        root = %root.display(),
+                        error = %err,
+                        "failed to read directory entry while scanning java sources"
+                    );
+                    logged_entry_error = true;
+                }
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -956,7 +1036,7 @@ fn parse_java_file(path: &Path, text: &str) -> ParsedJavaFile {
                     .find(|a| a.name == "Module")
                     .and_then(|a| a.args.as_deref())
                     .map(|args| extract_class_list(args, "includes"))
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 modules.push(ModuleInfo {
                     name: name.clone(),
                     includes,
@@ -972,7 +1052,7 @@ fn parse_java_file(path: &Path, text: &str) -> ParsedJavaFile {
                 let modules_list = component_ann
                     .and_then(|a| a.args.as_deref())
                     .map(|args| extract_class_list(args, "modules"))
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 let scope = extract_scope(&pending_annotations);
                 let span = span_for_token(path, line_idx as u32, raw_line, &type_decl.name)
                     .unwrap_or_else(|| fallback_span(path, line_idx as u32));

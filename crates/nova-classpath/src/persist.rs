@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{ClasspathClassStub, ClasspathEntry, ClasspathError, ClasspathFingerprint};
@@ -84,10 +85,18 @@ fn try_load(
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => return None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.classpath",
+                path = %path.display(),
+                error = %err,
+                "failed to stat classpath entry cache file"
+            );
+            return None;
+        }
     };
     if meta.file_type().is_symlink() {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "symlink");
         return None;
     }
     if !meta.is_file() {
@@ -97,7 +106,7 @@ fn try_load(
     let max_len =
         nova_storage::MAX_PAYLOAD_LEN_BYTES.saturating_add(nova_storage::HEADER_LEN as u64);
     if meta.len() > max_len {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "oversize");
         return None;
     }
 
@@ -108,22 +117,34 @@ fn try_load(
     ) {
         Ok(Some(archive)) => archive,
         Ok(None) => return None,
-        Err(_) => {
-            let _ = std::fs::remove_file(path);
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.classpath",
+                path = %path.display(),
+                error = %err,
+                "failed to open classpath entry cache file"
+            );
+            remove_file_best_effort(path, "open_failed");
             return None;
         }
     };
 
     let value = match archive.to_owned() {
         Ok(value) => value,
-        Err(_) => {
-            let _ = std::fs::remove_file(path);
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.classpath",
+                path = %path.display(),
+                error = %err,
+                "failed to decode classpath entry cache file"
+            );
+            remove_file_best_effort(path, "decode_failed");
             return None;
         }
     };
 
     if value.fingerprint != fingerprint || &value.entry != entry {
-        let _ = std::fs::remove_file(path);
+        remove_file_best_effort(path, "key_mismatch");
         return None;
     }
 
@@ -170,8 +191,36 @@ fn try_store(
 }
 
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(err) => {
+            // This should be extremely rare (system clock set before 1970). Avoid spamming logs
+            // by reporting at most once.
+            static REPORTED: OnceLock<()> = OnceLock::new();
+            if REPORTED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.classpath",
+                    error = %err,
+                    "system time is before unix epoch; using 0 for now_millis"
+                );
+            }
+            0
+        }
+    }
+}
+
+fn remove_file_best_effort(path: &Path, reason: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.classpath",
+                path = %path.display(),
+                reason,
+                error = %err,
+                "failed to delete classpath entry cache file"
+            );
+        }
+    }
 }

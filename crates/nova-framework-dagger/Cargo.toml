@@ -10,6 +10,7 @@ nova-hir = { path = "../nova-hir" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-types = { path = "../nova-types" }
+tracing = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

@@ -125,8 +125,7 @@ impl<'a> FlowBodyLower<'a> {
 
             ast::Statement::LabeledStatement(labeled) => labeled
                 .statement()
-                .map(|inner| self.lower_statement(inner))
-                .unwrap_or_default(),
+                .map_or_else(Vec::new, |inner| self.lower_statement(inner)),
 
             ast::Statement::IfStatement(if_stmt) => {
                 let condition = if_stmt

@@ -1,12 +1,31 @@
+use std::collections::HashMap;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use nova_vfs::FileChange;
 
-pub(crate) fn normalize_watch_path(path: impl Into<PathBuf>) -> PathBuf {
-    match nova_vfs::VfsPath::local(path.into()) {
-        nova_vfs::VfsPath::Local(path) => path,
-        // `VfsPath::local` always returns the local variant.
-        _ => unreachable!("VfsPath::local produced a non-local path"),
+pub(crate) fn normalize_watch_path(path: impl AsRef<Path>) -> PathBuf {
+    nova_vfs::normalize_local_path(path.as_ref())
+}
+
+fn normalized_local_paths(change: &FileChange) -> [Option<PathBuf>; 2] {
+    match change {
+        FileChange::Created { path }
+        | FileChange::Modified { path }
+        | FileChange::Deleted { path } => {
+            let path = path.as_local_path().map(|path| normalize_watch_path(path));
+            [path, None]
+        }
+        FileChange::Moved { from, to } => {
+            let mut first = from.as_local_path().map(|path| normalize_watch_path(path));
+            let mut second = to.as_local_path().map(|path| normalize_watch_path(path));
+            if first.is_none() {
+                first = second.take();
+            }
+            [first, second]
+        }
     }
 }
 
@@ -45,12 +64,16 @@ impl WatchConfig {
         source_roots: Vec<PathBuf>,
         generated_source_roots: Vec<PathBuf>,
     ) -> Self {
+        let workspace_root = normalize_watch_path(&workspace_root);
         Self {
-            workspace_root: normalize_watch_path(workspace_root),
-            source_roots: source_roots.into_iter().map(normalize_watch_path).collect(),
+            workspace_root,
+            source_roots: source_roots
+                .into_iter()
+                .map(|root| normalize_watch_path(&root))
+                .collect(),
             generated_source_roots: generated_source_roots
                 .into_iter()
-                .map(normalize_watch_path)
+                .map(|root| normalize_watch_path(&root))
                 .collect(),
             module_roots: Vec::new(),
             nova_config_path: None,
@@ -71,129 +94,479 @@ impl WatchConfig {
     /// Replace the effective Nova config path for this workspace, applying the same logical
     /// normalization as `VfsPath::local`.
     pub fn set_nova_config_path(&mut self, nova_config_path: Option<PathBuf>) {
-        self.nova_config_path = nova_config_path.map(normalize_watch_path);
+        self.nova_config_path = nova_config_path.map(|path| normalize_watch_path(&path));
     }
 }
 
-pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<ChangeCategory> {
-    // Normalize event paths before categorization so drive-letter case (`c:` vs `C:` on Windows)
-    // and dot segments (`a/../b`) don't affect source-root/build-file matching.
-    //
-    // This does **not** resolve symlinks; it is purely lexical normalization via `nova-vfs`.
-    let paths: Vec<PathBuf> = change
-        .paths()
-        .filter_map(|path| path.as_local_path())
-        .map(|path| normalize_watch_path(path.to_path_buf()))
-        .collect();
+struct SourceTreeMatcher<'a> {
+    config: &'a WatchConfig,
+    has_configured_roots: bool,
+}
 
-    let nova_config_path = config
-        .nova_config_path
-        .as_ref()
-        .map(|path| normalize_watch_path(path.clone()));
+impl<'a> SourceTreeMatcher<'a> {
+    fn new(config: &'a WatchConfig) -> Self {
+        Self {
+            config,
+            has_configured_roots: !config.source_roots.is_empty()
+                || !config.generated_source_roots.is_empty(),
+        }
+    }
 
-    for path in &paths {
-        if nova_config_path
-            .as_ref()
-            .is_some_and(|config_path| config_path == path)
-        {
-            return Some(ChangeCategory::Build);
+    fn configured_roots(&self) -> impl Iterator<Item = &PathBuf> + '_ {
+        self.config
+            .source_roots
+            .iter()
+            .chain(self.config.generated_source_roots.iter())
+    }
+
+    fn is_allowed_under_noisy_dir(&self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.config.workspace_root) else {
+            return true;
+        };
+        if !is_in_noisy_dir(rel) {
+            return true;
         }
 
-        // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
-        // like a build change so we reload the project config instead of only updating file
-        // contents.
-        if path
-            .file_name()
-            .is_some_and(|name| name == "module-info.java")
-        {
-            return Some(ChangeCategory::Build);
+        // If the path is under a noisy subtree relative to the workspace root, only allow it if it
+        // is covered by a configured root that is itself under a noisy directory (e.g. Bazel
+        // `bazel-out/` roots).
+        self.configured_roots()
+            .filter(|root| path.starts_with(root))
+            .filter_map(|root| root.strip_prefix(&self.config.workspace_root).ok())
+            .any(is_in_noisy_dir)
+    }
+
+    fn is_in_source_tree(&self, path: &Path) -> bool {
+        if self.has_configured_roots {
+            let is_in_configured_root = is_within_any(path, &self.config.source_roots)
+                || is_within_any(path, &self.config.generated_source_roots);
+            if !is_in_configured_root {
+                return false;
+            }
+
+            // Configured roots may legitimately live under “noisy” directories (e.g. Bazel
+            // `bazel-out/`). However, we still want to ignore noisy subtrees for broad roots like the
+            // workspace root itself (which otherwise causes `target/` directory events to trigger
+            // rescans / indexing work).
+            //
+            // Rule: if the *path* is under a noisy directory relative to the workspace root, only
+            // treat it as a source path when it is covered by a configured root that is itself under
+            // a noisy directory.
+            if !self.is_allowed_under_noisy_dir(path) {
+                return false;
+            }
+
+            return true;
         }
 
-        // Many build files are detected based on path components (e.g. ignoring `build/` output
-        // directories). Use paths relative to the workspace root so absolute parent directories
-        // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
+        // Fall back to treating the entire workspace root as a source root when we don't have more
+        // specific roots (e.g. simple projects).
+        if !path.starts_with(&self.config.workspace_root) {
+            return false;
+        }
+
+        // Avoid indexing under noisy build output trees (e.g. `target/`, `node_modules/`) to prevent
+        // spurious churn and incorrect “discovery” of irrelevant files.
         let rel = path
-            .strip_prefix(&config.workspace_root)
-            .unwrap_or_else(|_| {
-                config
-                    .module_roots
-                    .iter()
-                    .chain(config.source_roots.iter())
-                    .chain(config.generated_source_roots.iter())
-                    .find_map(|root| path.strip_prefix(root).ok())
-                    .unwrap_or(path.as_path())
-            });
-        if is_build_file(rel) {
-            return Some(ChangeCategory::Build);
+            .strip_prefix(&self.config.workspace_root)
+            .unwrap_or(path);
+        !is_in_noisy_dir(rel)
+    }
+
+    fn is_ancestor_of_any_configured_source_root(&self, path: &Path) -> bool {
+        if !self.has_configured_roots {
+            return false;
+        }
+
+        self.configured_roots().any(|root| root.starts_with(path))
+    }
+}
+
+pub(crate) struct WatchEventCategorizer<'a> {
+    config: &'a WatchConfig,
+    matcher: SourceTreeMatcher<'a>,
+    nova_config_path: Option<PathBuf>,
+}
+
+impl<'a> WatchEventCategorizer<'a> {
+    pub(crate) fn new(config: &'a WatchConfig) -> Self {
+        Self {
+            config,
+            matcher: SourceTreeMatcher::new(config),
+            // Best-effort: normalize once per batch so callers that bypass `set_nova_config_path`
+            // still behave correctly.
+            nova_config_path: config
+                .nova_config_path
+                .as_ref()
+                .map(|path| normalize_watch_path(path)),
         }
     }
 
-    let has_configured_roots =
-        !config.source_roots.is_empty() || !config.generated_source_roots.is_empty();
-
-    let is_in_source_tree = |path: &Path| {
-        if has_configured_roots {
-            is_within_any(path, &config.source_roots)
-                || is_within_any(path, &config.generated_source_roots)
-        } else {
-            // Fall back to treating the entire workspace root as a source root when we don't have
-            // more specific roots (e.g. simple projects).
-            path.starts_with(&config.workspace_root)
-        }
-    };
-
-    // We primarily index Java sources.
-    for path in &paths {
-        if path.extension().and_then(|s| s.to_str()) == Some("java") && is_in_source_tree(path) {
-            return Some(ChangeCategory::Source);
+    fn build_match_path<'p>(
+        &self,
+        path: &'p PathBuf,
+        relative_path_error_logged: &OnceLock<()>,
+    ) -> &'p Path {
+        match path.strip_prefix(&self.config.workspace_root) {
+            Ok(rel) => rel,
+            Err(err) => match self
+                .config
+                .module_roots
+                .iter()
+                .chain(self.config.source_roots.iter())
+                .chain(self.config.generated_source_roots.iter())
+                .find_map(|root| path.strip_prefix(root).ok())
+            {
+                Some(rel) => rel,
+                None => {
+                    if relative_path_error_logged.set(()).is_ok() {
+                        tracing::debug!(
+                            target = "nova.workspace",
+                            path = %path.display(),
+                            workspace_root = %self.config.workspace_root.display(),
+                            error = %err,
+                            "watch event path is not under workspace or configured roots; using absolute path for build file matching"
+                        );
+                    }
+                    path.as_path()
+                }
+            },
         }
     }
 
-    // Directory-level watcher events (rename/move/delete) can arrive without per-file events.
-    // Treat directory events inside the source tree as Source changes so the workspace engine can
-    // expand them into file-level operations without allocating bogus `FileId`s.
-    for path in &paths {
-        if path.is_dir() && is_in_source_tree(path) {
-            return Some(ChangeCategory::Source);
-        }
-    }
+    fn categorize_with_paths(
+        &self,
+        change: &FileChange,
+        paths: &[Option<PathBuf>; 2],
+        dir_cache: &mut BatchDirCache,
+    ) -> Option<ChangeCategory> {
+        static WATCH_EVENT_RELATIVE_PATH_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
 
-    // Deleted directories no longer exist, so `is_dir()` can't detect them. Heuristic: if the
-    // deleted/moved path has no extension and lives under the source tree, pass it through so the
-    // workspace engine can decide whether it corresponds to a tracked directory.
-    match change {
-        FileChange::Deleted { path } => {
-            let Some(path) = path.as_local_path() else {
-                return None;
-            };
-            let path = normalize_watch_path(path.to_path_buf());
-            if path.extension().is_none() && is_in_source_tree(&path) {
-                return Some(ChangeCategory::Source);
+        if paths[0].is_none() && paths[1].is_none() {
+            return None;
+        }
+
+        for path in paths.iter().flatten() {
+            if self
+                .nova_config_path
+                .as_ref()
+                .is_some_and(|config_path| config_path == path)
+            {
+                return Some(ChangeCategory::Build);
+            }
+
+            // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
+            // like a build change so we reload the project config instead of only updating file
+            // contents.
+            if path
+                .file_name()
+                .is_some_and(|name| name == "module-info.java")
+            {
+                return Some(ChangeCategory::Build);
+            }
+
+            // Many build files are detected based on path components (e.g. ignoring `build/` output
+            // directories). Use paths relative to the workspace root so absolute parent directories
+            // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
+            let rel = self.build_match_path(path, &WATCH_EVENT_RELATIVE_PATH_ERROR_LOGGED);
+            if is_build_file(rel) {
+                return Some(ChangeCategory::Build);
             }
         }
-        FileChange::Moved { from, to } => {
-            let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
-                return None;
-            };
-            let from = normalize_watch_path(from.to_path_buf());
-            let to = normalize_watch_path(to.to_path_buf());
-            if (from.extension().is_none() && is_in_source_tree(&from))
-                || (to.extension().is_none() && is_in_source_tree(&to))
+
+        // We primarily index Java sources.
+        for path in paths.iter().flatten() {
+            if path.extension().and_then(|s| s.to_str()) == Some("java")
+                && self.matcher.is_in_source_tree(path)
             {
                 return Some(ChangeCategory::Source);
             }
         }
-        _ => {}
+
+        // Directory-level watcher events (rename/move/delete) can arrive without per-file events.
+        // Treat directory moves inside the source tree as Source changes so the workspace engine can
+        // expand them into file-level operations without allocating bogus `FileId`s.
+        //
+        // For directory creates/modifies we prefer the rescan heuristic (`RescanHeuristic`), so avoid
+        // unnecessary `metadata` calls here on high-volume file-change streams.
+        if matches!(change, FileChange::Moved { .. }) {
+            for path in paths.iter().flatten() {
+                if self.matcher.is_in_source_tree(path)
+                    && !looks_like_file(path)
+                    && dir_cache.is_dir_best_effort(path) == Some(true)
+                {
+                    return Some(ChangeCategory::Source);
+                }
+            }
+        }
+
+        // Deleted directories no longer exist, so `is_dir()` can't detect them. Heuristic: if the
+        // deleted/moved path has no extension and lives under the source tree, pass it through so the
+        // workspace engine can decide whether it corresponds to a tracked directory.
+        if matches!(
+            change,
+            FileChange::Deleted { .. } | FileChange::Moved { .. }
+        ) {
+            for path in paths.iter().flatten() {
+                if path.extension().is_none() && self.matcher.is_in_source_tree(path) {
+                    return Some(ChangeCategory::Source);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+#[cfg(test)]
+pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<ChangeCategory> {
+    let mut dir_cache = BatchDirCache::new();
+    let categorizer = WatchEventCategorizer::new(config);
+    let paths = normalized_local_paths(change);
+    categorizer.categorize_with_paths(change, &paths, &mut dir_cache)
+}
+
+pub(crate) fn looks_like_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext,
+        // Primary source language.
+        "java"
+        // Common source/config files in Java repos.
+        | "kt" | "kts" | "groovy" | "scala"
+        | "xml" | "properties"
+        | "json" | "toml" | "yaml" | "yml"
+        | "md"
+    )
+}
+
+pub(crate) struct BatchDirCache {
+    values: HashMap<PathBuf, DirStat>,
+}
+
+impl BatchDirCache {
+    const MAX_ENTRIES: usize = 32 * 1024;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
     }
 
-    None
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: HashMap::with_capacity(capacity.min(Self::MAX_ENTRIES)),
+        }
+    }
+
+    pub(crate) fn stat(&mut self, path: &PathBuf) -> DirStat {
+        if let Some(value) = self.values.get(path) {
+            return *value;
+        }
+
+        let value = match fs::metadata(path) {
+            Ok(meta) => DirStat::IsDir(meta.is_dir()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => DirStat::NotFound,
+            Err(err) => DirStat::Error {
+                kind: err.kind(),
+                raw_os_error: err.raw_os_error(),
+            },
+        };
+        if self.values.len() < Self::MAX_ENTRIES {
+            self.values.insert(path.clone(), value);
+        }
+        value
+    }
+
+    pub(crate) fn stat_with_error_hook(
+        &mut self,
+        path: &PathBuf,
+        mut on_error: impl FnMut(&io::Error),
+    ) -> DirStat {
+        if let Some(value) = self.values.get(path) {
+            return *value;
+        }
+
+        let value = match fs::metadata(path) {
+            Ok(meta) => DirStat::IsDir(meta.is_dir()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => DirStat::NotFound,
+            Err(err) => {
+                on_error(&err);
+                DirStat::Error {
+                    kind: err.kind(),
+                    raw_os_error: err.raw_os_error(),
+                }
+            }
+        };
+        if self.values.len() < Self::MAX_ENTRIES {
+            self.values.insert(path.clone(), value);
+        }
+        value
+    }
+
+    fn is_dir_best_effort(&mut self, path: &PathBuf) -> Option<bool> {
+        match self.stat(path) {
+            DirStat::IsDir(value) => Some(value),
+            DirStat::NotFound | DirStat::Error { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirStat {
+    IsDir(bool),
+    NotFound,
+    Error {
+        kind: io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+pub(crate) struct RescanHeuristic<'a> {
+    matcher: SourceTreeMatcher<'a>,
+}
+
+impl<'a> RescanHeuristic<'a> {
+    pub(crate) fn new(config: &'a WatchConfig) -> Self {
+        Self {
+            matcher: SourceTreeMatcher::new(config),
+        }
+    }
+
+    fn should_rescan_with_paths(
+        &self,
+        change: &FileChange,
+        paths: &[Option<PathBuf>; 2],
+        dir_cache: &mut BatchDirCache,
+    ) -> bool {
+        match change {
+            // Directory create/modify events can arrive without per-file events. Prefer a rescan so we
+            // discover newly introduced files reliably.
+            FileChange::Created { .. } | FileChange::Modified { .. } => {
+                let Some(path) = paths[0].as_ref() else {
+                    return false;
+                };
+
+                // Avoid `stat` calls for unrelated paths.
+                if !self.matcher.is_in_source_tree(path)
+                    && !self.matcher.is_ancestor_of_any_configured_source_root(path)
+                {
+                    return false;
+                }
+
+                // Avoid rescans triggered by noisy build-output directories (e.g. `target/`) even
+                // when we have broad configured roots. When a directory under a noisy subtree is
+                // explicitly configured as a source/generated root (e.g. Bazel `bazel-out/` roots),
+                // allow it.
+                if !self.matcher.is_allowed_under_noisy_dir(path) {
+                    return false;
+                }
+
+                // Avoid `stat` for the common case where the watcher is reporting a normal file.
+                // If we can't cheaply rule out "directory-like", fall back to `metadata`.
+                if looks_like_file(path) {
+                    return false;
+                }
+
+                dir_cache.is_dir_best_effort(path).unwrap_or(false)
+            }
+
+            // Directory moves are expanded into file-level operations by `apply_filesystem_events`
+            // when they involve already-known paths.
+            //
+            // However, moving a directory *into* the source tree can introduce previously unknown
+            // files (if the watcher only reports the directory move). In that case we fall back to a
+            // rescan to discover them.
+            FileChange::Moved { .. } => {
+                let (Some(from), Some(to)) = (paths[0].as_ref(), paths[1].as_ref()) else {
+                    return false;
+                };
+
+                let from_in_tree = self.matcher.is_in_source_tree(from);
+                let to_in_tree = self.matcher.is_in_source_tree(to);
+                if !to_in_tree || from_in_tree {
+                    return false;
+                }
+
+                // Fast path: file moves into the source tree are common during checkouts/renames and
+                // should not trigger rescans. Avoid `stat` when both ends look like normal files.
+                if looks_like_file(from) && looks_like_file(to) {
+                    return false;
+                }
+
+                let from_dir = dir_cache.is_dir_best_effort(from);
+                let to_dir = dir_cache.is_dir_best_effort(to);
+                if from_dir == Some(true) || to_dir == Some(true) {
+                    return true;
+                }
+
+                // If we can't stat either path (e.g. both already gone), only treat extension-less
+                // paths as "directory-like".
+                if from_dir.is_none() && to_dir.is_none() {
+                    return from.extension().is_none() || to.extension().is_none();
+                }
+
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatchBatchPlan {
+    RescanRequired,
+    Debounce(ChangeCategory),
+    Ignore,
+}
+
+/// Plans watcher events for a single `WatchEvent::Changes` batch.
+///
+/// This intentionally enforces the invariant that directory rescan heuristics must run before
+/// categorization. Some watcher backends can report directory creates/modifies without emitting
+/// per-file events; we treat those as "rescan required" rather than routing them through
+/// `apply_filesystem_events`.
+pub(crate) struct WatchBatchPlanner<'a> {
+    rescan: RescanHeuristic<'a>,
+    categorizer: WatchEventCategorizer<'a>,
+    dir_cache: BatchDirCache,
+}
+
+impl<'a> WatchBatchPlanner<'a> {
+    pub(crate) fn new(config: &'a WatchConfig) -> Self {
+        Self {
+            rescan: RescanHeuristic::new(config),
+            categorizer: WatchEventCategorizer::new(config),
+            dir_cache: BatchDirCache::new(),
+        }
+    }
+
+    pub(crate) fn plan(&mut self, change: &FileChange) -> WatchBatchPlan {
+        let paths = normalized_local_paths(change);
+        if self
+            .rescan
+            .should_rescan_with_paths(change, &paths, &mut self.dir_cache)
+        {
+            return WatchBatchPlan::RescanRequired;
+        }
+
+        match self
+            .categorizer
+            .categorize_with_paths(change, &paths, &mut self.dir_cache)
+        {
+            Some(cat) => WatchBatchPlan::Debounce(cat),
+            None => WatchBatchPlan::Ignore,
+        }
+    }
 }
 
 fn is_within_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-fn is_in_noisy_dir(path: &Path) -> bool {
+pub(crate) fn is_in_noisy_dir(path: &Path) -> bool {
     path.components().any(|c| {
         let component = c.as_os_str();
         if component == std::ffi::OsStr::new(".git")
@@ -926,6 +1299,34 @@ mod tests {
     }
 
     #[test]
+    fn noisy_paths_are_not_treated_as_source_when_no_roots_are_configured() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WatchConfig::new(root.clone());
+
+        assert_eq!(
+            categorize_event(
+                &config,
+                &FileChange::Modified {
+                    path: VfsPath::local(root.join("target/Generated.java"))
+                }
+            ),
+            None,
+            "java files under target/ should not be treated as Source when no roots are configured"
+        );
+
+        assert_eq!(
+            categorize_event(
+                &config,
+                &FileChange::Deleted {
+                    path: VfsPath::local(root.join("target"))
+                }
+            ),
+            None,
+            "directory events under target/ should be ignored when no roots are configured"
+        );
+    }
+
+    #[test]
     fn custom_nova_config_path_is_categorized_as_build() {
         let workspace_root = PathBuf::from("/tmp/workspace");
         let candidates = [
@@ -974,5 +1375,283 @@ mod tests {
             categorize_event(&config, &event),
             Some(ChangeCategory::Build)
         );
+    }
+
+    #[test]
+    fn should_rescan_avoids_stat_for_file_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut dir_cache = BatchDirCache::new();
+
+        let file = root.join("src/main/java/Example.java");
+        let event = FileChange::Created {
+            path: VfsPath::local(file),
+        };
+        let paths = normalized_local_paths(&event);
+        assert!(!RescanHeuristic::new(&config).should_rescan_with_paths(
+            &event,
+            &paths,
+            &mut dir_cache
+        ));
+    }
+
+    #[test]
+    fn should_rescan_for_created_directory_in_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut dir_cache = BatchDirCache::new();
+
+        let created_dir = root.join("src/main/java/com");
+        std::fs::create_dir_all(&created_dir).unwrap();
+
+        let event = FileChange::Created {
+            path: VfsPath::local(created_dir),
+        };
+        let paths = normalized_local_paths(&event);
+        assert!(RescanHeuristic::new(&config).should_rescan_with_paths(
+            &event,
+            &paths,
+            &mut dir_cache
+        ));
+    }
+
+    #[test]
+    fn should_rescan_for_directory_move_into_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut dir_cache = BatchDirCache::new();
+
+        let outside = root.join("..").join("outside");
+        let from_dir = outside.join("pkg");
+        let to_dir = root.join("src/main/java/pkg");
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::create_dir_all(to_dir.parent().unwrap()).unwrap();
+        std::fs::rename(&from_dir, &to_dir).unwrap();
+
+        let event = FileChange::Moved {
+            from: VfsPath::local(from_dir),
+            to: VfsPath::local(to_dir),
+        };
+        let paths = normalized_local_paths(&event);
+        assert!(RescanHeuristic::new(&config).should_rescan_with_paths(
+            &event,
+            &paths,
+            &mut dir_cache
+        ));
+    }
+
+    #[test]
+    fn should_rescan_for_created_dot_directory_in_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut dir_cache = BatchDirCache::new();
+
+        // Directories can contain dots; ensure we don't accidentally treat these as normal files.
+        let created_dir = root.join("src/main/java/com.example");
+        std::fs::create_dir_all(&created_dir).unwrap();
+
+        let event = FileChange::Created {
+            path: VfsPath::local(created_dir),
+        };
+        let paths = normalized_local_paths(&event);
+        assert!(RescanHeuristic::new(&config).should_rescan_with_paths(
+            &event,
+            &paths,
+            &mut dir_cache
+        ));
+    }
+
+    #[test]
+    fn should_rescan_for_dot_directory_move_into_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut dir_cache = BatchDirCache::new();
+
+        let outside = root.join("..").join("outside-dot");
+        let from_dir = outside.join("com.example");
+        let to_dir = root.join("src/main/java/com.example");
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::create_dir_all(to_dir.parent().unwrap()).unwrap();
+        std::fs::rename(&from_dir, &to_dir).unwrap();
+
+        let event = FileChange::Moved {
+            from: VfsPath::local(from_dir),
+            to: VfsPath::local(to_dir),
+        };
+        let paths = normalized_local_paths(&event);
+        assert!(RescanHeuristic::new(&config).should_rescan_with_paths(
+            &event,
+            &paths,
+            &mut dir_cache
+        ));
+    }
+
+    #[test]
+    fn categorizer_does_not_stat_for_modified_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+
+        let categorizer = WatchEventCategorizer::new(&config);
+        let mut dir_cache = BatchDirCache::new();
+
+        let event = FileChange::Modified {
+            path: VfsPath::local(root.join("src/Main.java")),
+        };
+        let paths = normalized_local_paths(&event);
+        assert_eq!(
+            categorizer.categorize_with_paths(&event, &paths, &mut dir_cache),
+            Some(ChangeCategory::Source)
+        );
+        assert!(
+            dir_cache.values.is_empty(),
+            "expected categorization of modified files to avoid metadata calls"
+        );
+    }
+
+    #[test]
+    fn categorizer_stats_moved_directories_in_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+
+        let categorizer = WatchEventCategorizer::new(&config);
+        let mut dir_cache = BatchDirCache::new();
+
+        let from_dir = root.join("src/old-dir");
+        let to_dir = root.join("src/new-dir");
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::rename(&from_dir, &to_dir).unwrap();
+
+        let event = FileChange::Moved {
+            from: VfsPath::local(from_dir),
+            to: VfsPath::local(to_dir),
+        };
+        let paths = normalized_local_paths(&event);
+        assert_eq!(
+            categorizer.categorize_with_paths(&event, &paths, &mut dir_cache),
+            Some(ChangeCategory::Source)
+        );
+        assert!(
+            !dir_cache.values.is_empty(),
+            "expected moved directory categorization to stat at least one path"
+        );
+    }
+
+    #[test]
+    fn batch_planner_prefers_rescan_for_created_directories_in_source_tree() {
+        // This codifies the watcher invariant:
+        // - directory create/modify events inside the source tree must be handled by
+        //   `RescanHeuristic` (so we discover new files), rather than being routed through
+        //   categorization heuristics that avoid `metadata` calls on high-volume streams.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let created_dir = root.join("src/main/java/com");
+        std::fs::create_dir_all(&created_dir).unwrap();
+
+        let event = FileChange::Created {
+            path: VfsPath::local(created_dir),
+        };
+        assert_eq!(planner.plan(&event), WatchBatchPlan::RescanRequired);
+    }
+
+    #[test]
+    fn batch_planner_debounces_java_file_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let file = root.join("src/main/java/Example.java");
+        let event = FileChange::Created {
+            path: VfsPath::local(file),
+        };
+        assert_eq!(
+            planner.plan(&event),
+            WatchBatchPlan::Debounce(ChangeCategory::Source)
+        );
+    }
+
+    #[test]
+    fn batch_planner_ignores_created_directories_in_noisy_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let created_dir = root.join("target/generated");
+        std::fs::create_dir_all(&created_dir).unwrap();
+        let event = FileChange::Created {
+            path: VfsPath::local(created_dir),
+        };
+        assert_eq!(planner.plan(&event), WatchBatchPlan::Ignore);
+    }
+
+    #[test]
+    fn batch_planner_debounces_directory_moves_within_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let from_dir = root.join("src/main/java/from_pkg");
+        let to_dir = root.join("src/main/java/to_pkg");
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::rename(&from_dir, &to_dir).unwrap();
+
+        let event = FileChange::Moved {
+            from: VfsPath::local(from_dir),
+            to: VfsPath::local(to_dir),
+        };
+        assert_eq!(
+            planner.plan(&event),
+            WatchBatchPlan::Debounce(ChangeCategory::Source)
+        );
+    }
+
+    #[test]
+    fn batch_planner_requires_rescan_for_directory_moves_into_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let outside = root.join("..").join("outside-move-into");
+        let from_dir = outside.join("pkg");
+        let to_dir = root.join("src/main/java/pkg");
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::create_dir_all(to_dir.parent().unwrap()).unwrap();
+        std::fs::rename(&from_dir, &to_dir).unwrap();
+
+        let event = FileChange::Moved {
+            from: VfsPath::local(from_dir),
+            to: VfsPath::local(to_dir),
+        };
+        assert_eq!(planner.plan(&event), WatchBatchPlan::RescanRequired);
+    }
+
+    #[test]
+    fn batch_planner_ignores_extensionless_file_creates_in_source_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = WatchConfig::new(root.clone());
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let file = root.join("src/main/java/README");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "hello").unwrap();
+
+        let event = FileChange::Created {
+            path: VfsPath::local(file),
+        };
+        assert_eq!(planner.plan(&event), WatchBatchPlan::Ignore);
     }
 }

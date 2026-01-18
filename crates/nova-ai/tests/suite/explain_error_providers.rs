@@ -220,7 +220,7 @@ async fn explain_error_works_for_each_provider_kind() {
             assert!(req
                 .uri()
                 .query()
-                .unwrap_or_default()
+                .expect("expected query string to be present")
                 .contains("key=test-key"));
             Response::new(Body::from(
                 r#"{"candidates":[{"content":{"parts":[{"text":"explanation"}]}}]}"#,
@@ -253,7 +253,7 @@ async fn explain_error_works_for_each_provider_kind() {
             assert!(req
                 .uri()
                 .query()
-                .unwrap_or_default()
+                .expect("expected query string to be present")
                 .contains("api-version=2024-02-01"));
             assert_eq!(
                 req.headers()

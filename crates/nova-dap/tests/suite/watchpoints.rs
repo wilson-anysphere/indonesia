@@ -149,7 +149,7 @@ async fn dap_rejects_data_breakpoints_when_jdwp_capabilities_missing() {
     let message = resp
         .get("message")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .expect("error response message");
     assert!(
         message.contains("watchpoints are not supported"),
         "{message}"

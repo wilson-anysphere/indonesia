@@ -24,8 +24,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use nova_core::ProjectId;
+use nova_core::{panic_payload_to_str, ProjectId};
 use nova_hir::framework::ClassData;
 use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic, Parameter, Span, Type};
@@ -606,18 +607,51 @@ impl AnalyzerRegistry {
         db: &'a dyn Database,
         project: ProjectId,
     ) -> impl Iterator<Item = &'a dyn FrameworkAnalyzer> + 'a {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         self.analyzers.iter().map(|a| a.as_ref()).filter(move |a| {
-            catch_unwind(AssertUnwindSafe(|| a.applies_to(db, project))).unwrap_or(false)
+            let analyzer: &dyn FrameworkAnalyzer = *a;
+            match catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))) {
+                Ok(applicable) => applicable,
+                Err(panic) => {
+                    if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            op = "applies_to",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    false
+                }
+            }
         })
     }
 
     /// Aggregate `FrameworkData` across all applicable analyzers.
     pub fn framework_data(&self, db: &dyn Database, file: FileId) -> Vec<FrameworkData> {
+        static ANALYZE_FILE_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let data =
-                catch_unwind(AssertUnwindSafe(|| analyzer.analyze_file(db, file))).unwrap_or(None);
+            let data = match catch_unwind(AssertUnwindSafe(|| analyzer.analyze_file(db, file))) {
+                Ok(data) => data,
+                Err(panic) => {
+                    if ANALYZE_FILE_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            file = file.to_raw(),
+                            op = "analyze_file",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    None
+                }
+            };
             if let Some(data) = data {
                 out.push(data);
             }
@@ -627,11 +661,27 @@ impl AnalyzerRegistry {
 
     /// Collect all framework diagnostics for `file`.
     pub fn framework_diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+        static DIAGNOSTICS_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let diags = catch_unwind(AssertUnwindSafe(|| analyzer.diagnostics(db, file)))
-                .unwrap_or_default();
+            let diags = match catch_unwind(AssertUnwindSafe(|| analyzer.diagnostics(db, file))) {
+                Ok(diags) => diags,
+                Err(panic) => {
+                    if DIAGNOSTICS_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            file = file.to_raw(),
+                            op = "diagnostics",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(diags);
         }
         out
@@ -644,6 +694,8 @@ impl AnalyzerRegistry {
         file: FileId,
         cancel: &CancellationToken,
     ) -> Vec<Diagnostic> {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+        static DIAGNOSTICS_WITH_CANCEL_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -656,8 +708,23 @@ impl AnalyzerRegistry {
             }
             let analyzer = analyzer.as_ref();
 
-            let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
-                .unwrap_or(false);
+            let applicable =
+                match catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))) {
+                    Ok(applicable) => applicable,
+                    Err(panic) => {
+                        if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                            tracing::error!(
+                                target = "nova.framework",
+                                analyzer = std::any::type_name_of_val(analyzer),
+                                project = project.to_raw(),
+                                op = "applies_to",
+                                panic = %panic_payload_to_str(&*panic),
+                                "framework analyzer panicked; continuing best-effort"
+                            );
+                        }
+                        false
+                    }
+                };
             if !applicable {
                 continue;
             }
@@ -666,10 +733,25 @@ impl AnalyzerRegistry {
                 break;
             }
 
-            let diags = catch_unwind(AssertUnwindSafe(|| {
+            let diags = match catch_unwind(AssertUnwindSafe(|| {
                 analyzer.diagnostics_with_cancel(db, file, cancel)
-            }))
-            .unwrap_or_default();
+            })) {
+                Ok(diags) => diags,
+                Err(panic) => {
+                    if DIAGNOSTICS_WITH_CANCEL_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            file = file.to_raw(),
+                            op = "diagnostics_with_cancel",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(diags);
         }
         out
@@ -681,10 +763,26 @@ impl AnalyzerRegistry {
         db: &dyn Database,
         ctx: &CompletionContext,
     ) -> Vec<CompletionItem> {
+        static COMPLETIONS_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, ctx.project) {
-            let completions = catch_unwind(AssertUnwindSafe(|| analyzer.completions(db, ctx)))
-                .unwrap_or_default();
+            let completions = match catch_unwind(AssertUnwindSafe(|| analyzer.completions(db, ctx)))
+            {
+                Ok(completions) => completions,
+                Err(panic) => {
+                    if COMPLETIONS_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = ctx.project.to_raw(),
+                            op = "completions",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(completions);
         }
         out
@@ -698,6 +796,8 @@ impl AnalyzerRegistry {
         ctx: &CompletionContext,
         cancel: &CancellationToken,
     ) -> Vec<CompletionItem> {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+        static COMPLETIONS_WITH_CANCEL_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -710,8 +810,22 @@ impl AnalyzerRegistry {
             let analyzer = analyzer.as_ref();
 
             let applicable =
-                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, ctx.project)))
-                    .unwrap_or(false);
+                match catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, ctx.project))) {
+                    Ok(applicable) => applicable,
+                    Err(panic) => {
+                        if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                            tracing::error!(
+                                target = "nova.framework",
+                                analyzer = std::any::type_name_of_val(analyzer),
+                                project = ctx.project.to_raw(),
+                                op = "applies_to",
+                                panic = %panic_payload_to_str(&*panic),
+                                "framework analyzer panicked; continuing best-effort"
+                            );
+                        }
+                        false
+                    }
+                };
             if !applicable {
                 continue;
             }
@@ -720,10 +834,24 @@ impl AnalyzerRegistry {
                 break;
             }
 
-            let completions = catch_unwind(AssertUnwindSafe(|| {
+            let completions = match catch_unwind(AssertUnwindSafe(|| {
                 analyzer.completions_with_cancel(db, ctx, cancel)
-            }))
-            .unwrap_or_default();
+            })) {
+                Ok(completions) => completions,
+                Err(panic) => {
+                    if COMPLETIONS_WITH_CANCEL_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = ctx.project.to_raw(),
+                            op = "completions_with_cancel",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(completions);
         }
         out
@@ -735,6 +863,7 @@ impl AnalyzerRegistry {
         db: &dyn Database,
         symbol: &Symbol,
     ) -> Vec<NavigationTarget> {
+        static NAVIGATION_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let project = match *symbol {
             Symbol::File(file) => db.project_of_file(file),
             Symbol::Class(class) => db.project_of_class(class),
@@ -742,8 +871,22 @@ impl AnalyzerRegistry {
 
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let nav = catch_unwind(AssertUnwindSafe(|| analyzer.navigation(db, symbol)))
-                .unwrap_or_default();
+            let nav = match catch_unwind(AssertUnwindSafe(|| analyzer.navigation(db, symbol))) {
+                Ok(nav) => nav,
+                Err(panic) => {
+                    if NAVIGATION_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            op = "navigation",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(nav);
         }
         out
@@ -756,6 +899,8 @@ impl AnalyzerRegistry {
         symbol: &Symbol,
         cancel: &CancellationToken,
     ) -> Vec<NavigationTarget> {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+        static NAVIGATION_WITH_CANCEL_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -773,7 +918,19 @@ impl AnalyzerRegistry {
             let analyzer = analyzer.as_ref();
 
             let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
-                .unwrap_or(false);
+                .unwrap_or_else(|panic| {
+                    if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            op = "applies_to",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    false
+                });
             if !applicable {
                 continue;
             }
@@ -782,10 +939,24 @@ impl AnalyzerRegistry {
                 break;
             }
 
-            let nav = catch_unwind(AssertUnwindSafe(|| {
+            let nav = match catch_unwind(AssertUnwindSafe(|| {
                 analyzer.navigation_with_cancel(db, symbol, cancel)
-            }))
-            .unwrap_or_default();
+            })) {
+                Ok(nav) => nav,
+                Err(panic) => {
+                    if NAVIGATION_WITH_CANCEL_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            op = "navigation_with_cancel",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(nav);
         }
         out
@@ -797,11 +968,28 @@ impl AnalyzerRegistry {
         db: &dyn Database,
         class: ClassId,
     ) -> Vec<VirtualMember> {
+        static VIRTUAL_MEMBERS_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let project = db.project_of_class(class);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let members = catch_unwind(AssertUnwindSafe(|| analyzer.virtual_members(db, class)))
-                .unwrap_or_default();
+            let members =
+                match catch_unwind(AssertUnwindSafe(|| analyzer.virtual_members(db, class))) {
+                    Ok(members) => members,
+                    Err(panic) => {
+                        if VIRTUAL_MEMBERS_PANIC_LOGGED.set(()).is_ok() {
+                            tracing::error!(
+                                target = "nova.framework",
+                                analyzer = std::any::type_name_of_val(analyzer),
+                                project = project.to_raw(),
+                                class = class.to_raw(),
+                                op = "virtual_members",
+                                panic = %panic_payload_to_str(&*panic),
+                                "framework analyzer panicked; continuing best-effort"
+                            );
+                        }
+                        Vec::new()
+                    }
+                };
             out.extend(members);
         }
         out
@@ -818,11 +1006,27 @@ impl AnalyzerRegistry {
 
     /// Collect inlay hints for a file.
     pub fn framework_inlay_hints(&self, db: &dyn Database, file: FileId) -> Vec<InlayHint> {
+        static INLAY_HINTS_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let hints = catch_unwind(AssertUnwindSafe(|| analyzer.inlay_hints(db, file)))
-                .unwrap_or_default();
+            let hints = match catch_unwind(AssertUnwindSafe(|| analyzer.inlay_hints(db, file))) {
+                Ok(hints) => hints,
+                Err(panic) => {
+                    if INLAY_HINTS_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            file = file.to_raw(),
+                            op = "inlay_hints",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(hints);
         }
         out
@@ -835,6 +1039,8 @@ impl AnalyzerRegistry {
         file: FileId,
         cancel: &CancellationToken,
     ) -> Vec<InlayHint> {
+        static APPLIES_TO_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
+        static INLAY_HINTS_WITH_CANCEL_PANIC_LOGGED: OnceLock<()> = OnceLock::new();
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -848,7 +1054,19 @@ impl AnalyzerRegistry {
             let analyzer = analyzer.as_ref();
 
             let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
-                .unwrap_or(false);
+                .unwrap_or_else(|panic| {
+                    if APPLIES_TO_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            op = "applies_to",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    false
+                });
             if !applicable {
                 continue;
             }
@@ -857,10 +1075,25 @@ impl AnalyzerRegistry {
                 break;
             }
 
-            let hints = catch_unwind(AssertUnwindSafe(|| {
+            let hints = match catch_unwind(AssertUnwindSafe(|| {
                 analyzer.inlay_hints_with_cancel(db, file, cancel)
-            }))
-            .unwrap_or_default();
+            })) {
+                Ok(hints) => hints,
+                Err(panic) => {
+                    if INLAY_HINTS_WITH_CANCEL_PANIC_LOGGED.set(()).is_ok() {
+                        tracing::error!(
+                            target = "nova.framework",
+                            analyzer = std::any::type_name_of_val(analyzer),
+                            project = project.to_raw(),
+                            file = file.to_raw(),
+                            op = "inlay_hints_with_cancel",
+                            panic = %panic_payload_to_str(&*panic),
+                            "framework analyzer panicked; continuing best-effort"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             out.extend(hints);
         }
         out

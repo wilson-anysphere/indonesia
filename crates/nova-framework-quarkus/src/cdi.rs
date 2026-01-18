@@ -165,9 +165,7 @@ fn parse_class_declaration(
     injections: &mut Vec<InjectionPoint>,
 ) {
     let modifiers = modifier_node(node);
-    let class_annotations = modifiers
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let class_annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     let name_node = node
         .child_by_field_name("name")
@@ -268,7 +266,7 @@ fn parse_field_injections(node: Node<'_>, source_idx: usize, source: &str) -> Ve
         .or_else(|| infer_field_type_node(node));
     let required_type = ty_node
         .map(|n| simplify_type(node_text(source, n)))
-        .unwrap_or_default();
+        .unwrap_or_else(String::new);
 
     let qualifiers = parse_qualifiers(&annotations);
 
@@ -304,9 +302,7 @@ fn parse_constructor_injections(
     source: &str,
 ) -> Vec<InjectionPoint> {
     let modifiers = modifier_node(node);
-    let annotations = modifiers
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
     if !annotations.iter().any(|a| a.simple_name == "Inject") {
         return Vec::new();
     }
@@ -348,7 +344,7 @@ fn parse_constructor_param_injection(
 
     let qualifiers = modifier_node(node)
         .map(|m| parse_qualifiers(&collect_annotations(m, source)))
-        .unwrap_or_default();
+        .map_or_else(Qualifiers::default, |q| q);
 
     Some(InjectionPoint {
         required_type,
@@ -375,9 +371,7 @@ fn parse_class_body_for_producers(
         }
 
         let modifiers = modifier_node(child);
-        let annotations = modifiers
-            .map(|m| collect_annotations(m, source))
-            .unwrap_or_default();
+        let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
         if !annotations.iter().any(|a| a.simple_name == "Produces") {
             continue;
         }
@@ -396,7 +390,7 @@ fn parse_class_body_for_producers(
             .or_else(|| infer_method_return_type_node(child));
         let return_ty = return_ty_node
             .map(|n| simplify_type(node_text(source, n)))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
 
         let member_qualifiers = parse_qualifiers(&annotations);
         let mut qualifiers = class_qualifiers.clone();

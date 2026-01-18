@@ -56,7 +56,7 @@ impl MockProvider {
     }
 
     fn set_response(&self, completions: Vec<MultiTokenCompletion>) {
-        *self.response.lock().expect("poisoned mutex") = completions;
+        *self.response.lock().expect("response mutex poisoned") = completions;
     }
 
     fn release(&self) {
@@ -64,7 +64,7 @@ impl MockProvider {
     }
 
     fn prompts(&self) -> Vec<String> {
-        self.prompts.lock().expect("poisoned mutex").clone()
+        self.prompts.lock().expect("prompts mutex poisoned").clone()
     }
 }
 
@@ -74,9 +74,16 @@ impl MultiTokenCompletionProvider for MockProvider {
         request: MultiTokenCompletionRequest,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
         let MultiTokenCompletionRequest { prompt, cancel, .. } = request;
-        self.prompts.lock().expect("poisoned mutex").push(prompt);
+        self.prompts
+            .lock()
+            .expect("prompts mutex poisoned")
+            .push(prompt);
         let gate = Arc::clone(&self.gate);
-        let response = self.response.lock().expect("poisoned mutex").clone();
+        let response = self
+            .response
+            .lock()
+            .expect("response mutex poisoned")
+            .clone();
 
         Box::pin(async move {
             tokio::select! {

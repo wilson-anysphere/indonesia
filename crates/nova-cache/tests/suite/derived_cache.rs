@@ -323,7 +323,15 @@ fn derived_artifact_cache_gc_respects_ttl() {
     let bytes = bincode_options().serialize(&persisted).unwrap();
     std::fs::write(fresh_path, bytes).unwrap();
 
-    let _ = std::fs::remove_file(query_dir.join("index.json"));
+    let index_path = query_dir.join("index.json");
+    if let Err(err) = std::fs::remove_file(&index_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "failed to remove derived cache index file {}: {err}",
+                index_path.display()
+            );
+        }
+    }
 
     let policy = DerivedCachePolicy {
         max_bytes: u64::MAX,

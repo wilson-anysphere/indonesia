@@ -19,6 +19,7 @@ rkyv = { version = "0.7", features = ["validation"] }
 rowan = "0.15.17"
 text-size = "1.1.1"
 unicode-ident = "1"
+tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"

@@ -8,6 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,22 @@ const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
 const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
 
 const JMOD_HEADER_LEN: u64 = 4;
+
+static REPORTED_INVALID_MR_VERSION: OnceLock<()> = OnceLock::new();
+
+fn report_invalid_multi_release_version(name: &str, version: &str, err: &std::num::ParseIntError) {
+    // Multi-release classpaths can contain many entries. Avoid spamming logs if a
+    // corrupted archive has lots of invalid version segments.
+    if REPORTED_INVALID_MR_VERSION.set(()).is_ok() {
+        tracing::debug!(
+            target = "nova.classpath",
+            name,
+            version,
+            error = %err,
+            "invalid multi-release version segment; skipping entry"
+        );
+    }
+}
 
 /// Derive the automatic module name for a module-path entry based on its path.
 ///
@@ -364,11 +381,23 @@ fn fingerprint_file(path: &Path) -> std::io::Result<ClasspathFingerprint> {
 
 fn fingerprint_class_dir(dir: &Path) -> std::io::Result<ClasspathFingerprint> {
     let mut class_files: Vec<PathBuf> = Vec::new();
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    let mut logged_walk_error = false;
+    for entry in walkdir::WalkDir::new(dir).follow_links(false).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                if !logged_walk_error {
+                    tracing::debug!(
+                        target = "nova.classpath",
+                        root = %dir.display(),
+                        error = %err,
+                        "failed to walk class directory while computing fingerprint"
+                    );
+                    logged_walk_error = true;
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -394,9 +423,18 @@ fn fingerprint_class_dir(dir: &Path) -> std::io::Result<ClasspathFingerprint> {
 }
 
 fn hash_mtime(hasher: &mut DefaultHasher, time: &SystemTime) {
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    static MTIME_DURATION_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_else(|err| {
+        if MTIME_DURATION_ERROR_LOGGED.set(()).is_ok() {
+            tracing::debug!(
+                target = "nova.classpath",
+                error = %err,
+                "failed to compute mtime duration since UNIX_EPOCH; hashing as 0"
+            );
+        }
+        std::time::Duration::from_secs(0)
+    });
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
@@ -519,6 +557,24 @@ pub struct ClasspathIndex {
     internal_to_binary: HashMap<String, String>,
 }
 
+fn deps_store_from_env_best_effort() -> Option<DependencyIndexStore> {
+    static DEPS_STORE_FROM_ENV_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    match DependencyIndexStore::from_env() {
+        Ok(store) => Some(store),
+        Err(err) => {
+            if DEPS_STORE_FROM_ENV_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.classpath",
+                    error = ?err,
+                    "failed to initialize dependency index store from env (best effort)"
+                );
+            }
+            None
+        }
+    }
+}
+
 impl ClasspathIndex {
     pub fn build(
         entries: &[ClasspathEntry],
@@ -532,7 +588,7 @@ impl ClasspathIndex {
         cache_dir: Option<&Path>,
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
-        let deps_store = DependencyIndexStore::from_env().ok();
+        let deps_store = deps_store_from_env_best_effort();
         Self::build_with_deps_store_and_options(
             entries,
             cache_dir,
@@ -837,7 +893,7 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
-        let deps_store = DependencyIndexStore::from_env().ok();
+        let deps_store = deps_store_from_env_best_effort();
         Self::build_with_deps_store_and_options(
             entries,
             cache_dir,
@@ -913,7 +969,7 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
-        let deps_store = DependencyIndexStore::from_env().ok();
+        let deps_store = deps_store_from_env_best_effort();
         Self::build_module_path_with_deps_store_and_options(
             entries,
             cache_dir,
@@ -988,7 +1044,7 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
-        let deps_store = DependencyIndexStore::from_env().ok();
+        let deps_store = deps_store_from_env_best_effort();
         Self::build_classpath_with_deps_store_and_options(
             entries,
             cache_dir,
@@ -1076,7 +1132,7 @@ impl ModuleAwareClasspathIndex {
         cache_dir: Option<&Path>,
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
-        let deps_store = DependencyIndexStore::from_env().ok();
+        let deps_store = deps_store_from_env_best_effort();
         Self::build_mixed_with_deps_store_and_options(
             module_path_entries,
             classpath_entries,
@@ -1460,11 +1516,23 @@ fn index_class_dir(
 
     // Ensure deterministic directory iteration (WalkDir does not guarantee ordering).
     let mut class_files: Vec<PathBuf> = Vec::new();
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    let mut logged_walk_error = false;
+    for entry in walkdir::WalkDir::new(dir).follow_links(false).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                if !logged_walk_error {
+                    tracing::debug!(
+                        target = "nova.classpath",
+                        root = %dir.display(),
+                        error = %err,
+                        "failed to walk class directory while indexing classpath entry"
+                    );
+                    logged_walk_error = true;
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -1773,7 +1841,10 @@ fn index_zip(
                     };
                     match version.parse::<u32>() {
                         Ok(v) => Some(v),
-                        Err(_) => continue,
+                        Err(err) => {
+                            report_invalid_multi_release_version(&name, version, &err);
+                            continue;
+                        }
                     }
                 } else if name.starts_with("classes/META-INF/") {
                     continue;
@@ -1867,7 +1938,10 @@ fn index_zip(
                         };
                         match version.parse::<u32>() {
                             Ok(v) => Some(v),
-                            Err(_) => continue,
+                            Err(err) => {
+                                report_invalid_multi_release_version(&name, version, &err);
+                                continue;
+                            }
                         }
                     } else if let Some(rest) = name.strip_prefix("classes/META-INF/versions/") {
                         let Some((version, _path)) = rest.split_once('/') else {
@@ -1875,7 +1949,10 @@ fn index_zip(
                         };
                         match version.parse::<u32>() {
                             Ok(v) => Some(v),
-                            Err(_) => continue,
+                            Err(err) => {
+                                report_invalid_multi_release_version(&name, version, &err);
+                                continue;
+                            }
                         }
                     } else if name.starts_with("META-INF/") || name.starts_with("classes/META-INF/")
                     {
@@ -1955,10 +2032,24 @@ fn jar_is_multi_release<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> boo
 }
 
 fn dir_is_multi_release(dir: &Path) -> bool {
+    let mut logged_read_error = false;
     for candidate in MANIFEST_CANDIDATES {
         let manifest_path = dir.join(candidate);
-        let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
-            continue;
+        let manifest = match std::fs::read_to_string(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                if !logged_read_error {
+                    tracing::debug!(
+                        target = "nova.classpath",
+                        path = %manifest_path.display(),
+                        error = %err,
+                        "failed to read manifest while checking multi-release directory entry"
+                    );
+                    logged_read_error = true;
+                }
+                continue;
+            }
         };
         if manifest_is_multi_release(&manifest) {
             return true;
@@ -2001,7 +2092,23 @@ fn mr_version_from_dir_path(rel: &Path, is_multi_release: bool) -> Option<Option
         let Component::Normal(version_component) = version_component else {
             return None;
         };
-        let version = version_component.to_str()?.parse::<u32>().ok()?;
+        static MR_VERSION_PARSE_ERROR_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+        let version_str = version_component.to_string_lossy();
+        let version = match version_str.parse::<u32>() {
+            Ok(version) => version,
+            Err(err) => {
+                if MR_VERSION_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.classpath",
+                        version = %version_str,
+                        error = %err,
+                        "failed to parse multi-release version; ignoring entry (best effort)"
+                    );
+                }
+                return None;
+            }
+        };
         return Some(Some(version));
     }
 

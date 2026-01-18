@@ -84,11 +84,25 @@ pub fn enumerate_project_caches(
         return Ok(Vec::new());
     }
 
+    let mut logged_metadata_bin_stat_error = false;
+    let mut logged_metadata_json_stat_error = false;
+    let mut logged_metadata_json_open_error = false;
+    let mut logged_metadata_json_parse_error = false;
+    let mut logged_perf_stat_error = false;
+
     let mut caches = Vec::new();
     for entry in std::fs::read_dir(cache_root)? {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.cache",
+                    cache_root = %cache_root.display(),
+                    error = %err,
+                    "failed to read cache root directory entry while enumerating caches"
+                );
+                continue;
+            }
         };
         let name_os = entry.file_name();
         if name_os == "deps" {
@@ -97,7 +111,19 @@ pub fn enumerate_project_caches(
 
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
-            Err(_) => continue,
+            Err(err) => {
+                // Cache entries can race with deletion; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    let path = entry.path();
+                    tracing::debug!(
+                        target = "nova.cache",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to read cache entry file type while enumerating caches"
+                    );
+                }
+                continue;
+            }
         };
         if !(file_type.is_dir() || file_type.is_symlink()) {
             continue;
@@ -123,9 +149,22 @@ pub fn enumerate_project_caches(
             let metadata_path = path.join(CACHE_METADATA_JSON_FILENAME);
             let metadata_bin_path = path.join(CACHE_METADATA_BIN_FILENAME);
 
-            let metadata_bin_is_file = std::fs::symlink_metadata(&metadata_bin_path)
-                .ok()
-                .is_some_and(|meta| meta.is_file());
+            let metadata_bin_is_file = match std::fs::symlink_metadata(&metadata_bin_path) {
+                Ok(meta) => meta.is_file(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                Err(err) => {
+                    if !logged_metadata_bin_stat_error {
+                        logged_metadata_bin_stat_error = true;
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %metadata_bin_path.display(),
+                            error = %err,
+                            "failed to stat cache metadata archive while enumerating caches"
+                        );
+                    }
+                    false
+                }
+            };
 
             let mut loaded_metadata = false;
             if metadata_bin_is_file {
@@ -137,30 +176,83 @@ pub fn enumerate_project_caches(
                 }
             }
 
-            if !loaded_metadata
-                && std::fs::symlink_metadata(&metadata_path)
-                    .ok()
-                    .is_some_and(|meta| meta.is_file())
-            {
-                if let Ok(file) = std::fs::File::open(&metadata_path) {
-                    let reader = std::io::BufReader::new(file);
-                    if let Ok(metadata) = serde_json::from_reader::<_, CacheMetadataSummary>(reader)
-                    {
-                        last_updated_millis = metadata.last_updated_millis;
-                        nova_version = metadata.nova_version;
-                        schema_version = metadata.schema_version;
+            let metadata_json_is_file = match std::fs::symlink_metadata(&metadata_path) {
+                Ok(meta) => meta.is_file(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                Err(err) => {
+                    if !logged_metadata_json_stat_error {
+                        logged_metadata_json_stat_error = true;
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %metadata_path.display(),
+                            error = %err,
+                            "failed to stat cache metadata JSON while enumerating caches"
+                        );
+                    }
+                    false
+                }
+            };
+
+            if !loaded_metadata && metadata_json_is_file {
+                match std::fs::File::open(&metadata_path) {
+                    Ok(file) => {
+                        let reader = std::io::BufReader::new(file);
+                        match serde_json::from_reader::<_, CacheMetadataSummary>(reader) {
+                            Ok(metadata) => {
+                                last_updated_millis = metadata.last_updated_millis;
+                                nova_version = metadata.nova_version;
+                                schema_version = metadata.schema_version;
+                            }
+                            Err(err) => {
+                                if !logged_metadata_json_parse_error {
+                                    logged_metadata_json_parse_error = true;
+                                    tracing::debug!(
+                                        target = "nova.cache",
+                                        path = %metadata_path.display(),
+                                        error = %err,
+                                        "failed to parse cache metadata JSON while enumerating caches"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        if !logged_metadata_json_open_error {
+                            logged_metadata_json_open_error = true;
+                            tracing::debug!(
+                                target = "nova.cache",
+                                path = %metadata_path.display(),
+                                error = %err,
+                                "failed to open cache metadata JSON while enumerating caches"
+                            );
+                        }
                     }
                 }
             }
 
             let perf_path = path.join("perf.json");
-            if let Ok(meta) = std::fs::symlink_metadata(&perf_path) {
-                if meta.is_file() {
-                    if let Some(perf_updated) = modified_millis(&perf_path) {
-                        last_updated_millis = Some(match last_updated_millis {
-                            Some(prev) => prev.max(perf_updated),
-                            None => perf_updated,
-                        });
+            match std::fs::symlink_metadata(&perf_path) {
+                Ok(meta) => {
+                    if meta.is_file() {
+                        if let Some(perf_updated) = modified_millis(&perf_path) {
+                            last_updated_millis = Some(match last_updated_millis {
+                                Some(prev) => prev.max(perf_updated),
+                                None => perf_updated,
+                            });
+                        }
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    if !logged_perf_stat_error {
+                        logged_perf_stat_error = true;
+                        tracing::debug!(
+                            target = "nova.cache",
+                            path = %perf_path.display(),
+                            error = %err,
+                            "failed to stat perf.json while enumerating caches"
+                        );
                     }
                 }
             }
@@ -395,12 +487,47 @@ fn unique_sibling_path(parent: &Path, name: &str, suffix: &str) -> PathBuf {
 }
 
 fn modified_millis(path: &Path) -> Option<u64> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    modified
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            // Cache entries can race with deletion; only log unexpected errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.cache",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to stat file while reading modified time"
+                );
+            }
+            return None;
+        }
+    };
+
+    let modified = match meta.modified() {
+        Ok(modified) => modified,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "failed to read file modified time"
+            );
+            return None;
+        }
+    };
+
+    match modified.duration_since(UNIX_EPOCH) {
+        Ok(d) => Some(d.as_millis() as u64),
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.cache",
+                path = %path.display(),
+                error = %err,
+                "file modified time predates unix epoch"
+            );
+            None
+        }
+    }
 }
 
 fn dir_size_bytes_nofollow(root: &Path) -> u64 {
@@ -408,7 +535,23 @@ fn dir_size_bytes_nofollow(root: &Path) -> u64 {
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                let io_err = err.io_error();
+                let should_log = match io_err {
+                    Some(io_err) => io_err.kind() != std::io::ErrorKind::NotFound,
+                    None => true,
+                };
+                if should_log {
+                    let path = err.path().map(|p| p.display().to_string());
+                    tracing::debug!(
+                        target = "nova.cache",
+                        path,
+                        error = %err,
+                        "failed to walk cache directory while computing size"
+                    );
+                }
+                continue;
+            }
         };
         let ty = entry.file_type();
         if !(ty.is_file() || ty.is_symlink()) {
@@ -416,7 +559,18 @@ fn dir_size_bytes_nofollow(root: &Path) -> u64 {
         }
         let len = match std::fs::symlink_metadata(entry.path()) {
             Ok(meta) => meta.len(),
-            Err(_) => continue,
+            Err(err) => {
+                // Cache entries can race with deletion; only log unexpected errors.
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        target = "nova.cache",
+                        path = %entry.path().display(),
+                        error = %err,
+                        "failed to stat cache entry while computing size"
+                    );
+                }
+                continue;
+            }
         };
         total = total.saturating_add(len);
     }

@@ -13,15 +13,32 @@ use std::time::Duration;
 
 static STDIO_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
+#[track_caller]
+fn lock_unpoison<'a>(mutex: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = std::panic::Location::caller();
+            tracing::error!(
+                target = "nova.lsp.tests",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "mutex poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
+
 /// Serialize tests that spawn the `nova-lsp` stdio server.
 ///
 /// The server binary is large and may spin up multiple helper threads. When the test harness runs
 /// these integration tests in parallel (controlled by `RUST_TEST_THREADS`), spawning many server
 /// processes at once can exceed the sandbox's memory limits and lead to spurious crashes / EOFs.
 pub fn stdio_server_lock() -> std::sync::MutexGuard<'static, ()> {
-    STDIO_SERVER_LOCK
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
+    lock_unpoison(&STDIO_SERVER_LOCK)
 }
 
 /// Build an RFC 8089 `file://` URI string for an absolute filesystem path.
@@ -88,8 +105,12 @@ impl TestAiServer {
             }
 
             let mut parts = request_line.split_whitespace();
-            let method = parts.next().unwrap_or_default();
-            let path = parts.next().unwrap_or_default();
+            let Some(method) = parts.next() else {
+                continue;
+            };
+            let Some(path) = parts.next() else {
+                continue;
+            };
 
             let mut content_length: usize = 0;
             loop {
@@ -108,7 +129,9 @@ impl TestAiServer {
                 }
                 if let Some((name, value)) = line.split_once(':') {
                     if name.eq_ignore_ascii_case("Content-Length") {
-                        content_length = value.trim().parse::<usize>().unwrap_or(0);
+                        if let Ok(len) = value.trim().parse::<usize>() {
+                            content_length = len;
+                        }
                     }
                 }
             }
@@ -220,6 +243,18 @@ pub fn read_response_with_id(reader: &mut impl BufRead, id: i64) -> Value {
             return msg;
         }
     }
+}
+
+#[track_caller]
+pub fn jsonrpc_result(response: &Value) -> Value {
+    response.get("result").cloned().unwrap_or_else(|| {
+        panic!("jsonrpc response missing `result` field (or it is not an object): {response:#}")
+    })
+}
+
+#[track_caller]
+pub fn jsonrpc_result_as<T: serde::de::DeserializeOwned>(response: &Value) -> T {
+    serde_json::from_value(jsonrpc_result(response)).expect("decode jsonrpc result")
 }
 
 pub fn decode_initialize_result(response: &Value) -> InitializeResult {

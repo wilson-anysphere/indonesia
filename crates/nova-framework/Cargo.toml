@@ -9,3 +9,4 @@ nova-hir = { path = "../nova-hir" }
 nova-scheduler = { path = "../nova-scheduler" }
 nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs" }
+tracing = { workspace = true }

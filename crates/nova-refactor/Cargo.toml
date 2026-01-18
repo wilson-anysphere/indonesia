@@ -21,6 +21,7 @@ nova-hir = { path = "../nova-hir" }
 nova-flow = { path = "../nova-flow" }
 nova-jdk = { path = "../nova-jdk" }
 nova-resolve = { path = "../nova-resolve" }
+tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"

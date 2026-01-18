@@ -256,7 +256,7 @@ where
                 // LSP CreateFile doesn't include contents; represent "create with contents" as a
                 // full rewrite of an empty document. If there are additional text edits on this
                 // file, apply them in-memory and send a single rewrite to avoid offset shifting.
-                let file_edits = edits_by_file.remove(file).unwrap_or_default();
+                let file_edits = edits_by_file.remove(file).unwrap_or_else(Vec::new);
                 let final_contents = crate::edit::apply_text_edits(contents, &file_edits)
                     .map_err(LspConversionError::Edit)?;
 

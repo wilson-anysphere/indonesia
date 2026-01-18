@@ -129,7 +129,10 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
 
 impl Write for BufferGuard {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("buffer mutex poisoned")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -170,7 +173,7 @@ fn shard_index_protocol_mismatch_is_cache_miss_and_logs() {
         assert!(loaded.is_none());
     });
 
-    let output = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let output = String::from_utf8(buf.lock().expect("buffer mutex poisoned").clone()).unwrap();
     assert!(output.contains("incompatible protocol version"), "{output}");
     assert!(output.contains("shard_id=7"), "{output}");
     assert!(output.contains("shard_7.bin"), "{output}");

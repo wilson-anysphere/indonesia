@@ -184,7 +184,7 @@ static CACHE_REGISTRY: OnceLock<Mutex<HashMap<CacheSettings, Weak<LlmResponseCac
 
 pub(crate) fn shared_cache(settings: CacheSettings) -> Arc<LlmResponseCache> {
     let registry = CACHE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().expect("cache registry mutex poisoned");
+    let mut registry = crate::poison::lock(registry, "shared_cache.registry");
 
     if let Some(existing) = registry.get(&settings).and_then(|weak| weak.upgrade()) {
         return existing;

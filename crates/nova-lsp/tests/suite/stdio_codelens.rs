@@ -14,8 +14,8 @@ use lsp_types::{
 
 use crate::support::{
     did_open_notification, exit_notification, initialize_request_with_root_uri,
-    initialized_notification, jsonrpc_request, read_response_with_id, shutdown_request,
-    write_jsonrpc_message,
+    initialized_notification, jsonrpc_request, jsonrpc_result_as, read_response_with_id,
+    shutdown_request, write_jsonrpc_message,
 };
 
 #[test]
@@ -74,9 +74,7 @@ public class CalculatorTest {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let lenses: Vec<CodeLens> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("codeLens result array");
+    let lenses: Vec<CodeLens> = jsonrpc_result_as(&resp);
     assert!(
         lenses.iter().any(|lens| lens
             .command
@@ -147,9 +145,7 @@ public class Main {
         ),
     );
     let resp = read_response_with_id(&mut stdout, 2);
-    let lenses: Vec<CodeLens> =
-        serde_json::from_value(resp.get("result").cloned().unwrap_or_default())
-            .expect("codeLens result array");
+    let lenses: Vec<CodeLens> = jsonrpc_result_as(&resp);
     assert!(
         lenses.iter().any(|lens| lens
             .command

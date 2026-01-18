@@ -7,7 +7,7 @@ use crate::db::DatabaseSnapshot;
 use crate::framework_cache;
 use crate::nav_core;
 use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
-use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex};
+use nova_core::LineIndex;
 use nova_db::Database as _;
 use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
 
@@ -185,7 +185,22 @@ fn mapstruct_target_location(
         });
     }
 
-    let text = std::fs::read_to_string(&target.file).ok()?;
+    let text = match std::fs::read_to_string(&target.file) {
+        Ok(text) => text,
+        Err(err) => {
+            // The target may be outside the current workspace and could race with deletion.
+            // Treat as best-effort and only log unexpected filesystem errors.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.ide",
+                    file = %target.file.display(),
+                    error = %err,
+                    "failed to read mapstruct navigation target file"
+                );
+            }
+            return None;
+        }
+    };
     let line_index = LineIndex::new(&text);
     Some(Location {
         uri,
@@ -194,9 +209,7 @@ fn mapstruct_target_location(
 }
 
 fn uri_for_path(path: &Path) -> Option<Uri> {
-    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
-    let uri = path_to_file_uri(&abs).ok()?;
-    Uri::from_str(&uri).ok()
+    crate::uri::uri_from_path_best_effort(path, "navigation.uri_for_path")
 }
 
 fn fallback_unknown_uri() -> Uri {

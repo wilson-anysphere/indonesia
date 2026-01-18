@@ -146,6 +146,237 @@ pub fn rewrite_this_tokens(source: &str, replacement: &str) -> String {
     out
 }
 
+/// Rewrite identifier tokens in `source` using `replacements`.
+///
+/// This is a lightweight, token-aware rewrite suitable for Java expressions and statement
+/// snippets. Like [`rewrite_this_tokens`], it avoids rewrites inside string/char literals and only
+/// considers ASCII identifier tokens.
+pub fn rewrite_identifier_tokens(
+    source: &str,
+    replacements: &std::collections::HashMap<String, String>,
+) -> String {
+    if replacements.is_empty() {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    while let Some((_idx, ch)) = chars.next() {
+        if in_str {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+
+        if in_char {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_str = true;
+                out.push(ch);
+            }
+            '\'' => {
+                in_char = true;
+                out.push(ch);
+            }
+            _ if is_java_identifier_start_ascii(ch) => {
+                let mut ident = String::new();
+                ident.push(ch);
+                while let Some((_, next_ch)) = chars.peek().copied() {
+                    if is_java_identifier_part_ascii(next_ch) {
+                        ident.push(next_ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(replacement) = replacements.get(&ident) {
+                    out.push_str(replacement);
+                } else {
+                    out.push_str(&ident);
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+
+    out
+}
+
+fn collect_lambda_param_names(source: &str) -> HashSet<String> {
+    let bytes = source.as_bytes();
+    let mut out = HashSet::new();
+
+    // Best-effort scan that:
+    // - ignores string/char literals
+    // - finds `->`
+    // - extracts parameter identifiers (single `x ->` or parenthesized `(a, b) ->`)
+    let mut i = 0usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+
+        if in_str {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_char {
+            match b {
+                b'\\' => escape = true,
+                b'\'' => in_char = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'"' => {
+                in_str = true;
+                i += 1;
+                continue;
+            }
+            b'\'' => {
+                in_char = true;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if b == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+            // Look backward for the parameter list immediately preceding `->`.
+            let mut j = i;
+            while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+                j -= 1;
+            }
+            if j == 0 {
+                i += 2;
+                continue;
+            }
+
+            if bytes[j - 1] == b')' {
+                // Parenthesized lambda params: walk back to matching '('.
+                let mut depth = 0i32;
+                let mut k = j - 1;
+                loop {
+                    match bytes[k] {
+                        b')' => depth += 1,
+                        b'(' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if k == 0 {
+                        break;
+                    }
+                    k -= 1;
+                }
+
+                if bytes.get(k) == Some(&b'(') {
+                    let params_str = &source[k + 1..j - 1];
+                    for seg in params_str.split(',') {
+                        let seg = seg.trim();
+                        if seg.is_empty() {
+                            continue;
+                        }
+
+                        // Best-effort: take the last identifier token in the segment.
+                        let mut end = seg.len();
+                        while end > 0 {
+                            let ch = seg.as_bytes()[end - 1] as char;
+                            if is_java_identifier_part_ascii(ch) {
+                                break;
+                            }
+                            end -= 1;
+                        }
+                        if end == 0 {
+                            continue;
+                        }
+                        let mut start = end;
+                        while start > 0 {
+                            let ch = seg.as_bytes()[start - 1] as char;
+                            if is_java_identifier_part_ascii(ch) {
+                                start -= 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        let ident = &seg[start..end];
+                        if !ident.is_empty() {
+                            out.insert(ident.to_string());
+                        }
+                    }
+                }
+            } else {
+                // Single identifier param.
+                let mut end = j;
+                while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                let mut start = end;
+                while start > 0 {
+                    let ch = bytes[start - 1] as char;
+                    if is_java_identifier_part_ascii(ch) {
+                        start -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if start < end {
+                    out.insert(source[start..end].to_string());
+                }
+            }
+
+            i += 2;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
 /// Rewrites *unqualified* method call sites to compile in injected helper contexts.
 ///
 /// The injected stream-eval helper is a separate top-level class, so unqualified method calls like
@@ -448,10 +679,16 @@ pub fn generate_stream_eval_helper_java_source(
         .unwrap_or("Object");
 
     // Compute a deterministic, collision-free parameter list.
+    //
+    // Important: Java lambda parameters cannot shadow method parameters/local variables in the
+    // enclosing method scope. To avoid surprising compile failures for user expressions like
+    // `.map(x -> x)` we avoid binding locals/fields under their original names.
     let mut used_params: HashSet<String> = HashSet::new();
     used_params.insert(THIS_IDENT.to_string());
     let mut params: Vec<(String, String)> = Vec::new();
     params.push((this_ty.to_string(), THIS_IDENT.to_string()));
+    let mut name_rewrites: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for (name, ty) in locals {
         let name = name.trim();
@@ -464,6 +701,7 @@ pub fn generate_stream_eval_helper_java_source(
         }
 
         let base = sanitize_java_param_name(name);
+        let base = format!("__nova_{base}");
         let param = if used_params.insert(base.clone()) {
             base
         } else {
@@ -479,6 +717,7 @@ pub fn generate_stream_eval_helper_java_source(
         };
 
         params.push((ty.to_string(), param));
+        name_rewrites.insert(name.to_string(), params.last().expect("param").1.clone());
     }
 
     // Bind instance fields after locals so unqualified field references can compile.
@@ -498,16 +737,24 @@ pub fn generate_stream_eval_helper_java_source(
 
         let sanitized = sanitize_java_param_name(name);
         if sanitized != name {
-            // Best-effort: skip fields whose identifiers cannot be represented directly
-            // without rewriting the expression.
             continue;
         }
-        if !used_params.insert(sanitized.clone()) {
-            // Locals (or other fields) already bound this name.
-            continue;
-        }
+        let base = format!("__nova_{sanitized}");
+        let param = if used_params.insert(base.clone()) {
+            base
+        } else {
+            let mut idx = 2usize;
+            loop {
+                let candidate = format!("{base}_{idx}");
+                if used_params.insert(candidate.clone()) {
+                    break candidate;
+                }
+                idx += 1;
+            }
+        };
 
-        params.push((ty.to_string(), sanitized));
+        params.push((ty.to_string(), param.clone()));
+        name_rewrites.insert(name.to_string(), param);
     }
 
     // Bind static fields after instance fields. Locals and instance fields shadow static fields,
@@ -528,11 +775,22 @@ pub fn generate_stream_eval_helper_java_source(
         if sanitized != name {
             continue;
         }
-        if !used_params.insert(sanitized.clone()) {
-            continue;
-        }
+        let base = format!("__nova_{sanitized}");
+        let param = if used_params.insert(base.clone()) {
+            base
+        } else {
+            let mut idx = 2usize;
+            loop {
+                let candidate = format!("{base}_{idx}");
+                if used_params.insert(candidate.clone()) {
+                    break candidate;
+                }
+                idx += 1;
+            }
+        };
 
-        params.push((ty.to_string(), sanitized));
+        params.push((ty.to_string(), param.clone()));
+        name_rewrites.insert(name.to_string(), param);
     }
 
     for (idx, stage) in stages.iter().enumerate() {
@@ -540,6 +798,12 @@ pub fn generate_stream_eval_helper_java_source(
         let stage = stage.trim();
         let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
         let stage = rewrite_this_tokens(stage, THIS_IDENT);
+        let lambda_params = collect_lambda_param_names(&stage);
+        let mut stage_rewrites = name_rewrites.clone();
+        for name in lambda_params {
+            stage_rewrites.remove(&name);
+        }
+        let stage = rewrite_identifier_tokens(&stage, &stage_rewrites);
         let stage_is_void = is_known_void_stream_expression(&stage);
 
         out.push_str("  public static ");
@@ -593,6 +857,12 @@ pub fn generate_stream_eval_helper_java_source(
                 .unwrap_or(terminal_expr)
                 .trim();
             let terminal_expr = rewrite_this_tokens(terminal_expr, THIS_IDENT);
+            let lambda_params = collect_lambda_param_names(&terminal_expr);
+            let mut terminal_rewrites = name_rewrites.clone();
+            for name in lambda_params {
+                terminal_rewrites.remove(&name);
+            }
+            let terminal_expr = rewrite_identifier_tokens(&terminal_expr, &terminal_rewrites);
             let terminal_is_void = is_known_void_stream_expression(&terminal_expr);
 
             out.push_str("  public static ");
@@ -1077,7 +1347,7 @@ mod tests {
 
         // Ensure locals are exposed via valid parameter names.
         assert!(src.contains("com.example.Foo __this"));
-        assert!(src.contains("int foo_bar"));
+        assert!(src.contains("int __nova_foo_bar"));
 
         // Ensure stages are generated and `this` is rewritten.
         assert!(src.contains("public static java.util.List<?> stage0"));
@@ -1132,10 +1402,10 @@ mod tests {
             "expected stage0 to be void for forEach:\n{src}"
         );
         assert!(
-            !src.contains("return s.forEach"),
+            !src.contains("return __nova_s.forEach"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains("s.forEach(System.out::println);"));
+        assert!(src.contains("__nova_s.forEach(System.out::println);"));
     }
 
     #[test]
@@ -1163,10 +1433,10 @@ mod tests {
             "expected stage0 to be void for forEachOrdered:\n{src}"
         );
         assert!(
-            !src.contains("return s.forEachOrdered"),
+            !src.contains("return __nova_s.forEachOrdered"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains("s.forEachOrdered(System.out::println);"));
+        assert!(src.contains("__nova_s.forEachOrdered(System.out::println);"));
     }
 
     #[test]
@@ -1218,9 +1488,9 @@ mod tests {
 
         // `__this` always comes first.
         assert!(
-            src.contains("public static java.util.List<?> stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums, java.util.List<java.lang.Integer> MY_LIST)")
+            src.contains("public static java.util.List<?> stage0(com.example.Foo __this, java.util.List<java.lang.Integer> __nova_nums, java.util.List<java.lang.Integer> __nova_MY_LIST)")
         );
-        assert!(src.contains("return sampleStream(nums.stream(), 25);"));
+        assert!(src.contains("return sampleStream(__nova_nums.stream(), 25);"));
     }
 
     #[test]
@@ -1254,11 +1524,12 @@ mod tests {
             "expected stage0 to be void for forEach:\n{src}"
         );
         assert!(
-            !src.contains("return s.map"),
+            !src.contains("return __nova_s.map"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src
-            .contains(r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#));
+        assert!(src.contains(
+            r#"__nova_s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#
+        ));
     }
 
     #[test]
@@ -1282,7 +1553,7 @@ mod tests {
         );
 
         assert!(
-            src.contains("stage0(Foo __this, int foo_bar, int foo_bar_2, int foo_bar_3)"),
+            src.contains("stage0(Foo __this, int __nova_foo_bar, int __nova_foo_bar_2, int __nova_foo_bar_3)"),
             "{src}"
         );
         // Ensure trailing semicolons are stripped before wrapping in `return ...;`.
@@ -1338,9 +1609,9 @@ mod tests {
             "expected terminal to be void for forEach:\n{src}"
         );
         assert!(
-            !src.contains("return s.forEach"),
+            !src.contains("return __nova_s.forEach"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains("s.forEach(System.out::println);"));
+        assert!(src.contains("__nova_s.forEach(System.out::println);"));
     }
 }

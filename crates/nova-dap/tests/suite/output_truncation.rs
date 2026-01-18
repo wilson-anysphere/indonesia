@@ -52,7 +52,7 @@ async fn launch_truncates_very_long_stdout_lines() {
     let output = output_evt
         .pointer("/body/output")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .expect("output event missing body.output");
     assert!(
         output.len() < line_len,
         "expected output to be truncated ({} bytes), but got {} bytes",

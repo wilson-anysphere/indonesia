@@ -8,22 +8,49 @@
 
 use crate::aquery::JavaCompileInfo;
 use anyhow::{anyhow, Context, Result};
-use nova_core::{file_uri_to_path, AbsPathBuf, BuildDiagnostic as NovaDiagnostic};
+use nova_core::{AbsPathBuf, BuildDiagnostic as NovaDiagnostic};
 use nova_process::CancellationToken;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    env::VarError,
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, OnceLock,
     },
     thread,
     time::Duration,
 };
+
+#[track_caller]
+fn join_thread_best_effort(handle: thread::JoinHandle<()>, reason: &'static str) {
+    static JOIN_PANIC_LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    if let Err(panic) = handle.join() {
+        if JOIN_PANIC_LOGGED.set(()).is_ok() {
+            let loc = std::panic::Location::caller();
+            let message = panic
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string panic>");
+
+            tracing::debug!(
+                target = "nova.build_bazel",
+                reason,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                panic = %message,
+                "background thread panicked (best effort join)"
+            );
+        }
+    }
+}
 
 const BSP_MAX_MESSAGE_BYTES_DEFAULT: usize = 64 * 1024 * 1024;
 const BSP_MAX_MESSAGE_BYTES_FLOOR: usize = 1024 * 1024;
@@ -32,14 +59,45 @@ const BSP_MAX_MESSAGE_BYTES_ENV_VAR: &str = "NOVA_BSP_MAX_MESSAGE_BYTES";
 const BSP_MAX_HEADER_LINE_BYTES: usize = 8 * 1024; // 8 KiB
 
 fn bsp_max_message_bytes() -> usize {
-    let configured = std::env::var(BSP_MAX_MESSAGE_BYTES_ENV_VAR).ok();
+    static BSP_MAX_MESSAGE_BYTES_ENV_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    static BSP_MAX_MESSAGE_BYTES_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let configured = match std::env::var(BSP_MAX_MESSAGE_BYTES_ENV_VAR) {
+        Ok(value) => Some(value),
+        Err(VarError::NotPresent) => None,
+        Err(err) => {
+            if BSP_MAX_MESSAGE_BYTES_ENV_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    key = BSP_MAX_MESSAGE_BYTES_ENV_VAR,
+                    error = ?err,
+                    "failed to read env override; using default BSP max message bytes"
+                );
+            }
+            None
+        }
+    };
     let configured = configured
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty());
 
     let value = configured
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| match value.parse::<usize>() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                if BSP_MAX_MESSAGE_BYTES_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.build_bazel",
+                        key = BSP_MAX_MESSAGE_BYTES_ENV_VAR,
+                        value,
+                        error = %err,
+                        "invalid env override; using default BSP max message bytes"
+                    );
+                }
+                None
+            }
+        })
         .unwrap_or(BSP_MAX_MESSAGE_BYTES_DEFAULT);
 
     value.clamp(BSP_MAX_MESSAGE_BYTES_FLOOR, BSP_MAX_MESSAGE_BYTES_CEILING)
@@ -85,7 +143,23 @@ const ENV_BSP_REQUEST_TIMEOUT_MS: &str = "NOVA_BSP_REQUEST_TIMEOUT_MS";
 const DEFAULT_BSP_REQUEST_TIMEOUT: Duration = Duration::from_millis(300_000);
 
 fn parse_timeout_ms(key: &str, default: Duration) -> Duration {
-    let raw = std::env::var(key).unwrap_or_default();
+    static BSP_TIMEOUT_ENV_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let raw = match std::env::var(key) {
+        Ok(raw) => raw,
+        Err(VarError::NotPresent) => String::new(),
+        Err(err) => {
+            if BSP_TIMEOUT_ENV_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build.bazel",
+                    key,
+                    error = ?err,
+                    "failed to read env override; using default BSP timeout"
+                );
+            }
+            String::new()
+        }
+    };
     let raw = raw.trim();
     if raw.is_empty() {
         return default;
@@ -93,11 +167,26 @@ fn parse_timeout_ms(key: &str, default: Duration) -> Duration {
 
     let ms: i64 = match raw.parse() {
         Ok(ms) => ms,
-        Err(_) => return default,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.build.bazel",
+                key,
+                value = raw,
+                error = %err,
+                "invalid env override; using default BSP timeout"
+            );
+            return default;
+        }
     };
 
     // Treat <= 0 values as unset so callers can't accidentally disable timeouts and hang forever.
     if ms <= 0 {
+        tracing::debug!(
+            target = "nova.build.bazel",
+            key,
+            value = raw,
+            "non-positive env override; using default BSP timeout"
+        );
         return default;
     }
 
@@ -227,14 +316,28 @@ fn split_bsp_args_whitespace(args_raw: &str) -> Vec<String> {
 
 #[cfg(any(test, feature = "bsp"))]
 fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
+    static BSP_ARGS_ENV_JSON_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let args_raw = args_raw.trim();
     if args_raw.is_empty() {
         return Vec::new();
     }
 
     if args_raw.starts_with('[') {
-        serde_json::from_str::<Vec<String>>(args_raw)
-            .unwrap_or_else(|_| split_bsp_args_whitespace(args_raw))
+        match serde_json::from_str::<Vec<String>>(args_raw) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                if BSP_ARGS_ENV_JSON_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.build_bazel",
+                        error = %err,
+                        args_raw,
+                        "failed to parse NOVA_BSP_ARGS as JSON; falling back to whitespace splitting"
+                    );
+                }
+                split_bsp_args_whitespace(args_raw)
+            }
+        }
     } else {
         split_bsp_args_whitespace(args_raw)
     }
@@ -398,7 +501,20 @@ fn bsp_compile_raw_with_cancellation(
 
         // Optional discovery step: fetch targets so we can resolve "labels" (or display names) to
         // actual BSP build target identifiers.
-        let build_targets = client.build_targets().ok();
+        static BSP_BUILD_TARGETS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+        let build_targets = match client.build_targets() {
+            Ok(build_targets) => Some(build_targets),
+            Err(err) => {
+                if BSP_BUILD_TARGETS_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.build_bazel",
+                        error = %err,
+                        "bsp buildTargets request failed (best effort); continuing without target discovery"
+                    );
+                }
+                None
+            }
+        };
 
         let resolved_targets: Vec<BuildTargetIdentifier> = targets
             .iter()
@@ -410,8 +526,26 @@ fn bsp_compile_raw_with_cancellation(
         })?;
 
         // Best-effort graceful shutdown. Servers may still send final diagnostics while responding.
-        let _ = client.shutdown();
-        let _ = client.exit();
+        static BSP_GRACEFUL_SHUTDOWN_ERROR_LOGGED: std::sync::OnceLock<()> =
+            std::sync::OnceLock::new();
+        if let Err(err) = client.shutdown() {
+            if BSP_GRACEFUL_SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    error = ?err,
+                    "bsp shutdown request failed (best effort)"
+                );
+            }
+        }
+        if let Err(err) = client.exit() {
+            if BSP_GRACEFUL_SHUTDOWN_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    error = ?err,
+                    "bsp exit request failed (best effort)"
+                );
+            }
+        }
 
         Ok((compile_result.status_code, client.drain_diagnostics()))
     })();
@@ -419,7 +553,7 @@ fn bsp_compile_raw_with_cancellation(
     // Stop the cancellation thread now that the BSP server has exited (or we've given up).
     let _ = cancel_tx.send(());
     if let Some(handle) = cancel_handle {
-        let _ = handle.join();
+        join_thread_best_effort(handle, "bsp.compile.cancel_thread");
     }
 
     result
@@ -682,7 +816,7 @@ impl BspClient {
                     let _ = cancel.send(());
                 }
                 if let Some(handle) = self.handle.take() {
-                    let _ = handle.join();
+                    join_thread_best_effort(handle, "bsp.request_watchdog");
                 }
             }
         }
@@ -750,8 +884,15 @@ impl BspClient {
 
                 if let Some(error) = incoming.get("error") {
                     let error = error.clone();
-                    if let Ok(parsed) = serde_json::from_value::<BspRpcError>(error.clone()) {
-                        return Err(anyhow::Error::new(parsed));
+                    match serde_json::from_value::<BspRpcError>(error.clone()) {
+                        Ok(parsed) => return Err(anyhow::Error::new(parsed)),
+                        Err(err) => {
+                            tracing::debug!(
+                                target = "nova.build_bazel",
+                                error = ?err,
+                                "failed to parse BSP error object; falling back to generic error"
+                            );
+                        }
                     }
                     return Err(anyhow!("BSP error response: {error}"));
                 }
@@ -838,7 +979,7 @@ impl Drop for BspClient {
             let _ = cancel.send(());
         }
         if let Some(handle) = self.timeout_handle.take() {
-            let _ = handle.join();
+            join_thread_best_effort(handle, "bsp.client_timeout_thread");
         }
 
         // Best-effort shutdown; ignore errors.
@@ -901,7 +1042,19 @@ pub struct BspWorkspace {
 
 impl BspWorkspace {
     pub fn connect(root: PathBuf, config: BspServerConfig) -> Result<Self> {
-        let mut root = root.canonicalize().unwrap_or(root);
+        let mut root = match root.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => root,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    path = %root.display(),
+                    error = %err,
+                    "failed to canonicalize BSP workspace root; using fallback"
+                );
+                root
+            }
+        };
         if !root.is_absolute() {
             root = std::env::current_dir()?.join(root);
         }
@@ -939,7 +1092,7 @@ impl BspWorkspace {
         // Ensure the watchdog cannot fire after we return from `connect`, even in error cases.
         let _ = cancel_tx.send(());
         if let Some(handle) = watchdog_handle {
-            let _ = handle.join();
+            join_thread_best_effort(handle, "bsp.connect_watchdog");
         }
 
         if connect_timed_out.load(Ordering::SeqCst) {
@@ -952,7 +1105,19 @@ impl BspWorkspace {
     }
 
     pub fn from_client(root: PathBuf, mut client: BspClient) -> Result<Self> {
-        let mut root = root.canonicalize().unwrap_or(root);
+        let mut root = match root.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => root,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    path = %root.display(),
+                    error = %err,
+                    "failed to canonicalize BSP workspace root; using fallback"
+                );
+                root
+            }
+        };
         if !root.is_absolute() {
             root = std::env::current_dir()?.join(root);
         }
@@ -994,7 +1159,7 @@ impl BspWorkspace {
             let targets = self.client.build_targets()?.targets;
             self.targets = Some(targets);
         }
-        Ok(self.targets.as_deref().unwrap_or_default())
+        Ok(self.targets.as_deref().unwrap_or(&[]))
     }
 
     /// Resolve a build target identifier for a Bazel label.
@@ -1135,9 +1300,7 @@ fn collect_nova_diagnostics(
 
     for params in raw {
         let uri = params.text_document.uri;
-        let path = file_uri_to_path(&uri)
-            .map(|path| path.into_path_buf())
-            .unwrap_or_else(|_| PathBuf::from(uri));
+        let path = normalize_bsp_uri_to_path(&uri);
 
         let mut converted = Vec::with_capacity(params.diagnostics.len());
         for diag in params.diagnostics {
@@ -1361,9 +1524,22 @@ fn resolve_build_target_identifier(
 }
 
 fn normalize_bsp_uri_to_path(uri: &str) -> PathBuf {
-    nova_core::file_uri_to_path(uri)
-        .map(|abs| abs.into_path_buf())
-        .unwrap_or_else(|_| PathBuf::from(uri))
+    static BSP_URI_TO_PATH_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    match nova_core::file_uri_to_path(uri) {
+        Ok(abs) => abs.into_path_buf(),
+        Err(err) => {
+            if BSP_URI_TO_PATH_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    uri,
+                    error = %err,
+                    "failed to convert BSP file URI to path; using raw URI as path"
+                );
+            }
+            PathBuf::from(uri)
+        }
+    }
 }
 
 fn bsp_range_to_nova_range(range: &Range) -> nova_core::Range {
@@ -1426,7 +1602,20 @@ pub fn target_compile_info_via_bsp(
 
     // Optional discovery step: fetch targets so we can resolve "labels" (or display names) to
     // actual BSP build target identifiers.
-    let build_targets = client.build_targets().ok();
+    static BSP_BUILD_TARGETS_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+    let build_targets = match client.build_targets() {
+        Ok(build_targets) => Some(build_targets),
+        Err(err) => {
+            if BSP_BUILD_TARGETS_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build_bazel",
+                    error = %err,
+                    "bsp buildTargets request failed (best effort); continuing without target discovery"
+                );
+            }
+            None
+        }
+    };
     let requested_target = resolve_build_target_identifier(target, build_targets.as_ref());
 
     let opts = client.javac_options(JavacOptionsParams {

@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use thiserror::Error;
 use zip::ZipArchive;
@@ -34,6 +35,8 @@ pub(crate) struct CtSymEntry {
 }
 
 pub(crate) fn parse_entry_name(name: &str) -> Option<CtSymEntry> {
+    static CT_SYM_RELEASE_PARSE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
     let name = name.trim_start_matches('/');
     if name.is_empty() || name.ends_with('/') {
         return None;
@@ -60,7 +63,21 @@ pub(crate) fn parse_entry_name(name: &str) -> Option<CtSymEntry> {
         return None;
     }
 
-    let release = release_str.parse::<u32>().ok()?;
+    let release = match release_str.parse::<u32>() {
+        Ok(release) => release,
+        Err(err) => {
+            if CT_SYM_RELEASE_PARSE_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.jdk",
+                    release = %release_str,
+                    zip_path = %name,
+                    error = %err,
+                    "failed to parse ct.sym release; ignoring entry (best effort)"
+                );
+            }
+            return None;
+        }
+    };
 
     Some(CtSymEntry {
         release,

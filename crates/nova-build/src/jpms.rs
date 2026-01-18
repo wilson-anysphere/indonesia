@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use zip::ZipArchive;
 
 const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
@@ -180,9 +181,19 @@ fn archive_is_stable_module(path: &Path) -> bool {
     }
 
     fn is_jmod_magic(file: &mut File) -> bool {
+        static JMOD_MAGIC_SEEK_RESET_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let mut header = [0u8; 2];
         let ok = file.read_exact(&mut header).is_ok() && header == *b"JM";
-        let _ = file.seek(SeekFrom::Start(0));
+        if let Err(err) = file.seek(SeekFrom::Start(0)) {
+            if JMOD_MAGIC_SEEK_RESET_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.build",
+                    error = %err,
+                    "failed to reset file cursor after probing for jmod magic"
+                );
+            }
+        }
         ok
     }
 

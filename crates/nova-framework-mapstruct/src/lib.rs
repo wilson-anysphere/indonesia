@@ -23,9 +23,10 @@ use nova_framework_parse::{
 use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use tree_sitter::Node;
 
+mod poison;
 mod workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +168,7 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             return true;
         }
 
+        let mut logged_read_error = false;
         if files.into_iter().any(|file| {
             if let Some(text) = db.file_text(file) {
                 return looks_like_mapstruct_source(text);
@@ -194,8 +196,21 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
                 return false;
             }
 
-            let Ok(text) = std::fs::read_to_string(path) else {
-                return false;
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+                Err(err) => {
+                    if !logged_read_error {
+                        tracing::debug!(
+                            target = "nova.framework.mapstruct",
+                            path = %path.display(),
+                            error = %err,
+                            "failed to read MapStruct candidate source file"
+                        );
+                        logged_read_error = true;
+                    }
+                    return false;
+                }
             };
             looks_like_mapstruct_source(&text)
         }) {
@@ -219,6 +234,8 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
+        static DIAGNOSTICS_FOR_FILE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let Some(text) = db.file_text(file) else {
             return Vec::new();
         };
@@ -238,7 +255,21 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
         let project = db.project_of_file(file);
         let has_mapstruct_dependency = has_mapstruct_build_dependency(db, project);
-        crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency).unwrap_or_default()
+        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
+            Ok(diagnostics) => diagnostics,
+            Err(err) => {
+                if DIAGNOSTICS_FOR_FILE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.framework.mapstruct",
+                        root = %root.display(),
+                        path = %path.display(),
+                        error = %err,
+                        "failed to compute MapStruct diagnostics (best effort)"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 
     fn navigation(
@@ -294,6 +325,8 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
+        static COMPLETIONS_FOR_FILE_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
         let Some(path) = db.file_path(ctx.file) else {
             return Vec::new();
         };
@@ -378,7 +411,22 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         let Some(root) = nova_project::workspace_root(path) else {
             return Vec::new();
         };
-        completions_for_file(&root, path, text, ctx.offset).unwrap_or_default()
+        match completions_for_file(&root, path, text, ctx.offset) {
+            Ok(items) => items,
+            Err(err) => {
+                if COMPLETIONS_FOR_FILE_ERROR_LOGGED.set(()).is_ok() {
+                    tracing::debug!(
+                        target = "nova.framework.mapstruct",
+                        root = %root.display(),
+                        path = %path.display(),
+                        offset = ctx.offset,
+                        error = %err,
+                        "failed to compute MapStruct completions (best effort)"
+                    );
+                }
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -761,16 +809,18 @@ fn mapping_property_completions(
     }
 
     // Compute the current segment prefix within the string literal value.
-    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
+    let Some(before_cursor) = file_text.get(value_span.start..cursor) else {
+        return Vec::new();
+    };
     let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
     let segment_start = value_span.start + segment_start_rel;
-    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+    let prefix = &before_cursor[segment_start_rel..];
 
     // Resolve the type for nested property paths (`foo.bar.<cursor>`).
     let resolved_ty = if segment_start_rel > 0 {
         let path = before_cursor
             .get(..segment_start_rel.saturating_sub(1))
-            .unwrap_or_default();
+            .unwrap_or("");
         resolve_property_path_type(db, workspace, ty, path).unwrap_or_else(|| ty.clone())
     } else {
         ty.clone()
@@ -1049,9 +1099,7 @@ fn parse_mapper_decl(
     let modifiers = node
         .child_by_field_name("modifiers")
         .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
     let mapper_annotation = annotations
         .iter()
         .find(|a| is_mapstruct_mapper_annotation(a, imports))?;
@@ -1242,9 +1290,7 @@ fn parse_mapping_method(
     let modifiers = node
         .child_by_field_name("modifiers")
         .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
-        .map(|m| collect_annotations(m, source))
-        .unwrap_or_default();
+    let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
 
     let mappings = annotations
         .iter()
@@ -1304,9 +1350,7 @@ fn parse_formal_parameters(
         let modifiers = child
             .child_by_field_name("modifiers")
             .or_else(|| find_named_child(child, "modifiers"));
-        let annotations = modifiers
-            .map(|m| collect_annotations(m, source))
-            .unwrap_or_default();
+        let annotations = modifiers.map_or_else(Vec::new, |m| collect_annotations(m, source));
 
         let is_mapping_target = annotations.iter().any(|a| a.simple_name == "MappingTarget");
         let is_context = annotations.iter().any(|a| a.simple_name == "Context");
@@ -1613,16 +1657,18 @@ fn mapping_property_completions_best_effort(
         return Vec::new();
     }
 
-    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
+    let Some(before_cursor) = file_text.get(value_span.start..cursor) else {
+        return Vec::new();
+    };
     let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
     let segment_start = value_span.start + segment_start_rel;
-    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+    let prefix = &before_cursor[segment_start_rel..];
 
     // Resolve the type for nested property paths (`foo.bar.<cursor>`).
     let resolved_ty = if segment_start_rel > 0 {
         let path = before_cursor
             .get(..segment_start_rel.saturating_sub(1))
-            .unwrap_or_default();
+            .unwrap_or("");
         resolve_property_path_type_best_effort(cache, db, source_root, ty, path)
             .unwrap_or_else(|| ty.clone())
     } else {
@@ -1718,7 +1764,20 @@ fn property_types_for_type_best_effort(
     }
 
     // Fall back to reading from disk if the DB doesn't have the file contents.
-    if let Ok(text) = std::fs::read_to_string(&candidate) {
+    let text = match std::fs::read_to_string(&candidate) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::debug!(
+                target = "nova.framework.mapstruct",
+                path = %candidate.display(),
+                error = %err,
+                "failed to read MapStruct source file from disk"
+            );
+            None
+        }
+    };
+    if let Some(text) = text {
         return property_types_from_source_text(&text, ty);
     }
 
@@ -1729,7 +1788,23 @@ fn property_types_from_source_text(
     source: &str,
     ty: &JavaType,
 ) -> Option<HashMap<String, JavaType>> {
-    let tree = parse_java(source).ok()?;
+    static MAPSTRUCT_PARSE_JAVA_ERROR_LOGGED: OnceLock<()> = OnceLock::new();
+
+    let tree = match parse_java(source) {
+        Ok(tree) => tree,
+        Err(err) => {
+            if MAPSTRUCT_PARSE_JAVA_ERROR_LOGGED.set(()).is_ok() {
+                tracing::debug!(
+                    target = "nova.framework.mapstruct",
+                    ty_name = %ty.name,
+                    source_len = source.len(),
+                    error = ?err,
+                    "failed to parse Java source for MapStruct property discovery"
+                );
+            }
+            return None;
+        }
+    };
     let root = tree.root_node();
     let package = package_of_source(root, source);
     let imports = imports_of_source(root, source);
@@ -1825,16 +1900,18 @@ fn mapping_property_completions_fs(
         return Vec::new();
     }
 
-    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
+    let Some(before_cursor) = file_text.get(value_span.start..cursor) else {
+        return Vec::new();
+    };
     let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
     let segment_start = value_span.start + segment_start_rel;
-    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+    let prefix = &before_cursor[segment_start_rel..];
 
     // Resolve the type for nested property paths (`foo.bar.<cursor>`).
     let resolved_ty = if segment_start_rel > 0 {
         let path = before_cursor
             .get(..segment_start_rel.saturating_sub(1))
-            .unwrap_or_default();
+            .unwrap_or("");
         resolve_property_path_type_fs(cache, project_root, roots, ty, path)
             .unwrap_or_else(|| ty.clone())
     } else {
@@ -2181,7 +2258,7 @@ impl FsWorkspaceCache {
     fn type_index(&self, project_root: &Path, roots: &[PathBuf]) -> Arc<FsTypeIndex> {
         let key = project_root.to_path_buf();
         let entry = {
-            let mut cache = lock_unpoison(&self.inner);
+            let mut cache = crate::poison::lock(&self.inner, "FsWorkspaceCache.type_index/cache");
             cache
                 .entry(key.clone())
                 .or_insert_with(|| Arc::new(FsTypeIndexEntry::default()))
@@ -2251,23 +2328,25 @@ fn scan_roots_for_type_index(roots: &[PathBuf]) -> Vec<PathBuf> {
     }
 }
 
-fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
 #[cfg(test)]
 static FS_TYPE_INDEX_BUILD_COUNTS: LazyLock<Mutex<HashMap<PathBuf, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
 fn bump_fs_type_index_build_count(project_root: &Path) {
-    let mut counts = lock_unpoison(&FS_TYPE_INDEX_BUILD_COUNTS);
+    let mut counts = crate::poison::lock(
+        &FS_TYPE_INDEX_BUILD_COUNTS,
+        "fs_type_index/test/bump_build_count",
+    );
     *counts.entry(project_root.to_path_buf()).or_insert(0) += 1;
 }
 
 #[cfg(test)]
 fn fs_type_index_build_count(project_root: &Path) -> usize {
-    let counts = lock_unpoison(&FS_TYPE_INDEX_BUILD_COUNTS);
+    let counts = crate::poison::lock(
+        &FS_TYPE_INDEX_BUILD_COUNTS,
+        "fs_type_index/test/read_build_count",
+    );
     counts.get(project_root).copied().unwrap_or(0)
 }
 

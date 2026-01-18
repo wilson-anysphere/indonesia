@@ -261,5 +261,18 @@ pub fn default_build_systems(options: LoadOptions) -> Vec<Box<dyn BuildSystemBac
 }
 
 fn canonicalize_root(root: &Path) -> PathBuf {
-    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+    match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target = "nova.project",
+                    root = %root.display(),
+                    error = %err,
+                    "failed to canonicalize build system root; using fallback"
+                );
+            }
+            root.to_path_buf()
+        }
+    }
 }

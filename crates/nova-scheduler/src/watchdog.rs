@@ -3,6 +3,8 @@ use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use nova_core::panic_payload_to_str;
+
 use crate::{CancellationToken, TaskError};
 
 static RUN_WITH_TIMEOUT_THREADS_STARTED: AtomicUsize = AtomicUsize::new(0);
@@ -91,7 +93,17 @@ fn run_with_timeout_pool_size() -> usize {
 
     match std::env::var(ENV_KEY) {
         Ok(raw) => match raw.parse::<usize>() {
-            Ok(0) | Err(_) => default_size,
+            Ok(0) => default_size,
+            Err(err) => {
+                tracing::debug!(
+                    target = "nova.scheduler",
+                    key = ENV_KEY,
+                    value = raw,
+                    error = %err,
+                    "invalid env override; using default run_with_timeout pool size"
+                );
+                default_size
+            }
             Ok(n) => n,
         },
         Err(_) => default_size,
@@ -177,8 +189,19 @@ where
 
     pool.pool.spawn(move || {
         let _permit = permit;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_task)))
-            .map_err(|_| TaskError::Panicked);
+        let result =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_task))) {
+                Ok(value) => Ok(value),
+                Err(panic) => {
+                    let message = panic_payload_to_str(&*panic);
+                    tracing::error!(
+                        target = "nova.scheduler",
+                        panic = %message,
+                        "watchdog task panicked"
+                    );
+                    Err(TaskError::Panicked)
+                }
+            };
         let _ = tx.send(result);
     });
 
