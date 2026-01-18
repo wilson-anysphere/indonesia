@@ -36,7 +36,10 @@ struct RecordingBuildExecutor {
 
 impl RecordingBuildExecutor {
     fn calls(&self) -> Vec<Call> {
-        self.calls.lock().expect("calls mutex poisoned").clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 }
 
@@ -49,7 +52,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
     ) -> nova_build::Result<BuildResult> {
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Call::Maven {
                 module: module_relative.map(PathBuf::from),
                 goal,
@@ -68,7 +71,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
     ) -> nova_build::Result<BuildResult> {
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Call::Gradle {
                 project_path: project_path.map(str::to_string),
                 task,
@@ -82,7 +85,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
     fn build_bazel(&self, _project_root: &Path, target: &str) -> nova_build::Result<BuildResult> {
         self.calls
             .lock()
-            .expect("calls mutex poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .push(Call::Bazel {
                 target: target.to_string(),
             });

@@ -119,7 +119,7 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
                 save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
                 generations
                     .lock()
-                    .expect("generations mutex poisoned")
+                    .unwrap_or_else(|err| err.into_inner())
                     .push(indexes.symbols.generation);
 
                 // Give other writers a chance to start saving while we load.
@@ -146,7 +146,7 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
         "expected at least one successful load"
     );
 
-    let generations = generations.lock().expect("generations mutex poisoned");
+    let generations = generations.lock().unwrap_or_else(|err| err.into_inner());
     let mut unique = generations.clone();
     unique.sort_unstable();
     unique.dedup();

@@ -245,7 +245,7 @@ impl LlmClient for CapturingLlm {
             .first()
             .map(|msg| msg.content.clone())
             .expect("chat request must include at least one message");
-        *self.prompt.lock().expect("prompt mutex poisoned") = Some(content);
+        *self.prompt.lock().unwrap_or_else(|err| err.into_inner()) = Some(content);
 
         Ok(r#"{"completions":[{"label":"x","insert_text":"y","format":"plain","additional_edits":[],"confidence":0.5}]}"#.to_string())
     }
@@ -303,7 +303,7 @@ async fn sanitization_respects_comment_redaction_flag() {
     let captured = llm
         .prompt
         .lock()
-        .expect("prompt mutex poisoned")
+        .unwrap_or_else(|err| err.into_inner())
         .clone()
         .expect("captured prompt");
     assert!(
