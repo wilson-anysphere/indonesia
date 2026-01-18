@@ -32,7 +32,7 @@ fn with_home_dir<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     let _guard = ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env lock poisoned");
+        .unwrap_or_else(|err| err.into_inner());
 
     // Set both to behave deterministically on Windows/Linux.
     let _home = EnvVarGuard::set("HOME", home);

@@ -16,7 +16,7 @@ fn with_temp_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
     let _guard = ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env lock poisoned");
+        .unwrap_or_else(|err| err.into_inner());
 
     let prior_home = std::env::var_os("HOME");
     let temp = tempfile::tempdir().expect("temp HOME");

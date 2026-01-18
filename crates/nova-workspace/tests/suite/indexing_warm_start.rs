@@ -8,7 +8,7 @@ fn with_cache_dir<T>(cache_dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
     let _guard = ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env lock poisoned");
+        .unwrap_or_else(|err| err.into_inner());
 
     let prior = std::env::var_os("NOVA_CACHE_DIR");
     std::env::set_var("NOVA_CACHE_DIR", cache_dir);
