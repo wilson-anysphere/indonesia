@@ -8,6 +8,7 @@
 mod applicability;
 mod cdi;
 mod config;
+mod poison;
 
 pub use applicability::{
     is_quarkus_applicable, is_quarkus_applicable_with_classpath, is_quarkus_applicable_with_db,
@@ -178,11 +179,8 @@ impl QuarkusAnalyzer {
         let java_files = collect_project_java_files(db, project, current_file)?;
         let fingerprint = fingerprint_project_sources(db, &java_files);
 
-        if let Some(existing) = self
-            .cache
-            .lock()
-            .expect("quarkus analyzer cache mutex poisoned")
-            .get_cloned(&project)
+        if let Some(existing) =
+            poison::lock(&self.cache, "QuarkusAnalyzer.cache").get_cloned(&project)
         {
             if existing.fingerprint == fingerprint {
                 return Some(existing);
@@ -215,10 +213,7 @@ impl QuarkusAnalyzer {
             analysis,
         });
 
-        self.cache
-            .lock()
-            .expect("quarkus analyzer cache mutex poisoned")
-            .insert(project, entry.clone());
+        poison::lock(&self.cache, "QuarkusAnalyzer.cache").insert(project, entry.clone());
 
         Some(entry)
     }
@@ -238,11 +233,8 @@ impl QuarkusAnalyzer {
 
         let fingerprint = fingerprint_config_files(db, &files);
 
-        if let Some(existing) = self
-            .config_cache
-            .lock()
-            .expect("quarkus analyzer config cache mutex poisoned")
-            .get_cloned(&project)
+        if let Some(existing) =
+            poison::lock(&self.config_cache, "QuarkusAnalyzer.config_cache").get_cloned(&project)
         {
             if existing.fingerprint == fingerprint {
                 return existing;
@@ -284,9 +276,7 @@ impl QuarkusAnalyzer {
             keys: keys.into_iter().collect(),
         });
 
-        self.config_cache
-            .lock()
-            .expect("quarkus analyzer config cache mutex poisoned")
+        poison::lock(&self.config_cache, "QuarkusAnalyzer.config_cache")
             .insert(project, Arc::clone(&built));
 
         built
@@ -300,11 +290,8 @@ impl QuarkusAnalyzer {
         let files = collect_config_files_from_filesystem(root);
         let fingerprint = fingerprint_fs_config_files(&files);
 
-        if let Some(existing) = self
-            .config_cache
-            .lock()
-            .expect("quarkus analyzer config cache mutex poisoned")
-            .get_cloned(&project)
+        if let Some(existing) =
+            poison::lock(&self.config_cache, "QuarkusAnalyzer.config_cache").get_cloned(&project)
         {
             if existing.fingerprint == fingerprint {
                 return existing;
@@ -349,9 +336,7 @@ impl QuarkusAnalyzer {
             keys: keys.into_iter().collect(),
         });
 
-        self.config_cache
-            .lock()
-            .expect("quarkus analyzer config cache mutex poisoned")
+        poison::lock(&self.config_cache, "QuarkusAnalyzer.config_cache")
             .insert(project, Arc::clone(&built));
 
         built
