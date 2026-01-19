@@ -1,7 +1,8 @@
 use lsp_types::{
     CompletionItem, CompletionList, CompletionParams, PartialResultParams, Position,
-    TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkDoneProgressParams,
+    TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams,
 };
+use nova_test_utils::apply_lsp_edits;
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::BufReader;
@@ -743,63 +744,4 @@ model = "default"
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn apply_lsp_edits(source: &str, edits: &[TextEdit]) -> String {
-    let mut edits: Vec<(usize, usize, &str)> = edits
-        .iter()
-        .map(|e| {
-            let start = position_to_offset_utf16(source, e.range.start).expect("start offset");
-            let end = position_to_offset_utf16(source, e.range.end).expect("end offset");
-            (start, end, e.new_text.as_str())
-        })
-        .collect();
-
-    // Apply from the end so offsets remain stable.
-    edits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-
-    let mut out = source.to_string();
-    for (start, end, text) in edits {
-        out.replace_range(start..end, text);
-    }
-    out
-}
-
-fn position_to_offset_utf16(text: &str, pos: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0usize;
-
-    for ch in text.chars() {
-        if line == pos.line && col_utf16 == pos.character {
-            return Some(idx);
-        }
-
-        if ch == '\n' {
-            if line == pos.line {
-                if col_utf16 == pos.character {
-                    return Some(idx);
-                }
-                return None;
-            }
-            line += 1;
-            col_utf16 = 0;
-            idx += 1;
-            continue;
-        }
-
-        if line == pos.line {
-            col_utf16 += ch.len_utf16() as u32;
-            if col_utf16 > pos.character {
-                return None;
-            }
-        }
-        idx += ch.len_utf8();
-    }
-
-    if line == pos.line && col_utf16 == pos.character {
-        Some(idx)
-    } else {
-        None
-    }
 }

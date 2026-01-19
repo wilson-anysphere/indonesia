@@ -2,9 +2,9 @@ use httpmock::prelude::*;
 use lsp_types::{
     ApplyWorkspaceEditResponse, CodeActionContext, CodeActionParams, CompletionParams, Diagnostic,
     ExecuteCommandParams, NumberOrString, PartialResultParams, Position, Range,
-    TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, Uri, WorkDoneProgressParams,
-    WorkspaceEdit,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams, WorkspaceEdit,
 };
+use nova_test_utils::apply_lsp_edits;
 use pretty_assertions::assert_eq;
 use std::io::BufReader;
 use std::path::Path;
@@ -31,27 +31,6 @@ fn find_apply_edit_request(messages: &[serde_json::Value]) -> serde_json::Value 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
     path_to_file_uri(&abs).expect("file uri")
-}
-
-fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
-    if edits.is_empty() {
-        return original.to_string();
-    }
-
-    let index = nova_core::LineIndex::new(original);
-    let core_edits: Vec<nova_core::TextEdit> = edits
-        .iter()
-        .map(|edit| {
-            let range = nova_core::Range::new(
-                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
-                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
-            );
-            let range = index.text_range(original, range).expect("valid range");
-            nova_core::TextEdit::new(range, edit.new_text.clone())
-        })
-        .collect();
-
-    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
 }
 
 #[test]

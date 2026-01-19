@@ -1,7 +1,8 @@
 use lsp_types::{
     ApplyWorkspaceEditResponse, CodeActionContext, CodeActionParams, ExecuteCommandParams,
-    Position, Range, TextDocumentIdentifier, TextEdit, Uri, WorkspaceEdit,
+    Position, Range, TextDocumentIdentifier, Uri, WorkspaceEdit,
 };
+use nova_test_utils::apply_lsp_edits;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::io::BufReader;
@@ -12,27 +13,6 @@ use crate::support::{
     initialize_request_empty, initialized_notification, jsonrpc_request, read_response_with_id,
     shutdown_request, write_jsonrpc_message,
 };
-
-fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
-    if edits.is_empty() {
-        return original.to_string();
-    }
-
-    let index = nova_core::LineIndex::new(original);
-    let core_edits: Vec<nova_core::TextEdit> = edits
-        .iter()
-        .map(|edit| {
-            let range = nova_core::Range::new(
-                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
-                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
-            );
-            let range = index.text_range(original, range).expect("valid range");
-            nova_core::TextEdit::new(range, edit.new_text.clone())
-        })
-        .collect();
-
-    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
-}
 
 #[test]
 fn stdio_server_supports_safe_delete_preview_then_apply() {
