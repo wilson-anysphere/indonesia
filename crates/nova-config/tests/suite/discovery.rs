@@ -1,5 +1,6 @@
 use std::ffi::OsString;
-use std::sync::Mutex;
+use std::panic::Location;
+use std::sync::{Mutex, MutexGuard};
 
 use nova_config::{
     discover_config_path, load_for_workspace, load_for_workspace_with_diagnostics, ConfigWarning,
@@ -8,6 +9,25 @@ use nova_config::{
 use tempfile::tempdir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[track_caller]
+fn env_lock() -> MutexGuard<'static, ()> {
+    match ENV_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = Location::caller();
+            tracing::error!(
+                target = "nova.config.tests",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "env lock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 struct EnvVarGuard {
     key: &'static str,
@@ -45,7 +65,7 @@ impl Drop for EnvVarGuard {
 
 #[test]
 fn discovers_nova_toml_in_workspace_root() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -63,7 +83,7 @@ fn discovers_nova_toml_in_workspace_root() {
 
 #[test]
 fn env_override_wins_over_workspace_file() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
 
     let dir = tempdir().unwrap();
     std::fs::write(
@@ -94,7 +114,7 @@ fn env_override_wins_over_workspace_file() {
 
 #[test]
 fn env_override_accepts_absolute_path() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
 
     let dir = tempdir().unwrap();
     std::fs::write(
@@ -118,7 +138,7 @@ fn env_override_accepts_absolute_path() {
 
 #[test]
 fn missing_config_returns_defaults() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -129,7 +149,7 @@ fn missing_config_returns_defaults() {
 
 #[test]
 fn reload_for_workspace_reports_changes() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();
@@ -164,7 +184,7 @@ fn reload_for_workspace_reports_changes() {
 
 #[test]
 fn load_for_workspace_with_diagnostics_resolves_relative_paths_from_workspace_root() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
 
     let dir = tempdir().unwrap();

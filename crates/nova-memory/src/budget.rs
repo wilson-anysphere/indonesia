@@ -367,15 +367,28 @@ fn system_total_memory_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::panic::Location;
     use std::sync::{Mutex, OnceLock};
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+    #[track_caller]
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        match ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = Location::caller();
+                tracing::error!(
+                    target = "nova.memory.tests",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "env lock poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
     }
 
     fn set_env_var(name: &str, value: Option<&str>) -> Option<OsString> {

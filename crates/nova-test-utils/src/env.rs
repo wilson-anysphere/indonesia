@@ -8,6 +8,7 @@
 //! This module provides a small RAII guard and a global lock to make that easy.
 
 use std::ffi::{OsStr, OsString};
+use std::panic::Location;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -16,11 +17,23 @@ static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 ///
 /// Environment variables are shared process state; tests that change them should use this lock
 /// to avoid race conditions in parallel test execution.
+#[track_caller]
 pub fn env_lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
+    match ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = Location::caller();
+            tracing::error!(
+                target = "nova.test_utils",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "env lock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
 }
 
 /// RAII guard that sets/unsets an environment variable and restores the previous value on drop.

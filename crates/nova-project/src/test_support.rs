@@ -1,14 +1,27 @@
 use std::ffi::OsString;
+use std::panic::Location;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[track_caller]
 pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
+    match ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = Location::caller();
+            tracing::error!(
+                target = "nova.project",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "env lock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
 }
 
 pub(crate) struct EnvVarGuard {

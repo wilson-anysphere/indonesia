@@ -70,16 +70,29 @@ pub use crate::bsp::target_compile_info_via_bsp;
 pub mod test_support {
     use std::{
         ffi::OsString,
+        panic::Location,
         sync::{Mutex, MutexGuard, OnceLock},
     };
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+    #[track_caller]
     pub fn env_lock() -> MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        match ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = Location::caller();
+                tracing::error!(
+                    target = "nova.build.bazel",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "env lock poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
     }
 
     /// RAII guard for temporary process environment variable mutations in tests.

@@ -3417,6 +3417,8 @@ async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::Location;
+    use std::sync::MutexGuard;
     use std::sync::{Arc, Mutex};
 
     use tokio::io::AsyncWriteExt;
@@ -3424,6 +3426,26 @@ mod tests {
     use tracing_subscriber::layer::Context;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::Layer;
+
+    #[track_caller]
+    fn lock<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = Location::caller();
+                tracing::error!(
+                    target = "nova.router.tests",
+                    context,
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
 
     #[test]
     fn distributed_router_config_debug_does_not_expose_auth_token() {
@@ -3538,10 +3560,7 @@ mod tests {
                     || visitor.target.as_deref() == Some("nova.worker.output");
                 if matches_target {
                     if let Some(line) = visitor.line {
-                        self.lines
-                            .lock()
-                            .unwrap_or_else(|err| err.into_inner())
-                            .push(line);
+                        lock(self.lines.as_ref(), "CaptureLayer.lines").push(line);
                     }
                 }
             }
@@ -3556,11 +3575,19 @@ mod tests {
 
         tracing::info!(target = "nova.worker.output", line = %"probe", "worker output");
         assert_eq!(
-            lines.lock().unwrap_or_else(|err| err.into_inner()).len(),
+            lock(
+                lines.as_ref(),
+                "drain_worker_output_truncates_overlong_lines.lines"
+            )
+            .len(),
             1,
             "capture layer did not receive probe event"
         );
-        lines.lock().unwrap_or_else(|err| err.into_inner()).clear();
+        lock(
+            lines.as_ref(),
+            "drain_worker_output_truncates_overlong_lines.lines",
+        )
+        .clear();
 
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         let task = tokio::spawn(drain_worker_output(1, "stdout", reader));
@@ -3572,7 +3599,10 @@ mod tests {
 
         task.await.unwrap();
 
-        let captured = lines.lock().unwrap_or_else(|err| err.into_inner());
+        let captured = lock(
+            lines.as_ref(),
+            "drain_worker_output_truncates_overlong_lines.lines",
+        );
         assert_eq!(captured.len(), 1, "expected exactly one logged line");
 
         let line = &captured[0];

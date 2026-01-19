@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -15,10 +16,23 @@ pub struct EnvGuard {
 }
 
 impl EnvGuard {
+    #[track_caller]
     pub fn prepend_path(bin_dir: &Path) -> io::Result<Self> {
-        let lock = ENV_LOCK
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "env lock poisoned"))?;
+        let lock = match ENV_LOCK.lock() {
+            Ok(lock) => lock,
+            Err(err) => {
+                let loc = Location::caller();
+                tracing::error!(
+                    target = "nova.testing",
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "env lock poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        };
 
         let original_path = env::var_os("PATH");
         let mut paths = Vec::new();

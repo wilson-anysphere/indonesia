@@ -1,8 +1,28 @@
 use nova_cache::Fingerprint;
+use std::panic::Location;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[track_caller]
+fn env_lock() -> MutexGuard<'static, ()> {
+    match ENV_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            let loc = Location::caller();
+            tracing::error!(
+                target = "nova.cache.tests",
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                error = %err,
+                "env lock poisoned; continuing with recovered guard"
+            );
+            err.into_inner()
+        }
+    }
+}
 
 struct ScopedEnvVar {
     key: &'static str,
@@ -43,7 +63,7 @@ fn write_origin_config(config_path: &Path, origin: &str) {
 fn project_hash_uses_git_origin_for_repo_root() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -70,7 +90,7 @@ fn project_hash_uses_git_origin_for_repo_root() {
 fn project_hash_finds_git_origin_from_parent_directory() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -96,7 +116,7 @@ fn project_hash_finds_git_origin_from_parent_directory() {
 fn project_hash_supports_worktree_gitdir_file() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
@@ -121,7 +141,7 @@ fn project_hash_supports_worktree_gitdir_file() {
 fn project_hash_supports_worktree_commondir() {
     let _guard = crate::test_lock();
 
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _lock = env_lock();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
     let temp = tempfile::tempdir().unwrap();
