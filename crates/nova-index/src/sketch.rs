@@ -5,34 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use crate::TextRange;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct TextRange {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl TextRange {
-    pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-
-    pub fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn shift(self, delta: usize) -> Self {
-        Self {
-            start: self.start.saturating_add(delta),
-            end: self.end.saturating_add(delta),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolKind {

@@ -8,6 +8,7 @@ mod persistence;
 mod segments;
 mod sketch;
 mod symbol_search;
+mod text_range;
 
 pub use indexes::*;
 pub use java_indexer::*;
@@ -19,3 +20,4 @@ pub use symbol_search::{
     CandidateStrategy, SearchResult, SearchStats, Symbol as SearchSymbol, SymbolSearchIndex,
     WorkspaceSymbolSearcher,
 };
+pub use text_range::TextRange;
