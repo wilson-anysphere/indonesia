@@ -2,25 +2,9 @@ use lsp_types::{
     CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
 };
 use nova_ide::code_action::diagnostic_quick_fixes;
+use nova_test_utils::apply_lsp_edits;
 
 use crate::framework_harness::offset_to_position;
-
-fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
-    let index = nova_core::LineIndex::new(text);
-    let core_edits: Vec<nova_core::TextEdit> = edits
-        .iter()
-        .map(|edit| {
-            let range = nova_core::Range::new(
-                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
-                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
-            );
-            let range = index.text_range(text, range).expect("valid range");
-            nova_core::TextEdit::new(range, edit.new_text.clone())
-        })
-        .collect();
-
-    nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
-}
 
 #[test]
 fn create_class_quick_fix_inserts_skeleton_at_eof() {

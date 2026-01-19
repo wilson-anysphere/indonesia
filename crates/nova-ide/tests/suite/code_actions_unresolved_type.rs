@@ -2,26 +2,10 @@ use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
+use nova_test_utils::apply_lsp_edits;
 use nova_types::Span;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
-    let index = nova_core::LineIndex::new(text);
-    let core_edits: Vec<nova_core::TextEdit> = edits
-        .iter()
-        .map(|edit| {
-            let range = nova_core::Range::new(
-                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
-                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
-            );
-            let range = index.text_range(text, range).expect("valid range");
-            nova_core::TextEdit::new(range, edit.new_text.clone())
-        })
-        .collect();
-
-    nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
-}
 
 #[test]
 fn unresolved_type_quickfix_offers_use_fully_qualified_name() {

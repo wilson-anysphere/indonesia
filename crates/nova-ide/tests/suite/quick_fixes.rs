@@ -9,26 +9,10 @@ use nova_ide::code_action::diagnostic_quick_fixes;
 use nova_ide::extensions::IdeExtensions;
 use nova_ide::quick_fix::quick_fixes_for_diagnostics;
 use nova_scheduler::CancellationToken;
+use nova_test_utils::apply_lsp_edits;
 use nova_types::Severity;
 
 use crate::framework_harness::{offset_to_position, position_to_offset};
-
-fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
-    use nova_core::{LineIndex, Position as CorePosition};
-
-    let index = LineIndex::new(text);
-    let mut core_edits = Vec::new();
-    for edit in edits {
-        let range = nova_core::Range::new(
-            CorePosition::new(edit.range.start.line, edit.range.start.character),
-            CorePosition::new(edit.range.end.line, edit.range.end.character),
-        );
-        let range = index.text_range(text, range).expect("valid LSP range");
-        core_edits.push(nova_core::TextEdit::new(range, edit.new_text.clone()));
-    }
-
-    nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
-}
 
 fn apply_single_text_edit(text: &str, edit: &lsp_types::TextEdit) -> String {
     apply_lsp_edits(text, std::slice::from_ref(edit))

@@ -3,26 +3,10 @@ use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
+use nova_test_utils::apply_lsp_edits;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
-    use nova_core::{LineIndex, Position as CorePosition};
-
-    let index = LineIndex::new(text);
-    let mut core_edits = Vec::new();
-    for edit in edits {
-        let range = nova_core::Range::new(
-            CorePosition::new(edit.range.start.line, edit.range.start.character),
-            CorePosition::new(edit.range.end.line, edit.range.end.character),
-        );
-        let range = index.text_range(text, range).expect("valid LSP range");
-        core_edits.push(nova_core::TextEdit::new(range, edit.new_text.clone()));
-    }
-
-    nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
-}
 
 fn first_edit(action: &lsp_types::CodeAction) -> (&lsp_types::Uri, &lsp_types::TextEdit) {
     let edit = action.edit.as_ref().expect("expected workspace edit");

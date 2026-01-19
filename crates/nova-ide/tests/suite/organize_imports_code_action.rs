@@ -7,27 +7,7 @@ use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
-
-fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
-    if edits.is_empty() {
-        return original.to_string();
-    }
-
-    let index = nova_core::LineIndex::new(original);
-    let core_edits: Vec<nova_core::TextEdit> = edits
-        .iter()
-        .map(|edit| {
-            let range = nova_core::Range::new(
-                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
-                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
-            );
-            let range = index.text_range(original, range).expect("valid range");
-            nova_core::TextEdit::new(range, edit.new_text.clone())
-        })
-        .collect();
-
-    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
-}
+use nova_test_utils::apply_lsp_edits;
 
 fn extract_edit_for_uri(edit: &WorkspaceEdit, uri: &Uri) -> Vec<TextEdit> {
     if let Some(changes) = edit.changes.as_ref() {
