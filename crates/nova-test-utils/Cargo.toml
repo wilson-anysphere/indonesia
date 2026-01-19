@@ -12,5 +12,8 @@ tracing = { workspace = true }
 
 [features]
 default = ["fixtures", "javac"]
-fixtures = ["dep:nova-index", "dep:nova-ide", "dep:lsp-types"]
+fixtures = ["fixture-fs", "fixture-ranges", "fixture-db"]
+fixture-fs = []
+fixture-ranges = ["dep:nova-index"]
+fixture-db = ["dep:nova-ide", "dep:lsp-types"]
 javac = ["dep:tempfile"]

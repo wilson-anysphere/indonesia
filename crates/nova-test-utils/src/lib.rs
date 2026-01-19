@@ -19,11 +19,23 @@ pub mod env;
 
 pub use env::{env_lock, EnvVarGuard};
 
-#[cfg(feature = "fixtures")]
-mod fixtures;
+#[cfg(feature = "fixture-db")]
+mod fixture_db;
 
-#[cfg(feature = "fixtures")]
-pub use fixtures::*;
+#[cfg(feature = "fixture-fs")]
+mod fixture_fs;
+
+#[cfg(feature = "fixture-ranges")]
+mod fixture_ranges;
+
+#[cfg(feature = "fixture-db")]
+pub use fixture_db::*;
+
+#[cfg(feature = "fixture-fs")]
+pub use fixture_fs::*;
+
+#[cfg(feature = "fixture-ranges")]
+pub use fixture_ranges::*;
 
 #[cfg(feature = "javac")]
 pub mod javac;

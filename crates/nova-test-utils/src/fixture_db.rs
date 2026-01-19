@@ -1,12 +1,8 @@
-use std::collections::{BTreeMap, HashMap};
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use lsp_types::{Position, Uri};
 use nova_ide::Database;
-use nova_index::TextRange;
 
 fn file_uri_for_fixture_path(path: &str) -> Uri {
     let path = path.trim();
@@ -53,128 +49,6 @@ fn push_pct_encoded(out: &mut String, b: u8) {
     out.push('%');
     out.push(HEX[(b >> 4) as usize] as char);
     out.push(HEX[(b & 0x0F) as usize] as char);
-}
-
-/// Extracts a byte range selection from a fixture containing `/*start*/` and
-/// `/*end*/` markers.
-///
-/// Returns the fixture with markers removed and the selection `TextRange`
-/// pointing at the extracted region.
-pub fn extract_range(fixture: &str) -> (String, TextRange) {
-    let start_marker = "/*start*/";
-    let end_marker = "/*end*/";
-
-    let start = fixture
-        .find(start_marker)
-        .expect("fixture missing /*start*/ marker");
-    let after_start = start + start_marker.len();
-    let end = fixture
-        .find(end_marker)
-        .expect("fixture missing /*end*/ marker");
-    assert!(end >= after_start, "/*end*/ must come after /*start*/");
-
-    let mut text = String::with_capacity(fixture.len());
-    text.push_str(&fixture[..start]);
-    text.push_str(&fixture[after_start..end]);
-    text.push_str(&fixture[end + end_marker.len()..]);
-
-    // Range in the marker-stripped text: the start position stays the same;
-    // the end shrinks by the length of the start marker.
-    let range = TextRange::new(start, end - start_marker.len());
-    (text, range)
-}
-
-/// Load a fixture directory into a `(relative_path -> text)` map.
-pub fn load_fixture_dir(dir: &Path) -> BTreeMap<PathBuf, String> {
-    fn visit_dir(
-        root: &Path,
-        dir: &Path,
-        out: &mut BTreeMap<PathBuf, String>,
-    ) -> std::io::Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit_dir(root, &path, out)?;
-            } else {
-                let rel = path.strip_prefix(root).unwrap().to_path_buf();
-                let text = fs::read_to_string(&path)?;
-                out.insert(rel, text);
-            }
-        }
-        Ok(())
-    }
-
-    let mut out = BTreeMap::new();
-    visit_dir(dir, dir, &mut out).expect("fixture dir readable");
-    out
-}
-
-pub fn assert_fixture_transformed(
-    before: &Path,
-    after: &Path,
-    mut transform: impl FnMut(&mut BTreeMap<PathBuf, String>),
-) {
-    let mut files = load_fixture_dir(before);
-    transform(&mut files);
-
-    if !after.exists() {
-        if bless_enabled() {
-            bless_fixture_dir(after, &files);
-            return;
-        }
-        panic!(
-            "missing expected fixture dir {} (run with `BLESS=1` to write it)",
-            after.display()
-        );
-    }
-
-    let expected = load_fixture_dir(after);
-    if files != expected {
-        if bless_enabled() {
-            bless_fixture_dir(after, &files);
-            return;
-        }
-        assert_eq!(files, expected);
-    }
-}
-
-fn bless_enabled() -> bool {
-    let Ok(val) = env::var("BLESS") else {
-        return false;
-    };
-    let val = val.trim().to_ascii_lowercase();
-    !(val.is_empty() || val == "0" || val == "false")
-}
-
-fn bless_fixture_dir(dir: &Path, files: &BTreeMap<PathBuf, String>) {
-    if dir.exists() {
-        fs::remove_dir_all(dir).unwrap_or_else(|err| {
-            panic!(
-                "failed to remove existing fixture dir {}: {err}",
-                dir.display()
-            )
-        });
-    }
-    fs::create_dir_all(dir)
-        .unwrap_or_else(|err| panic!("failed to create fixture dir {}: {err}", dir.display()));
-
-    for (rel, text) in files {
-        assert!(
-            rel.components()
-                .all(|c| !matches!(c, std::path::Component::ParentDir)),
-            "fixture paths must not contain '..': {}",
-            rel.display()
-        );
-        let path = dir.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap_or_else(|err| {
-                panic!("failed to create fixture dir {}: {err}", parent.display())
-            });
-        }
-        fs::write(&path, text)
-            .unwrap_or_else(|err| panic!("failed to write fixture {}: {err}", path.display()));
-    }
 }
 
 /// A minimal multi-file fixture with `$0`, `$1`, ... markers.
@@ -354,9 +228,6 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 mod tests {
     use super::*;
 
-    use lsp_types::Position;
-    use std::str::FromStr;
-
     #[test]
     fn strip_markers_preserves_unicode_and_offsets() {
         let input = "α$0😃β$10";
@@ -394,15 +265,6 @@ mod tests {
             .offset_for_position(&uri, fixture.marker_position(0))
             .unwrap();
         assert_eq!(roundtrip, fixture.marker_offset(0));
-    }
-
-    #[test]
-    fn extract_range_handles_multibyte_chars() {
-        let input = "a/*start*/α😃β/*end*/c";
-        let (text, range) = extract_range(input);
-
-        assert_eq!(text, "aα😃βc");
-        assert_eq!(&text[range.start..range.end], "α😃β");
     }
 
     #[test]
