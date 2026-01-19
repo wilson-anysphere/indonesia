@@ -166,13 +166,24 @@ fn metric_from_sample(sample: &CriterionSample) -> Result<BenchMetric> {
 
     let mut per_iter_ns = Vec::with_capacity(sample.times.len());
     for (iters, total_ns) in sample.iters.iter().zip(sample.times.iter()) {
+        if !iters.is_finite() || !total_ns.is_finite() {
+            return Err(anyhow!(
+                "criterion sample contains non-finite values (iters={iters:?}, total_ns={total_ns:?})"
+            ));
+        }
         if *iters <= 0.0 {
             continue;
         }
-        per_iter_ns.push(total_ns / *iters);
+        let per_iter = total_ns / *iters;
+        if !per_iter.is_finite() {
+            return Err(anyhow!(
+                "criterion sample produced non-finite per-iter time (iters={iters:?}, total_ns={total_ns:?}, per_iter={per_iter:?})"
+            ));
+        }
+        per_iter_ns.push(per_iter);
     }
 
-    per_iter_ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    per_iter_ns.sort_by(|a, b| a.total_cmp(b));
 
     if per_iter_ns.is_empty() {
         return Err(anyhow!("no samples in criterion run"));
@@ -432,10 +443,9 @@ impl Comparison {
             out.push_str("\n### Top regressions\n\n");
             let mut regressions = regressions;
             regressions.sort_by(|a, b| {
-                b.p50_change
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a.p50_change.unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let left = a.p50_change.unwrap_or(0.0);
+                let right = b.p50_change.unwrap_or(0.0);
+                right.total_cmp(&left)
             });
             for diff in regressions.into_iter().take(5) {
                 out.push_str(&format!(
@@ -509,10 +519,9 @@ impl RuntimeComparison {
             out.push_str("\n### Top regressions\n\n");
             let mut regressions = regressions;
             regressions.sort_by(|a, b| {
-                b.pct_change
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a.pct_change.unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let left = a.pct_change.unwrap_or(0.0);
+                let right = b.pct_change.unwrap_or(0.0);
+                right.total_cmp(&left)
             });
             for diff in regressions.into_iter().take(5) {
                 out.push_str(&format!(
