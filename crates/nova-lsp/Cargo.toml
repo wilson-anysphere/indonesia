@@ -81,7 +81,7 @@ httpmock = "0.7"
 futures = "0.3"
 pretty_assertions = "1.4"
 tempfile = "3.10.1"
-nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["fixtures"] }
+nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["fixture-db", "fixture-ranges"] }
 nova-types = { path = "../nova-types" }
 nova-framework = { path = "../nova-framework" }
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
