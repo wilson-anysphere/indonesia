@@ -57,6 +57,7 @@ path = "src/lib.rs"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 criterion = "0.5"
 tempfile = "3"
+nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["lsp-text"] }
 
 [[test]]
 name = "tests"

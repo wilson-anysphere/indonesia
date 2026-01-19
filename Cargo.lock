@@ -3987,6 +3987,7 @@ dependencies = [
  "nova-resolve",
  "nova-scheduler",
  "nova-syntax",
+ "nova-test-utils",
  "nova-types",
  "nova-types-bridge",
  "once_cell",
