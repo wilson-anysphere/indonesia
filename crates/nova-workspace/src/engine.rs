@@ -41,8 +41,8 @@ use nova_vfs::{
 use crate::poison::RecoverPoisoned as _;
 use crate::snapshot::WorkspaceDbView;
 use crate::watch::{
-    looks_like_file, normalize_watch_path, BatchDirCache, ChangeCategory, DirStat, WatchBatchPlan,
-    WatchBatchPlanner, WatchConfig,
+    looks_like_file, normalize_watch_path, normalize_watch_path_owned_if_needed, BatchDirCache,
+    ChangeCategory, DirStat, WatchBatchPlan, WatchBatchPlanner, WatchConfig,
 };
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
@@ -1305,25 +1305,21 @@ impl WorkspaceEngine {
                             match res {
                                 Ok(WatchEvent::Changes { changes }) => {
                                     let now = Instant::now();
-                                    {
-                                        let config = watch_config
-                                            .read()
-                                            .recover_poisoned();
-                                        let mut planner = WatchBatchPlanner::new(&config);
-                                        for change in changes {
-                                            match planner.plan(&change) {
-                                                WatchBatchPlan::RescanRequired => {
-                                                    rescan_pending = true;
-                                                    // Drop any pending debounced batches; we will reconcile via a
-                                                    // full project reload instead.
-                                                    reset_debouncer(&mut debouncer);
-                                                    break;
-                                                }
-                                                WatchBatchPlan::Debounce(cat) => {
-                                                    debouncer.push(&cat, change, now);
-                                                }
-                                                WatchBatchPlan::Ignore => {}
+                                    let config = watch_config.read().recover_poisoned().clone();
+                                    let mut planner = WatchBatchPlanner::new(&config);
+                                    for change in changes {
+                                        match planner.plan(&change) {
+                                            WatchBatchPlan::RescanRequired => {
+                                                rescan_pending = true;
+                                                // Drop any pending debounced batches; we will reconcile via a
+                                                // full project reload instead.
+                                                reset_debouncer(&mut debouncer);
+                                                break;
                                             }
+                                            WatchBatchPlan::Debounce(cat) => {
+                                                debouncer.push(&cat, change, now);
+                                            }
+                                            WatchBatchPlan::Ignore => {}
                                         }
                                     }
 
@@ -1414,21 +1410,23 @@ impl WorkspaceEngine {
                                     // the VFS + Salsa inputs to see the updated file contents promptly for
                                     // diagnostics and open-document behavior.
                                     let mut java_events = Vec::new();
-                                    let mut changed = Vec::new();
+                                    let mut changed = Vec::with_capacity(events.len().saturating_mul(2));
                                     for ev in events {
-                                        let is_java = ev.paths().any(|path| {
-                                            path.as_local_path().is_some_and(|path| {
-                                                path.extension().and_then(|ext| ext.to_str()) == Some("java")
-                                            })
-                                        });
-                                        if is_java {
-                                            java_events.push(ev.clone());
+                                        let mut is_java = false;
+                                        for path in ev.paths() {
+                                            let Some(path) = path.as_local_path() else {
+                                                continue;
+                                            };
+                                            if path.extension().and_then(|ext| ext.to_str())
+                                                == Some("java")
+                                            {
+                                                is_java = true;
+                                            }
+                                            changed.push(path.to_path_buf());
                                         }
 
-                                        for path in ev.paths() {
-                                            if let Some(path) = path.as_local_path() {
-                                                changed.push(path.to_path_buf());
-                                            }
+                                        if is_java {
+                                            java_events.push(ev);
                                         }
                                     }
 
@@ -1507,7 +1505,7 @@ impl WorkspaceEngine {
         let mut move_events: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(initial_vec_capacity);
 
         let initial_set_capacity = estimated_paths.min(MAX_BATCH_PREALLOC_CAPACITY);
-        let mut other_paths: HashSet<PathBuf> = HashSet::with_capacity(initial_set_capacity);
+        let mut other_paths: Vec<PathBuf> = Vec::with_capacity(initial_set_capacity);
         let mut module_info_changes: HashSet<PathBuf> =
             HashSet::with_capacity(initial_set_capacity);
 
@@ -1597,23 +1595,8 @@ impl WorkspaceEngine {
         }
 
         let mut known_files_index = KnownLocalFilesIndex::new(&self.vfs);
-        const MAX_VFS_IS_KNOWN_CACHE_ENTRIES: usize = 32 * 1024;
-        let mut vfs_is_known_cache: HashMap<PathBuf, bool> =
-            HashMap::with_capacity(estimated_paths.min(MAX_VFS_IS_KNOWN_CACHE_ENTRIES));
-        let mut is_known_vfs_path = |path: &PathBuf| -> bool {
-            if let Some(is_known) = vfs_is_known_cache.get(path) {
-                return *is_known;
-            }
-            let vfs_path = VfsPath::Local(path.clone());
-            let is_known = self.vfs.get_id(&vfs_path).is_some();
-            let VfsPath::Local(path) = vfs_path else {
-                unreachable!("VfsPath::Local constructed a non-local path");
-            };
-            if vfs_is_known_cache.len() < MAX_VFS_IS_KNOWN_CACHE_ENTRIES {
-                vfs_is_known_cache.insert(path, is_known);
-            }
-            is_known
-        };
+        let is_known_vfs_path =
+            |path: &PathBuf| self.vfs.get_local_id_normalized(path.as_path()).is_some();
 
         let mut logged_watch_path_metadata_error = false;
         let mut dir_cache = BatchDirCache::with_capacity(initial_set_capacity);
@@ -1648,8 +1631,8 @@ impl WorkspaceEngine {
                     let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
                         continue;
                     };
-                    let from = normalize_watch_path(from);
-                    let to = normalize_watch_path(to);
+                    let from = normalize_watch_path_owned_if_needed(from);
+                    let to = normalize_watch_path_owned_if_needed(to);
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
@@ -1662,7 +1645,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_watch_path(path);
+                    let path = normalize_watch_path_owned_if_needed(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1672,7 +1655,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_watch_path(path);
+                    let path = normalize_watch_path_owned_if_needed(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1703,7 +1686,7 @@ impl WorkspaceEngine {
         raw_deleted_file_events.dedup();
         for path in raw_deleted_file_events {
             if is_known_vfs_path(&path) {
-                other_paths.insert(path);
+                other_paths.push(path);
             }
         }
 
@@ -1729,7 +1712,7 @@ impl WorkspaceEngine {
                 continue;
             }
 
-            other_paths.insert(path);
+            other_paths.push(path);
         }
 
         // Dedupe directory-like delete events before scanning the VFS. Some watcher backends emit
@@ -1738,12 +1721,17 @@ impl WorkspaceEngine {
         raw_deleted_dir_events.sort();
         raw_deleted_dir_events.dedup();
         prune_nested_watch_paths(&mut raw_deleted_dir_events);
+        if raw_deleted_dir_events.len() > 1 {
+            // If we have multiple directory-like deletes in a single batch, building the sorted
+            // snapshot up-front is cheaper than doing one unsorted scan followed by a sorted scan.
+            let _ = known_files_index.ensure_known_files();
+        }
         for path in raw_deleted_dir_events {
             let found = known_files_index.for_each_known_file_under_dir(&path, |file| {
                 if is_module_info_java(&file) {
                     module_info_changes.insert(file.clone());
                 }
-                other_paths.insert(file);
+                other_paths.push(file);
             });
             if found == 0 {
                 continue;
@@ -1756,6 +1744,20 @@ impl WorkspaceEngine {
         raw_move_events.sort();
         raw_move_events.dedup();
         prune_redundant_directory_move_events(&mut raw_move_events);
+
+        let expected_directory_move_scans = raw_move_events
+            .iter()
+            .filter(|(from, to)| {
+                !is_known_vfs_path(from) && (from.extension().is_none() || to.extension().is_none())
+            })
+            .take(2)
+            .count();
+        if expected_directory_move_scans > 1 {
+            // Similar to directory delete expansion: if we expect multiple directory-level move
+            // expansions, build the sorted snapshot up-front to avoid doing one full unsorted scan
+            // and then a second scan+sort.
+            let _ = known_files_index.ensure_known_files();
+        }
 
         for (from, to) in raw_move_events {
             // Directory moves can arrive as a single watcher event. Expand to per-file moves using
@@ -1837,16 +1839,27 @@ impl WorkspaceEngine {
         move_events.sort();
         move_events.dedup();
         let ordered_moves = order_move_events(move_events);
+        let mut moved_endpoints = Vec::new();
+        if !ordered_moves.is_empty() {
+            moved_endpoints.reserve(ordered_moves.len().saturating_mul(2));
+            for (from, to) in &ordered_moves {
+                moved_endpoints.push(from.clone());
+                moved_endpoints.push(to.clone());
+            }
+            moved_endpoints.sort();
+            moved_endpoints.dedup();
+        }
         for (from, to) in ordered_moves {
-            other_paths.remove(&from);
-            other_paths.remove(&to);
-
             self.apply_move_event(from, to);
         }
 
-        let mut remaining: Vec<PathBuf> = other_paths.into_iter().collect();
+        let mut remaining = other_paths;
         remaining.sort();
+        remaining.dedup();
         for path in remaining {
+            if !moved_endpoints.is_empty() && moved_endpoints.binary_search(&path).is_ok() {
+                continue;
+            }
             self.apply_path_event(path);
         }
 
@@ -1870,6 +1883,7 @@ impl WorkspaceEngine {
         let (root, delay) = {
             let now = Instant::now();
             let mut state = self.project_state.lock().recover_poisoned();
+            state.pending_build_changes.reserve(changed_files.len());
             state.pending_build_changes.extend(changed_files);
             let root = state.workspace_root.clone();
 
@@ -7547,6 +7561,103 @@ mode = "off"
     }
 
     #[test]
+    fn multiple_directory_move_events_preserve_file_ids_and_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        let from_a = root.join("src/main/java/com/foo");
+        let from_b = root.join("src/test/java/com/foo");
+        fs::create_dir_all(&from_a).unwrap();
+        fs::create_dir_all(&from_b).unwrap();
+
+        let a_file = from_a.join("A.java");
+        let b_file = from_b.join("B.java");
+        fs::write(&a_file, "class A { disk }".as_bytes()).unwrap();
+        fs::write(&b_file, "class B { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let vfs_a_from = VfsPath::local(a_file.clone());
+        let vfs_b_from = VfsPath::local(b_file.clone());
+        let id_a = engine.vfs.get_id(&vfs_a_from).expect("A id allocated");
+        let id_b = engine.vfs.get_id(&vfs_b_from).expect("B id allocated");
+
+        let opened_a =
+            workspace.open_document(vfs_a_from.clone(), "class A { overlay }".to_string(), 1);
+        let opened_b =
+            workspace.open_document(vfs_b_from.clone(), "class B { overlay }".to_string(), 1);
+        assert_eq!(opened_a, id_a);
+        assert_eq!(opened_b, id_b);
+        assert!(engine.vfs.open_documents().is_open(id_a));
+        assert!(engine.vfs.open_documents().is_open(id_b));
+
+        let to_a = root.join("src/main/java/com/bar");
+        let to_b = root.join("src/test/java/com/bar");
+        fs::create_dir_all(to_a.parent().unwrap()).unwrap();
+        fs::create_dir_all(to_b.parent().unwrap()).unwrap();
+        fs::rename(&from_a, &to_a).unwrap();
+        fs::rename(&from_b, &to_b).unwrap();
+
+        let from_a_event = from_a.join("..").join("foo");
+        let to_a_event = to_a.join("..").join("bar");
+        let from_b_event = from_b.join("..").join("foo");
+        let to_b_event = to_b.join("..").join("bar");
+
+        workspace.apply_filesystem_events(vec![
+            FileChange::Moved {
+                from: VfsPath::Local(from_a_event),
+                to: VfsPath::Local(to_a_event),
+            },
+            FileChange::Moved {
+                from: VfsPath::Local(from_b_event),
+                to: VfsPath::Local(to_b_event),
+            },
+        ]);
+
+        let a_to = to_a.join("A.java");
+        let b_to = to_b.join("B.java");
+        let vfs_a_to = VfsPath::local(a_to.clone());
+        let vfs_b_to = VfsPath::local(b_to.clone());
+
+        assert_eq!(engine.vfs.get_id(&vfs_a_from), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b_from), None);
+        assert_eq!(engine.vfs.get_id(&vfs_a_to), Some(id_a));
+        assert_eq!(engine.vfs.get_id(&vfs_b_to), Some(id_b));
+
+        // Directory moves should not allocate ids for the directory paths themselves.
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(from_a)), None);
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(to_a)), None);
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(from_b)), None);
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(to_b)), None);
+
+        assert_eq!(
+            engine.vfs.read_to_string(&vfs_a_to).unwrap(),
+            "class A { overlay }"
+        );
+        assert_eq!(
+            engine.vfs.read_to_string(&vfs_b_to).unwrap(),
+            "class B { overlay }"
+        );
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+            assert_eq!(
+                snap.file_rel_path(id_a).as_str(),
+                "src/main/java/com/bar/A.java"
+            );
+            assert_eq!(
+                snap.file_rel_path(id_b).as_str(),
+                "src/test/java/com/bar/B.java"
+            );
+            assert!(snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
+            assert!(snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
+        });
+    }
+
+    #[test]
     fn directory_deletion_events_mark_nested_files_as_missing_and_remove_from_project_files() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
@@ -7588,6 +7699,74 @@ mode = "off"
             assert!(!snap.file_exists(id_b));
             assert!(!snap.project_files(project).contains(&id_a));
             assert!(!snap.project_files(project).contains(&id_b));
+        });
+    }
+
+    #[test]
+    fn multiple_directory_deletion_events_mark_all_nested_files_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        let src_a = root.join("src/main/java/com/a");
+        let src_b = root.join("src/main/java/com/b");
+        fs::create_dir_all(&src_a).unwrap();
+        fs::create_dir_all(&src_b).unwrap();
+
+        let a1 = src_a.join("A1.java");
+        let a2 = src_a.join("A2.java");
+        let b1 = src_b.join("B1.java");
+        let b2 = src_b.join("B2.java");
+        fs::write(&a1, "class A1 {}".as_bytes()).unwrap();
+        fs::write(&a2, "class A2 {}".as_bytes()).unwrap();
+        fs::write(&b1, "class B1 {}".as_bytes()).unwrap();
+        fs::write(&b2, "class B2 {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let id_a1 = engine.vfs.get_id(&VfsPath::local(a1)).expect("A1 id");
+        let id_a2 = engine.vfs.get_id(&VfsPath::local(a2)).expect("A2 id");
+        let id_b1 = engine.vfs.get_id(&VfsPath::local(b1)).expect("B1 id");
+        let id_b2 = engine.vfs.get_id(&VfsPath::local(b2)).expect("B2 id");
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.project_files(project).contains(&id_a1));
+            assert!(snap.project_files(project).contains(&id_a2));
+            assert!(snap.project_files(project).contains(&id_b1));
+            assert!(snap.project_files(project).contains(&id_b2));
+        });
+
+        fs::remove_dir_all(&src_a).unwrap();
+        fs::remove_dir_all(&src_b).unwrap();
+
+        let delete_a = src_a.join("..").join("a");
+        let delete_b = src_b.join("..").join("b");
+        workspace.apply_filesystem_events(vec![
+            FileChange::Deleted {
+                path: VfsPath::Local(delete_a),
+            },
+            FileChange::Deleted {
+                path: VfsPath::Local(delete_b),
+            },
+        ]);
+
+        // Directory deletes should not allocate ids for directory paths themselves.
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(src_a)), None);
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(src_b)), None);
+
+        engine.query_db.with_snapshot(|snap| {
+            for id in [id_a1, id_a2, id_b1, id_b2] {
+                assert!(
+                    !snap.file_exists(id),
+                    "expected file id {id:?} to be missing"
+                );
+                assert!(
+                    !snap.project_files(project).contains(&id),
+                    "expected file id {id:?} to be removed from project_files"
+                );
+            }
         });
     }
 
