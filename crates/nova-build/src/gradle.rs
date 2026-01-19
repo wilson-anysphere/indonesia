@@ -379,23 +379,17 @@ impl GradleBuild {
             .collect();
         cached_projects.sort_by(|a, b| a.path.cmp(&b.path));
         cached_projects.dedup_by(|a, b| a.path == b.path);
-        data.projects = Some(cached_projects);
 
         // Snapshot project list for `.nova/queries/gradle.json` (best-effort). This snapshot is
         // consumed by `nova-project` to avoid invoking Gradle during discovery.
-        let snapshot_projects: Vec<GradleSnapshotProject> = data
-            .projects
-            .as_ref()
-            .map(|projects| {
-                projects
-                    .iter()
-                    .map(|p| GradleSnapshotProject {
-                        path: p.path.clone(),
-                        project_dir: p.dir.clone(),
-                    })
-                    .collect()
+        let snapshot_projects: Vec<GradleSnapshotProject> = cached_projects
+            .iter()
+            .map(|p| GradleSnapshotProject {
+                path: p.path.clone(),
+                project_dir: p.dir.clone(),
             })
-            .unwrap_or_else(Vec::new);
+            .collect();
+        data.projects = Some(cached_projects);
         let mut snapshot_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig> =
             BTreeMap::new();
 
