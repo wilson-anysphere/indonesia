@@ -768,11 +768,33 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use std::panic::Location;
+    use std::sync::MutexGuard;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     };
     use std::time::Duration;
+
+    #[track_caller]
+    fn lock<'a, T>(mutex: &'a Mutex<T>, context: &'static str) -> MutexGuard<'a, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                let loc = Location::caller();
+                tracing::error!(
+                    target = "nova.ai.codegen",
+                    context,
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    error = %err,
+                    "mutex poisoned; continuing with recovered guard"
+                );
+                err.into_inner()
+            }
+        }
+    }
 
     struct StaticProvider {
         response: String,
@@ -810,20 +832,10 @@ mod tests {
         ) -> Result<String, PromptCompletionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
 
-            if let Some(tx) = self
-                .started_tx
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .take()
-            {
+            if let Some(tx) = lock(&self.started_tx, "BlockingProvider.started_tx").take() {
                 let _ = tx.send(());
             }
-            if let Some(rx) = self
-                .resume_rx
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .take()
-            {
+            if let Some(rx) = lock(&self.resume_rx, "BlockingProvider.resume_rx").take() {
                 let _ = rx.recv();
             }
 

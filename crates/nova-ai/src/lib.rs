@@ -27,6 +27,8 @@ mod project_database;
 mod providers;
 mod semantic_search;
 mod types;
+#[cfg(any(test, feature = "local-llm"))]
+mod utf8_pending;
 mod util;
 
 pub mod cancel;

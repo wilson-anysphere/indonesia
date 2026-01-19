@@ -1,6 +1,8 @@
 #![cfg(feature = "local-llm")]
 
+use crate::utf8_pending::Utf8Pending;
 use crate::{
+    poison,
     providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest, ChatRole},
     AiError,
@@ -106,18 +108,11 @@ impl LlmProvider for InProcessLlamaProvider {
     ) -> Result<String, AiError> {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = match inner.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    if IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED.set(()).is_ok() {
-                        tracing::error!(
-                            target = "nova.ai",
-                            "in-process llama provider mutex poisoned; continuing with inner value"
-                        );
-                    }
-                    err.into_inner()
-                }
-            };
+            let mut guard = poison::lock_once(
+                &inner,
+                "InProcessLlamaProvider.inner",
+                &IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED,
+            );
             guard.complete(request, cancel, None)
         })
         .await
@@ -133,18 +128,11 @@ impl LlmProvider for InProcessLlamaProvider {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, AiError>>();
 
         let _handle = tokio::task::spawn_blocking(move || {
-            let mut guard = match inner.lock() {
-                Ok(guard) => guard,
-                Err(err) => {
-                    if IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED.set(()).is_ok() {
-                        tracing::error!(
-                            target = "nova.ai",
-                            "in-process llama provider mutex poisoned; continuing with inner value"
-                        );
-                    }
-                    err.into_inner()
-                }
-            };
+            let mut guard = poison::lock_once(
+                &inner,
+                "InProcessLlamaProvider.inner",
+                &IN_PROCESS_LLAMA_MUTEX_POISONED_LOGGED,
+            );
             let result = guard.complete(request, cancel, Some(&tx));
             if let Err(err) = result {
                 let _ = tx.send(Err(err));
@@ -278,7 +266,7 @@ impl Inner {
 
         // Generate up to `max_new_tokens`.
         let mut generated_bytes = Vec::with_capacity(max_new_tokens as usize * 4);
-        let mut utf8_pending: Vec<u8> = Vec::new();
+        let mut utf8_pending = Utf8Pending::new();
 
         let mut n_cur = batch.n_tokens();
         let n_target = i32::try_from(tokens.len() + max_new_tokens as usize)
@@ -305,8 +293,8 @@ impl Inner {
                 })?;
 
             if let Some(stream) = stream {
-                utf8_pending.extend_from_slice(&bytes);
-                flush_utf8_stream(stream, &mut utf8_pending);
+                utf8_pending.extend(&bytes);
+                utf8_pending.flush(stream);
             } else {
                 generated_bytes.extend_from_slice(&bytes);
             }
@@ -322,47 +310,10 @@ impl Inner {
 
         if let Some(stream) = stream {
             // Flush any remaining bytes (lossy if needed).
-            if !utf8_pending.is_empty() {
-                let out = String::from_utf8_lossy(&utf8_pending).to_string();
-                let _ = stream.send(Ok(out));
-            }
+            utf8_pending.flush_lossy(stream);
             Ok(String::new())
         } else {
             Ok(String::from_utf8_lossy(&generated_bytes).to_string())
-        }
-    }
-}
-
-fn flush_utf8_stream(
-    stream: &tokio::sync::mpsc::UnboundedSender<Result<String, AiError>>,
-    pending: &mut Vec<u8>,
-) {
-    loop {
-        match std::str::from_utf8(pending) {
-            Ok(text) => {
-                if !text.is_empty() {
-                    let _ = stream.send(Ok(text.to_string()));
-                }
-                pending.clear();
-                return;
-            }
-            Err(err) => {
-                let valid = err.valid_up_to();
-                if valid == 0 {
-                    // If this is a hard UTF-8 error, drop a byte to avoid spinning forever.
-                    if err.error_len().is_some() && !pending.is_empty() {
-                        pending.remove(0);
-                    }
-                    return;
-                }
-
-                // SAFETY: `valid_up_to` guarantees this prefix is valid UTF-8.
-                let prefix = unsafe { std::str::from_utf8_unchecked(&pending[..valid]) };
-                if !prefix.is_empty() {
-                    let _ = stream.send(Ok(prefix.to_string()));
-                }
-                pending.drain(..valid);
-            }
         }
     }
 }

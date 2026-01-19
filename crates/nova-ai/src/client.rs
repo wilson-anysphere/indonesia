@@ -961,10 +961,7 @@ mod tests {
                 target: event.metadata().target().to_string(),
                 fields: visitor.fields,
             };
-            self.events
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(captured);
+            crate::poison::lock(self.events.as_ref(), "CapturingLayer.events").push(captured);
         }
     }
 
@@ -1133,7 +1130,7 @@ mod tests {
             "dummy returns unsanitized content"
         );
 
-        let events = events.lock().unwrap_or_else(|err| err.into_inner());
+        let events = crate::poison::lock(events.as_ref(), "chat_audit.events");
         let audit = audit_events(&events);
 
         let request = audit
@@ -1213,7 +1210,7 @@ mod tests {
         let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
         assert_eq!(parts.concat(), format!("chunk {secret}"));
 
-        let events = events.lock().unwrap_or_else(|err| err.into_inner());
+        let events = crate::poison::lock(events.as_ref(), "chat_stream_audit.events");
         let audit = audit_events(&events);
 
         let response = audit
@@ -1267,11 +1264,8 @@ mod tests {
             request: ChatRequest,
             _cancel: CancellationToken,
         ) -> Result<String, AiError> {
-            *self
-                .captured
-                .request
-                .lock()
-                .unwrap_or_else(|err| err.into_inner()) = Some(request);
+            *crate::poison::lock(&self.captured.request, "CapturingProvider.request") =
+                Some(request);
             Ok("ok".to_string())
         }
 
@@ -1280,11 +1274,8 @@ mod tests {
             request: ChatRequest,
             _cancel: CancellationToken,
         ) -> Result<AiStream, AiError> {
-            *self
-                .captured
-                .request
-                .lock()
-                .unwrap_or_else(|err| err.into_inner()) = Some(request);
+            *crate::poison::lock(&self.captured.request, "CapturingProvider.request") =
+                Some(request);
             let stream = async_stream::try_stream! {
                 yield "ok".to_string();
             };
@@ -1342,10 +1333,7 @@ mod tests {
             .await
             .expect("chat");
 
-        let req = captured
-            .request
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        let req = crate::poison::lock(&captured.request, "CapturedRequest.request")
             .take()
             .expect("provider should receive request");
         let msg1 = &req.messages[0].content;
