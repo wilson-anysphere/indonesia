@@ -39,6 +39,7 @@ members = [
     "crates/nova-framework-mapstruct",
     "crates/nova-framework-web",
     "crates/nova-framework-quarkus",
+    "crates/nova-fuzz-utils",
     "crates/nova-fuzzy",
     "crates/nova-hir",
     "crates/nova-modules",

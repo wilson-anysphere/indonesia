@@ -527,6 +527,29 @@ pub(crate) fn normalize_local_path(path: &Path) -> PathBuf {
     out
 }
 
+pub(crate) fn local_path_needs_normalization(path: &Path) -> bool {
+    for component in path.components() {
+        match component {
+            Component::CurDir | Component::ParentDir => return true,
+            #[cfg(windows)]
+            Component::Prefix(prefix) => {
+                use std::path::Prefix;
+
+                match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                        if drive.is_ascii_lowercase() {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn normalize_prefix(prefix_component: std::path::PrefixComponent<'_>) -> OsString {
     #[cfg(windows)]
     {

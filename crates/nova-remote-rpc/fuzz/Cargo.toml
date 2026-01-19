@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+nova-fuzz-utils = { path = "../../nova-fuzz-utils" }
 nova-remote-proto = { path = "../../nova-remote-proto" }
 nova-remote-rpc = { path = ".." }
 tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }

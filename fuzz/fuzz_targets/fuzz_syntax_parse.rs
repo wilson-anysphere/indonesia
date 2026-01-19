@@ -1,64 +1,27 @@
 #![no_main]
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
+use nova_fuzz_utils::{truncate_utf8, FuzzRunner};
 
-mod utils;
+fn init() {}
 
-const TIMEOUT: Duration = Duration::from_secs(1);
-
-struct Runner {
-    input_tx: mpsc::SyncSender<String>,
-    output_rx: Mutex<mpsc::Receiver<()>>,
-}
-
-fn runner() -> &'static Runner {
-    static RUNNER: OnceLock<Runner> = OnceLock::new();
-    RUNNER.get_or_init(|| {
-        let (input_tx, input_rx) = mpsc::sync_channel::<String>(0);
-        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
-
-        std::thread::spawn(move || {
-            for input in input_rx {
-                // The goal is simply "never panic / never hang" on malformed input.
-                let _green = nova_syntax::parse(&input);
-                let _java = nova_syntax::parse_java(&input);
-                let _ = output_tx.send(());
-            }
-        });
-
-        Runner {
-            input_tx,
-            output_rx: Mutex::new(output_rx),
-        }
-    })
-}
-
-fuzz_target!(|data: &[u8]| {
-    let Some(text) = utils::truncate_utf8(data) else {
+fn run_one(_state: &mut (), input: &[u8]) {
+    let Some(text) = truncate_utf8(input) else {
         return;
     };
 
-    let runner = runner();
-    runner
-        .input_tx
-        .send(text.to_owned())
-        .expect("fuzz_syntax_parse worker thread exited");
+    // The goal is simply "never panic / never hang" on malformed input.
+    let _green = nova_syntax::parse(text);
+    let _java = nova_syntax::parse_java(text);
+}
 
-    match runner
-        .output_rx
-        .lock()
-        .expect("fuzz_syntax_parse worker receiver poisoned")
-        .recv_timeout(TIMEOUT)
-    {
-        Ok(()) => {}
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("fuzz_syntax_parse fuzz target timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("fuzz_syntax_parse worker thread panicked")
-        }
-    }
+fn runner() -> &'static FuzzRunner<()> {
+    static RUNNER: OnceLock<FuzzRunner<()>> = OnceLock::new();
+    RUNNER.get_or_init(|| FuzzRunner::new_default("fuzz_syntax_parse", init, run_one))
+}
+
+fuzz_target!(|data: &[u8]| {
+    runner().run(data);
 });

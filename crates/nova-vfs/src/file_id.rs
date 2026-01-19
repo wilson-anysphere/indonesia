@@ -1,9 +1,11 @@
-use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::Path;
 
+use hashbrown::HashMap;
 use nova_core::FileId;
 
 use crate::path::VfsPath;
+use crate::path::{local_path_needs_normalization, normalize_local_path};
 
 /// Allocates stable `FileId`s for paths and supports reverse lookup.
 #[derive(Debug, Default)]
@@ -13,7 +15,42 @@ pub struct FileIdRegistry {
 }
 
 impl FileIdRegistry {
+    fn local_key_hash(&self, path: &Path) -> u64 {
+        let mut hasher = self.path_to_id.hasher().build_hasher();
+        std::mem::discriminant(&VfsPath::Local(std::path::PathBuf::new())).hash(&mut hasher);
+        path.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        #[cfg(debug_assertions)]
+        {
+            let mut check = self.path_to_id.hasher().build_hasher();
+            VfsPath::Local(path.to_path_buf()).hash(&mut check);
+            debug_assert_eq!(
+                hash,
+                check.finish(),
+                "local_key_hash must match VfsPath::Local hash"
+            );
+        }
+
+        hash
+    }
+
     fn normalize_if_needed(&self, path: &VfsPath) -> Option<VfsPath> {
+        // Fast path: most callsites construct local paths via `VfsPath::local(..)`, which already
+        // applies logical normalization. Avoid allocating a normalized copy on every lookup/insert
+        // when we can cheaply determine the path is already normalized.
+        if let VfsPath::Local(local) = path {
+            if !local_path_needs_normalization(local.as_path()) {
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(
+                    normalize_local_path(local.as_path()),
+                    local.as_path(),
+                    "local_path_needs_normalization must be conservative"
+                );
+                return None;
+            }
+        }
+
         let normalized = crate::path::normalize_vfs_path(path.clone());
         if &normalized == path {
             None
@@ -118,11 +155,11 @@ impl FileIdRegistry {
             return id_from;
         }
 
-        if let Some(id_to) = self
+        let removed_destination = self
             .path_to_id
             .remove(&to)
-            .or_else(|| self.path_to_id.remove(&to_key))
-        {
+            .or_else(|| self.path_to_id.remove(&to_key));
+        if let Some(id_to) = removed_destination {
             if id_to != id_from {
                 if let Some(slot) = self.id_to_path.get_mut(id_to.to_raw() as usize) {
                     *slot = None;
@@ -161,6 +198,39 @@ impl FileIdRegistry {
         }
     }
 
+    /// Returns the id for `path` if it is a normalized local path and has been interned.
+    ///
+    /// Callers must ensure that `path` is already normalized according to `VfsPath::local`
+    /// semantics (dot-segments removed, drive letter normalized on Windows).
+    pub fn get_local_id_normalized(&self, path: &Path) -> Option<FileId> {
+        debug_assert!(
+            !local_path_needs_normalization(path),
+            "get_local_id_normalized requires a normalized local path"
+        );
+        let hash = self.local_key_hash(path);
+        self.path_to_id
+            .raw_entry()
+            .from_hash(hash, |candidate| match candidate {
+                VfsPath::Local(local) => local == path,
+                _ => false,
+            })
+            .map(|(_, id)| *id)
+    }
+
+    /// Returns the id for a local path if it has been interned.
+    ///
+    /// This is best-effort and purely lexical (aligns with `VfsPath::local` / `normalize_local_path`):
+    /// - If `path` is already normalized, this is a single hashmap lookup.
+    /// - If `path` contains dot-segments (or a lowercase drive letter on Windows), we normalize and
+    ///   retry (allocating only in that case).
+    pub fn get_local_id(&self, path: &Path) -> Option<FileId> {
+        if local_path_needs_normalization(path) {
+            let normalized = normalize_local_path(path);
+            return self.get_local_id_normalized(normalized.as_path());
+        }
+        self.get_local_id_normalized(path)
+    }
+
     /// Returns the id for `path` if it has been interned.
     pub fn get_id(&self, path: &VfsPath) -> Option<FileId> {
         if let Some(id) = self.path_to_id.get(path).copied() {
@@ -196,6 +266,52 @@ mod tests {
         assert_eq!(id1, id2);
         assert_eq!(registry.get_id(&path), Some(id1));
         assert_eq!(registry.get_path(id1), Some(&path));
+        assert_eq!(
+            registry.get_local_id_normalized(path.as_local_path().unwrap()),
+            Some(id1)
+        );
+    }
+
+    #[test]
+    fn local_id_index_updates_on_rename() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("From.java"));
+        let to = VfsPath::local(dir.path().join("To.java"));
+        let id_from = registry.file_id(from.clone());
+
+        let id_after = registry.rename_path(&from, to.clone());
+        assert_eq!(id_after, id_from);
+        assert_eq!(
+            registry.get_local_id_normalized(from.as_local_path().unwrap()),
+            None
+        );
+        assert_eq!(
+            registry.get_local_id_normalized(to.as_local_path().unwrap()),
+            Some(id_from)
+        );
+    }
+
+    #[test]
+    fn local_id_index_handles_rename_into_existing_destination() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("From.java"));
+        let to = VfsPath::local(dir.path().join("To.java"));
+        let id_from = registry.file_id(from.clone());
+        let id_to = registry.file_id(to.clone());
+
+        let id_after = registry.rename_path(&from, to.clone());
+        assert_eq!(id_after, id_to);
+        assert_ne!(id_from, id_to);
+        assert_eq!(
+            registry.get_local_id_normalized(from.as_local_path().unwrap()),
+            None
+        );
+        assert_eq!(
+            registry.get_local_id_normalized(to.as_local_path().unwrap()),
+            Some(id_to)
+        );
     }
 
     #[test]

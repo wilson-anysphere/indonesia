@@ -1,76 +1,55 @@
 #![no_main]
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
+use nova_fuzz_utils::{truncate_utf8, FuzzRunner};
 
 use nova_syntax::LiteralError;
 use nova_syntax::SyntaxKind;
 
-mod utils;
+fn init() {}
 
-const TIMEOUT: Duration = Duration::from_secs(1);
+fn run_one(_state: &mut (), input: &[u8]) {
+    let Some(text) = truncate_utf8(input) else {
+        return;
+    };
+    let selector = input.first().copied().unwrap_or(0);
 
-struct Runner {
-    input_tx: mpsc::SyncSender<Input>,
-    output_rx: Mutex<mpsc::Receiver<()>>,
+    let text_len = text.len();
+    let kind = pick_kind(selector);
+
+    // The goal is simply "never panic / never hang" on malformed input.
+    if let Err(e) = nova_syntax::parse_literal(kind, text) {
+        assert_span_in_bounds("parse_literal", &e, text_len);
+    }
+
+    if let Err(e) = nova_syntax::parse_int_literal(text) {
+        assert_span_in_bounds("parse_int_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::parse_long_literal(text) {
+        assert_span_in_bounds("parse_long_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::parse_float_literal(text) {
+        assert_span_in_bounds("parse_float_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::parse_double_literal(text) {
+        assert_span_in_bounds("parse_double_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::unescape_char_literal(text) {
+        assert_span_in_bounds("unescape_char_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::unescape_string_literal(text) {
+        assert_span_in_bounds("unescape_string_literal", &e, text_len);
+    }
+    if let Err(e) = nova_syntax::unescape_text_block(text) {
+        assert_span_in_bounds("unescape_text_block", &e, text_len);
+    }
 }
 
-struct Input {
-    selector: u8,
-    text: String,
-}
-
-fn runner() -> &'static Runner {
-    static RUNNER: OnceLock<Runner> = OnceLock::new();
-    RUNNER.get_or_init(|| {
-        let (input_tx, input_rx) = mpsc::sync_channel::<Input>(0);
-        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
-
-        std::thread::spawn(move || {
-            for input in input_rx {
-                let text_len = input.text.len();
-                let kind = pick_kind(input.selector);
-
-                // The goal is simply "never panic / never hang" on malformed input.
-                if let Err(e) = nova_syntax::parse_literal(kind, &input.text) {
-                    assert_span_in_bounds("parse_literal", &e, text_len);
-                }
-
-                if let Err(e) = nova_syntax::parse_int_literal(&input.text) {
-                    assert_span_in_bounds("parse_int_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::parse_long_literal(&input.text) {
-                    assert_span_in_bounds("parse_long_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::parse_float_literal(&input.text) {
-                    assert_span_in_bounds("parse_float_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::parse_double_literal(&input.text) {
-                    assert_span_in_bounds("parse_double_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::unescape_char_literal(&input.text) {
-                    assert_span_in_bounds("unescape_char_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::unescape_string_literal(&input.text) {
-                    assert_span_in_bounds("unescape_string_literal", &e, text_len);
-                }
-                if let Err(e) = nova_syntax::unescape_text_block(&input.text) {
-                    assert_span_in_bounds("unescape_text_block", &e, text_len);
-                }
-
-                let _ = output_tx.send(());
-            }
-        });
-
-        Runner {
-            input_tx,
-            output_rx: Mutex::new(output_rx),
-        }
-    })
+fn runner() -> &'static FuzzRunner<()> {
+    static RUNNER: OnceLock<FuzzRunner<()>> = OnceLock::new();
+    RUNNER.get_or_init(|| FuzzRunner::new_default("fuzz_syntax_literals", init, run_one))
 }
 
 fn pick_kind(selector: u8) -> SyntaxKind {
@@ -102,32 +81,5 @@ fn assert_span_in_bounds(label: &str, err: &LiteralError, text_len: usize) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Some(text) = utils::truncate_utf8(data) else {
-        return;
-    };
-
-    let selector = data.first().copied().unwrap_or(0);
-    let runner = runner();
-    runner
-        .input_tx
-        .send(Input {
-            selector,
-            text: text.to_owned(),
-        })
-        .expect("fuzz_syntax_literals worker thread exited");
-
-    match runner
-        .output_rx
-        .lock()
-        .expect("fuzz_syntax_literals worker receiver poisoned")
-        .recv_timeout(TIMEOUT)
-    {
-        Ok(()) => {}
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            panic!("fuzz_syntax_literals fuzz target timed out")
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("fuzz_syntax_literals worker thread panicked")
-        }
-    }
+    runner().run(data);
 });

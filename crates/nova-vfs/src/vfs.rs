@@ -105,6 +105,24 @@ impl<F: FileSystem> Vfs<F> {
         ids.get_id(path)
     }
 
+    /// Returns the id for a *normalized* local path if it has been interned.
+    ///
+    /// This is a fast path for hot code that already ensures paths are normalized via
+    /// `VfsPath::local` / `normalize_local_path` semantics.
+    pub fn get_local_id_normalized(&self, path: &Path) -> Option<FileId> {
+        let ids = self.lock_ids();
+        ids.get_local_id_normalized(path)
+    }
+
+    /// Returns the id for a local path if it has been interned.
+    ///
+    /// This performs lexical normalization only when needed (dot segments / Windows drive letter),
+    /// avoiding allocation for already-normalized paths.
+    pub fn get_local_id(&self, path: &Path) -> Option<FileId> {
+        let ids = self.lock_ids();
+        ids.get_local_id(path)
+    }
+
     /// Reverse lookup for an interned file id.
     pub fn path_for_id(&self, id: FileId) -> Option<VfsPath> {
         let ids = self.lock_ids();

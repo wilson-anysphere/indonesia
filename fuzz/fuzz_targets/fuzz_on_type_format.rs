@@ -1,92 +1,81 @@
 #![no_main]
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
-
-mod utils;
+use nova_fuzz_utils::{truncate_utf8, FuzzRunner, MAX_INPUT_SIZE};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-struct Runner {
-    input_tx: mpsc::SyncSender<String>,
-    output_rx: Mutex<mpsc::Receiver<()>>,
+fn init() {}
+
+fn run_one(_state: &mut (), input: &[u8]) {
+    let Some(text) = truncate_utf8(input) else {
+        return;
+    };
+    let bytes = text.as_bytes();
+
+    let mut config = nova_format::FormatConfig::default();
+    if let Some(byte) = bytes.get(16) {
+        config.indent_width = 1 + (*byte as usize % 8);
+    }
+    if let Some(byte) = bytes.get(17) {
+        config.indent_style = if byte & 1 == 0 {
+            nova_format::IndentStyle::Spaces
+        } else {
+            nova_format::IndentStyle::Tabs
+        };
+    }
+
+    let tree = nova_syntax::parse(text);
+    let line_index = nova_core::LineIndex::new(text);
+
+    let len_plus_one = text.len().saturating_add(1);
+    let offset = clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
+    let offset = nova_core::TextSize::from(offset as u32);
+    let position = line_index.position(text, offset);
+
+    let triggers = ['}', ';', ')', ','];
+    let trigger_idx = bytes.get(8).copied().unwrap_or(0) as usize % triggers.len();
+    let ch = triggers[trigger_idx];
+
+    if let Ok(edits) = nova_format::edits_for_on_type_formatting(&tree, text, position, ch, &config)
+    {
+        let line_start = line_index
+            .line_start(position.line)
+            .expect("position line should be in bounds");
+        let line_end = line_index
+            .line_end(position.line)
+            .expect("position line should be in bounds");
+        let line_start_usize = u32::from(line_start) as usize;
+        let line_end_usize = u32::from(line_end) as usize;
+
+        let formatted = nova_core::apply_text_edits(text, &edits).expect("edits must apply");
+
+        // On-type formatting should only affect the current line's content.
+        assert!(formatted.starts_with(&text[..line_start_usize]));
+        assert!(formatted.ends_with(&text[line_end_usize..]));
+
+        for edit in &edits {
+            assert!(
+                edit.range.start() >= line_start && edit.range.end() <= line_end,
+                "on-type formatting produced an out-of-line edit: {edit:?} not within {line_start:?}..{line_end:?}",
+            );
+        }
+    }
 }
 
-fn runner() -> &'static Runner {
-    static RUNNER: OnceLock<Runner> = OnceLock::new();
+fn runner() -> &'static FuzzRunner<()> {
+    static RUNNER: OnceLock<FuzzRunner<()>> = OnceLock::new();
     RUNNER.get_or_init(|| {
-        let (input_tx, input_rx) = mpsc::sync_channel::<String>(0);
-        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
-
-        std::thread::spawn(move || {
-            for input in input_rx {
-                let bytes = input.as_bytes();
-                let text = input.as_str();
-
-                let mut config = nova_format::FormatConfig::default();
-                if let Some(byte) = bytes.get(16) {
-                    config.indent_width = 1 + (*byte as usize % 8);
-                }
-                if let Some(byte) = bytes.get(17) {
-                    config.indent_style = if byte & 1 == 0 {
-                        nova_format::IndentStyle::Spaces
-                    } else {
-                        nova_format::IndentStyle::Tabs
-                    };
-                }
-
-                let tree = nova_syntax::parse(text);
-                let line_index = nova_core::LineIndex::new(text);
-
-                let len_plus_one = text.len().saturating_add(1);
-                let offset =
-                    clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
-                let offset = nova_core::TextSize::from(offset as u32);
-                let position = line_index.position(text, offset);
-
-                let triggers = ['}', ';', ')', ','];
-                let trigger_idx = bytes.get(8).copied().unwrap_or(0) as usize % triggers.len();
-                let ch = triggers[trigger_idx];
-
-                if let Ok(edits) =
-                    nova_format::edits_for_on_type_formatting(&tree, text, position, ch, &config)
-                {
-                    let line_start = line_index
-                        .line_start(position.line)
-                        .expect("position line should be in bounds");
-                    let line_end = line_index
-                        .line_end(position.line)
-                        .expect("position line should be in bounds");
-                    let line_start_usize = u32::from(line_start) as usize;
-                    let line_end_usize = u32::from(line_end) as usize;
-
-                    let formatted =
-                        nova_core::apply_text_edits(text, &edits).expect("edits must apply");
-
-                    // On-type formatting should only affect the current line's content.
-                    assert!(formatted.starts_with(&text[..line_start_usize]));
-                    assert!(formatted.ends_with(&text[line_end_usize..]));
-
-                    for edit in &edits {
-                        assert!(
-                            edit.range.start() >= line_start && edit.range.end() <= line_end,
-                            "on-type formatting produced an out-of-line edit: {edit:?} not within {line_start:?}..{line_end:?}",
-                        );
-                    }
-                }
-
-                let _ = output_tx.send(());
-            }
-        });
-
-        Runner {
-            input_tx,
-            output_rx: Mutex::new(output_rx),
-        }
+        FuzzRunner::new(
+            "fuzz_on_type_format",
+            MAX_INPUT_SIZE,
+            TIMEOUT,
+            init,
+            run_one,
+        )
     })
 }
 
@@ -109,28 +98,5 @@ fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Some(text) = utils::truncate_utf8(data) else {
-        return;
-    };
-
-    let runner = runner();
-    runner
-        .input_tx
-        .send(text.to_owned())
-        .expect("fuzz_on_type_format worker thread exited");
-
-    match runner
-        .output_rx
-        .lock()
-        .expect("fuzz_on_type_format worker receiver poisoned")
-        .recv_timeout(TIMEOUT)
-    {
-        Ok(()) => {}
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            panic!("fuzz_on_type_format fuzz target timed out")
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("fuzz_on_type_format worker thread panicked")
-        }
-    }
+    runner().run(data);
 });

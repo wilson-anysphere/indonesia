@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+nova-fuzz-utils = { path = "../../nova-fuzz-utils" }
 
 [dependencies.nova-jdwp]
 path = ".."

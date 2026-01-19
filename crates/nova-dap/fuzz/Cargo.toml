@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+nova-fuzz-utils = { path = "../../nova-fuzz-utils" }
 nova-dap = { path = ".." }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "rt", "time"] }

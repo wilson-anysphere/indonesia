@@ -1,15 +1,14 @@
 #![no_main]
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
+use nova_fuzz_utils::FuzzRunner;
 
 use nova_syntax::{TextEdit, TextRange};
 
-mod utils;
+use nova_fuzz_utils::{truncate_utf8, MAX_INPUT_SIZE};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_EDITS: usize = 8;
@@ -20,28 +19,22 @@ const MAX_REPLACEMENT_BYTES: usize = 64;
 /// allowing a handful of edits to be described.
 const MAX_OP_BYTES: usize = 256;
 
-struct Runner {
-    input_tx: mpsc::SyncSender<Vec<u8>>,
-    output_rx: Mutex<mpsc::Receiver<()>>,
+fn init() {}
+
+fn run_one(_state: &mut (), input: &[u8]) {
+    run_case(input);
 }
 
-fn runner() -> &'static Runner {
-    static RUNNER: OnceLock<Runner> = OnceLock::new();
+fn runner() -> &'static FuzzRunner<()> {
+    static RUNNER: OnceLock<FuzzRunner<()>> = OnceLock::new();
     RUNNER.get_or_init(|| {
-        let (input_tx, input_rx) = mpsc::sync_channel::<Vec<u8>>(0);
-        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
-
-        std::thread::spawn(move || {
-            for input in input_rx {
-                run_case(&input);
-                let _ = output_tx.send(());
-            }
-        });
-
-        Runner {
-            input_tx,
-            output_rx: Mutex::new(output_rx),
-        }
+        FuzzRunner::new(
+            "fuzz_reparse_java_sequence",
+            MAX_INPUT_SIZE,
+            TIMEOUT,
+            init,
+            run_one,
+        )
     })
 }
 
@@ -139,7 +132,7 @@ fn decode_edit(cursor: &mut ByteCursor<'_>, text: &str) -> Option<TextEdit> {
     // consistent with the produced `new_text`.
     let deleted_len = end.saturating_sub(start);
     let base_len = text_len.saturating_sub(deleted_len);
-    let allowed_insert_len = utils::MAX_INPUT_SIZE.saturating_sub(base_len);
+    let allowed_insert_len = MAX_INPUT_SIZE.saturating_sub(base_len);
     if replacement.len() > allowed_insert_len {
         replacement = truncate_str_to_boundary(&replacement, allowed_insert_len).to_owned();
     }
@@ -148,7 +141,7 @@ fn decode_edit(cursor: &mut ByteCursor<'_>, text: &str) -> Option<TextEdit> {
 }
 
 fn run_case(data: &[u8]) {
-    let cap = data.len().min(utils::MAX_INPUT_SIZE);
+    let cap = data.len().min(MAX_INPUT_SIZE);
     let data = &data[..cap];
 
     if data.is_empty() {
@@ -167,7 +160,7 @@ fn run_case(data: &[u8]) {
     let split = data.len().saturating_sub(op_len);
     let (text_bytes, op_bytes) = data.split_at(split);
 
-    let Some(text0) = utils::truncate_utf8(text_bytes) else {
+    let Some(text0) = truncate_utf8(text_bytes) else {
         return;
     };
 
@@ -181,7 +174,7 @@ fn run_case(data: &[u8]) {
         };
 
         let new_text = apply_edit(&text, &edit);
-        debug_assert!(new_text.len() <= utils::MAX_INPUT_SIZE);
+        debug_assert!(new_text.len() <= MAX_INPUT_SIZE);
 
         let full = nova_syntax::parse_java(&new_text);
         let incr = nova_syntax::reparse_java(&parse, &text, edit, &new_text);
@@ -193,26 +186,5 @@ fn run_case(data: &[u8]) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let cap = data.len().min(utils::MAX_INPUT_SIZE);
-
-    let runner = runner();
-    runner
-        .input_tx
-        .send(data[..cap].to_vec())
-        .expect("fuzz_reparse_java_sequence worker thread exited");
-
-    match runner
-        .output_rx
-        .lock()
-        .expect("fuzz_reparse_java_sequence worker receiver poisoned")
-        .recv_timeout(TIMEOUT)
-    {
-        Ok(()) => {}
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            panic!("fuzz_reparse_java_sequence fuzz target timed out")
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("fuzz_reparse_java_sequence worker thread panicked")
-        }
-    }
+    runner().run(data);
 });

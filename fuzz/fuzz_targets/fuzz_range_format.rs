@@ -1,109 +1,89 @@
 #![no_main]
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
-
-mod utils;
+use nova_fuzz_utils::{truncate_utf8, FuzzRunner, MAX_INPUT_SIZE};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-struct Runner {
-    input_tx: mpsc::SyncSender<String>,
-    output_rx: Mutex<mpsc::Receiver<()>>,
+fn init() {}
+
+fn run_one(_state: &mut (), input: &[u8]) {
+    let Some(text) = truncate_utf8(input) else {
+        return;
+    };
+    let bytes = text.as_bytes();
+
+    let mut config = nova_format::FormatConfig::default();
+    if let Some(byte) = bytes.get(16) {
+        config.indent_width = 1 + (*byte as usize % 8);
+    }
+    if let Some(byte) = bytes.get(17) {
+        config.indent_style = if byte & 1 == 0 {
+            nova_format::IndentStyle::Spaces
+        } else {
+            nova_format::IndentStyle::Tabs
+        };
+    }
+    if let Some(byte) = bytes.get(18) {
+        config.max_line_length = 20 + (*byte as usize % 200);
+    }
+    if let Some(byte) = bytes.get(19) {
+        config.insert_final_newline = match byte % 3 {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        };
+    }
+    if let Some(byte) = bytes.get(20) {
+        config.trim_final_newlines = match byte % 3 {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        };
+    }
+
+    let tree = nova_syntax::parse(text);
+    let line_index = nova_core::LineIndex::new(text);
+
+    let len_plus_one = text.len().saturating_add(1);
+    let start = clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
+    let end = clamp_to_char_boundary(text, (read_u64_le(bytes, 8) as usize) % len_plus_one);
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+
+    let start = nova_core::TextSize::from(start as u32);
+    let end = nova_core::TextSize::from(end as u32);
+    let byte_range = nova_core::TextRange::new(start, end);
+    let range = line_index.range(text, byte_range);
+
+    let res = nova_format::edits_for_range_formatting(&tree, text, range, &config);
+    if let Ok(edits) = res {
+        let selected = line_index
+            .text_range(text, range)
+            .expect("range should convert back to a byte range");
+        let selected_start = u32::from(selected.start()) as usize;
+        let selected_end = u32::from(selected.end()) as usize;
+
+        let formatted = nova_core::apply_text_edits(text, &edits).expect("edits must apply");
+
+        // Range formatting should preserve the text outside the range.
+        assert!(formatted.starts_with(&text[..selected_start]));
+        assert!(formatted.ends_with(&text[selected_end..]));
+
+        for edit in &edits {
+            assert!(
+                edit.range.start() >= selected.start() && edit.range.end() <= selected.end(),
+                "range formatting produced an out-of-range edit: {edit:?} not within {selected:?}",
+            );
+        }
+    }
 }
 
-fn runner() -> &'static Runner {
-    static RUNNER: OnceLock<Runner> = OnceLock::new();
-    RUNNER.get_or_init(|| {
-        let (input_tx, input_rx) = mpsc::sync_channel::<String>(0);
-        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
-
-        std::thread::spawn(move || {
-            for input in input_rx {
-                let bytes = input.as_bytes();
-                let text = input.as_str();
-
-                let mut config = nova_format::FormatConfig::default();
-                if let Some(byte) = bytes.get(16) {
-                    config.indent_width = 1 + (*byte as usize % 8);
-                }
-                if let Some(byte) = bytes.get(17) {
-                    config.indent_style = if byte & 1 == 0 {
-                        nova_format::IndentStyle::Spaces
-                    } else {
-                        nova_format::IndentStyle::Tabs
-                    };
-                }
-                if let Some(byte) = bytes.get(18) {
-                    config.max_line_length = 20 + (*byte as usize % 200);
-                }
-                if let Some(byte) = bytes.get(19) {
-                    config.insert_final_newline = match byte % 3 {
-                        0 => None,
-                        1 => Some(false),
-                        _ => Some(true),
-                    };
-                }
-                if let Some(byte) = bytes.get(20) {
-                    config.trim_final_newlines = match byte % 3 {
-                        0 => None,
-                        1 => Some(false),
-                        _ => Some(true),
-                    };
-                }
-
-                let tree = nova_syntax::parse(text);
-                let line_index = nova_core::LineIndex::new(text);
-
-                let len_plus_one = text.len().saturating_add(1);
-                let start =
-                    clamp_to_char_boundary(text, (read_u64_le(bytes, 0) as usize) % len_plus_one);
-                let end =
-                    clamp_to_char_boundary(text, (read_u64_le(bytes, 8) as usize) % len_plus_one);
-                let (start, end) = if start <= end { (start, end) } else { (end, start) };
-
-                let start = nova_core::TextSize::from(start as u32);
-                let end = nova_core::TextSize::from(end as u32);
-                let byte_range = nova_core::TextRange::new(start, end);
-                let range = line_index.range(text, byte_range);
-
-                let res = nova_format::edits_for_range_formatting(&tree, text, range, &config);
-                if let Ok(edits) = res {
-                    let selected = line_index
-                        .text_range(text, range)
-                        .expect("range should convert back to a byte range");
-                    let selected_start = u32::from(selected.start()) as usize;
-                    let selected_end = u32::from(selected.end()) as usize;
-
-                    let formatted =
-                        nova_core::apply_text_edits(text, &edits).expect("edits must apply");
-
-                    // Range formatting should preserve the text outside the range.
-                    assert!(formatted.starts_with(&text[..selected_start]));
-                    assert!(formatted.ends_with(&text[selected_end..]));
-
-                    for edit in &edits {
-                        assert!(
-                            edit.range.start() >= selected.start()
-                                && edit.range.end() <= selected.end(),
-                            "range formatting produced an out-of-range edit: {edit:?} not within {selected:?}",
-                        );
-                    }
-                }
-
-                let _ = output_tx.send(());
-            }
-        });
-
-        Runner {
-            input_tx,
-            output_rx: Mutex::new(output_rx),
-        }
-    })
+fn runner() -> &'static FuzzRunner<()> {
+    static RUNNER: OnceLock<FuzzRunner<()>> = OnceLock::new();
+    RUNNER.get_or_init(|| FuzzRunner::new("fuzz_range_format", MAX_INPUT_SIZE, TIMEOUT, init, run_one))
 }
 
 fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
@@ -125,26 +105,5 @@ fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Some(text) = utils::truncate_utf8(data) else {
-        return;
-    };
-
-    let runner = runner();
-    runner
-        .input_tx
-        .send(text.to_owned())
-        .expect("fuzz_range_format worker thread exited");
-
-    match runner
-        .output_rx
-        .lock()
-        .expect("fuzz_range_format worker receiver poisoned")
-        .recv_timeout(TIMEOUT)
-    {
-        Ok(()) => {}
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("fuzz_range_format fuzz target timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("fuzz_range_format worker thread panicked")
-        }
-    }
+    runner().run(data);
 });

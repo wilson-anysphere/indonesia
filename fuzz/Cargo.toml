@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lsp-types = "0.97"
+nova-fuzz-utils = { path = "../crates/nova-fuzz-utils" }
 nova-archive = { path = "../crates/nova-archive" }
 nova-classfile = { path = "../crates/nova-classfile" }
 nova-decompile = { path = "../crates/nova-decompile" }
