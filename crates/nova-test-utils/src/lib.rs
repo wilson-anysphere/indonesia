@@ -28,6 +28,9 @@ mod fixture_fs;
 #[cfg(feature = "fixture-ranges")]
 mod fixture_ranges;
 
+#[cfg(feature = "lsp-text")]
+mod lsp_text;
+
 #[cfg(feature = "fixture-db")]
 pub use fixture_db::*;
 
@@ -36,6 +39,9 @@ pub use fixture_fs::*;
 
 #[cfg(feature = "fixture-ranges")]
 pub use fixture_ranges::*;
+
+#[cfg(feature = "lsp-text")]
+pub use lsp_text::*;
 
 #[cfg(feature = "javac")]
 pub mod javac;

@@ -1,9 +1,8 @@
 use lsp_types::{
     CodeActionContext, CodeActionOrCommand, CodeActionParams, ExecuteCommandParams,
-    PartialResultParams, Position, Range, TextDocumentIdentifier, WorkDoneProgressParams,
-    WorkspaceEdit,
+    PartialResultParams, Range, TextDocumentIdentifier, WorkDoneProgressParams, WorkspaceEdit,
 };
-use nova_test_utils::extract_range;
+use nova_test_utils::{extract_range, offset_to_position, position_to_offset};
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::io::BufReader;
@@ -131,69 +130,6 @@ class C {
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0;
-
-    for ch in text.chars() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-        idx += ch.len_utf8();
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
-}
-
-fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0;
-
-    for ch in text.chars() {
-        if line == pos.line && col_utf16 == pos.character {
-            return Some(idx);
-        }
-
-        if ch == '\n' {
-            if line == pos.line {
-                if col_utf16 == pos.character {
-                    return Some(idx);
-                }
-                return None;
-            }
-            line += 1;
-            col_utf16 = 0;
-            idx += 1;
-            continue;
-        }
-
-        if line == pos.line {
-            col_utf16 += ch.len_utf16() as u32;
-            if col_utf16 > pos.character {
-                return None;
-            }
-        }
-        idx += ch.len_utf8();
-    }
-
-    if line == pos.line && col_utf16 == pos.character {
-        Some(idx)
-    } else {
-        None
-    }
 }
 
 fn apply_lsp_edits(source: &str, edits: &[lsp_types::TextEdit]) -> String {

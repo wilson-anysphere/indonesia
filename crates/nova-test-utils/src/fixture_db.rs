@@ -4,6 +4,8 @@ use std::str::FromStr;
 use lsp_types::{Position, Uri};
 use nova_ide::Database;
 
+use crate::lsp_text;
+
 fn file_uri_for_fixture_path(path: &str) -> Uri {
     let path = path.trim();
 
@@ -124,7 +126,7 @@ impl Fixture {
     pub fn marker_position(&self, id: u32) -> Position {
         let (uri, offset) = self.markers.get(&id).unwrap();
         let text = self.files.get(uri).unwrap();
-        offset_to_position(text, *offset)
+        lsp_text::offset_to_position(text, *offset)
     }
 
     #[allow(dead_code)]
@@ -136,57 +138,7 @@ impl Fixture {
     #[allow(dead_code)]
     pub fn offset_for_position(&self, uri: &Uri, position: Position) -> Option<usize> {
         let text = self.files.get(uri)?;
-        position_to_offset(text, position)
-    }
-}
-
-fn position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut offset: usize = 0;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(offset);
-        }
-
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(offset)
-    } else {
-        None
-    }
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
+        lsp_text::position_to_offset(text, position)
     }
 }
 

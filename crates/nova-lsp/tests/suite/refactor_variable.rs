@@ -1,26 +1,11 @@
 use lsp_types::Uri;
-use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_lsp::refactor::{
     extract_variable_code_actions, inline_variable_code_actions,
     resolve_extract_variable_code_action,
 };
-use nova_test_utils::extract_range;
+use nova_test_utils::{extract_range, offset_to_position, position_to_offset};
 use pretty_assertions::assert_eq;
 use std::str::FromStr;
-
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let index = LineIndex::new(text);
-    let pos = index.position(text, TextSize::from(offset as u32));
-    lsp_types::Position::new(pos.line, pos.character)
-}
-
-fn position_to_offset(text: &str, pos: lsp_types::Position) -> Option<usize> {
-    let index = LineIndex::new(text);
-    let pos = CorePosition::new(pos.line, pos.character);
-    index
-        .offset_of_position(text, pos)
-        .map(|o| u32::from(o) as usize)
-}
 
 fn apply_lsp_edits(source: &str, edits: &[lsp_types::TextEdit]) -> String {
     let mut byte_edits: Vec<(usize, usize, &str)> = edits

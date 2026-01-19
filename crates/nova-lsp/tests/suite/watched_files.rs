@@ -1,8 +1,9 @@
 use lsp_types::{
-    FileChangeType, FileEvent, GotoDefinitionParams, PartialResultParams, Position, Range,
+    FileChangeType, FileEvent, GotoDefinitionParams, PartialResultParams, Range,
     TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use nova_core::{path_to_file_uri, AbsPathBuf};
+use nova_test_utils::{offset_to_position, position_to_offset};
 use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
@@ -19,53 +20,6 @@ fn uri_for_path(path: &std::path::Path) -> Uri {
         .expect("file uri")
         .parse()
         .expect("lsp uri")
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position::new(line, col_utf16)
-}
-
-fn position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut offset: usize = 0;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(offset);
-        }
-
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(offset)
-    } else {
-        None
-    }
 }
 
 fn range_text<'a>(text: &'a str, range: Range) -> &'a str {
