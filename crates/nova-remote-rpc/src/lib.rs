@@ -13,7 +13,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use bytes::Bytes;
 use nova_remote_proto::v3::{
@@ -27,65 +27,8 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 pub type RequestId = u64;
 
-#[track_caller]
-fn lock_std_mutex<'a, T>(mutex: &'a StdMutex<T>, context: &'static str) -> MutexGuard<'a, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(err) => {
-            let loc = std::panic::Location::caller();
-            tracing::error!(
-                target = "nova.remote_rpc",
-                context,
-                file = loc.file(),
-                line = loc.line(),
-                column = loc.column(),
-                error = %err,
-                "mutex poisoned; continuing with recovered guard"
-            );
-            err.into_inner()
-        }
-    }
-}
-
-#[track_caller]
-fn read_rwlock<'a, T>(lock: &'a RwLock<T>, context: &'static str) -> RwLockReadGuard<'a, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(err) => {
-            let loc = std::panic::Location::caller();
-            tracing::error!(
-                target = "nova.remote_rpc",
-                context,
-                file = loc.file(),
-                line = loc.line(),
-                column = loc.column(),
-                error = %err,
-                "rwlock poisoned; continuing with recovered guard"
-            );
-            err.into_inner()
-        }
-    }
-}
-
-#[track_caller]
-fn write_rwlock<'a, T>(lock: &'a RwLock<T>, context: &'static str) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(err) => {
-            let loc = std::panic::Location::caller();
-            tracing::error!(
-                target = "nova.remote_rpc",
-                context,
-                file = loc.file(),
-                line = loc.line(),
-                column = loc.column(),
-                error = %err,
-                "rwlock poisoned; continuing with recovered guard"
-            );
-            err.into_inner()
-        }
-    }
-}
+mod poison;
+use poison::{lock_std_mutex, read_rwlock, write_rwlock};
 
 /// Result of a router-side handshake admission hook.
 #[derive(Debug, Clone)]
