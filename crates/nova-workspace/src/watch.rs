@@ -1767,6 +1767,26 @@ mod tests {
     }
 
     #[test]
+    fn batch_planner_requires_rescan_for_directory_creates_under_external_configured_root() {
+        let ws = tempfile::tempdir().unwrap();
+        let workspace_root = ws.path().canonicalize().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let external_root = external.path().canonicalize().unwrap();
+
+        let mut config = WatchConfig::new(workspace_root);
+        config.source_roots = vec![external_root.join("src/main/java")];
+        let mut planner = WatchBatchPlanner::new(&config);
+
+        let created_dir = external_root.join("src/main/java/pkg");
+        std::fs::create_dir_all(&created_dir).unwrap();
+
+        let event = FileChange::Created {
+            path: VfsPath::local(created_dir),
+        };
+        assert_eq!(planner.plan(&event), WatchBatchPlan::RescanRequired);
+    }
+
+    #[test]
     fn directory_deletes_of_configured_root_ancestors_are_source_changes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
