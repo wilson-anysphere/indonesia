@@ -11,5 +11,5 @@ nova-ids = { path = "../nova-ids" }
 [dev-dependencies]
 pretty_assertions = "1.4"
 nova-classpath = { path = "../nova-classpath" }
-nova-test-utils = { path = "../nova-test-utils", default-features = false }
+nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["javac"] }
 nova-types-bridge = { path = "../nova-types-bridge" }

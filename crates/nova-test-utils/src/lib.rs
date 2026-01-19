@@ -25,4 +25,5 @@ mod fixtures;
 #[cfg(feature = "fixtures")]
 pub use fixtures::*;
 
+#[cfg(feature = "javac")]
 pub mod javac;

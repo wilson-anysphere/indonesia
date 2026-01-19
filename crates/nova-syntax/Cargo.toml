@@ -25,7 +25,7 @@ tracing = { workspace = true }
 criterion = "0.5"
 pretty_assertions = "1.4.0"
 xtask = { path = "../xtask" }
-nova-test-utils = { path = "../nova-test-utils", default-features = false }
+nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["javac"] }
 
 [[bench]]
 name = "parse_java"

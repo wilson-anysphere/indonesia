@@ -7,9 +7,10 @@ edition = "2021"
 nova-index = { path = "../nova-index", optional = true }
 lsp-types = { version = "0.97", optional = true }
 nova-ide = { path = "../nova-ide", optional = true }
-tempfile.workspace = true
+tempfile = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [features]
-default = ["fixtures"]
+default = ["fixtures", "javac"]
 fixtures = ["dep:nova-index", "dep:nova-ide", "dep:lsp-types"]
+javac = ["dep:tempfile"]

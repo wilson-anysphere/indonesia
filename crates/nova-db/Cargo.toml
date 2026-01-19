@@ -34,7 +34,7 @@ walkdir = "2"
 [dev-dependencies]
 bincode = "1"
 criterion = "0.5"
-nova-test-utils = { path = "../nova-test-utils", default-features = false }
+nova-test-utils = { path = "../nova-test-utils", default-features = false, features = ["javac"] }
 rayon = "1"
 nova-syntax = { path = "../nova-syntax", features = ["test-parse-counter"] }
 serde_json = "1"
