@@ -3,38 +3,9 @@ use nova_lsp::refactor::{
     extract_variable_code_actions, inline_variable_code_actions,
     resolve_extract_variable_code_action,
 };
-use nova_test_utils::{extract_range, offset_to_position, position_to_offset};
+use nova_test_utils::{apply_lsp_edits, extract_range, offset_to_position};
 use pretty_assertions::assert_eq;
 use std::str::FromStr;
-
-fn apply_lsp_edits(source: &str, edits: &[lsp_types::TextEdit]) -> String {
-    let mut byte_edits: Vec<(usize, usize, &str)> = edits
-        .iter()
-        .map(|e| {
-            let start = position_to_offset(source, e.range.start).expect("start offset");
-            let end = position_to_offset(source, e.range.end).expect("end offset");
-            (start, end, e.new_text.as_str())
-        })
-        .collect();
-
-    // Apply from the end so offsets remain stable.
-    byte_edits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-
-    // Overlap check.
-    let mut last_start = source.len();
-    for (start, end, _) in &byte_edits {
-        assert!(*start <= *end);
-        assert!(*end <= source.len());
-        assert!(*end <= last_start, "overlapping edits");
-        last_start = *start;
-    }
-
-    let mut out = source.to_string();
-    for (start, end, text) in byte_edits {
-        out.replace_range(start..end, text);
-    }
-    out
-}
 
 #[test]
 fn extract_variable_code_actions_offer_var_and_explicit_type_variants() {

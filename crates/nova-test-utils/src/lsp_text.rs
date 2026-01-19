@@ -1,4 +1,4 @@
-use lsp_types::Position;
+use lsp_types::{Position, TextEdit};
 
 /// Converts a UTF-8 byte offset into an LSP UTF-16 position.
 ///
@@ -76,6 +76,40 @@ pub fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Apply a list of LSP text edits to `source`.
+///
+/// Edits are interpreted using UTF-16 positions and applied from the end of the document to keep
+/// offsets stable. Panics if the edit ranges are invalid or overlapping.
+#[must_use]
+pub fn apply_lsp_edits(source: &str, edits: &[TextEdit]) -> String {
+    let mut byte_edits: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|e| {
+            let start = position_to_offset(source, e.range.start).expect("start offset");
+            let end = position_to_offset(source, e.range.end).expect("end offset");
+            (start, end, e.new_text.as_str())
+        })
+        .collect();
+
+    // Apply from the end so offsets remain stable.
+    byte_edits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    // Overlap check.
+    let mut last_start = source.len();
+    for (start, end, _) in &byte_edits {
+        assert!(*start <= *end);
+        assert!(*end <= source.len());
+        assert!(*end <= last_start, "overlapping edits");
+        last_start = *start;
+    }
+
+    let mut out = source.to_string();
+    for (start, end, text) in byte_edits {
+        out.replace_range(start..end, text);
+    }
+    out
 }
 
 #[cfg(test)]
