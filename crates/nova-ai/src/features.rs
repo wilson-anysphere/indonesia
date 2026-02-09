@@ -37,6 +37,7 @@ pub struct NovaAi {
     llm: Arc<dyn LlmClient>,
     context_builder: ContextBuilder,
     max_output_tokens: u32,
+    code_review_max_diff_chars: usize,
 }
 
 impl NovaAi {
@@ -49,6 +50,7 @@ impl NovaAi {
             llm,
             context_builder: ContextBuilder::new(),
             max_output_tokens: config.provider.max_tokens,
+            code_review_max_diff_chars: config.features.code_review_max_diff_chars.max(1),
         })
     }
 
@@ -253,6 +255,7 @@ impl NovaAi {
             .sanitize_snippet(&CodeSnippet::ad_hoc(filtered.text))
             .unwrap_or_else(|| diff::DIFF_OMITTED_PLACEHOLDER.to_string());
         let sanitized = diff::replace_omission_sentinels(&sanitized);
+        let sanitized = truncate_middle_with_marker(sanitized, self.code_review_max_diff_chars);
 
         let result = llm
             .chat(
@@ -278,6 +281,69 @@ impl NovaAi {
     /// Access the underlying client (for model listing, custom prompts, etc).
     pub fn llm(&self) -> Arc<dyn LlmClient> {
         self.llm.clone()
+    }
+}
+
+fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
+    let max_chars = max_chars.max(1);
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text;
+    }
+
+    // Iterate until the marker length stabilizes (it depends on the omitted count's digit count).
+    let mut marker_len = 0usize;
+    let mut marker = String::new();
+    for _ in 0..8 {
+        let available = max_chars.saturating_sub(marker_len);
+        let omitted = total_chars.saturating_sub(available);
+        let next_marker = format!("\n[diff truncated: omitted {omitted} chars]\n");
+        let next_len = next_marker.chars().count();
+        marker = next_marker;
+        if next_len == marker_len {
+            break;
+        }
+        marker_len = next_len;
+    }
+
+    let marker_len = marker.chars().count();
+    if max_chars <= marker_len {
+        return truncate_prefix_chars(&marker, max_chars).to_string();
+    }
+
+    let available = max_chars - marker_len;
+    let head_len = available / 2;
+    let tail_len = available - head_len;
+
+    let head = truncate_prefix_chars(&text, head_len);
+    let tail = truncate_suffix_chars(&text, tail_len);
+
+    let mut out = String::with_capacity(max_chars.min(total_chars) + marker.len());
+    out.push_str(head);
+    out.push_str(&marker);
+    out.push_str(tail);
+    out
+}
+
+fn truncate_prefix_chars(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => &text[..idx],
+        None => text,
+    }
+}
+
+fn truncate_suffix_chars(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+
+    match text.char_indices().rev().nth(max_chars.saturating_sub(1)) {
+        Some((idx, _)) => &text[idx..],
+        None => text,
     }
 }
 

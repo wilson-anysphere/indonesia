@@ -688,6 +688,19 @@ pub struct AiFeaturesConfig {
     /// Enables multi-token completion suggestions.
     #[serde(default)]
     pub multi_token_completion: bool,
+
+    /// Maximum number of diff characters included in AI code review prompts.
+    ///
+    /// Large diffs can exceed LLM provider limits and increase latency/cost.
+    /// When the diff exceeds this limit, Nova keeps the beginning and end of the
+    /// diff and inserts a truncation marker indicating how much was omitted.
+    #[serde(default = "default_code_review_max_diff_chars")]
+    #[schemars(range(min = 1))]
+    pub code_review_max_diff_chars: usize,
+}
+
+fn default_code_review_max_diff_chars() -> usize {
+    50_000
 }
 
 #[allow(clippy::derivable_impls)]
@@ -697,6 +710,7 @@ impl Default for AiFeaturesConfig {
             completion_ranking: false,
             semantic_search: false,
             multi_token_completion: false,
+            code_review_max_diff_chars: default_code_review_max_diff_chars(),
         }
     }
 }

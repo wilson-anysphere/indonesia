@@ -1,6 +1,7 @@
 mod ai_eval;
 mod cloud_multi_token;
 mod code_review;
+mod code_review_truncation;
 mod completion_ranking_cache;
 mod code_review_prompt;
 mod completion_ranking_privacy;
