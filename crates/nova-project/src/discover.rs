@@ -639,8 +639,25 @@ fn gradle_settings_includes_build(workspace_root: &Path, build_root: &Path) -> b
 }
 
 fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
+    // Avoid treating the OS temp directory (e.g. `/tmp`) itself as a workspace root just because it
+    // happens to contain a `src/` directory. Temp roots are often shared across unrelated
+    // processes/tests, so allowing them to participate in "simple project" root discovery can
+    // cause unrelated temp workspaces nested under the temp dir to be misclassified as belonging
+    // to the temp dir.
+    //
+    // This is intentionally conservative: if callers really want to treat the temp dir as a
+    // workspace, they can still do so via the `UnknownProjectType` fallback (which uses the
+    // caller-provided root).
+    let temp_dir = {
+        let temp = std::env::temp_dir();
+        std::fs::canonicalize(&temp).unwrap_or(temp)
+    };
+
     let mut dir = start;
     loop {
+        if dir == temp_dir {
+            break;
+        }
         if dir.join("src").is_dir() {
             return Some(dir.to_path_buf());
         }
