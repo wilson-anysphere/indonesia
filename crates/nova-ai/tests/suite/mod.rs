@@ -1,6 +1,7 @@
 mod ai_eval;
 mod cloud_multi_token;
 mod code_review;
+mod completion_ranking_privacy;
 mod embedding_semantic_search;
 mod explain_error_providers;
 mod in_process_llama_smoke;
