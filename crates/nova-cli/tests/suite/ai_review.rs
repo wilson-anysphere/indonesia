@@ -348,3 +348,151 @@ model = "test-model"
 
     mock.assert_hits(1);
 }
+
+#[test]
+fn ai_review_git_staged_flag_uses_git_diff_staged_output() {
+    if ProcessCommand::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nGit staged diff OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    let src = temp.child("README.md");
+    src.write_str("hello\n").unwrap();
+
+    let git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    // Modify and stage, then restore working tree so only staged diff remains.
+    src.write_str("hello staged\n").unwrap();
+    git(&["add", "README.md"]);
+    git(&["restore", "--worktree", "README.md"]);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(temp.path())
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review", "--git", "--staged", "--json"])
+        .output()
+        .expect("run nova ai review --git --staged");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Git staged diff OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
+
+#[test]
+fn ai_review_errors_when_ai_disabled() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.child("nova.toml");
+    config
+        .write_str(
+            r#"
+[ai]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review (ai disabled)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("AI is disabled"),
+        "expected disabled message, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("NOVA_CONFIG_PATH"),
+        "expected env var hint, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn ai_review_errors_when_diff_is_empty() {
+    let server = MockServer::start();
+    // Should never hit the network.
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review (empty diff)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No diff content provided"),
+        "expected empty diff message, got:\n{stderr}"
+    );
+}
