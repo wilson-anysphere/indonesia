@@ -123,6 +123,7 @@ pub struct AiClient {
     semaphore: Arc<Semaphore>,
     privacy: PrivacyFilter,
     default_max_tokens: u32,
+    default_temperature: Option<f32>,
     request_timeout: Duration,
     audit_enabled: bool,
     provider_label: &'static str,
@@ -296,6 +297,7 @@ impl AiClient {
             semaphore: Arc::new(Semaphore::new(concurrency)),
             privacy: PrivacyFilter::new(&config.privacy)?,
             default_max_tokens: config.provider.max_tokens,
+            default_temperature: config.provider.temperature,
             request_timeout: config.provider.timeout(),
             audit_enabled: config.enabled && config.audit_log.enabled,
             provider_label: provider_label(&config.provider.kind),
@@ -350,6 +352,9 @@ impl AiClient {
     fn sanitize_request(&self, mut request: ChatRequest) -> ChatRequest {
         if request.max_tokens.is_none() {
             request.max_tokens = Some(self.default_max_tokens);
+        }
+        if request.temperature.is_none() {
+            request.temperature = self.default_temperature;
         }
 
         let mut session = self.privacy.new_session();
@@ -1059,6 +1064,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            default_temperature: None,
             request_timeout: Duration::from_secs(30),
             audit_enabled: true,
             provider_label: "dummy",
@@ -1283,6 +1289,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 16,
+            default_temperature: None,
             request_timeout: Duration::from_secs(30),
             audit_enabled: false,
             provider_label: "dummy",
@@ -1397,6 +1404,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            default_temperature: None,
             request_timeout: Duration::from_secs(30),
             audit_enabled: false,
             provider_label: "dummy",
@@ -1414,6 +1422,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            default_temperature: None,
             request_timeout: Duration::from_secs(30),
             audit_enabled: true,
             provider_label: "dummy",
@@ -1468,6 +1477,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            default_temperature: None,
             request_timeout: Duration::from_secs(30),
             audit_enabled: false,
             provider_label: "dummy",
@@ -1559,6 +1569,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            default_temperature: None,
             request_timeout: Duration::from_millis(10),
             audit_enabled: false,
             provider_label: "dummy",

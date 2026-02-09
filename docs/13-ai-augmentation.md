@@ -424,6 +424,28 @@ The LLM backend used by completion ranking (and other LLM-backed features) is co
 `ai.provider` and instantiated via `nova-ai::AiClient`. Optional in-memory caching for LLM calls is
 controlled by `ai.cache_enabled` (plus `ai.cache_max_entries` / `ai.cache_ttl_secs`).
 
+Provider settings (model selection, endpoint, and request defaults) live under `ai.provider`:
+
+```toml
+[ai.provider]
+# Backend implementation.
+kind = "ollama" # "ollama" | "open_ai_compatible" | "open_ai" | "anthropic" | "gemini" | "azure_open_ai" | "http"
+
+# Default model name.
+model = "llama3"
+
+# Provider base URL / endpoint.
+url = "http://localhost:11434"
+
+# Default max tokens for responses (used when callers don't provide `max_tokens`).
+max_tokens = 1024
+
+# Optional default sampling temperature applied when callers don't set `temperature`.
+# When unset (the default), Nova omits the `temperature` field and the provider's own default applies
+# (often `1.0`).
+temperature = 0.2
+```
+
 ### Server-side overrides (environment variables)
 
 Some editor integrations set environment variables when starting `nova-lsp` to provide **server-side

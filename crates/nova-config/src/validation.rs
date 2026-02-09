@@ -400,6 +400,15 @@ fn validate_ai(
         });
     }
 
+    if let Some(temp) = config.ai.provider.temperature {
+        if temp.is_nan() || temp < 0.0 {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.temperature".to_string(),
+                message: "must be >= 0".to_string(),
+            });
+        }
+    }
+
     if matches!(config.ai.provider.concurrency, Some(0)) {
         out.errors.push(ConfigValidationError::AiConcurrencyZero);
     }

@@ -1029,6 +1029,14 @@ pub struct AiProviderConfig {
     #[schemars(range(min = 1))]
     pub max_tokens: u32,
 
+    /// Optional default sampling temperature applied to chat requests.
+    ///
+    /// When unset, Nova omits the `temperature` field entirely and the provider's default is used
+    /// (often `1.0`).
+    #[serde(default)]
+    #[schemars(range(min = 0.0))]
+    pub temperature: Option<f32>,
+
     /// Per-request timeout.
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 1))]
@@ -1057,6 +1065,7 @@ impl fmt::Debug for AiProviderConfig {
             .field("azure_deployment", &self.azure_deployment)
             .field("azure_api_version", &self.azure_api_version)
             .field("max_tokens", &self.max_tokens)
+            .field("temperature", &self.temperature)
             .field("timeout_ms", &self.timeout_ms)
             .field("concurrency", &self.concurrency)
             .field("in_process_llama", &self.in_process_llama)
@@ -1152,6 +1161,7 @@ impl Default for AiProviderConfig {
             azure_deployment: None,
             azure_api_version: None,
             max_tokens: default_max_tokens(),
+            temperature: None,
             timeout_ms: default_timeout_ms(),
             concurrency: None,
             in_process_llama: None,
