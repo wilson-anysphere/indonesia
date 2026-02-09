@@ -65,6 +65,15 @@ fn shutdown(mut child: std::process::Child, mut stdin: std::process::ChildStdin,
     assert!(status.success());
 }
 
+fn code_review_request_omits_excluded_diff(req: &HttpMockRequest) -> bool {
+    const SECRET_MARKER: &str = "DO_NOT_LEAK_THIS_SECRET";
+    let Some(body) = req.body.as_deref() else {
+        return false;
+    };
+    let body = String::from_utf8_lossy(body);
+    body.contains("[diff omitted due to excluded_paths]") && !body.contains(SECRET_MARKER)
+}
+
 #[test]
 fn stdio_ai_code_review_custom_request_returns_string_and_emits_progress() {
     let _lock = support::stdio_server_lock();
@@ -165,6 +174,76 @@ local_only = true
     assert_eq!(chunks.join(""), output);
 
     mock.assert();
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_code_review_custom_request_omits_diff_for_excluded_paths() {
+    let _lock = support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let secrets_dir = root.join("src").join("secrets");
+    std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+    let secret_path = secrets_dir.join("Secret.java");
+    std::fs::write(&secret_path, "class Secret {}").expect("write Secret.java");
+    let secret_uri = support::file_uri_string(&secret_path);
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .matches(code_review_request_omits_excluded_diff);
+        then
+            .status(200)
+            .json_body(json!({ "completion": "mock review" }));
+    });
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["src/secrets/**"]
+"#,
+            endpoint = format!("{}/complete", server.base_url())
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/Secret.java b/Secret.java\n+// DO_NOT_LEAK_THIS_SECRET\n",
+                "uri": secret_uri,
+            }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.as_str(), Some("mock review"));
+
+    mock.assert_hits(1);
 
     shutdown(child, stdin, stdout);
 }

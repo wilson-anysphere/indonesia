@@ -1016,8 +1016,9 @@ Most AI endpoints require a configured AI provider (`ai.enabled=true` in `nova.t
 legacy `NOVA_AI_*` env vars like `NOVA_AI_PROVIDER`). When configuring AI via env vars, provider
 tuning env vars `NOVA_AI_MAX_TOKENS` / `NOVA_AI_CONCURRENCY` can override `ai.provider.max_tokens` /
 `ai.provider.concurrency` (values are clamped to >= 1). `NOVA_AI_EXCLUDED_PATHS` can be used to set
-`ai.privacy.excluded_paths` (comma/newline separated glob list). `nova/ai/status` is always
-available and returns a non-sensitive snapshot of the server’s effective AI state.
+`ai.privacy.excluded_paths` (comma/newline separated glob list). `nova/ai/status` does **not**
+require AI to be configured and returns a non-sensitive snapshot of the server’s effective AI state
+even when AI is disabled.
 
 Read-only AI endpoints (`nova/ai/explainError`, `nova/ai/codeReview`, `nova/ai/models`) return a
 result payload without applying edits. Patch-based endpoints (`nova/ai/generateMethodBody`,

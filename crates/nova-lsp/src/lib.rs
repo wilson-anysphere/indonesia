@@ -32,7 +32,6 @@
 //!   - `nova/ai/status`
 //!   - `nova/ai/generateMethodBody`
 //!   - `nova/ai/generateTests`
-//!   - `nova/ai/codeReview`
 //! - Build integration endpoints (classpath, build status, diagnostics)
 //!   - `nova/build/targetClasspath`
 //!   - `nova/build/fileClasspath`

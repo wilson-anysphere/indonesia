@@ -247,9 +247,72 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 13, "method": "nova/completion/more", "params": null }),
+        &json!({ "jsonrpc": "2.0", "id": 13, "method": "nova/ai/codeReview", "params": null }),
     );
-    let completion_more_resp = support::read_response_with_id(&mut stdout, 13);
+    let code_review_resp = support::read_response_with_id(&mut stdout, 13);
+    assert_eq!(
+        code_review_resp
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_i64()),
+        Some(-32603),
+        "expected safe-mode error, got: {code_review_resp:?}"
+    );
+    assert_eq!(
+        code_review_resp
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some(SAFE_MODE_MESSAGE)
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 14, "method": "nova/ai/models", "params": null }),
+    );
+    let models_resp = support::read_response_with_id(&mut stdout, 14);
+    assert_eq!(
+        models_resp
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_i64()),
+        Some(-32603),
+        "expected safe-mode error, got: {models_resp:?}"
+    );
+    assert_eq!(
+        models_resp
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some(SAFE_MODE_MESSAGE)
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 15, "method": "nova/ai/status", "params": null }),
+    );
+    let status_resp = support::read_response_with_id(&mut stdout, 15);
+    assert_eq!(
+        status_resp
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_i64()),
+        Some(-32603),
+        "expected safe-mode error, got: {status_resp:?}"
+    );
+    assert_eq!(
+        status_resp
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some(SAFE_MODE_MESSAGE)
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 16, "method": "nova/completion/more", "params": null }),
+    );
+    let completion_more_resp = support::read_response_with_id(&mut stdout, 16);
     assert_eq!(
         completion_more_resp
             .get("error")
@@ -268,9 +331,9 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 14, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 17, "method": "shutdown" }),
     );
-    let _shutdown_resp = support::read_response_with_id(&mut stdout, 14);
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 17);
     support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
