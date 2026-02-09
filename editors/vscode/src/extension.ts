@@ -780,9 +780,13 @@ export async function activate(context: vscode.ExtensionContext) {
            // Only poll `nova/completion/more` when the base completion list indicates more results
            // may arrive. When multi-token completions are disabled (server-side or by privacy
            // policy), Nova returns `isIncomplete = false`.
-          if (!Array.isArray(result) && typeof result?.isIncomplete === 'boolean' && result.isIncomplete === false) {
-            return result;
-          }
+           if (!Array.isArray(result) && typeof result?.isIncomplete === 'boolean' && result.isIncomplete === false) {
+             // Ensure we don't surface cached AI completions for an earlier context when the
+             // server explicitly reported the completion list as complete for this request.
+             lastAiCompletionContextKey = undefined;
+             lastAiCompletionPosition = undefined;
+             return result;
+           }
 
           if (aiItemsByContextKey.has(contextKey) || aiRequestsInFlight.has(contextKey)) {
             return result;
