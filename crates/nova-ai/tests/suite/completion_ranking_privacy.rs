@@ -115,6 +115,20 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
         .clone()
         .expect("expected prompt to be captured");
 
+    let candidates_marker = "Candidates:\n```";
+    let candidates_start = prompt
+        .find(candidates_marker)
+        .expect("expected candidates section marker in prompt");
+    let after_marker = &prompt[candidates_start + candidates_marker.len()..];
+    let fence_line_end = after_marker
+        .find('\n')
+        .expect("expected candidates code fence to end with newline");
+    let after_fence = &after_marker[fence_line_end + 1..];
+    let candidates_end = after_fence
+        .find("```")
+        .expect("expected closing candidates code fence");
+    let candidates_block = &after_fence[..candidates_end];
+
     // Raw identifiers should not be visible to the provider.
     for leaked in ["SecretService", "mySecretMethod", "mySecretField"] {
         assert!(
@@ -124,17 +138,29 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
     }
 
     // Numeric candidate IDs must remain intact so the local caller can map the model's output.
-    for id in ["0:", "1:"] {
+    for (idx, raw) in ["0:", "1:"].into_iter().enumerate() {
+        let line = candidates_block
+            .lines()
+            .find(|line| line.starts_with(raw))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected candidates block to contain a line starting with {raw:?} (idx={idx})\n{candidates_block}"
+                )
+            });
         assert!(
-            prompt.contains(id),
-            "expected provider prompt to contain numeric candidate id {id:?}\n{prompt}"
+            line.contains("id_"),
+            "expected candidate label to be anonymized (contain id_*) on line: {line:?}\n{candidates_block}"
+        );
+        assert!(
+            !line.contains('"'),
+            "candidate labels must not be quoted as JSON strings inside the code fence (would bypass identifier anonymization)\nline={line:?}\n{candidates_block}"
         );
     }
 
     // Ensure we actually anonymized (rather than dropping the candidate list entirely).
     assert!(
-        prompt.contains("id_0"),
-        "expected anonymized placeholder to appear in provider prompt\n{prompt}"
+        candidates_block.contains("id_"),
+        "expected anonymized placeholder to appear in candidates block\n{candidates_block}"
     );
 
     handle.abort();
