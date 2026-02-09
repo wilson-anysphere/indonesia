@@ -35,6 +35,7 @@ async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() 
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.provider.kind = AiProviderKind::AzureOpenAi;
     config.provider.url = Url::parse(&format!("{}/", server.base_url())).unwrap();
     config.provider.azure_deployment = Some("my-deployment".to_string());
@@ -100,6 +101,7 @@ async fn azure_openai_provider_embeddings_redacts_absolute_paths_in_cloud_mode()
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.provider.kind = AiProviderKind::AzureOpenAi;
     config.provider.url = Url::parse(&format!("{}/", server.base_url())).unwrap();
     config.provider.azure_deployment = Some("my-deployment".to_string());
@@ -154,6 +156,7 @@ async fn azure_openai_provider_embeddings_respects_embeddings_model_override_as_
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.embeddings.model = Some("embed-deployment".to_string());
     config.provider.kind = AiProviderKind::AzureOpenAi;
     config.provider.url = Url::parse(&format!("{}/", server.base_url())).unwrap();

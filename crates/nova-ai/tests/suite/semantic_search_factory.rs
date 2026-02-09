@@ -474,6 +474,76 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
 
 #[cfg(feature = "embeddings")]
 #[test]
+fn semantic_search_from_config_provider_backend_batches_ollama_requests_for_multi_doc_java_files() {
+    let server = MockServer::start();
+
+    let embed_mock = server.mock(|when, then| {
+        when.method(POST).path("/api/embed");
+        then.status(200).json_body(json!({
+            "embeddings": [
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ]
+        }));
+    });
+
+    let legacy_mock = server.mock(|when, then| {
+        when.method(POST).path("/api/embeddings");
+        then.status(200).json_body(json!({
+            "embedding": [1.0, 0.0, 0.0]
+        }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            package com.example;
+
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+
+                public String goodbye() {
+                    return "goodbye";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let cfg = AiConfig {
+        enabled: true,
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::Ollama,
+            url: Url::parse(&server.base_url()).unwrap(),
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("nomic-embed-text".to_string()),
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_project(&db);
+
+    // Indexing a Java file yields multiple extracted docs (type + methods), so the provider
+    // embedder should use the `/api/embed` batch endpoint exactly once.
+    embed_mock.assert_hits(1);
+    legacy_mock.assert_hits(0);
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
 fn semantic_search_from_config_embeddings_supports_incremental_updates() {
     let cfg = AiConfig {
         enabled: true,

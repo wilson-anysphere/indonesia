@@ -934,7 +934,7 @@ mod embeddings {
             let mut session = self.privacy.new_session();
             let sanitized = inputs
                 .iter()
-                .map(|input| self.sanitize_text(&mut session, input))
+                .map(|text| self.sanitize_text(&mut session, text))
                 .collect::<Vec<_>>();
 
             let mut out = vec![None::<Vec<f32>>; inputs.len()];

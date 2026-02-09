@@ -9,7 +9,7 @@ use url::Url;
 
 #[test]
 fn provider_embedder_can_be_used_from_sync_context_without_tokio_runtime() {
-    // This test is explicitly *not* a `#[tokio::test]` because semantic search is synchronous.
+    // This test is explicitly *not* a `#[tokio::test(flavor = "current_thread")]` because semantic search is synchronous.
     // If the embedder implementation incorrectly depends on `tokio::runtime::Handle::current()`,
     // this assertion (and the calls below) will fail.
     assert!(

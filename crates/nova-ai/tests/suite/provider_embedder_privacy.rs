@@ -90,6 +90,7 @@ async fn provider_embeddings_redacts_privacy_patterns_before_sending_to_http_bac
     cfg.enabled = true;
     cfg.embeddings.enabled = true;
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = std::path::PathBuf::new();
     cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = Url::parse(&format!("http://{addr}")).unwrap();
     cfg.provider.model = "test-embedding-model".to_string();

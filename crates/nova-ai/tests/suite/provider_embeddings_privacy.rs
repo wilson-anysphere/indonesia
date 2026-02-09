@@ -99,6 +99,7 @@ async fn provider_embeddings_client_remote_url_falls_back_to_hash_in_local_only_
     cfg.enabled = true;
     cfg.embeddings.enabled = true;
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = std::path::PathBuf::new();
     cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = Url::parse("https://api.openai.com/v1").unwrap();
     cfg.provider.model = "text-embedding-3-small".to_string();
@@ -135,6 +136,7 @@ async fn provider_embeddings_client_loopback_url_is_allowed_in_local_only_mode()
     cfg.enabled = true;
     cfg.embeddings.enabled = true;
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = std::path::PathBuf::new();
     cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = Url::parse(&format!("http://localhost:{}/v1", server.port())).unwrap();
     cfg.provider.model = "test-embed-model".to_string();
@@ -339,6 +341,7 @@ async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_openai_
     cfg.enabled = true;
     cfg.embeddings.enabled = true;
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = std::path::PathBuf::new();
     cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = Url::parse(&server.base_url()).unwrap();
     cfg.provider.model = "test-embed-model".to_string();
@@ -450,6 +453,7 @@ async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_ollama(
     cfg.enabled = true;
     cfg.embeddings.enabled = true;
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = std::path::PathBuf::new();
     cfg.provider.kind = AiProviderKind::Ollama;
     cfg.provider.url = Url::parse(&server.base_url()).unwrap();
     cfg.provider.model = "nomic-embed-text".to_string();

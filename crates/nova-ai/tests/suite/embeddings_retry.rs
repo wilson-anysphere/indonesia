@@ -24,10 +24,8 @@ fn openai_compatible_config(server: &MockServer, model_dir: std::path::PathBuf) 
 #[tokio::test(flavor = "current_thread")]
 async fn embeddings_retries_on_http_429() {
     let server = MockServer::start();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let model_dir = dir.path().join("models").join("embeddings");
 
-    let cfg = openai_compatible_config(&server, model_dir);
+    let cfg = openai_compatible_config(&server, std::path::PathBuf::new());
     let client = embeddings_client_from_config(&cfg).expect("client");
 
     let mut mock_429 = server.mock(|when, then| {
