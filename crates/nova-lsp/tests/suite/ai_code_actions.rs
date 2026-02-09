@@ -5425,6 +5425,136 @@ local_only = true
 }
 
 #[test]
+fn stdio_server_execute_command_ai_code_review_returns_string_and_progress() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "LGTM" }));
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let file_path = root.join("Main.java");
+    std::fs::write(&file_path, "class Main {}\n").expect("write Main.java");
+    let file_uri = uri_for_path(&file_path);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure env vars don't override the config file.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let progress_token = json!("progress-token");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": nova_ide::COMMAND_CODE_REVIEW,
+                "arguments": [{
+                    "diff": "diff --git a/Main.java b/Main.java\nindex 0000000..1111111 100644\n--- a/Main.java\n+++ b/Main.java\n@@\n-class Main {}\n+class Main { void foo() {} }\n",
+                    "uri": file_uri,
+                }],
+                "workDoneToken": progress_token.clone()
+            }
+        }),
+    );
+
+    let (notifications, exec_resp) = drain_notifications_until_id(&mut stdout, 2);
+
+    assert!(
+        exec_resp.get("error").is_none(),
+        "expected executeCommand success, got: {exec_resp:#?}"
+    );
+    assert!(
+        exec_resp.get("result").and_then(|v| v.as_str()).is_some(),
+        "expected string result, got: {exec_resp:#?}"
+    );
+
+    let progress_kinds: Vec<String> = notifications
+        .iter()
+        .filter(|msg| msg.get("method").and_then(|m| m.as_str()) == Some("$/progress"))
+        .filter(|msg| msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token))
+        .filter_map(|msg| {
+            msg.get("params")
+                .and_then(|p| p.get("value"))
+                .and_then(|v| v.get("kind"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    assert!(progress_kinds.contains(&"begin".to_string()));
+    assert!(progress_kinds.contains(&"end".to_string()));
+
+    ai_server.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_execute_command_generate_method_body_without_root_uri_applies_workspace_edit() {
     let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");

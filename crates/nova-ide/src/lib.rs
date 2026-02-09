@@ -38,10 +38,11 @@ mod spring_config_intel;
 mod spring_di;
 
 pub use ai::{
-    explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
-    GenerateMethodBodyArgs, GenerateTestsArgs, LspPosition, LspRange, NovaCodeAction, NovaCommand,
-    CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
-    COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
+    explain_error_action, generate_method_body_action, generate_tests_action, CodeReviewArgs,
+    ExplainErrorArgs, GenerateMethodBodyArgs, GenerateTestsArgs, LspPosition, LspRange,
+    NovaCodeAction, NovaCommand, CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS,
+    CODE_ACTION_KIND_EXPLAIN, COMMAND_CODE_REVIEW, COMMAND_EXPLAIN_ERROR,
+    COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
 pub use completion::filter_and_rank_completions;
 pub use decompile::{

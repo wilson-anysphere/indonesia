@@ -4,7 +4,8 @@ use crate::stdio_paths::path_from_uri;
 use lsp_server::Connection;
 use nova_ide::{
     CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
-    COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
+    COMMAND_CODE_REVIEW, COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY,
+    COMMAND_GENERATE_TESTS,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -91,6 +92,7 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
         nova_lsp::AI_EXPLAIN_ERROR_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
+        nova_lsp::AI_CODE_REVIEW_METHOD,
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
         nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD,
         // Extensions
@@ -219,6 +221,7 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
                     COMMAND_EXPLAIN_ERROR,
                     COMMAND_GENERATE_METHOD_BODY,
                     COMMAND_GENERATE_TESTS,
+                    COMMAND_CODE_REVIEW,
                     "nova.runTest",
                     "nova.debugTest",
                     "nova.runMain",

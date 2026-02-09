@@ -5,7 +5,7 @@ use crate::ServerState;
 
 use lsp_server::RequestId;
 use nova_index::Index;
-use nova_ide::{ExplainErrorArgs, GenerateMethodBodyArgs, GenerateTestsArgs};
+use nova_ide::{CodeReviewArgs, ExplainErrorArgs, GenerateMethodBodyArgs, GenerateTestsArgs};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -172,6 +172,16 @@ pub(super) fn handle_execute_command(
                 cancel.clone(),
             )
         }
+        nova_ide::COMMAND_CODE_REVIEW => {
+            let args: CodeReviewArgs = parse_first_arg(params.arguments)?;
+            crate::stdio_ai::run_ai_code_review(
+                args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
+        }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
             if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::SAFE_DELETE_METHOD) {
@@ -244,4 +254,3 @@ fn parse_first_arg<T: serde::de::DeserializeOwned>(
     let first = args.remove(0);
     serde_json::from_value(first).map_err(|e| (-32602, e.to_string()))
 }
-

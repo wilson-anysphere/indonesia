@@ -13,6 +13,7 @@ pub const CODE_ACTION_KIND_AI_TESTS: &str = "nova.ai.tests";
 pub const COMMAND_EXPLAIN_ERROR: &str = "nova.ai.explainError";
 pub const COMMAND_GENERATE_METHOD_BODY: &str = "nova.ai.generateMethodBody";
 pub const COMMAND_GENERATE_TESTS: &str = "nova.ai.generateTests";
+pub const COMMAND_CODE_REVIEW: &str = "nova.ai.codeReview";
 
 /// A protocol-agnostic representation of an editor code action.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +91,16 @@ pub struct GenerateTestsArgs {
     /// Range covering the selected target snippet (best-effort).
     #[serde(default)]
     pub range: Option<LspRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeReviewArgs {
+    /// Unified diff (or similar) to be reviewed by the AI model.
+    pub diff: String,
+
+    /// URI of the document associated with the diff (if available).
+    #[serde(default)]
+    pub uri: Option<String>,
 }
 
 pub fn explain_error_action(args: ExplainErrorArgs) -> NovaCodeAction {
