@@ -105,7 +105,7 @@ fn provider_embedder_chunks_openai_compatible_batches_when_configured() {
     let query = server.mock(|when, then| {
         when.method(POST).path("/v1/embeddings").json_body(json!({
             "model": "text-embedding-3-small",
-            "input": "hello world",
+            "input": ["hello world"],
         }));
         then.status(200).json_body(json!({
             "data": [{ "embedding": [1.0, 0.0, 0.0] }]

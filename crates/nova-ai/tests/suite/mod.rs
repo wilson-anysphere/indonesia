@@ -22,6 +22,7 @@ mod ollama_embedder;
 mod ollama_provider_embeddings;
 mod patch_engine;
 mod patch_safety;
+mod provider_embeddings;
 mod provider_embeddings_azure;
 mod provider_embeddings_ollama;
 mod project_database_adapters;

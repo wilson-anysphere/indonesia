@@ -619,16 +619,28 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
         if let Some(disk) = self.disk_cache.clone() {
             let disk_keys = miss_disk_keys.clone();
             let expected = disk_keys.len();
-            let disk_hits = match tokio::task::spawn_blocking(move || {
-                disk_keys
+            let spawn_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+                let disk = disk.clone();
+                let disk_keys = disk_keys.clone();
+                move || {
+                    tokio::task::spawn_blocking(move || {
+                        disk_keys
+                            .into_iter()
+                            .map(|key| disk.load(key).ok().flatten())
+                            .collect::<Vec<_>>()
+                    })
+                }
+            }));
+
+            let disk_hits = match spawn_result {
+                Ok(handle) => match handle.await {
+                    Ok(hits) if hits.len() == expected => hits,
+                    _ => vec![None; expected],
+                },
+                Err(_) => disk_keys
                     .into_iter()
                     .map(|key| disk.load(key).ok().flatten())
-                    .collect::<Vec<_>>()
-            })
-            .await
-            {
-                Ok(hits) if hits.len() == expected => hits,
-                _ => vec![None; expected],
+                    .collect::<Vec<_>>(),
             };
 
             let mut still_indices = Vec::new();
@@ -691,12 +703,29 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
             }
 
             if let Some(disk) = self.disk_cache.clone() {
-                let _ = tokio::task::spawn_blocking(move || {
-                    for (key, vec) in disk_inserts {
-                        let _ = disk.store(key, &vec);
+                let disk_inserts = Arc::new(disk_inserts);
+                let spawn_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+                    let disk = disk.clone();
+                    let disk_inserts = disk_inserts.clone();
+                    move || {
+                        tokio::task::spawn_blocking(move || {
+                            for (key, vec) in disk_inserts.iter() {
+                                let _ = disk.store(*key, vec);
+                            }
+                        })
                     }
-                })
-                .await;
+                }));
+
+                match spawn_result {
+                    Ok(handle) => {
+                        let _ = handle.await;
+                    }
+                    Err(_) => {
+                        for (key, vec) in disk_inserts.iter() {
+                            let _ = disk.store(*key, vec);
+                        }
+                    }
+                }
             }
         }
 

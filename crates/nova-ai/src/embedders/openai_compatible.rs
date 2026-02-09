@@ -52,10 +52,7 @@ impl OpenAiCompatibleEmbedder {
         })
     }
 
-    fn authorize(
-        &self,
-        request: reqwest::blocking::RequestBuilder,
-    ) -> reqwest::blocking::RequestBuilder {
+    fn authorize(&self, request: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
         match &self.api_key {
             Some(api_key) => request.bearer_auth(api_key),
             None => request,
@@ -74,39 +71,19 @@ impl OpenAiCompatibleEmbedder {
         if base_path.ends_with("/v1") {
             Ok(base.join(path.trim_start_matches('/'))?)
         } else {
-            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))? )
+            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))?)
         }
     }
 
-    fn embed_once(&self, text: &str) -> Result<Vec<f32>, AiError> {
-        let url = self.endpoint("/embeddings")?;
-        let body = OpenAiEmbeddingRequest {
-            model: &self.model,
-            input: text,
-        };
-
-        let response = self
-            .authorize(self.client.post(url))
-            .json(&body)
-            // Redundant with the client builder timeout, but keep it explicit in case
-            // reqwest semantics change.
-            .timeout(self.timeout)
-            .send()?
-            .error_for_status()?;
-
-        let parsed: OpenAiEmbeddingResponse = response.json()?;
-        let embedding = parsed
-            .data
-            .into_iter()
-            .next()
-            .map(|item| item.embedding)
-            .filter(|embedding| !embedding.is_empty())
-            .ok_or_else(|| AiError::UnexpectedResponse("missing data[0].embedding".into()))?;
-
-        Ok(embedding)
+    fn map_reqwest_error(err: reqwest::Error) -> AiError {
+        if err.is_timeout() {
+            AiError::Timeout
+        } else {
+            AiError::Http(err)
+        }
     }
 
-    fn embed_batch_impl(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+    fn embed_request(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
             return Ok(Vec::new());
         }
@@ -123,17 +100,25 @@ impl OpenAiCompatibleEmbedder {
             // Redundant with the client builder timeout, but keep it explicit in case
             // reqwest semantics change.
             .timeout(self.timeout)
-            .send()?
-            .error_for_status()?;
+            .send()
+            .map_err(Self::map_reqwest_error)?
+            .error_for_status()
+            .map_err(Self::map_reqwest_error)?;
 
-        let parsed: OpenAiEmbeddingResponse = response.json()?;
+        let bytes = response.bytes().map_err(Self::map_reqwest_error)?;
+        let parsed: OpenAiEmbeddingResponse = serde_json::from_slice(&bytes)?;
         parse_openai_embeddings(parsed, input.len())
     }
 }
 
 impl Embedder for OpenAiCompatibleEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
-        self.embed_once(text)
+        let input = [text.to_string()];
+        let mut embeddings = self.embed_request(&input)?;
+        embeddings
+            .pop()
+            .filter(|embedding| !embedding.is_empty())
+            .ok_or_else(|| AiError::UnexpectedResponse("missing data[0].embedding".into()))
     }
 
     fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
@@ -144,16 +129,10 @@ impl Embedder for OpenAiCompatibleEmbedder {
         let batch_size = self.batch_size.max(1);
         let mut out = Vec::with_capacity(inputs.len());
         for chunk in inputs.chunks(batch_size) {
-            out.extend(self.embed_batch_impl(chunk)?);
+            out.extend(self.embed_request(chunk)?);
         }
         Ok(out)
     }
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiEmbeddingRequest<'a> {
-    model: &'a str,
-    input: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,12 +176,27 @@ fn parse_openai_embeddings(
         out[idx] = Some(item.embedding);
     }
 
-    out.into_iter()
-        .enumerate()
-        .map(|(idx, item)| {
-            item.filter(|v| !v.is_empty()).ok_or_else(|| {
-                AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
-            })
-        })
-        .collect()
+    let mut dims: Option<usize> = None;
+    let mut embeddings = Vec::with_capacity(expected);
+
+    for (idx, item) in out.into_iter().enumerate() {
+        let embedding = item.filter(|v| !v.is_empty()).ok_or_else(|| {
+            AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
+        })?;
+
+        match dims {
+            None => dims = Some(embedding.len()),
+            Some(expected_dims) if embedding.len() != expected_dims => {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "inconsistent embedding dimensions: expected {expected_dims}, got {} for index {idx}",
+                    embedding.len()
+                )));
+            }
+            _ => {}
+        }
+
+        embeddings.push(embedding);
+    }
+
+    Ok(embeddings)
 }

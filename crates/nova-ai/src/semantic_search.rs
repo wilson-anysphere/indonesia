@@ -665,23 +665,11 @@ mod embeddings {
         }
 
         fn embed_openai_compatible(&self, text: &str) -> Result<Vec<f32>, AiError> {
-            let url = openai_compatible_endpoint(&self.base_url, "/embeddings")?;
-            let body = OpenAiEmbeddingRequest {
-                model: &self.model,
-                input: text,
-            };
-
-            let mut request = self.client.post(url).json(&body);
-            if let Some(key) = self.api_key.as_deref() {
-                request = request.bearer_auth(key);
-            }
-
-            let response = request.send()?.error_for_status()?;
-            let parsed: OpenAiEmbeddingResponse = response.json()?;
-            let first = parsed.data.into_iter().next().ok_or_else(|| {
+            let input = [text.to_string()];
+            let mut batch = self.embed_openai_compatible_batch(&input)?;
+            batch.pop().ok_or_else(|| {
                 AiError::UnexpectedResponse("missing embeddings data[0].embedding".into())
-            })?;
-            Ok(first.embedding)
+            })
         }
 
         fn embed_openai_compatible_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
@@ -1215,12 +1203,6 @@ mod embeddings {
     }
 
     #[derive(Serialize)]
-    struct OpenAiEmbeddingRequest<'a> {
-        model: &'a str,
-        input: &'a str,
-    }
-
-    #[derive(Serialize)]
     struct OpenAiEmbeddingBatchRequest<'a> {
         model: &'a str,
         input: &'a [String],
@@ -1267,14 +1249,29 @@ mod embeddings {
             out[idx] = Some(item.embedding);
         }
 
-        out.into_iter()
-            .enumerate()
-            .map(|(idx, item)| {
-                item.filter(|v| !v.is_empty()).ok_or_else(|| {
-                    AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
-                })
-            })
-            .collect()
+        let mut dims: Option<usize> = None;
+        let mut embeddings = Vec::with_capacity(expected);
+
+        for (idx, item) in out.into_iter().enumerate() {
+            let embedding = item.filter(|v| !v.is_empty()).ok_or_else(|| {
+                AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
+            })?;
+
+            match dims {
+                None => dims = Some(embedding.len()),
+                Some(expected_dims) if embedding.len() != expected_dims => {
+                    return Err(AiError::UnexpectedResponse(format!(
+                        "inconsistent embedding dimensions: expected {expected_dims}, got {} for index {idx}",
+                        embedding.len()
+                    )));
+                }
+                _ => {}
+            }
+
+            embeddings.push(embedding);
+        }
+
+        Ok(embeddings)
     }
 
     #[derive(Serialize)]

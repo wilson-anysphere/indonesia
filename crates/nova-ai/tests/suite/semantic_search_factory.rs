@@ -253,15 +253,26 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
 #[test]
 fn semantic_search_from_config_provider_backend_supports_openai_compatible_embeddings() {
     let server = MockServer::start();
-    let mock = server.mock(|when, then| {
+    let index_mock = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/embeddings")
-            .body_contains("\"model\":\"text-embedding-3-small\"");
+            .body_contains("\"model\":\"text-embedding-3-small\"")
+            .body_contains("path: src/Hello.java");
         then.status(200).json_body(json!({
             "data": [
                 { "index": 0, "embedding": [1.0, 0.0, 0.0] },
                 { "index": 1, "embedding": [1.0, 0.0, 0.0] }
             ]
+        }));
+    });
+
+    let query_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").json_body(json!({
+            "model": "text-embedding-3-small",
+            "input": ["hello world"],
+        }));
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
         }));
     });
 
@@ -304,7 +315,8 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
     assert!(!results.is_empty());
     assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
 
-    mock.assert_hits(2);
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(1);
 }
 
 #[cfg(feature = "embeddings")]
@@ -312,14 +324,29 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
 fn semantic_search_from_config_provider_backend_batches_openai_compatible_requests_for_multi_doc_files(
 ) {
     let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/embeddings");
+    let index_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            // Distinguish indexing requests (multi-doc embed texts) from the query embedding request.
+            .body_contains("goodbye");
         then.status(200).json_body(json!({
             "data": [
                 { "index": 0, "embedding": [1.0, 0.0, 0.0] },
                 { "index": 1, "embedding": [1.0, 0.0, 0.0] },
                 { "index": 2, "embedding": [1.0, 0.0, 0.0] },
             ]
+        }));
+    });
+
+    // The query embedding request is a single-input batch. Use a dedicated mock so the response
+    // size matches the request (the embedder rejects extra embeddings in the response).
+    let query_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").json_body(json!({
+            "model": "text-embedding-3-small",
+            "input": ["hello world"],
+        }));
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
         }));
     });
 
@@ -367,7 +394,8 @@ fn semantic_search_from_config_provider_backend_batches_openai_compatible_reques
     assert!(!results.is_empty());
 
     // One request for indexing (batched) + one request for query embedding.
-    mock.assert_hits(2);
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(1);
 }
 
 #[cfg(feature = "embeddings")]

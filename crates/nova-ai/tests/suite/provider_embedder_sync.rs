@@ -21,7 +21,7 @@ fn provider_embedder_can_be_used_from_sync_context_without_tokio_runtime() {
     let mock = server.mock(|when, then| {
         when.method(POST).path("/v1/embeddings");
         then.status(200).json_body(json!({
-            "data": [{"embedding": [1.0, 0.0, 0.0]}],
+            "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}],
         }));
     });
 
@@ -49,14 +49,26 @@ fn provider_embedder_can_be_used_from_sync_context_without_tokio_runtime() {
 #[test]
 fn provider_embedder_batches_embedding_requests_when_indexing_multiple_docs() {
     let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/embeddings");
+    let index_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains("goodbye");
         then.status(200).json_body(json!({
             "data": [
                 { "index": 0, "embedding": [1.0, 0.0, 0.0] },
                 { "index": 1, "embedding": [1.0, 0.0, 0.0] },
-                { "index": 2, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 2, "embedding": [1.0, 0.0, 0.0] }
             ],
+        }));
+    });
+
+    let query_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").json_body(json!({
+            "model": "test-embedding-model",
+            "input": ["hello world"],
+        }));
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
         }));
     });
 
@@ -92,12 +104,14 @@ fn provider_embedder_batches_embedding_requests_when_indexing_multiple_docs() {
         .to_string(),
     );
 
-    mock.assert_hits(1);
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(0);
 
     let results = search.search("hello world");
     assert!(!results.is_empty(), "expected non-empty results");
     assert_eq!(results[0].path, path);
 
     // One batched embed call for indexing + one for searching.
-    mock.assert_hits(2);
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(1);
 }
