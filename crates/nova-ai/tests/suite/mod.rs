@@ -10,6 +10,8 @@ mod embedding_disk_cache;
 mod embedding_semantic_search;
 mod explain_error_providers;
 mod in_process_llama_smoke;
+#[cfg(all(feature = "embeddings", feature = "embeddings-local"))]
+mod local_embedder_integration;
 mod llm_cache;
 mod local_backends;
 mod patch_engine;
