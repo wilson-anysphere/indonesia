@@ -86,6 +86,32 @@ Key details:
 - **Prompt/response format:** candidates are assigned **numeric IDs** (`0..N-1`). The prompt
   instructs the model to return **only** a JSON array of those IDs in preferred order, e.g.
   `[3, 0, 2, 1]`.
+
+  Prompt outline (simplified):
+
+  ````text
+  You are a Java code completion ranking engine.
+  Prompt version: nova_completion_ranking_v1
+
+  Task: rank the candidate completion items from best to worst.
+  Return ONLY a JSON array of candidate IDs (integers) in best-to-worst order.
+
+  User prefix:
+  ```java
+  <prefix>
+  ```
+
+  Current line:
+  ```java
+  <line text>
+  ```
+
+  Candidates:
+  ```java
+  0: Method println
+  1: Method print
+  ```
+  ````
 - **Privacy / excluded paths:** `ai.privacy.excluded_paths` is enforced when building ranking
   prompts—code from excluded files is not sent. If the focal file is excluded, ranking is skipped
   (baseline order).
