@@ -127,6 +127,10 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             !user_prompt.contains("[diff omitted due to excluded_paths]"),
             "{user_prompt}"
         );
+        assert!(
+            !user_prompt.contains("[diff truncated: omitted "),
+            "{user_prompt}"
+        );
 
         Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
     };
