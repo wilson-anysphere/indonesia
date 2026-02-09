@@ -263,6 +263,9 @@ pub async fn generate_patch(
 ) -> Result<CodeGenerationResult, CodeGenerationError> {
     enforce_code_edit_policy(privacy)?;
     enforce_no_privacy_excluded_paths_in_workspace(workspace, privacy)?;
+    if let Some(edit_range_safety) = &config.edit_range_safety {
+        validate_edit_range_safety_config(workspace, edit_range_safety)?;
+    }
 
     let mut attempt = 0usize;
     let mut feedback: Option<ErrorFeedback> = None;
@@ -625,6 +628,46 @@ fn enforce_edit_range_safety_pre_format(
         .map_err(|message| format!("{message} (file '{}')", safety.file))
 }
 
+fn validate_edit_range_safety_config(
+    workspace: &VirtualWorkspace,
+    safety: &EditRangeSafetyConfig,
+) -> Result<(), CodeGenerationError> {
+    let before_text = workspace.get(&safety.file).ok_or_else(|| {
+        CodeGenerationError::Apply(PatchApplyError::MissingFile {
+            file: safety.file.clone(),
+        })
+    })?;
+
+    let index = LineIndex::new(before_text);
+    let Some(start) = index.offset_of_position(
+        before_text,
+        CorePosition::new(safety.allowed_range.start.line, safety.allowed_range.start.character),
+    ) else {
+        return Err(CodeGenerationError::InvalidInsertRange {
+            file: safety.file.clone(),
+            range: fmt_patch_range(safety.allowed_range),
+        });
+    };
+    let Some(end) = index.offset_of_position(
+        before_text,
+        CorePosition::new(safety.allowed_range.end.line, safety.allowed_range.end.character),
+    ) else {
+        return Err(CodeGenerationError::InvalidInsertRange {
+            file: safety.file.clone(),
+            range: fmt_patch_range(safety.allowed_range),
+        });
+    };
+
+    if start > end {
+        return Err(CodeGenerationError::InvalidInsertRange {
+            file: safety.file.clone(),
+            range: fmt_patch_range(safety.allowed_range),
+        });
+    }
+
+    Ok(())
+}
+
 fn enforce_text_unchanged_outside_range(
     before: &str,
     after: &str,
@@ -662,11 +705,19 @@ fn enforce_text_unchanged_outside_range(
     };
 
     if changed_start < allowed_start || changed_end > allowed_end {
+        let changed_start_pos = index.position(
+            before,
+            TextSize::from((changed_start.min(u32::MAX as usize)) as u32),
+        );
+        let changed_end_pos =
+            index.position(before, TextSize::from((changed_end.min(u32::MAX as usize)) as u32));
         return Err(format!(
-            "patch modified text outside the allowed range {} (changed span {}..{} bytes)",
+            "patch modified text outside the allowed range {} (changed range {}:{}-{}:{})",
             fmt_patch_range(allowed_range),
-            changed_start,
-            changed_end
+            changed_start_pos.line + 1,
+            changed_start_pos.character + 1,
+            changed_end_pos.line + 1,
+            changed_end_pos.character + 1,
         ));
     }
 
