@@ -774,3 +774,182 @@ fn ai_review_errors_when_diff_is_empty() {
         "expected empty diff message, got:\n{stderr}"
     );
 }
+
+#[test]
+fn ai_review_git_errors_when_diff_is_empty() {
+    if ProcessCommand::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    // Init a clean git repo with no changes.
+    let src = temp.child("README.md");
+    src.write_str("hello\n").unwrap();
+
+    let git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(temp.path())
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review", "--git"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review --git (empty diff)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("git diff") && stderr.contains("empty diff"),
+        "expected git empty diff message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
+
+#[test]
+fn ai_review_git_staged_errors_when_diff_is_empty() {
+    if ProcessCommand::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    let src = temp.child("README.md");
+    src.write_str("hello\n").unwrap();
+
+    let git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(temp.path())
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review", "--git", "--staged"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review --git --staged (empty diff)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("git diff --staged") && stderr.contains("empty diff"),
+        "expected git staged empty diff message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
+
+#[test]
+fn ai_review_diff_file_errors_when_file_is_empty() {
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+    let diff_file = temp.child("empty.diff");
+    diff_file.write_str("").unwrap();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review", "--diff-file"])
+        .arg(diff_file.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review --diff-file (empty)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("diff file") && stderr.contains("was empty"),
+        "expected diff-file empty message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
