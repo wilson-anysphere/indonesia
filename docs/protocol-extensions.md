@@ -1174,6 +1174,8 @@ Output format (model response):
     available in the diff; otherwise grouped by category (`### Correctness`, `### Performance`,
     `### Security`, `### Tests`, `### Maintainability`).
   - `## Tests` — missing tests / risky areas and specific test cases to add.
+- The model should always include these headings. If a section has no content, it should still be
+  present and contain `- None` (for example: no issues, no additional tests needed).
 - Each issue should include:
   - severity label (`BLOCKER` / `MAJOR` / `MINOR`)
   - **Where:** file + function/method (or diff hunk)
@@ -1181,6 +1183,7 @@ Output format (model response):
   - **Suggestion:** a concrete, code-referencing change when possible (quote lines or show a small snippet)
 - If there are no issues, the model should still include the `## Issues & Suggestions` heading and
   write `- None`.
+- Issues should be listed in descending severity (`BLOCKER` → `MAJOR` → `MINOR`) when possible.
 - Severity guidance:
   - `BLOCKER`: must fix before merge (likely bug/security issue/crash/data loss)
   - `MAJOR`: important to address soon (likely correctness/perf/maintainability risk)

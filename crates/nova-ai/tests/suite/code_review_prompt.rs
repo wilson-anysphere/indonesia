@@ -10,6 +10,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+fn extract_diff_block(prompt: &str) -> Option<&str> {
+    let (_, rest) = prompt.split_once("```diff\n")?;
+    let (diff, _) = rest.split_once("\n```")?;
+    Some(diff)
+}
+
 fn spawn_server<F, Fut>(handler: F) -> (SocketAddr, JoinHandle<()>)
 where
     F: Fn(Request<Body>) -> Fut + Clone + Send + 'static,
@@ -80,6 +86,18 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             "{user_prompt}"
         );
         assert!(user_prompt.contains("## Tests"), "{user_prompt}");
+
+        // The diff should be included in a fenced ```diff block.
+        assert!(user_prompt.contains("```diff"), "{user_prompt}");
+        let diff_part = extract_diff_block(user_prompt).expect("diff fenced block present");
+        assert!(
+            diff_part.contains("diff --git a/src/Main.java b/src/Main.java"),
+            "expected diff header to be present; got:\n{diff_part}"
+        );
+        assert!(
+            diff_part.contains("+class Main { int x = 1; }"),
+            "expected diff hunk contents to be present; got:\n{diff_part}"
+        );
 
         // Grouping instructions
         assert!(user_prompt.contains("### path/to/File.java"), "{user_prompt}");
