@@ -602,6 +602,10 @@ embeddings) point to **localhost/loopback** (for example `http://localhost:11434
 Non-local endpoints are rejected in local-only mode (and provider embeddings will fall back to
 `backend="hash"`).
 
+Additionally, `ai.privacy.excluded_paths` is enforced for semantic search indexing: excluded files
+are never embedded or returned as related-code context, which helps keep sensitive code off any
+provider-backed embeddings endpoint.
+
 ### Server-side overrides (environment variables)
 
 Some editor integrations set environment variables when starting `nova-lsp` to provide **server-side
