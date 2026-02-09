@@ -863,7 +863,10 @@ pub enum AiEmbeddingsBackend {
     Hash,
     /// Provider-backed embeddings via the configured AI provider (`ai.provider.*`).
     Provider,
-    /// Future local in-process embedding models (placeholder).
+    /// In-process local neural embedding models.
+    ///
+    /// This backend is supported when `nova-ai` is built with an appropriate
+    /// local-embeddings feature (e.g. `embeddings-local`).
     Local,
 }
 

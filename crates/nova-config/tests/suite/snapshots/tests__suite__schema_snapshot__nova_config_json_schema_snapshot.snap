@@ -1,5 +1,6 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
+assertion_line: 4
 expression: schema
 ---
 {
@@ -975,7 +976,7 @@ expression: schema
           ]
         },
         {
-          "description": "Future local in-process embedding models (placeholder).",
+          "description": "In-process local neural embedding models.\n\nThis backend is supported when `nova-ai` is built with an appropriate local-embeddings feature (e.g. `embeddings-local`).",
           "type": "string",
           "enum": [
             "local"
