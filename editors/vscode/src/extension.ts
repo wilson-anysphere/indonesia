@@ -493,7 +493,59 @@ export async function activate(context: vscode.ExtensionContext) {
       return undefined;
     }
 
-    const result = await sendNovaRequest<unknown>('workspace/executeCommand', { command: commandId, arguments: args });
+    let result: unknown;
+    try {
+      result = await sendNovaRequest<unknown>('workspace/executeCommand', { command: commandId, arguments: args });
+    } catch (err) {
+      if (isSafeModeError(err)) {
+        // Safe-mode UI is updated by `sendNovaRequest`; avoid surfacing a redundant error toast.
+        return undefined;
+      }
+
+      if (isUnknownExecuteCommandError(err)) {
+        const details = formatError(err);
+
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+        const routedWorkspaceKey = routeWorkspaceFolderUri({
+          workspaceFolders: workspaces.map((workspace) => ({
+            name: workspace.name,
+            fsPath: workspace.uri.fsPath,
+            uri: workspace.uri.toString(),
+          })),
+          activeDocumentUri,
+          method: 'workspace/executeCommand',
+          params: { command: commandId, arguments: args },
+        });
+        const folder = routedWorkspaceKey
+          ? workspaces.find((workspace) => workspace.uri.toString() === routedWorkspaceKey)
+          : undefined;
+
+        const picked = await vscode.window.showErrorMessage(
+          `Nova: Command is not supported by your nova-lsp version (unknown command: ${commandId}). Update the server.`,
+          'Install/Update Server',
+          'Show Server Version',
+          'Copy Details',
+        );
+        if (picked === 'Install/Update Server') {
+          await vscode.commands.executeCommand('nova.installOrUpdateServer');
+        } else if (picked === 'Show Server Version') {
+          await vscode.commands.executeCommand('nova.showServerVersion', folder);
+        } else if (picked === 'Copy Details') {
+          try {
+            await vscode.env.clipboard.writeText(details);
+            void vscode.window.showInformationMessage('Nova: Copied to clipboard.');
+          } catch (err) {
+            const message = formatError(err);
+            void vscode.window.showErrorMessage(`Nova: failed to copy to clipboard: ${message}`);
+          }
+        }
+        return undefined;
+      }
+
+      throw err;
+    }
+
     if (commandId === 'nova.safeDelete' && isSafeDeletePreviewPayload(result)) {
       await vscode.commands.executeCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, result);
     }
