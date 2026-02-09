@@ -607,6 +607,35 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 }
 
 fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
+    fn root_with_explicit_config_env(start: &Path) -> Option<PathBuf> {
+        let value = env::var_os(NOVA_CONFIG_ENV_VAR)?;
+        if value.is_empty() {
+            return None;
+        }
+        let candidate = PathBuf::from(value);
+        if candidate.is_absolute() {
+            // Absolute `NOVA_CONFIG_PATH` doesn't depend on workspace-root resolution.
+            return None;
+        }
+
+        let mut dir = start;
+        loop {
+            if dir.join(&candidate).is_file() {
+                return Some(dir.to_path_buf());
+            }
+
+            let Some(parent) = dir.parent() else {
+                break;
+            };
+            if parent == dir {
+                break;
+            }
+            dir = parent;
+        }
+
+        None
+    }
+
     fn root_with_config_marker(start: &Path) -> Option<PathBuf> {
         const CANDIDATES: [&str; 4] = [
             "nova.toml",
@@ -694,6 +723,17 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let start = candidate_path.map(start_dir).unwrap_or(cwd);
     let start = start.canonicalize().unwrap_or(start);
+
+    // If the user explicitly provided `NOVA_CONFIG_PATH` (relative to the workspace root),
+    // prefer a workspace-root that actually contains that path. This avoids scenarios where a
+    // nested `nova.toml` would otherwise "steal" the workspace-root and cause the explicit config
+    // lookup to fail.
+    if let Some(root) = root_with_explicit_config_env(&start) {
+        return root;
+    }
+    if env::var_os(NOVA_CONFIG_ENV_VAR).is_some() {
+        return nova_project::workspace_root(&start).unwrap_or(start);
+    }
     if let Some(root) = root_with_config_marker(&start) {
         return root;
     }

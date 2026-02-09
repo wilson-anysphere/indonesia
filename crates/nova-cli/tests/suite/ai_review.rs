@@ -281,3 +281,70 @@ fn ai_review_git_flag_uses_git_diff_output() {
 
     mock.assert_hits(1);
 }
+
+#[test]
+fn ai_review_respects_relative_nova_config_path_env_var() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nEnv config OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    temp.child("configs").create_dir_all().unwrap();
+    temp.child("configs/nova-ci.toml")
+        .write_str(&format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "test-model"
+"#,
+            server.base_url()
+        ))
+        .unwrap();
+
+    // Create a nested `nova.toml` which would otherwise "steal" workspace-root discovery.
+    let sub = temp.child("sub");
+    sub.create_dir_all().unwrap();
+    sub.child("nova.toml").write_str("").unwrap();
+    let nested = sub.child("nested");
+    nested.create_dir_all().unwrap();
+
+    let diff = sample_diff();
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(nested.path())
+        .env("NOVA_CONFIG_PATH", "configs/nova-ci.toml")
+        .args(["ai", "review", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(diff.as_bytes())?;
+            drop(child.stdin.take());
+            child.wait_with_output()
+        })
+        .expect("run nova ai review (NOVA_CONFIG_PATH relative)");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Env config OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
