@@ -29,6 +29,9 @@ mod semantic_search;
 mod types;
 mod util;
 
+#[cfg(feature = "embeddings")]
+pub mod embeddings;
+
 pub mod cancel;
 pub mod context;
 pub mod patch;

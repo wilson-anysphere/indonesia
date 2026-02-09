@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Some sandbox environments set `RUSTUP_TOOLCHAIN` globally, which overrides the repository's
+# pinned toolchain in `rust-toolchain.toml`. Nova requires the pinned toolchain, so prefer the
+# toolchain file by default. Callers can still override the toolchain via `+<toolchain>` (handled
+# below).
+unset RUSTUP_TOOLCHAIN
+
 # High-throughput cargo wrapper for multi-agent hosts.
 #
 # Goals:

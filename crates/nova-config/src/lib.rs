@@ -882,7 +882,6 @@ pub struct AiEmbeddingsConfig {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub timeout_ms: Option<u64>,
-
     /// Directory containing embedding model files / cache.
     #[serde(default = "default_embeddings_model_dir")]
     #[schemars(with = "String")]

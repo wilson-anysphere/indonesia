@@ -10,6 +10,7 @@ mod llm_cache;
 mod local_backends;
 mod patch_engine;
 mod patch_safety;
+mod provider_embeddings_azure;
 mod project_database_adapters;
 mod semantic_context_builder;
 mod semantic_search_factory;
