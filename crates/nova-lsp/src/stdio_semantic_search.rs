@@ -166,6 +166,39 @@ impl ServerState {
         self.semantic_search_workspace_index_cancel.cancel();
     }
 
+    pub(super) fn clear_semantic_search_index(&mut self) {
+        if !self.semantic_search_enabled() {
+            return;
+        }
+
+        // Refresh the open-file set to reflect current overlay state.
+        {
+            let mut open = self
+                .semantic_search_open_files
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            open.clear();
+            for file_id in self.analysis.vfs.open_documents().snapshot() {
+                if let Some(path) = self.analysis.file_paths.get(&file_id) {
+                    open.insert(path.clone());
+                }
+            }
+        }
+
+        {
+            let mut search = self
+                .semantic_search
+                .write()
+                .unwrap_or_else(|err| err.into_inner());
+            search.clear();
+        }
+
+        // Preserve open-document overlays after clearing.
+        for file_id in self.analysis.vfs.open_documents().snapshot() {
+            self.semantic_search_index_open_document(file_id);
+        }
+    }
+
     pub(super) fn semantic_search_workspace_index_status_json(&self) -> serde_json::Value {
         let (current, completed, files, bytes) =
             self.semantic_search_workspace_index_status.snapshot();
@@ -391,7 +424,20 @@ impl ServerState {
                     let mut search = semantic_search
                         .write()
                         .unwrap_or_else(|err| err.into_inner());
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    if status.current_run_id.load(Ordering::SeqCst) != run_id {
+                        break;
+                    }
                     search.index_file(path, text);
+                }
+
+                if cancel.is_cancelled() {
+                    break;
+                }
+                if status.current_run_id.load(Ordering::SeqCst) != run_id {
+                    break;
                 }
 
                 indexed_files += 1;
@@ -409,7 +455,6 @@ impl ServerState {
                         .unwrap_or_else(|err| err.into_inner());
                     search.finalize_indexing();
                 }
-
                 status.completed_run_id.store(run_id, Ordering::SeqCst);
             }
         });

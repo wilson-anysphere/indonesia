@@ -154,6 +154,9 @@ mod suite {
     #[path = "semantic_search_reindex_stdio.rs"]
     mod semantic_search_reindex_stdio;
     #[cfg(feature = "ai")]
+    #[path = "semantic_search_workspace_folders.rs"]
+    mod semantic_search_workspace_folders;
+    #[cfg(feature = "ai")]
     #[path = "semantic_search_workspace_indexing.rs"]
     mod semantic_search_workspace_indexing;
     #[cfg(feature = "ai")]

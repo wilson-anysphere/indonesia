@@ -24,7 +24,14 @@ fn stdio_workspace_folder_change_updates_project_root_and_keeps_server_responsiv
 
     let cache_dir = TempDir::new().expect("cache dir");
 
-    let foo_path = root1.join("Foo.java");
+    // Ensure workspace-root discovery treats these as self-contained workspaces even if the host
+    // machine has an unrelated `src/` directory somewhere above the tempdir (e.g. `/tmp/src`).
+    let root1_src = root1.join("src");
+    let root2_src = root2.join("src");
+    std::fs::create_dir_all(&root1_src).expect("create ws1/src");
+    std::fs::create_dir_all(&root2_src).expect("create ws2/src");
+
+    let foo_path = root1_src.join("Foo.java");
     std::fs::write(
         &foo_path,
         r#"
@@ -34,7 +41,7 @@ fn stdio_workspace_folder_change_updates_project_root_and_keeps_server_responsiv
     )
     .expect("write Foo.java");
 
-    let bar_path = root2.join("Bar.java");
+    let bar_path = root2_src.join("Bar.java");
     std::fs::write(
         &bar_path,
         r#"

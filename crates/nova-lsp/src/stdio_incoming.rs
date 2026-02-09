@@ -364,6 +364,8 @@ pub(super) fn handle_notification(
                 return Ok(());
             };
 
+            let previous_root = state.project_root.clone();
+
             // LSP sends a delta. Today we treat the first added workspace folder as the new
             // active project root.
             let new_root = params
@@ -373,11 +375,10 @@ pub(super) fn handle_notification(
                 .filter_map(|folder| path_from_uri(folder.uri.as_str()))
                 .next();
 
+            let mut next_root = previous_root.clone();
             if let Some(root) = new_root {
-                state.project_root = Some(root);
-                state.workspace = None;
-                state.load_extensions();
-            } else if let Some(current_root) = state.project_root.clone() {
+                next_root = Some(root);
+            } else if let Some(current_root) = previous_root.as_ref() {
                 // Best-effort: if the current root was removed and there are no added folders,
                 // clear it so subsequent requests fail with a clear "missing project root" error
                 // instead of using a stale workspace.
@@ -386,11 +387,22 @@ pub(super) fn handle_notification(
                     .removed
                     .iter()
                     .filter_map(|folder| path_from_uri(folder.uri.as_str()))
-                    .any(|path| path == current_root);
+                    .any(|path| path == *current_root);
                 if removed_current {
-                    state.project_root = None;
-                    state.workspace = None;
-                    state.load_extensions();
+                    next_root = None;
+                }
+            }
+
+            if next_root != previous_root {
+                state.cancel_semantic_search_workspace_indexing();
+                state.clear_semantic_search_index();
+
+                state.project_root = next_root;
+                state.workspace = None;
+                state.load_extensions();
+
+                if state.project_root.is_some() {
+                    state.start_semantic_search_workspace_indexing();
                 }
             }
         }
