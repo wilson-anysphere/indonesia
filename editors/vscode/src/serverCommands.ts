@@ -3,7 +3,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 
 import { extractMainClassFromCommandArgs, extractTestIdFromCommandArgs } from './serverCommandArgs';
 import { debugTestById } from './testDebug';
-import { formatError } from './safeMode';
+import { formatError, isSafeModeError, isUnknownExecuteCommandError } from './safeMode';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
 
 export type NovaRequest = <R>(
@@ -616,6 +616,35 @@ export function registerNovaServerCommands(
         },
       );
     } catch (err) {
+      if (isSafeModeError(err)) {
+        // Safe-mode UI + prompt already provide the user-facing guidance (bug report).
+        return;
+      }
+
+      if (isUnknownExecuteCommandError(err)) {
+        const details = formatError(err);
+        const picked = await vscode.window.showErrorMessage(
+          'Nova: Extract method is not supported by your nova-lsp version (unknown command: nova.extractMethod). Update the server.',
+          'Install/Update Server',
+          'Show Server Version',
+          'Copy Details',
+        );
+        if (picked === 'Install/Update Server') {
+          await vscode.commands.executeCommand('nova.installOrUpdateServer');
+        } else if (picked === 'Show Server Version') {
+          await vscode.commands.executeCommand('nova.showServerVersion');
+        } else if (picked === 'Copy Details') {
+          try {
+            await vscode.env.clipboard.writeText(details);
+            void vscode.window.showInformationMessage('Nova: Copied to clipboard.');
+          } catch (err) {
+            const message = formatError(err);
+            void vscode.window.showErrorMessage(`Nova: failed to copy to clipboard: ${message}`);
+          }
+        }
+        return;
+      }
+
       const message = formatError(err);
       void vscode.window.showErrorMessage(`Nova: extract method failed: ${message}`);
     }
