@@ -1408,8 +1408,6 @@ mod tests {
         let insert_pos = patch_pos_for_offset(before, close_brace_offset);
 
         // Insert a return statement at the *end* boundary of the allowed range (right before `}`).
-        // This is safe but would be rejected by implementations that validate
-        // `AppliedPatch.touched_ranges` in output coordinates.
         let provider = StaticProvider {
             response: format!(
                 r#"{{
@@ -1451,6 +1449,90 @@ mod tests {
             .get(file)
             .expect("patched file");
         assert!(applied.contains("return a + b;"), "{applied}");
+    }
+
+    #[test]
+    fn edit_range_safety_accepts_deletion_at_allowed_range_end_boundary() {
+        let before = "class Test {\n    int add(int a, int b) {\n    }\n}\n";
+        let file = "Test.java";
+        let workspace = VirtualWorkspace::new([(file.to_string(), before.to_string())]);
+
+        let method_line = "    int add(int a, int b) {";
+        let open_brace_offset = before
+            .find(method_line)
+            .expect("method line")
+            .saturating_add(method_line.len().saturating_sub(1));
+        let close_brace_offset = before
+            .find("\n    }\n")
+            .expect("method close")
+            .saturating_add("\n    ".len());
+
+        let allowed_range =
+            patch_range_for_offsets(before, open_brace_offset + 1, close_brace_offset);
+
+        // Delete the indentation spaces immediately before the closing `}` at the end boundary of
+        // the allowed range.
+        //
+        // This is safe, but would be rejected by implementations that validate
+        // `AppliedPatch.touched_ranges` in output coordinates, because deletions have an empty
+        // inserted span and `touched_ranges` is expanded by ±1 byte (which can extend into the
+        // closing `}`, outside the allowed range).
+        let delete_start_offset = close_brace_offset.saturating_sub(4);
+        assert_eq!(
+            &before[delete_start_offset..close_brace_offset],
+            "    ",
+            "expected four-space indent before method close"
+        );
+
+        let delete_start = patch_pos_for_offset(before, delete_start_offset);
+        let delete_end = patch_pos_for_offset(before, close_brace_offset);
+
+        let provider = StaticProvider {
+            response: format!(
+                r#"{{
+  "edits": [{{
+    "file": "{file}",
+    "range": {{ "start": {{ "line": {start_line}, "character": {start_ch} }}, "end": {{ "line": {end_line}, "character": {end_ch} }} }},
+    "text": ""
+  }}]
+}}"#,
+                start_line = delete_start.line,
+                start_ch = delete_start.character,
+                end_line = delete_end.line,
+                end_ch = delete_end.character,
+            ),
+        };
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: file.to_string(),
+            allowed_range,
+        });
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Edit method body.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("patch should be accepted");
+
+        let applied = result
+            .applied
+            .workspace
+            .get(file)
+            .expect("patched file");
+        assert!(
+            applied.contains("\n}\n}\n"),
+            "expected method close brace to be de-indented: {applied}"
+        );
     }
 
     #[test]
