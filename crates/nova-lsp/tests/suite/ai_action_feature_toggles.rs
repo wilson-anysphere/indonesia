@@ -375,3 +375,104 @@ model = "default"
     assert!(status.success());
     ai_server.assert_hits(0);
 }
+
+#[test]
+fn stdio_server_respects_ai_feature_toggle_code_review() {
+    let _lock = support::stdio_server_lock();
+
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock" }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+code_review = false
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_lsp_with_config(&config_path);
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/src/Main.java b/src/Main.java\n--- a/src/Main.java\n+++ b/src/Main.java\n@@\n-class Main {}\n+class Main { int x; }\n"
+            }
+        }),
+    );
+    let review_resp = support::read_response_with_id(&mut stdout, 2);
+    let err = review_resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(err.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    let message = err
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("ai.features.code_review"),
+        "expected error message to mention ai.features.code_review, got: {message:?}"
+    );
+    assert_eq!(
+        err.get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("disabled"),
+        "expected structured disabled error kind"
+    );
+    assert_eq!(
+        err.get("data")
+            .and_then(|v| v.get("feature"))
+            .and_then(|v| v.as_str()),
+        Some("ai.features.code_review"),
+        "expected structured disabled error feature"
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
