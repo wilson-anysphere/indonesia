@@ -34,6 +34,8 @@
     "onCommand:nova.buildProject",
     "onCommand:nova.showRequestMetrics",
     "onCommand:nova.resetRequestMetrics",
+    "onCommand:nova.showSemanticSearchIndexStatus",
+    "onCommand:nova.waitForSemanticSearchIndex",
     "onCommand:nova.discoverTests",
     "onCommand:nova.reloadProject",
     "onCommand:nova.runTestInteractive",
@@ -119,6 +121,14 @@
       {
         "command": "nova.resetRequestMetrics",
         "title": "Nova: Reset Request Metrics"
+      },
+      {
+        "command": "nova.showSemanticSearchIndexStatus",
+        "title": "Nova: Show Semantic Search Index Status"
+      },
+      {
+        "command": "nova.waitForSemanticSearchIndex",
+        "title": "Nova: Wait for Semantic Search Indexing"
       },
       {
         "command": "nova.discoverTests",

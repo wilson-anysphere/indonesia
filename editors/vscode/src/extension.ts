@@ -12,6 +12,7 @@ import { registerNovaFrameworkDashboard } from './frameworkDashboard';
 import type { NovaFrameworksViewController } from './frameworksView';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
+import { registerNovaSemanticSearchCommands } from './semanticSearchCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
 import { ProjectModelCache } from './projectModelCache';
 import { registerNovaTestDebugRunProfile } from './testDebug';
@@ -304,6 +305,7 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaDebugConfigurations(context, sendNovaRequest);
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
+  registerNovaSemanticSearchCommands(context, sendNovaRequest);
   const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest, {
     isServerRunning: () =>
       clientManager?.entries().some((entry) => entry.client.state === State.Running || entry.client.state === State.Starting) ?? false,

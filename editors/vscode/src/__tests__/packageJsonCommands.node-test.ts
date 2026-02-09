@@ -102,6 +102,30 @@ test('package.json contributes Nova request metrics commands', async () => {
   assert.ok(activationEvents.includes('onCommand:nova.resetRequestMetrics'));
 });
 
+test('package.json contributes Nova semantic search index status commands', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const commandIds = new Set(
+    commands
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+      .filter((id): id is string => typeof id === 'string'),
+  );
+
+  assert.ok(commandIds.has('nova.showSemanticSearchIndexStatus'));
+  assert.ok(commandIds.has('nova.waitForSemanticSearchIndex'));
+
+  assert.ok(activationEvents.includes('onCommand:nova.showSemanticSearchIndexStatus'));
+  assert.ok(activationEvents.includes('onCommand:nova.waitForSemanticSearchIndex'));
+});
+
 test('package.json contributes Run/Debug Test/Main command palette entries via local interactive IDs', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
