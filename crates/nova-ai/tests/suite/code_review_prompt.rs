@@ -107,6 +107,13 @@ async fn code_review_prompt_requests_structured_markdown_output() {
         // Ensure we call out potential omissions due to excluded_paths.
         assert!(user_prompt.contains("excluded_paths"), "{user_prompt}");
 
+        // The omission placeholder string should only appear when the diff is actually omitted,
+        // not as part of the general prompt instructions.
+        assert!(
+            !user_prompt.contains("[diff omitted due to excluded_paths]"),
+            "{user_prompt}"
+        );
+
         Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
     };
 
@@ -132,4 +139,3 @@ index 0000000..1111111 100644
 
     handle.abort();
 }
-
