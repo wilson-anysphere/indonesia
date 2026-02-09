@@ -76,7 +76,8 @@ pub trait SemanticSearch: Send + Sync {
 ///
 /// If `ai.embeddings.enabled = true` and the crate is compiled with the
 /// `embeddings` Cargo feature, this returns an [`EmbeddingSemanticSearch`]
-/// instance backed by the configured embedder backend.
+/// instance backed by the configured embeddings backend (`hash`, `provider`,
+/// or `local`).
 ///
 /// When embeddings are enabled in config but the crate is built without the
 /// `embeddings` feature, this falls back to [`TrigramSemanticSearch`].

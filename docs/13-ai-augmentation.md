@@ -488,6 +488,102 @@ retry_max_backoff_ms = 2000
 Note: retries are always bounded by `ai.provider.timeout_ms`—Nova clamps each retry's backoff delay
 to the remaining timeout budget.
 
+### Semantic search + embeddings configuration
+
+Nova exposes semantic search as an **AI feature flag** (so it can be disabled entirely in
+privacy-sensitive or resource-constrained environments) while still providing a non-AI fallback.
+
+At a high level:
+
+- `ai.enabled` gates all AI features.
+- `ai.features.semantic_search` enables semantic-search functionality (workspace indexing + context
+  building).
+- `ai.embeddings.enabled` switches semantic search from the lightweight **trigram** matcher to an
+  **embedding-backed** index (when available).
+
+#### Cargo feature gating (build-time)
+
+Embedding-backed semantic search is compiled behind the `nova-ai` Cargo feature `embeddings`.
+
+- If Nova is built **with** `nova-ai --features embeddings` and `ai.embeddings.enabled=true`, Nova
+  will use the configured embeddings backend.
+- If Nova is built **without** that Cargo feature, Nova will log a warning and fall back to the
+  trigram matcher even when embeddings are enabled in `nova.toml`.
+
+#### `ai.embeddings.backend` (runtime selection)
+
+When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors are produced:
+
+- `hash` — deterministic/offline hashing-trick embeddings (recommended for tests).
+- `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`).
+- `local` — in-process embedding model (only available if implemented by the build; otherwise Nova
+  falls back to `hash`).
+
+`ai.embeddings.model` optionally overrides the embedding model used by provider embeddings.
+When unset, Nova reuses `ai.provider.model`. It is ignored for `backend="hash"`.
+
+#### Deterministic/offline embeddings (recommended default for tests)
+
+```toml
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.embeddings]
+enabled = true
+backend = "hash"
+```
+
+#### Provider embeddings (Ollama)
+
+```toml
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+# Keep everything local: provider endpoints must resolve to loopback/localhost.
+[ai.privacy]
+local_only = true
+
+[ai.provider]
+kind = "ollama"
+url = "http://localhost:11434"
+
+[ai.embeddings]
+enabled = true
+backend = "provider"
+model = "nomic-embed-text"
+```
+
+#### Provider embeddings (OpenAI-compatible HTTP server)
+
+```toml
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "open_ai_compatible"
+url = "http://localhost:8000/v1"
+
+[ai.embeddings]
+enabled = true
+backend = "provider"
+model = "text-embedding-3-small"
+```
+
+#### Privacy note: `ai.privacy.local_only=true` + provider embeddings
+
+When `ai.privacy.local_only=true`, Nova validates that HTTP providers (including provider-backed
+embeddings) point to **localhost/loopback** (for example `http://localhost:11434`).
+Non-local endpoints are rejected by config validation.
+
 ### Server-side overrides (environment variables)
 
 Some editor integrations set environment variables when starting `nova-lsp` to provide **server-side

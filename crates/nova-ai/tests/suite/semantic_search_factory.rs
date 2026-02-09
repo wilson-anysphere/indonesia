@@ -1,7 +1,15 @@
 use std::path::PathBuf;
 
+#[cfg(feature = "embeddings")]
+use httpmock::prelude::*;
 use nova_ai::{semantic_search_from_config, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiEmbeddingsConfig};
+#[cfg(feature = "embeddings")]
+use nova_config::AiProviderKind;
+#[cfg(feature = "embeddings")]
+use serde_json::json;
+#[cfg(feature = "embeddings")]
+use url::Url;
 
 #[test]
 fn semantic_search_from_config_respects_feature_flag() {
@@ -128,6 +136,94 @@ fn semantic_search_from_config_supports_incremental_updates() {
     search.index_file(path.clone(), "hello final".to_string());
     search.clear();
     assert!(search.search("hello final").is_empty());
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
+fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/api/embeddings");
+        then.status(200).json_body(json!({ "embedding": [1.0, 0.0, 0.0] }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/example.txt".to_string(),
+        "hello world".to_string(),
+    )]);
+
+    let cfg = AiConfig {
+        enabled: true,
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::Ollama,
+            url: Url::parse(&server.base_url()).unwrap(),
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("nomic-embed-text".to_string()),
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+
+    // One request for indexing, one request for query embedding.
+    mock.assert_hits(2);
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
+fn semantic_search_from_config_provider_backend_supports_openai_compatible_embeddings() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings");
+        then.status(200)
+            .json_body(json!({ "data": [{ "embedding": [1.0, 0.0, 0.0] }] }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/example.txt".to_string(),
+        "hello world".to_string(),
+    )]);
+
+    let cfg = AiConfig {
+        enabled: true,
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::OpenAiCompatible,
+            url: Url::parse(&format!("{}/v1", server.base_url())).unwrap(),
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("text-embedding-3-small".to_string()),
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+
+    mock.assert_hits(2);
 }
 
 #[cfg(feature = "embeddings")]
