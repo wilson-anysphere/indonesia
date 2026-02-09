@@ -1913,15 +1913,17 @@ Notes:
     env var overrides.
   - This only affects **async multi-token** AI completions; standard (non-AI) completions returned
     from `textDocument/completion` are unaffected.
+  - This override does **not** disable completion ranking.
   - When enabled, this value influences both:
     - how many suggestions the server asks the AI provider to generate, and
     - the final number of AI completion items returned (items are validated/deduped and then
       truncated to the max).
   - VS Code note: the Nova VS Code extension surfaces `nova.aiCompletions.maxItems` by setting this
     env var when starting `nova-lsp` and prompts for a server restart when it changes.
-- Other server-side env var overrides that can disable AI completions entirely:
+- Other server-side env var overrides that can disable AI completion features entirely:
   - `NOVA_DISABLE_AI=1` disables all AI features.
-  - `NOVA_DISABLE_AI_COMPLETIONS=1` disables multi-token completions.
+  - `NOVA_DISABLE_AI_COMPLETIONS=1` disables AI completion features (completion ranking and
+    multi-token completions).
 - Clients should gate polling on `CompletionList.isIncomplete = true`; when multi-token completions
   are disabled, the server returns `isIncomplete = false` and `nova/completion/more` will return an
   empty result.
