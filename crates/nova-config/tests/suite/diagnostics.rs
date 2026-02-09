@@ -1061,6 +1061,69 @@ completion_ranking_ms = 250
 }
 
 #[test]
+fn does_not_warn_when_completion_ranking_cache_is_disabled_for_loopback_provider() {
+    let text = r#"
+[ai]
+enabled = true
+cache_enabled = false
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "ollama"
+url = "http://localhost:11434"
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 250
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert!(diagnostics.warnings.is_empty());
+}
+
+#[test]
+fn warns_when_completion_ranking_cache_is_disabled_for_non_loopback_openai_compatible_provider() {
+    let text = r#"
+[ai]
+enabled = true
+cache_enabled = false
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "open_ai_compatible"
+url = "https://example.com/v1"
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 250
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::AiCompletionRankingCacheDisabled {
+            toml_path: "ai.cache_enabled".to_string(),
+            provider: AiProviderKind::OpenAiCompatible,
+            message: "completion ranking is enabled with a non-local AI provider, but ai.cache_enabled=false; consider setting ai.cache_enabled=true to reduce repeated provider traffic (note: caching retains model output in memory).".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_embeddings_limits_are_positive() {
     let text = r#"
 [ai]
