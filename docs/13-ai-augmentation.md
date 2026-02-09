@@ -523,6 +523,14 @@ When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors a
 `ai.embeddings.model` optionally overrides the embedding model used by provider embeddings.
 When unset, Nova reuses `ai.provider.model`. It is ignored for `backend="hash"`.
 
+Other useful knobs (see `nova_config::AiEmbeddingsConfig` for the full set):
+
+- `ai.embeddings.timeout_ms` — timeout override (ms) for provider-backed embeddings (defaults to
+  `ai.provider.timeout_ms`).
+- `ai.embeddings.max_memory_bytes` — soft memory budget for the embedding-backed index. When the
+  budget is exceeded, Nova truncates the index (dropping whole files) to stay within the limit.
+- `ai.embeddings.batch_size` — local-embedder batch size (only used when `backend="local"`).
+
 #### Deterministic/offline embeddings (recommended default for tests)
 
 ```toml
