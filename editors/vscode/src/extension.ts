@@ -2157,9 +2157,17 @@ export async function activate(context: vscode.ExtensionContext) {
           const picked = await vscode.window.showWarningMessage(
             `Nova: nova-lsp is running in safe mode in ${workspaceName}${reasonSuffix}. Generate a bug report to help diagnose the issue.`,
             'Generate Bug Report',
+            'Show Safe Mode',
           );
           if (picked === 'Generate Bug Report') {
             await vscode.commands.executeCommand(BUG_REPORT_COMMAND, folder);
+          } else if (picked === 'Show Safe Mode') {
+            try {
+              await vscode.commands.executeCommand('workbench.view.explorer');
+              await vscode.commands.executeCommand('novaFrameworks.focus');
+            } catch {
+              // Best-effort: these commands may be unavailable in some VS Code contexts.
+            }
           }
         } finally {
           const latest = safeModeByWorkspaceKey.get(workspaceKey);
@@ -2684,9 +2692,17 @@ export async function activate(context: vscode.ExtensionContext) {
     const picked = await vscode.window.showWarningMessage(
       `Nova AI: ${featureLabel} is unavailable because nova-lsp is running in safe mode${workspaceSuffix}. Generate a bug report to help diagnose the issue.`,
       'Generate Bug Report',
+      'Show Safe Mode',
     );
     if (picked === 'Generate Bug Report') {
       await vscode.commands.executeCommand(BUG_REPORT_COMMAND, folder);
+    } else if (picked === 'Show Safe Mode') {
+      try {
+        await vscode.commands.executeCommand('workbench.view.explorer');
+        await vscode.commands.executeCommand('novaFrameworks.focus');
+      } catch {
+        // Best-effort: these commands may be unavailable in some VS Code contexts.
+      }
     }
   };
 
