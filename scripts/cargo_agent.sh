@@ -27,6 +27,8 @@ unset RUSTUP_TOOLCHAIN
 #   NOVA_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
 #   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow unscoped `cargo test` (not recommended)
+#   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1 Preserve `RUSTUP_TOOLCHAIN` env var (default: unset it so
+#                                     rust-toolchain.toml is respected)
 #   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Respect RUSTUP_TOOLCHAIN even if rust-toolchain.toml exists (rare)
 
 usage() {
@@ -164,6 +166,17 @@ fi
 # Prefer correctness/reliability here: allow callers to opt back in by explicitly setting
 # `RUSTC_WRAPPER` in their environment, but default to no wrapper.
 export RUSTC_WRAPPER="${RUSTC_WRAPPER:-}"
+
+# Some environments set `RUSTUP_TOOLCHAIN` globally, which overrides this repository's pinned
+# `rust-toolchain.toml`. That can lead to confusing version-mismatch errors (e.g. "rustc X is not
+# supported") even though the correct toolchain is installed.
+#
+# Prefer the repo's toolchain pin by default. Callers that need a specific toolchain can either:
+# - pass `+<toolchain>` as the first argument (supported by this wrapper), or
+# - set `NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1` to preserve `RUSTUP_TOOLCHAIN`.
+if [[ -z "${NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN:-}" ]]; then
+  unset RUSTUP_TOOLCHAIN
+fi
 
 # Get CPU count
 nproc="${NOVA_CARGO_NPROC:-}"
