@@ -79,10 +79,13 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
             .expect("valid unix path regex")
     });
-    // Basic Windows drive paths (as they typically appear in string literals, with escaped
+    // Basic Windows drive paths (e.g. `C:\Users\alice\file.txt`).
+    //
+    // This intentionally matches one or more backslashes so we redact both the raw form (single
+    // backslashes) and the escaped form that often appears in serialized/quoted strings (double
     // backslashes).
     static WINDOWS_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?m)(?P<path>[A-Za-z]:\\\\[A-Za-z0-9._\\-\\\\]+)")
+        Regex::new(r"(?m)(?P<path>[A-Za-z]:\\+[A-Za-z0-9._\\-\\\\]+)")
             .expect("valid windows path regex")
     });
 
@@ -176,5 +179,13 @@ mod tests {
             !out.contains(r"C:\\Users\\alice\\secret.txt"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_absolute_paths_with_single_backslashes() {
+        let prompt = r#"log("opening C:\Users\alice\secret.txt")"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"C:\Users\alice\secret.txt"), "{out}");
     }
 }

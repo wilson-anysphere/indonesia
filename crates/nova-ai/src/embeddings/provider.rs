@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::client::validate_local_only_url;
 use crate::llm_privacy::PrivacyFilter;
+use crate::privacy::redact_file_paths;
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
 use nova_metrics::MetricsRegistry;
@@ -178,6 +179,7 @@ pub(super) fn provider_embeddings_client_from_config(
         .clone()
         .unwrap_or_else(|| config.provider.model.clone());
     let batch_size = config.embeddings.batch_size.max(1);
+    let redact_paths = !config.privacy.local_only;
 
     let privacy = Arc::new(PrivacyFilter::new(&config.privacy)?);
 
@@ -273,6 +275,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 max_memory_bytes,
                 disk_cache,
                 privacy.clone(),
+                redact_paths,
             )))
         }
         AiProviderKind::OpenAi => {
@@ -323,6 +326,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 max_memory_bytes,
                 disk_cache,
                 privacy.clone(),
+                redact_paths,
             )))
         }
         AiProviderKind::OpenAiCompatible => {
@@ -365,6 +369,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 max_memory_bytes,
                 disk_cache,
                 privacy.clone(),
+                redact_paths,
             )))
         }
         AiProviderKind::Http => {
@@ -407,6 +412,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 max_memory_bytes,
                 disk_cache,
                 privacy.clone(),
+                redact_paths,
             )))
         }
         AiProviderKind::Ollama => {
@@ -448,6 +454,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 max_memory_bytes,
                 disk_cache,
                 privacy.clone(),
+                redact_paths,
             )))
         }
         other => {
@@ -483,6 +490,7 @@ struct CachedEmbeddingsClient {
     memory_cache: EmbeddingVectorCache,
     disk_cache: Option<Arc<DiskEmbeddingCache>>,
     privacy: Arc<PrivacyFilter>,
+    redact_paths: bool,
 }
 
 impl CachedEmbeddingsClient {
@@ -494,6 +502,7 @@ impl CachedEmbeddingsClient {
         max_memory_bytes: usize,
         disk_cache: Option<Arc<DiskEmbeddingCache>>,
         privacy: Arc<PrivacyFilter>,
+        redact_paths: bool,
     ) -> Self {
         Self {
             inner,
@@ -503,6 +512,7 @@ impl CachedEmbeddingsClient {
             memory_cache: EmbeddingVectorCache::new(max_memory_bytes),
             disk_cache,
             privacy,
+            redact_paths,
         }
     }
 
@@ -546,9 +556,18 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
         let mut session = self.privacy.new_session();
         let sanitized_input: Vec<String> = input
             .iter()
-            .map(|text| match kind {
-                EmbeddingInputKind::Document => self.privacy.sanitize_code_text(&mut session, text),
-                EmbeddingInputKind::Query => self.privacy.sanitize_prompt_text(&mut session, text),
+            .map(|text| {
+                let sanitized = match kind {
+                    EmbeddingInputKind::Document => {
+                        self.privacy.sanitize_code_text(&mut session, text)
+                    }
+                    EmbeddingInputKind::Query => self.privacy.sanitize_prompt_text(&mut session, text),
+                };
+                if self.redact_paths {
+                    redact_file_paths(&sanitized)
+                } else {
+                    sanitized
+                }
             })
             .collect();
 

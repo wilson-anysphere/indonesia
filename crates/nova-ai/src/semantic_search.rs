@@ -398,6 +398,8 @@ mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use crate::client::validate_local_only_url;
     use crate::embeddings::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey, DISK_CACHE_NAMESPACE_V1};
+    use crate::llm_privacy::{PrivacyFilter, SanitizationSession};
+    use crate::privacy::redact_file_paths;
     use crate::AiError;
     use nova_core::ProjectDatabase;
     use nova_fuzzy::{fuzzy_match, MatchKind};
@@ -536,6 +538,8 @@ mod embeddings {
         endpoint_id: String,
         memory_cache: Arc<Mutex<HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>>>,
         disk_cache: Option<Arc<DiskEmbeddingCache>>,
+        privacy: Arc<PrivacyFilter>,
+        redact_paths: bool,
     }
 
     impl ProviderEmbedder {
@@ -547,6 +551,8 @@ mod embeddings {
             timeout: Duration,
             disk_cache: Option<Arc<DiskEmbeddingCache>>,
             batch_size: usize,
+            privacy: Arc<PrivacyFilter>,
+            redact_paths: bool,
         ) -> Result<Self, AiError> {
             let client = BlockingClient::builder().timeout(timeout).build()?;
             let backend_id = match &provider_kind {
@@ -587,6 +593,8 @@ mod embeddings {
                 endpoint_id,
                 memory_cache: Arc::new(Mutex::new(HashMap::new())),
                 disk_cache,
+                privacy,
+                redact_paths,
             })
         }
 
@@ -598,6 +606,15 @@ mod embeddings {
                 &self.model,
                 input.as_bytes(),
             )
+        }
+
+        fn sanitize_text(&self, session: &mut SanitizationSession, text: &str) -> String {
+            let sanitized = self.privacy.sanitize_code_text(session, text);
+            if self.redact_paths {
+                redact_file_paths(&sanitized)
+            } else {
+                sanitized
+            }
         }
 
         fn embed_uncached(&self, text: &str) -> Result<Vec<f32>, AiError> {
@@ -846,7 +863,9 @@ mod embeddings {
                 }
             }
 
-            let embedding = self.embed_uncached(text)?;
+            let mut session = self.privacy.new_session();
+            let sanitized = self.sanitize_text(&mut session, text);
+            let embedding = self.embed_uncached(&sanitized)?;
 
             if !embedding.is_empty() {
                 {
@@ -867,19 +886,26 @@ mod embeddings {
                 return Ok(Vec::new());
             }
 
-            let batch_size = self.batch_size.max(1);
+            let mut session = self.privacy.new_session();
+            let sanitized = inputs
+                .iter()
+                .map(|input| self.sanitize_text(&mut session, input))
+                .collect::<Vec<_>>();
+
             match &self.provider_kind {
-                AiProviderKind::Ollama => self.embed_ollama_batch(inputs),
+                AiProviderKind::Ollama => self.embed_ollama_batch(&sanitized),
                 AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
+                    let batch_size = self.batch_size.max(1);
                     let mut out = Vec::with_capacity(inputs.len());
-                    for chunk in inputs.chunks(batch_size) {
+                    for chunk in sanitized.chunks(batch_size) {
                         out.extend(self.embed_openai_compatible_batch(chunk)?);
                     }
                     Ok(out)
                 }
                 AiProviderKind::AzureOpenAi => {
+                    let batch_size = self.batch_size.max(1);
                     let mut out = Vec::with_capacity(inputs.len());
-                    for chunk in inputs.chunks(batch_size) {
+                    for chunk in sanitized.chunks(batch_size) {
                         out.extend(self.embed_azure_openai_batch(chunk)?);
                     }
                     Ok(out)
@@ -960,6 +986,19 @@ mod embeddings {
         let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
             .map(Arc::new)
             .ok();
+        let redact_paths = !config.privacy.local_only;
+        let privacy = match PrivacyFilter::new(&config.privacy) {
+            Ok(filter) => Arc::new(filter),
+            Err(err) => {
+                warn!(
+                    target = "nova.ai",
+                    provider = ?config.provider.kind,
+                    ?err,
+                    "failed to build embeddings privacy filter; falling back to hash embeddings"
+                );
+                return None;
+            }
+        };
 
         match provider_kind {
             AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
@@ -971,6 +1010,8 @@ mod embeddings {
                     timeout,
                     disk_cache.clone(),
                     batch_size,
+                    privacy.clone(),
+                    redact_paths,
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
@@ -1023,6 +1064,8 @@ mod embeddings {
                     timeout,
                     disk_cache.clone(),
                     batch_size,
+                    privacy.clone(),
+                    redact_paths,
                 ) {
                     Ok(mut embedder) => {
                         embedder.azure_deployment = Some(deployment);
@@ -1064,6 +1107,8 @@ mod embeddings {
                     timeout,
                     disk_cache,
                     batch_size,
+                    privacy.clone(),
+                    redact_paths,
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
