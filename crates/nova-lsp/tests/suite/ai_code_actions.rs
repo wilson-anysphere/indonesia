@@ -1266,6 +1266,217 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
 }
 
 #[test]
+fn stdio_server_nova_ai_generate_tests_request_derives_module_relative_test_path() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_rel = "moduleA/src/main/java/com/example/Calculator.java";
+    let file_path = root.join(file_rel);
+    std::fs::create_dir_all(file_path.parent().expect("parent dir"))
+        .expect("create moduleA/src/main/java dirs");
+    let file_uri = uri_for_path(&file_path);
+    let source = concat!(
+        "package com.example;\n",
+        "\n",
+        "public class Calculator {\n",
+        "    public int add(int a, int b) {\n",
+        "        return a + b;\n",
+        "    }\n",
+        "}\n",
+    );
+    std::fs::write(&file_path, source).expect("write Calculator.java");
+
+    let test_rel = "moduleA/src/test/java/com/example/CalculatorTest.java";
+    let patch = json!({
+        "edits": [{
+            "file": test_rel,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "text": concat!(
+                "package com.example;\n",
+                "\n",
+                "class CalculatorTest {\n",
+                "    void testAdd() {\n",
+                "        // TODO: add assertions\n",
+                "    }\n",
+                "}\n"
+            )
+        }]
+    });
+    let completion = serde_json::to_string(&patch).expect("patch json");
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .current_dir(root)
+        .env_remove("NOVA_CONFIG")
+        .env_remove("NOVA_CONFIG_PATH")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env("NOVA_AI_ENDPOINT", &endpoint)
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_LOCAL_ONLY", "1")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // Select the method snippet so GenerateTestsArgs.target is meaningful.
+    let method_line = "    public int add(int a, int b) {";
+    let method_start_offset = source.find(method_line).expect("method start");
+    let method_end_offset = source
+        .find("    }\n")
+        .expect("method end")
+        .saturating_add("    }\n".len());
+    let pos = TextPos::new(source);
+    let selection_start = pos
+        .lsp_position(method_start_offset)
+        .expect("selection start");
+    let selection_end = pos.lsp_position(method_end_offset).expect("selection end");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateTests",
+            "params": {
+                "workDoneToken": "t1",
+                "target": "public int add(int a, int b)",
+                "context": null,
+                "uri": file_uri,
+                "range": Range::new(selection_start, selection_end)
+            }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            apply_edit = Some(msg.clone());
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateTests success, got: {resp:#?}"
+    );
+    assert_eq!(
+        resp.get("result"),
+        Some(&serde_json::Value::Null),
+        "expected nova/ai/generateTests result to be JSON null"
+    );
+
+    let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
+    let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+    let document_changes = edit.document_changes.expect("documentChanges");
+    let ops = match document_changes {
+        lsp_types::DocumentChanges::Operations(ops) => ops,
+        other => panic!("expected documentChanges operations, got {other:?}"),
+    };
+    let expected_test_uri = uri_for_path(&root.join(test_rel))
+        .parse::<Uri>()
+        .expect("test uri");
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create))
+                if create.uri == expected_test_uri
+        )),
+        "expected CreateFile for module-derived test uri, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| {
+            let lsp_types::DocumentChangeOperation::Edit(edit) = op else {
+                return false;
+            };
+            if edit.text_document.uri != expected_test_uri {
+                return false;
+            }
+            edit.edits.iter().any(|edit| match edit {
+                lsp_types::OneOf::Left(edit) => edit.new_text.contains("class CalculatorTest"),
+                lsp_types::OneOf::Right(edit) => edit
+                    .text_edit
+                    .new_text
+                    .contains("class CalculatorTest"),
+            })
+        }),
+        "expected TextDocumentEdit containing generated test class, got {ops:?}"
+    );
+
+    ai_server.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_generate_tests_prompt_includes_target_and_source_when_editing_derived_test_file() {
     let _lock = crate::support::stdio_server_lock();
 

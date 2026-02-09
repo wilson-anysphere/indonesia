@@ -401,9 +401,11 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
   let mut config = CodeGenerationConfig::default();
   config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
 
-  let (action_file, insert_range, workspace) = if file_rel.starts_with("src/main/java/") {
-    if let Some(test_file) = derive_test_file_path(&source, &abs_path) {
-      // `derive_test_file_path` returns a workspace-relative path (e.g. `src/test/java/...`).
+  let (action_file, insert_range, workspace) =
+    if let Some(test_file) = derive_test_file_path(&source, Path::new(&file_rel)) {
+      // `derive_test_file_path` returns a workspace-relative path (e.g.
+      // `src/test/java/...` or `moduleA/src/test/java/...` for multi-module builds).
+      //
       // Enforce `ai.privacy.excluded_paths` on the derived destination to ensure we never
       // generate/modify tests in excluded directories.
       //
@@ -424,6 +426,7 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
           nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]),
         )
       } else {
+        // Patch safety: only allow edits to the derived test file.
         config.safety.allowed_path_prefixes = vec![test_file.clone()];
         config.safety.allow_new_files = true;
 
@@ -450,11 +453,12 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         )
       }
     } else {
-      (file_rel.clone(), selection_range, nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]))
-    }
-  } else {
-    (file_rel.clone(), selection_range, nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]))
-  };
+      (
+        file_rel.clone(),
+        selection_range,
+        nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]),
+      )
+    };
 
   let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
@@ -630,15 +634,18 @@ fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String
   // Only derive a `src/test/java/...` target when the source file lives under a conventional
   // `src/main/java` tree. For ad-hoc single-file projects (e.g. `Test.java` in the workspace
   // root), prefer inserting tests into the current file selection.
-  let in_src_main_java = source_path
+  //
+  // In multi-module Maven/Gradle workspaces, the source file path may be prefixed with the
+  // module directory (e.g. `moduleA/src/main/java/...`). Preserve that prefix in the derived
+  // destination so generated tests land in `moduleA/src/test/java/...`.
+  let components = source_path
     .components()
     .filter_map(|c| c.as_os_str().to_str())
-    .collect::<Vec<_>>()
+    .collect::<Vec<_>>();
+  let src_main_java_idx = components
     .windows(3)
-    .any(|window| window == ["src", "main", "java"]);
-  if !in_src_main_java {
-    return None;
-  }
+    .position(|window| window == ["src", "main", "java"])?;
+  let prefix = components[..src_main_java_idx].join("/");
 
   let class_name = source_path
     .file_stem()
@@ -661,7 +668,12 @@ fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String
     })
     .unwrap_or(Some(String::new()))?;
 
-  let mut out = String::from("src/test/java/");
+  let mut out = String::new();
+  if !prefix.is_empty() {
+    out.push_str(&prefix);
+    out.push('/');
+  }
+  out.push_str("src/test/java/");
   if !pkg_path.is_empty() {
     out.push_str(&pkg_path);
     out.push('/');
@@ -1773,4 +1785,3 @@ mod tests {
     assert!(built.text.contains("Symbol/type info"));
   }
 }
-
