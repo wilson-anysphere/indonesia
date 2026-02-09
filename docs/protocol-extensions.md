@@ -1179,6 +1179,8 @@ Output format (model response):
   - **Where:** file + function/method (or diff hunk)
   - **Why it matters:** impact/risk
   - **Suggestion:** a concrete, code-referencing change when possible (quote lines or show a small snippet)
+- If there are no issues, the model should still include the `## Issues & Suggestions` heading and
+  write `- None`.
 - Severity guidance:
   - `BLOCKER`: must fix before merge (likely bug/security issue/crash/data loss)
   - `MAJOR`: important to address soon (likely correctness/perf/maintainability risk)

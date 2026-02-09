@@ -1,3 +1,5 @@
+#![cfg(feature = "embeddings")]
+
 use httpmock::prelude::*;
 use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};

@@ -52,12 +52,15 @@ Return plain Markdown (no JSON) using this structure:
 
 ## Summary
 - 1-3 bullets describing what changed and overall risk.
+- Always include this heading even if the diff is empty/omitted.
 
 ## Issues & Suggestions
 - Prefer grouping by file when file paths are available in the diff. Use `### path/to/File.java`
   headings.
 - If file names are not available, group by category using: `### Correctness`, `### Performance`,
   `### Security`, `### Tests`, `### Maintainability`.
+- List issues in descending severity (`BLOCKER` → `MAJOR` → `MINOR`). If you found no issues, write
+  `- None` under this heading.
 
 For each issue/suggestion include:
 - **[SEVERITY]** short title (`BLOCKER`, `MAJOR`, or `MINOR`)
@@ -72,6 +75,7 @@ Severity guidance:
 
 ## Tests
 - Missing tests or risky areas + specific test cases to add.
+- If no additional tests are needed, write `- None`.
 
 (Optional) ## Positive Notes
 (Optional) ## Questions / Follow-ups

@@ -127,6 +127,12 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             );
         }
 
+        // Ordering and empty-section behavior.
+        assert!(user_prompt.contains("descending severity"), "{user_prompt}");
+        assert!(user_prompt.contains("If you found no issues"), "{user_prompt}");
+        assert!(user_prompt.contains("If no additional tests are needed"), "{user_prompt}");
+        assert!(user_prompt.contains("`- None`"), "{user_prompt}");
+
         // Ensure we call out potential omissions due to excluded_paths.
         assert!(user_prompt.contains("excluded_paths"), "{user_prompt}");
         // Ensure we also call out potential truncation.
