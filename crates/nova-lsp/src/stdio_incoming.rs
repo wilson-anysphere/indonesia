@@ -7,6 +7,7 @@ use lsp_types::{
     FileChangeType as LspFileChangeType,
     Uri as LspUri,
 };
+use nova_ai::ExcludedPathMatcher;
 use nova_vfs::{ChangeEvent, VfsPath};
 use serde::Deserialize;
 use std::env;
@@ -342,6 +343,7 @@ pub(super) fn handle_notification(
                 match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                     Ok(config) => {
                         state.config = Arc::new(config);
+                        reload_ai_semantic_search_config(state);
                         // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                         // the registry in sync when users edit `nova.toml`.
                         state.load_extensions();
@@ -402,6 +404,7 @@ pub(super) fn handle_notification(
             match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                 Ok(config) => {
                     state.config = Arc::new(config);
+                    reload_ai_semantic_search_config(state);
                     // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                     // the registry in sync when users toggle settings.
                     state.load_extensions();
@@ -501,3 +504,39 @@ pub(super) fn handle_notification(
     Ok(())
 }
 
+fn reload_ai_semantic_search_config(state: &mut ServerState) {
+    // Best-effort: stop any in-flight semantic-search indexing before swapping config/search
+    // engines. This avoids continuing to churn on a stale configuration after `nova.toml` is
+    // edited.
+    state.semantic_search_workspace_index_cancel.cancel();
+
+    state.ai_config = state.config.ai.clone();
+    state.ai_privacy_excluded_matcher =
+        Arc::new(ExcludedPathMatcher::from_config(&state.ai_config.privacy));
+
+    {
+        let mut search = state
+            .semantic_search
+            .write()
+            .unwrap_or_else(|err| err.into_inner());
+        *search = nova_ai::semantic_search_from_config(&state.ai_config);
+    }
+
+    // Clear + reindex currently open documents so overlays remain present in the semantic-search
+    // index even when workspace indexing is disabled/unavailable.
+    {
+        let mut search = state
+            .semantic_search
+            .write()
+            .unwrap_or_else(|err| err.into_inner());
+        search.clear();
+    }
+
+    for file_id in state.analysis.vfs.open_documents().snapshot() {
+        state.semantic_search_index_open_document(file_id);
+    }
+
+    // Best-effort: restart workspace indexing so new config settings take effect without a
+    // server restart.
+    state.start_semantic_search_workspace_indexing();
+}

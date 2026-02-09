@@ -148,6 +148,9 @@ mod suite {
     #[path = "semantic_search_search_stdio.rs"]
     mod semantic_search_search_stdio;
     #[cfg(feature = "ai")]
+    #[path = "semantic_search_config_reload_stdio.rs"]
+    mod semantic_search_config_reload_stdio;
+    #[cfg(feature = "ai")]
     #[path = "semantic_search_reindex_stdio.rs"]
     mod semantic_search_reindex_stdio;
     #[cfg(feature = "ai")]
