@@ -1003,6 +1003,7 @@ fn does_not_warn_about_completion_ranking_timeout_when_above_threshold() {
 [ai]
 enabled = true
 api_key = "secret"
+cache_enabled = true
 
 [ai.privacy]
 local_only = false
@@ -1022,6 +1023,41 @@ completion_ranking_ms = 250
 
     assert!(diagnostics.errors.is_empty());
     assert!(diagnostics.warnings.is_empty());
+}
+
+#[test]
+fn warns_when_completion_ranking_cache_is_disabled_for_cloud_provider() {
+    let text = r#"
+[ai]
+enabled = true
+api_key = "secret"
+cache_enabled = false
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "open_ai"
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 250
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::AiCompletionRankingCacheDisabled {
+            toml_path: "ai.cache_enabled".to_string(),
+            provider: AiProviderKind::OpenAi,
+            message: "completion ranking is enabled with a non-local AI provider, but ai.cache_enabled=false; consider setting ai.cache_enabled=true to reduce repeated provider traffic (note: caching retains model output in memory).".to_string(),
+        }]
+    );
 }
 
 #[test]

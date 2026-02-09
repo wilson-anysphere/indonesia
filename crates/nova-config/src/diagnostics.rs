@@ -60,6 +60,11 @@ pub enum ConfigWarning {
         timeout_ms: u64,
         message: String,
     },
+    AiCompletionRankingCacheDisabled {
+        toml_path: String,
+        provider: crate::AiProviderKind,
+        message: String,
+    },
     ExtensionsWasmPathMissing {
         toml_path: String,
         resolved: PathBuf,

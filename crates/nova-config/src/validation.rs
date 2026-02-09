@@ -587,6 +587,32 @@ fn validate_ai(
             });
     }
 
+    if config.ai.features.completion_ranking
+        && !config.ai.cache_enabled
+        && !config.ai.privacy.local_only
+        && config.ai.timeouts.completion_ranking_ms
+            >= COMPLETION_RANKING_CLOUD_PROVIDER_TIMEOUT_WARN_THRESHOLD_MS
+    {
+        let provider_is_non_local = match config.ai.provider.kind {
+            AiProviderKind::InProcessLlama => false,
+            AiProviderKind::OpenAi
+            | AiProviderKind::Anthropic
+            | AiProviderKind::Gemini
+            | AiProviderKind::AzureOpenAi => true,
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                !url_is_loopback(&config.ai.provider.url)
+            }
+        };
+
+        if provider_is_non_local {
+            out.warnings.push(ConfigWarning::AiCompletionRankingCacheDisabled {
+                toml_path: "ai.cache_enabled".to_string(),
+                provider: config.ai.provider.kind.clone(),
+                message: "completion ranking is enabled with a non-local AI provider, but ai.cache_enabled=false; consider setting ai.cache_enabled=true to reduce repeated provider traffic (note: caching retains model output in memory).".to_string(),
+            });
+        }
+    }
+
     if config.ai.features.multi_token_completion
         && config.ai.timeouts.multi_token_completion_ms == 0
     {
