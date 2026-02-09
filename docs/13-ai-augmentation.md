@@ -511,8 +511,8 @@ These knobs can be overridden independently under `[ai.privacy]`.
 Depending on the editor integration, these may be surfaced as settings prefixed with `nova.`
 (for example: `nova.ai.privacy.allow_cloud_code_edits`).
 
-Explain-only actions are always allowed regardless of these **code-edit gating** settings (but they
-are still subject to `ai.privacy.excluded_paths`).
+Explain-only actions are always allowed regardless of these **code-edit gating** settings (but
+`ai.privacy.excluded_paths` can still force Nova to omit file-backed code context from the prompt).
 
 ### Cloud multi-token completion policy (method-chain suggestions)
 
@@ -554,21 +554,36 @@ sent to an LLM provider (local or cloud).
 
 **Behavior:**
 
-When a file matches `excluded_paths`, Nova automatically disables AI features that would need to
-include that file’s contents in a prompt, including:
+`excluded_paths` is enforced server-side in the LSP request handlers
+(`crates/nova-lsp/src/stdio_ai.rs`) and again during prompt construction
+(`crates/nova-ai/src/features.rs`). It applies even if a client supplies its own code snippets.
 
-- multi-token completions
-- AI code actions that produce patches / file edits
-- semantic search indexing (excluded files are omitted from the semantic index and therefore cannot
-  be surfaced as related-code context)
+Nova’s behavior depends on the AI action:
 
-If the **focal file** for an AI request matches `excluded_paths`, the LSP integration rejects the
-request (for example: `nova/ai/explainError`, `nova/ai/generateMethodBody`, `nova/ai/generateTests`)
-instead of calling the model.
+1. **Explain-only actions** (for example: `nova/ai/explainError` and diff-based `codeReview`
+   prompts) are **allowed**, even when the focal file matches `excluded_paths`.
 
-When an AI request is otherwise allowed, any “extra files” / “related code” context items whose
-paths match `excluded_paths` are omitted from the prompt (and Nova adds a generic placeholder so the
-model can tell that some context was intentionally removed).
+   When the focal file is excluded, Nova builds a *diagnostic-only* prompt:
+
+   - file-backed source text is not included (client-supplied `code` is ignored)
+   - file path / range metadata is omitted to avoid leaking excluded paths
+   - the prompt includes a placeholder such as `[code context omitted due to excluded_paths]`
+
+2. **Patch-based code edits** (for example: `nova/ai/generateMethodBody` and
+   `nova/ai/generateTests`) are **rejected** when the focal/target file matches `excluded_paths`
+   (the server returns an error *before* calling the model).
+
+   Other edit-like features that require file-backed prompts (such as multi-token completions) are
+   also disabled for excluded files.
+
+3. **Semantic search indexing** omits excluded files entirely (they are not embedded/indexed and
+   therefore cannot be surfaced as related-code context).
+
+4. **Extra context items**: when an AI request is otherwise allowed, any “extra files” /
+   “related code” context items whose paths match `excluded_paths` are omitted from the prompt. If
+   anything was omitted, Nova injects a synthetic placeholder snippet such as
+   `[some context omitted due to excluded_paths]` so the model can tell context was intentionally
+   removed.
 
 ---
 

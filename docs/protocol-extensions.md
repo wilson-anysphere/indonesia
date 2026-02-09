@@ -1020,6 +1020,22 @@ via `workspace/applyEdit` and return `null` (on success).
 All AI requests accept an optional `workDoneToken` (standard LSP work-done progress token). When
 present, the server emits `$/progress` notifications for user-visible progress.
 
+#### Privacy: `ai.privacy.excluded_paths`
+
+`ai.privacy.excluded_paths` is a server-side allow/deny list for **file-backed** AI context.
+Behavior depends on the operation:
+
+- **Explain-only** requests (e.g. `nova/ai/explainError`) are still accepted for excluded files, but
+  the server omits file-backed source text and file path metadata from the prompt (it will ignore
+  any client-supplied `code` snippet for excluded files).
+- **Patch-based code edits** (e.g. `nova/ai/generateMethodBody`, `nova/ai/generateTests`) are
+  rejected when the target file is excluded.
+- Any additional context snippets whose paths match `excluded_paths` (semantic-search related code,
+  “extra files”) are omitted and replaced with an omission placeholder.
+
+See `crates/nova-lsp/src/stdio_ai.rs` (request-level enforcement) and `crates/nova-ai/src/features.rs`
+(prompt sanitization).
+
 ### `nova/ai/explainError`
 
 - **Kind:** request
