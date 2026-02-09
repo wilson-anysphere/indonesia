@@ -381,18 +381,38 @@ function jsonStringifyBestEffort(value: unknown): string {
 }
 
 async function sleep(ms: number, token?: vscode.CancellationToken): Promise<void> {
+  if (token?.isCancellationRequested) {
+    return;
+  }
+
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sub: vscode.Disposable | undefined;
+
+    const finish = () => {
+      if (done) {
+        return;
+      }
+      done = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      sub?.dispose();
+      resolve();
+    };
 
     if (!token) {
+      timer = setTimeout(finish, ms);
       return;
     }
 
-    const sub = token.onCancellationRequested(() => {
-      clearTimeout(timer);
-      sub.dispose();
-      resolve();
-    });
+    timer = setTimeout(finish, ms);
+    const subscription = token.onCancellationRequested(finish);
+    sub = subscription;
+    if (done) {
+      subscription.dispose();
+    }
   });
 }
 
