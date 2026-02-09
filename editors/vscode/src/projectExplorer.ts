@@ -1519,7 +1519,7 @@ async function showProjectModel(cache: ProjectModelCache, request: NovaRequest, 
         'Generate Bug Report',
       );
       if (picked === 'Generate Bug Report') {
-        await vscode.commands.executeCommand('nova.bugReport');
+        await vscode.commands.executeCommand('nova.bugReport', workspace);
       }
       return;
     }
@@ -1574,7 +1574,7 @@ async function showProjectConfiguration(
         'Generate Bug Report',
       );
       if (picked === 'Generate Bug Report') {
-        await vscode.commands.executeCommand('nova.bugReport');
+        await vscode.commands.executeCommand('nova.bugReport', workspace);
       }
       return;
     }

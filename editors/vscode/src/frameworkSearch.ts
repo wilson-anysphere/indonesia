@@ -164,7 +164,7 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
           return;
         }
         if (isSafeModeError(err)) {
-          await showSafeModeError();
+          await showSafeModeError(workspaceFolder);
           return;
         }
 
@@ -557,13 +557,13 @@ function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vs
   return new vscode.Range(start, end);
 }
 
-async function showSafeModeError(): Promise<void> {
+async function showSafeModeError(workspaceFolder: vscode.WorkspaceFolder): Promise<void> {
   const picked = await vscode.window.showErrorMessage(
     'Nova: nova-lsp is running in safe mode. Framework search is unavailable. ' +
       'Run “Nova: Generate Bug Report” to help diagnose the issue.',
     'Generate Bug Report',
   );
   if (picked === 'Generate Bug Report') {
-    await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+    await vscode.commands.executeCommand(BUG_REPORT_COMMAND, workspaceFolder);
   }
 }

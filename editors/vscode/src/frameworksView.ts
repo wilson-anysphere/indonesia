@@ -340,6 +340,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
                 {
                   command: 'nova.bugReport',
                   title: 'Generate Bug Report',
+                  arguments: [element.workspaceFolder],
                 },
               ),
             ]
