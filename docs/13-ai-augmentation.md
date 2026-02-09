@@ -745,14 +745,18 @@ set server-side via:
 
 Nova’s behavior depends on the AI action:
 
-1. **Explain-only actions** (for example: `nova/ai/explainError` and diff-based `codeReview`
-   prompts) are **allowed**, even when the focal file matches `excluded_paths`.
+1. **Explain-only actions** (for example: `nova/ai/explainError` and `nova/ai/codeReview`) are
+   **allowed**, even when the focal file matches `excluded_paths`.
 
-   When the focal file is excluded, Nova builds a *diagnostic-only* prompt:
+   When the focal file is excluded:
 
-   - file-backed source text is not included (client-supplied `code` is ignored)
-   - file path / range metadata is omitted to avoid leaking excluded paths
-   - the prompt includes a placeholder such as `[code context omitted due to excluded_paths]`
+   - For `explainError`, Nova builds a *diagnostic-only* prompt:
+     - file-backed source text is not included (client-supplied `code` is ignored)
+     - file path / range metadata is omitted to avoid leaking excluded paths
+     - the prompt includes a placeholder such as `[code context omitted due to excluded_paths]`
+   - For `codeReview`, if the request includes a `uri` that matches `excluded_paths`, Nova replaces
+     the diff with a placeholder such as `[diff omitted due to excluded_paths]` before calling the
+     model.
 
 2. **Completion ranking** is **skipped** when the focal file matches `excluded_paths` (the server
    returns the baseline completion ordering).
