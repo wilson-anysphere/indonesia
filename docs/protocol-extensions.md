@@ -1155,8 +1155,8 @@ Output format (model response):
   code-referencing suggestion when possible (file/function/hunk + rationale + proposed fix snippet).
 
 Note: the diff/context may be incomplete because some file sections can be omitted by
-`ai.privacy.excluded_paths`. In that case, the review may be more general and should call out the
-missing context.
+`ai.privacy.excluded_paths`, and very large diffs may be truncated to fit context limits. In those
+cases, the review may be more general and should call out the missing context.
 
 #### Side effects
 

@@ -37,6 +37,8 @@ Notes:
 - The diff/context you receive may be incomplete because some files or hunks can be omitted by
   `excluded_paths` privacy filtering. Do not assume missing context; call out limitations when
   relevant.
+- The diff may also be truncated to fit context limits. If you notice truncation/omission markers,
+  mention that the review is necessarily partial.
 - Focus on actionable feedback with concrete, code-referencing suggestions.
 
 ## Diff
