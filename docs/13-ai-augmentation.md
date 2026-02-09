@@ -373,7 +373,7 @@ Example output:
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  COMPLETION RANKING                                              │
-│  • LLM-backed reordering via `ai.provider`                       │
+│  • LLM-backed reordering via `ai.provider` (local or cloud)      │
 │  • Numeric candidate IDs in prompt; JSON array response          │
 │  • Guarded by `ai.timeouts.completion_ranking_ms` + fallback     │
 │  • In-memory cache when `ai.cache_enabled=true`                  │
