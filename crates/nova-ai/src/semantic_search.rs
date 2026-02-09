@@ -1762,17 +1762,17 @@ mod embeddings {
         struct VariableDimsEmbedder;
 
         impl Embedder for VariableDimsEmbedder {
-            fn embed(&self, text: &str) -> Vec<f32> {
+            fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
                 if text.contains("EMPTY") {
-                    return Vec::new();
+                    return Ok(Vec::new());
                 }
 
                 // Return different dimensionalities based on content so rebuild_index_locked must
                 // skip some docs and size the HNSW index based on the remaining inserted vectors.
                 if text.contains("DIM3") {
-                    vec![1.0, 0.0, 0.0]
+                    Ok(vec![1.0, 0.0, 0.0])
                 } else {
-                    vec![1.0, 0.0]
+                    Ok(vec![1.0, 0.0])
                 }
             }
         }

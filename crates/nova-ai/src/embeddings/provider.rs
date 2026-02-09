@@ -2,13 +2,17 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
 
+use super::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey, DISK_CACHE_NAMESPACE_V1};
 use super::EmbeddingsClient;
 
 pub(super) fn provider_embeddings_client_from_config(
@@ -24,6 +28,10 @@ pub(super) fn provider_embeddings_client_from_config(
         .model
         .clone()
         .unwrap_or_else(|| config.provider.model.clone());
+
+    let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
+        .map(Arc::new)
+        .ok();
 
     match &config.provider.kind {
         AiProviderKind::AzureOpenAi => {
@@ -41,35 +49,258 @@ pub(super) fn provider_embeddings_client_from_config(
                 .clone()
                 .unwrap_or_else(|| "2024-02-01".to_string());
 
-            Ok(Box::new(AzureOpenAiEmbeddingsClient::new(
+            let base = AzureOpenAiEmbeddingsClient::new(
                 config.provider.url.clone(),
                 api_key,
                 deployment,
                 api_version,
                 timeout,
-            )?))
+            )?;
+            let endpoint_id = base.endpoint_id()?;
+            let cached = CachedEmbeddingsClient::new(
+                Box::new(base),
+                "azure_open_ai",
+                endpoint_id,
+                // Azure uses deployment-bound embeddings. Include it as the model id so caches don't
+                // cross-contaminate deployments.
+                cached_model_id_for_azure(config)?,
+                disk_cache,
+            );
+            Ok(Box::new(cached))
         }
         AiProviderKind::OpenAi => {
             let api_key = config
                 .api_key
                 .clone()
                 .ok_or_else(|| AiError::InvalidConfig("OpenAI embeddings require ai.api_key".into()))?;
-            Ok(Box::new(OpenAiCompatibleEmbeddingsClient::new(
+            let base = OpenAiCompatibleEmbeddingsClient::new(
                 config.provider.url.clone(),
                 model.clone(),
                 Some(api_key),
                 timeout,
-            )?))
+            )?;
+            let endpoint_id = base.embeddings_endpoint_id()?;
+            let cached = CachedEmbeddingsClient::new(
+                Box::new(base),
+                "openai",
+                endpoint_id,
+                model,
+                disk_cache,
+            );
+            Ok(Box::new(cached))
         }
-        AiProviderKind::OpenAiCompatible => Ok(Box::new(OpenAiCompatibleEmbeddingsClient::new(
-            config.provider.url.clone(),
-            model,
-            config.api_key.clone(),
-            timeout,
-        )?)),
+        AiProviderKind::OpenAiCompatible => {
+            let base = OpenAiCompatibleEmbeddingsClient::new(
+                config.provider.url.clone(),
+                model.clone(),
+                config.api_key.clone(),
+                timeout,
+            )?;
+            let endpoint_id = base.embeddings_endpoint_id()?;
+            let cached = CachedEmbeddingsClient::new(
+                Box::new(base),
+                "openai_compatible",
+                endpoint_id,
+                model,
+                disk_cache,
+            );
+            Ok(Box::new(cached))
+        }
         other => Err(AiError::InvalidConfig(format!(
             "ai.provider.kind = {other:?} does not support provider-backed embeddings"
         ))),
+    }
+}
+
+fn cached_model_id_for_azure(config: &AiConfig) -> Result<String, AiError> {
+    // `AzureOpenAiEmbeddingsClient` is keyed by deployment. If we don't have a deployment, the
+    // config is already invalid; treat it as an error here so the cache key remains deterministic.
+    config
+        .provider
+        .azure_deployment
+        .clone()
+        .ok_or_else(|| {
+            AiError::InvalidConfig(
+                "Azure OpenAI embeddings require ai.provider.azure_deployment".into(),
+            )
+        })
+}
+
+struct CachedEmbeddingsClient {
+    inner: Box<dyn EmbeddingsClient>,
+    backend_id: &'static str,
+    endpoint_id: String,
+    model: String,
+    memory_cache: Arc<Mutex<HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>>>,
+    disk_cache: Option<Arc<DiskEmbeddingCache>>,
+}
+
+impl CachedEmbeddingsClient {
+    fn new(
+        inner: Box<dyn EmbeddingsClient>,
+        backend_id: &'static str,
+        endpoint_id: String,
+        model: String,
+        disk_cache: Option<Arc<DiskEmbeddingCache>>,
+    ) -> Self {
+        Self {
+            inner,
+            backend_id,
+            endpoint_id,
+            model,
+            memory_cache: Arc::new(Mutex::new(HashMap::new())),
+            disk_cache,
+        }
+    }
+
+    fn key_for(&self, input: &str) -> EmbeddingCacheKey {
+        EmbeddingCacheKey::new(
+            DISK_CACHE_NAMESPACE_V1,
+            self.backend_id,
+            &self.endpoint_id,
+            &self.model,
+            input.as_bytes(),
+        )
+    }
+}
+
+#[async_trait]
+impl EmbeddingsClient for CachedEmbeddingsClient {
+    async fn embed(
+        &self,
+        input: &[String],
+        cancel: CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
+        }
+
+        let mut out = vec![None::<Vec<f32>>; input.len()];
+        let mut miss_indices = Vec::new();
+        let mut miss_keys = Vec::new();
+        let mut miss_inputs = Vec::new();
+
+        {
+            let cache = self.memory_cache.lock().await;
+            for (idx, text) in input.iter().enumerate() {
+                let key = self.key_for(text);
+                if let Some(hit) = cache.get(&key) {
+                    out[idx] = Some((**hit).clone());
+                } else {
+                    miss_indices.push(idx);
+                    miss_keys.push(key);
+                    miss_inputs.push(text.clone());
+                }
+            }
+        }
+
+        // Disk cache lookups.
+        if let Some(disk) = self.disk_cache.clone() {
+            let disk_keys = miss_keys.clone();
+            let expected = disk_keys.len();
+            let disk_hits = match tokio::task::spawn_blocking(move || {
+                disk_keys
+                    .into_iter()
+                    .map(|key| disk.load(key).ok().flatten())
+                    .collect::<Vec<_>>()
+            })
+            .await
+            {
+                Ok(hits) if hits.len() == expected => hits,
+                _ => vec![None; expected],
+            };
+
+            let mut still_indices = Vec::new();
+            let mut still_keys = Vec::new();
+            let mut still_inputs = Vec::new();
+            let mut memory_inserts = Vec::new();
+
+            for ((idx, key), hit) in miss_indices
+                .into_iter()
+                .zip(miss_keys.into_iter())
+                .zip(disk_hits.into_iter())
+            {
+                if let Some(vec) = hit {
+                    out[idx] = Some(vec.clone());
+                    memory_inserts.push((key, vec));
+                } else {
+                    still_indices.push(idx);
+                    still_keys.push(key);
+                    // `miss_inputs` matched the same order as the keys.
+                }
+            }
+
+            // Rebuild still_inputs based on still_indices to preserve ordering.
+            for idx in &still_indices {
+                if let Some(text) = input.get(*idx) {
+                    still_inputs.push(text.clone());
+                }
+            }
+
+            if !memory_inserts.is_empty() {
+                let mut cache = self.memory_cache.lock().await;
+                for (key, vec) in memory_inserts {
+                    cache.insert(key, Arc::new(vec));
+                }
+            }
+
+            miss_indices = still_indices;
+            miss_keys = still_keys;
+            miss_inputs = still_inputs;
+        }
+
+        // Network for cache misses.
+        if !miss_inputs.is_empty() {
+            let embeddings = self.inner.embed(&miss_inputs, cancel).await?;
+            if embeddings.len() != miss_inputs.len() {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "embedder returned unexpected batch size: expected {}, got {}",
+                    miss_inputs.len(),
+                    embeddings.len()
+                )));
+            }
+
+            let mut memory_inserts = Vec::with_capacity(embeddings.len());
+            let mut disk_inserts = Vec::with_capacity(embeddings.len());
+
+            for ((orig_idx, key), embedding) in miss_indices
+                .into_iter()
+                .zip(miss_keys.into_iter())
+                .zip(embeddings.into_iter())
+            {
+                out[orig_idx] = Some(embedding.clone());
+                memory_inserts.push((key, embedding.clone()));
+                disk_inserts.push((key, embedding));
+            }
+
+            if !memory_inserts.is_empty() {
+                let mut cache = self.memory_cache.lock().await;
+                for (key, vec) in memory_inserts {
+                    cache.insert(key, Arc::new(vec));
+                }
+            }
+
+            if let Some(disk) = self.disk_cache.clone() {
+                let _ = tokio::task::spawn_blocking(move || {
+                    for (key, vec) in disk_inserts {
+                        let _ = disk.store(key, &vec);
+                    }
+                })
+                .await;
+            }
+        }
+
+        out.into_iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                item.ok_or_else(|| {
+                    AiError::UnexpectedResponse(format!("missing embedding output for index {idx}"))
+                })
+            })
+            .collect()
     }
 }
 
@@ -108,6 +339,19 @@ impl AzureOpenAiEmbeddingsClient {
             timeout,
             client,
         })
+    }
+
+    fn endpoint_id(&self) -> Result<String, AiError> {
+        let mut url = self
+            .endpoint
+            .join(&format!(
+                "openai/deployments/{}/embeddings",
+                self.deployment
+            ))
+            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        url.query_pairs_mut()
+            .append_pair("api-version", &self.api_version);
+        Ok(url.to_string())
     }
 }
 
@@ -209,6 +453,10 @@ impl OpenAiCompatibleEmbeddingsClient {
         } else {
             Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))?)
         }
+    }
+
+    fn embeddings_endpoint_id(&self) -> Result<String, AiError> {
+        Ok(self.endpoint("/embeddings")?.to_string())
     }
 }
 

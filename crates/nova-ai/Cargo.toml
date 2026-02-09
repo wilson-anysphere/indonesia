@@ -38,4 +38,6 @@ embeddings = ["dep:hnsw_rs", "dep:rayon", "reqwest/blocking"]
 [dev-dependencies]
 httpmock = "0.7"
 hyper = { version = "0.14", features = ["server", "http1", "tcp", "stream"] }
+tempfile = "3"
 tracing-subscriber = "0.3"
+walkdir = "2"

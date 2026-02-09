@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{AiError, Embedder as _};
 use nova_config::{AiConfig, AiEmbeddingsBackend};
 
+mod disk_cache;
 mod provider;
 
 /// An embeddings backend which can produce vector embeddings for batches of input strings.
@@ -17,9 +18,7 @@ pub trait EmbeddingsClient: Send + Sync {
 }
 
 /// Construct an [`EmbeddingsClient`] from runtime config.
-pub fn embeddings_client_from_config(
-    config: &AiConfig,
-) -> Result<Box<dyn EmbeddingsClient>, AiError> {
+pub fn embeddings_client_from_config(config: &AiConfig) -> Result<Box<dyn EmbeddingsClient>, AiError> {
     match config.embeddings.backend {
         AiEmbeddingsBackend::Hash => Ok(Box::new(LocalEmbeddingsClient::default())),
         AiEmbeddingsBackend::Provider => provider::provider_embeddings_client_from_config(config),
@@ -48,3 +47,4 @@ impl EmbeddingsClient for LocalEmbeddingsClient {
         self.embedder.embed_batch(input)
     }
 }
+
