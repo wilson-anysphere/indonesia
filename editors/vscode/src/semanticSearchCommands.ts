@@ -12,6 +12,8 @@ type SemanticSearchIndexStatusFields = {
   done?: boolean;
   indexedFiles?: number;
   indexedBytes?: number;
+  enabled?: boolean;
+  reason?: string;
 };
 
 export function registerNovaSemanticSearchCommands(
@@ -118,7 +120,7 @@ export function registerNovaSemanticSearchCommands(
                 return status;
               }
 
-              await sleep(1000);
+              await sleep(1000, token);
             }
 
             return undefined;
@@ -196,6 +198,8 @@ function readSemanticSearchIndexStatusFields(payload: unknown): SemanticSearchIn
     done: typeof obj.done === 'boolean' ? obj.done : undefined,
     indexedFiles: typeof obj.indexedFiles === 'number' ? obj.indexedFiles : undefined,
     indexedBytes: typeof obj.indexedBytes === 'number' ? obj.indexedBytes : undefined,
+    enabled: typeof obj.enabled === 'boolean' ? obj.enabled : undefined,
+    reason: typeof obj.reason === 'string' ? obj.reason : undefined,
   };
 }
 
@@ -211,13 +215,15 @@ function formatSemanticSearchIndexSummary(payload: unknown): string | undefined 
 
   const done = semanticSearchIndexingDone(fields);
   const state =
-    fields.currentRunId === 0
-      ? 'not started'
-      : done === true
-        ? 'done'
-        : done === false
-          ? 'in progress'
-          : 'unknown';
+    fields.enabled === false
+      ? 'disabled'
+      : fields.currentRunId === 0
+        ? 'not started'
+        : done === true
+          ? 'done'
+          : done === false
+            ? 'in progress'
+            : 'unknown';
 
   const runInfo =
     typeof fields.currentRunId === 'number' && typeof fields.completedRunId === 'number'
@@ -226,7 +232,12 @@ function formatSemanticSearchIndexSummary(payload: unknown): string | undefined 
         ? `run ${fields.currentRunId}`
         : undefined;
 
-  const parts = [runInfo, filesSuffix, bytesSuffix].filter((value): value is string => Boolean(value));
+  const reasonSuffix =
+    fields.reason && fields.reason.trim().length > 0 && state !== 'done'
+      ? `reason: ${fields.reason.trim()}`
+      : undefined;
+
+  const parts = [runInfo, reasonSuffix, filesSuffix, bytesSuffix].filter((value): value is string => Boolean(value));
   const details = parts.length > 0 ? ` — ${parts.join(', ')}` : '';
   return `Indexing: ${state}${details}`;
 }
@@ -236,8 +247,12 @@ function formatSemanticSearchWaitMessage(fields: SemanticSearchIndexStatusFields
   const indexedBytes = typeof fields.indexedBytes === 'number' ? fields.indexedBytes : undefined;
   const formattedBytes = formatBytes(indexedBytes);
 
+  if (fields.enabled === false) {
+    return 'Semantic search indexing is disabled.';
+  }
+
   if (fields.currentRunId === 0) {
-    return 'Semantic search indexing has not started (currentRunId=0).';
+    return fields.reason ? `Semantic search indexing has not started (reason: ${fields.reason}).` : 'Semantic search indexing has not started (currentRunId=0).';
   }
 
   const filesPart = typeof indexedFiles === 'number' ? `${indexedFiles.toLocaleString()} files` : 'files';
@@ -285,12 +300,6 @@ function formatBytes(bytes: number | undefined): string | undefined {
   return `${rounded} ${units[unitIndex]}`;
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 function jsonStringifyBestEffort(value: unknown): string {
   try {
     const serialized = JSON.stringify(
@@ -308,6 +317,22 @@ function jsonStringifyBestEffort(value: unknown): string {
     const message = formatError(err);
     return `<< Failed to JSON.stringify semantic search status: ${message} >>\n${String(value)}`;
   }
+}
+
+async function sleep(ms: number, token?: vscode.CancellationToken): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+
+    if (!token) {
+      return;
+    }
+
+    const sub = token.onCancellationRequested(() => {
+      clearTimeout(timer);
+      sub.dispose();
+      resolve();
+    });
+  });
 }
 
 async function pickWorkspaceFolderForSemanticSearchCommand(
