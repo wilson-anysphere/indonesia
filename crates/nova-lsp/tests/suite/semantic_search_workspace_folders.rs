@@ -55,6 +55,50 @@ fn semantic_search_index_status(
         .expect("indexStatus result")
 }
 
+fn wait_for_semantic_search_indexing_done(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    expected_run_id: u64,
+) {
+    for attempt in 0..100u64 {
+        let id = 5_000 + attempt as i64;
+        let status = semantic_search_index_status(stdin, stdout, id);
+        let run_id = status.get("currentRunId").and_then(|v| v.as_u64()).unwrap_or(0);
+        let done = status.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+        if run_id == expected_run_id && done {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let status = semantic_search_index_status(stdin, stdout, 9_999);
+    panic!(
+        "timed out waiting for semantic search workspace indexing (expected_run_id={expected_run_id}) status={status:#}"
+    );
+}
+
+fn semantic_search_query(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    id: i64,
+    query: &str,
+) -> Vec<serde_json::Value> {
+    write_jsonrpc_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD,
+            "params": { "query": query, "limit": 10 }
+        }),
+    );
+    let resp = read_response_with_id(stdout, id);
+    resp.pointer("/result/results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
 #[test]
 fn stdio_workspace_folder_add_starts_semantic_search_workspace_indexing_after_initialize_without_root(
 ) {
@@ -188,8 +232,10 @@ fn stdio_workspace_folder_change_restarts_semantic_search_workspace_indexing() {
     std::fs::create_dir_all(&root1).expect("create ws1");
     std::fs::create_dir_all(&root2).expect("create ws2");
 
-    std::fs::write(root1.join("Foo.java"), "class Foo {}").expect("write Foo.java");
-    std::fs::write(root2.join("Bar.java"), "class Bar {}").expect("write Bar.java");
+    let foo_text = r#"class Foo { String token = "fooToken"; }"#;
+    let bar_text = r#"class Bar { String token = "barToken"; }"#;
+    std::fs::write(root1.join("Foo.java"), foo_text).expect("write Foo.java");
+    std::fs::write(root2.join("Bar.java"), bar_text).expect("write Bar.java");
 
     let config_path = temp.path().join("nova.config.toml");
     let config = format!(
@@ -262,6 +308,20 @@ max_tokens = 64
         })
         .expect("expected semantic-search workspace indexing to start for initial root");
 
+    wait_for_semantic_search_indexing_done(&mut stdin, &mut stdout, run_id_1);
+
+    let results_before = semantic_search_query(&mut stdin, &mut stdout, 50, "fooToken");
+    assert!(
+        results_before.iter().any(|result| {
+            result.get("path").and_then(|v| v.as_str()) == Some("Foo.java")
+                && result
+                    .get("snippet")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("fooToken"))
+        }),
+        "expected Foo.java to be indexed under initial root; got {results_before:#?}"
+    );
+
     // Switch to root2 and expect the server to restart semantic-search workspace indexing.
     write_jsonrpc_message(
         &mut stdin,
@@ -294,6 +354,29 @@ max_tokens = 64
 
     assert_ne!(run_id_2, 0);
     assert_ne!(run_id_2, run_id_1);
+
+    wait_for_semantic_search_indexing_done(&mut stdin, &mut stdout, run_id_2);
+
+    let results_after = semantic_search_query(&mut stdin, &mut stdout, 51, "barToken");
+    assert!(
+        results_after.iter().any(|result| {
+            result.get("path").and_then(|v| v.as_str()) == Some("Bar.java")
+                && result
+                    .get("snippet")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("barToken"))
+        }),
+        "expected Bar.java to be indexed after root switch; got {results_after:#?}"
+    );
+
+    let results_old = semantic_search_query(&mut stdin, &mut stdout, 52, "fooToken");
+    assert!(
+        results_old.iter().all(|result| {
+            let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            !path.ends_with("Foo.java")
+        }),
+        "expected old workspace results to be cleared after root switch; got {results_old:#?}"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
