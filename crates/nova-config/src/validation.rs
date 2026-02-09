@@ -597,7 +597,7 @@ fn validate_ai(
             });
         }
 
-        if config.ai.embeddings.max_memory_bytes == 0 {
+        if config.ai.embeddings.max_memory_bytes.0 == 0 {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.embeddings.max_memory_bytes".to_string(),
                 message: "must be >= 1 when ai.embeddings.enabled is true".to_string(),

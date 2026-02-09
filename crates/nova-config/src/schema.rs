@@ -25,6 +25,29 @@ pub(crate) fn url_schema(
     }))
 }
 
+/// Schema for [`crate::ByteSize`]-like values.
+///
+/// These values are accepted in `nova.toml` as either an integer byte count or a human-friendly
+/// string such as `"512MiB"`.
+pub(crate) fn byte_size_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let _ = generator;
+    schema_from_json(json!({
+        "anyOf": [
+            {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0.0
+            },
+            {
+                "type": "string",
+                "minLength": 1
+            }
+        ]
+    }))
+}
+
 fn apply_semantic_constraints(schema: &mut RootSchema) {
     // Encode the most important semantic validation checks into the schema so editor/CI validation
     // catches obvious misconfiguration without running Nova.

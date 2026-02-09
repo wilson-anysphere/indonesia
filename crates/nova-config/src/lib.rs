@@ -894,9 +894,13 @@ pub struct AiEmbeddingsConfig {
     pub batch_size: usize,
 
     /// Soft memory budget (in bytes) for embedding models / caches.
+    ///
+    /// Accepts either:
+    /// - an integer byte count (e.g. `536870912`)
+    /// - a human-friendly string (e.g. `"512MiB"`, `"2G"`)
     #[serde(default = "default_embeddings_max_memory_bytes")]
-    #[schemars(range(min = 1))]
-    pub max_memory_bytes: usize,
+    #[schemars(schema_with = "crate::schema::byte_size_schema", range(min = 1))]
+    pub max_memory_bytes: ByteSize,
 }
 
 fn default_embeddings_model_dir() -> PathBuf {
@@ -907,8 +911,8 @@ fn default_embeddings_batch_size() -> usize {
     32
 }
 
-fn default_embeddings_max_memory_bytes() -> usize {
-    512 * 1024 * 1024
+fn default_embeddings_max_memory_bytes() -> ByteSize {
+    ByteSize(512 * 1024 * 1024)
 }
 
 impl Default for AiEmbeddingsConfig {

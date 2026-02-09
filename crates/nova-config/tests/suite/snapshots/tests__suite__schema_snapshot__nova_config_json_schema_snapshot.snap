@@ -994,10 +994,19 @@ expression: schema
           "type": "boolean"
         },
         "max_memory_bytes": {
-          "description": "Soft memory budget (in bytes) for embedding models / caches.",
+          "description": "Soft memory budget (in bytes) for embedding models / caches.\n\nAccepts either: - an integer byte count (e.g. `536870912`) - a human-friendly string (e.g. `\"512MiB\"`, `\"2G\"`)",
           "default": 536870912,
-          "type": "integer",
-          "format": "uint",
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
           "minimum": 1.0
         },
         "model": {
