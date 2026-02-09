@@ -11,6 +11,7 @@ mod embedding_disk_cache;
 mod embedding_batching;
 mod embeddings_client_factory;
 mod embedding_semantic_search;
+mod embeddings_retry;
 mod explain_error_providers;
 mod in_process_llama_smoke;
 #[cfg(all(feature = "embeddings", feature = "embeddings-local"))]

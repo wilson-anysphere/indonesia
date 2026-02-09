@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Some sandbox environments set `RUSTUP_TOOLCHAIN` globally, which overrides the repository's
-# pinned toolchain in `rust-toolchain.toml`. Nova requires the pinned toolchain, so prefer the
-# toolchain file by default. Callers can still override the toolchain via `+<toolchain>` (handled
-# below).
-unset RUSTUP_TOOLCHAIN
-
 # High-throughput cargo wrapper for multi-agent hosts.
 #
 # Goals:
@@ -148,16 +142,6 @@ fi
 deny_unscoped_cargo_test "$@"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Nova pins its Rust toolchain via `rust-toolchain.toml` (kept in sync with CI). Some environments
-# (notably shared runners / agent sandboxes) export `RUSTUP_TOOLCHAIN` globally, which would
-# otherwise override the repo pin and lead to hard-to-debug fmt/clippy drift.
-#
-# Prefer the repo pin by clearing the ambient override unless the caller explicitly selected a
-# toolchain via rustup's `+<toolchain>` syntax.
-if [[ "${1:-}" != +* ]]; then
-  unset RUSTUP_TOOLCHAIN || true
-fi
 
 # Some environments (including multi-agent sandboxes) ship with a global Cargo config that enables
 # `sccache` as a `rustc` wrapper. When the daemon isn't available this causes all builds/tests to

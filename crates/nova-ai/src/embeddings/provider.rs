@@ -3,18 +3,137 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::client::validate_local_only_url;
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
+use nova_metrics::MetricsRegistry;
 
 use super::cache::{EmbeddingCacheKey as MemoryCacheKey, EmbeddingCacheKeyBuilder, EmbeddingVectorCache};
 use super::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1};
 use super::EmbeddingsClient;
+
+const AI_EMBEDDINGS_RETRY_METRIC: &str = "ai/embeddings/retry";
+
+#[derive(Debug, Clone)]
+struct RetryConfig {
+    max_retries: usize,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(2),
+        }
+    }
+}
+
+fn should_retry(err: &AiError) -> bool {
+    match err {
+        AiError::Cancelled => false,
+        AiError::Timeout => true,
+        AiError::Http(err) => {
+            if err.is_timeout() || err.is_connect() {
+                return true;
+            }
+            let Some(status) = err.status() else {
+                // Network errors without a status are generally worth retrying.
+                return true;
+            };
+            status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error()
+        }
+        _ => false,
+    }
+}
+
+async fn backoff_sleep(
+    retry: &RetryConfig,
+    attempt: usize,
+    max_delay: Duration,
+    cancel: &CancellationToken,
+) -> Result<(), AiError> {
+    let factor = 2u32.saturating_pow((attempt.saturating_sub(1)).min(16) as u32);
+    let mut delay = retry.initial_backoff.saturating_mul(factor);
+    if delay > retry.max_backoff {
+        delay = retry.max_backoff;
+    }
+    if delay > max_delay {
+        delay = max_delay;
+    }
+
+    tokio::select! {
+        _ = cancel.cancelled() => Err(AiError::Cancelled),
+        _ = tokio::time::sleep(delay) => Ok(()),
+    }
+}
+
+async fn with_retry<T, F, Fut>(
+    provider_label: &'static str,
+    timeout: Duration,
+    retry: &RetryConfig,
+    cancel: &CancellationToken,
+    mut op: F,
+) -> Result<T, AiError>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = Result<T, AiError>>,
+{
+    let metrics = MetricsRegistry::global();
+    let operation_start = Instant::now();
+    let mut attempt = 0usize;
+
+    loop {
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
+        }
+
+        let remaining = timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
+
+        if attempt > 0 {
+            metrics.record_request(AI_EMBEDDINGS_RETRY_METRIC, Duration::from_micros(1));
+        }
+
+        let result = tokio::select! {
+            _ = cancel.cancelled() => Err(AiError::Cancelled),
+            res = tokio::time::timeout(remaining, op(remaining)) => match res {
+                Ok(out) => out,
+                Err(_) => Err(AiError::Timeout),
+            },
+        };
+
+        match result {
+            Ok(out) => return Ok(out),
+            Err(err) if attempt < retry.max_retries && should_retry(&err) => {
+                attempt += 1;
+                tracing::warn!(
+                    provider = provider_label,
+                    attempt,
+                    error = %err,
+                    "embeddings request failed, retrying"
+                );
+
+                let remaining = timeout.saturating_sub(operation_start.elapsed());
+                if remaining == Duration::ZERO {
+                    return Err(AiError::Timeout);
+                }
+                backoff_sleep(retry, attempt, remaining, cancel).await?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
 
 pub(super) fn provider_embeddings_client_from_config(
     config: &AiConfig,
@@ -556,7 +675,11 @@ impl AzureOpenAiEmbeddingsClient {
         Ok(url.to_string())
     }
 
-    async fn embed_once(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+    async fn embed_once(
+        &self,
+        input: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
         let mut url = self
             .endpoint
             .join(&format!(
@@ -575,7 +698,7 @@ impl AzureOpenAiEmbeddingsClient {
             .client
             .post(url)
             .json(&body)
-            .timeout(self.timeout)
+            .timeout(timeout)
             .send()
             .await?
             .error_for_status()?;
@@ -583,7 +706,6 @@ impl AzureOpenAiEmbeddingsClient {
         parse_openai_embeddings(parsed, input.len())
     }
 }
-
 #[async_trait]
 impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
     async fn embed(
@@ -594,24 +716,33 @@ impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-
+        let retry = RetryConfig::default();
+        let operation_start = Instant::now();
         let batch_size = self.batch_size.max(1);
-        let fut = async {
-            if input.len() <= batch_size {
-                return self.embed_once(input).await;
+
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.chunks(batch_size) {
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
             }
 
-            let mut out = Vec::with_capacity(input.len());
-            for chunk in input.chunks(batch_size) {
-                out.extend(self.embed_once(chunk).await?);
+            let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
             }
-            Ok(out)
-        };
 
-        tokio::select! {
-            _ = cancel.cancelled() => Err(AiError::Cancelled),
-            res = fut => res,
+            let embeddings = with_retry(
+                "azure_open_ai",
+                remaining,
+                &retry,
+                &cancel,
+                |timeout| self.embed_once(chunk, timeout),
+            )
+            .await?;
+            out.extend(embeddings);
         }
+
+        Ok(out)
     }
 }
 
@@ -677,14 +808,18 @@ impl OpenAiCompatibleEmbeddingsClient {
         Ok(self.endpoint("/embeddings")?.to_string())
     }
 
-    async fn embed_once(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+    async fn embed_once(
+        &self,
+        input: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
         let url = self.endpoint("/embeddings")?;
         let body = json!({
             "model": &self.model,
             "input": input,
         });
 
-        let mut request = self.client.post(url).json(&body).timeout(self.timeout);
+        let mut request = self.client.post(url).json(&body).timeout(timeout);
         if let Some(key) = self.api_key.as_deref() {
             request = request.bearer_auth(key);
         }
@@ -705,24 +840,33 @@ impl EmbeddingsClient for OpenAiCompatibleEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-
+        let retry = RetryConfig::default();
+        let operation_start = Instant::now();
         let batch_size = self.batch_size.max(1);
-        let fut = async {
-            if input.len() <= batch_size {
-                return self.embed_once(input).await;
+
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.chunks(batch_size) {
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
             }
 
-            let mut out = Vec::with_capacity(input.len());
-            for chunk in input.chunks(batch_size) {
-                out.extend(self.embed_once(chunk).await?);
+            let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
             }
-            Ok(out)
-        };
 
-        tokio::select! {
-            _ = cancel.cancelled() => Err(AiError::Cancelled),
-            res = fut => res,
+            let embeddings = with_retry(
+                "openai_compatible",
+                remaining,
+                &retry,
+                &cancel,
+                |timeout| self.embed_once(chunk, timeout),
+            )
+            .await?;
+            out.extend(embeddings);
         }
+
+        Ok(out)
     }
 }
 
@@ -807,6 +951,7 @@ impl OllamaEmbeddingsClient {
     async fn embed_via_embed_endpoint(
         &self,
         input: &[String],
+        timeout: Duration,
     ) -> Result<Option<Vec<Vec<f32>>>, AiError> {
         let url = self.endpoint("/api/embed")?;
         let body = json!({
@@ -818,7 +963,7 @@ impl OllamaEmbeddingsClient {
             .client
             .post(url)
             .json(&body)
-            .timeout(self.timeout)
+            .timeout(timeout)
             .send()
             .await?;
 
@@ -849,31 +994,59 @@ impl OllamaEmbeddingsClient {
         Ok(Some(embeddings))
     }
 
-    async fn embed_via_legacy_endpoint(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+    async fn embed_via_legacy_endpoint(
+        &self,
+        input: &[String],
+        cancel: &CancellationToken,
+        operation_start: Instant,
+        retry: &RetryConfig,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
         let url = self.endpoint("/api/embeddings")?;
         let mut out = Vec::with_capacity(input.len());
 
         for prompt in input {
-            let body = json!({
-                "model": &self.model,
-                "prompt": prompt,
-            });
-            let response = self
-                .client
-                .post(url.clone())
-                .json(&body)
-                .timeout(self.timeout)
-                .send()
-                .await?
-                .error_for_status()?;
-
-            let parsed: OllamaEmbeddingsResponse = response.json().await?;
-            if parsed.embedding.is_empty() {
-                return Err(AiError::UnexpectedResponse(
-                    "missing `embedding` in Ollama /api/embeddings response".into(),
-                ));
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
             }
-            out.push(parsed.embedding);
+
+            let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
+            }
+
+            let embedding = with_retry(
+                "ollama",
+                remaining,
+                retry,
+                cancel,
+                |timeout| {
+                    let url = url.clone();
+                    async move {
+                        let body = json!({
+                            "model": &self.model,
+                            "prompt": prompt,
+                        });
+                        let response = self
+                            .client
+                            .post(url)
+                            .json(&body)
+                            .timeout(timeout)
+                            .send()
+                            .await?
+                            .error_for_status()?;
+
+                        let parsed: OllamaEmbeddingsResponse = response.json().await?;
+                        if parsed.embedding.is_empty() {
+                            return Err(AiError::UnexpectedResponse(
+                                "missing `embedding` in Ollama /api/embeddings response".into(),
+                            ));
+                        }
+                        Ok(parsed.embedding)
+                    }
+                },
+            )
+            .await?;
+            out.push(embedding);
         }
 
         Ok(out)
@@ -890,36 +1063,68 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
+        let retry = RetryConfig::default();
+        let operation_start = Instant::now();
 
-        let fut = async {
-            let batch_size = self.batch_size.max(1);
-            let mut chunks = input.chunks(batch_size);
-            let Some(first_chunk) = chunks.next() else {
-                return Ok(Vec::new());
-            };
-
-            if let Some(embeddings) = self.embed_via_embed_endpoint(first_chunk).await? {
-                let mut out = Vec::with_capacity(input.len());
-                out.extend(embeddings);
-
-                for chunk in chunks {
-                    let Some(embeddings) = self.embed_via_embed_endpoint(chunk).await? else {
-                        return Err(AiError::UnexpectedResponse(
-                            "ollama /api/embed returned 404 after a successful request".into(),
-                        ));
-                    };
-                    out.extend(embeddings);
-                }
-
-                return Ok(out);
-            }
-            self.embed_via_legacy_endpoint(input).await
+        let batch_size = self.batch_size.max(1);
+        let mut chunks = input.chunks(batch_size);
+        let Some(first_chunk) = chunks.next() else {
+            return Ok(Vec::new());
         };
 
-        tokio::select! {
-            _ = cancel.cancelled() => Err(AiError::Cancelled),
-            res = fut => res,
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
         }
+
+        let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
+
+        let first = with_retry(
+            "ollama",
+            remaining,
+            &retry,
+            &cancel,
+            |timeout| self.embed_via_embed_endpoint(first_chunk, timeout),
+        )
+        .await?;
+
+        if let Some(embeddings) = first {
+            let mut out = Vec::with_capacity(input.len());
+            out.extend(embeddings);
+
+            for chunk in chunks {
+                if cancel.is_cancelled() {
+                    return Err(AiError::Cancelled);
+                }
+
+                let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+                if remaining == Duration::ZERO {
+                    return Err(AiError::Timeout);
+                }
+
+                let Some(embeddings) = with_retry(
+                    "ollama",
+                    remaining,
+                    &retry,
+                    &cancel,
+                    |timeout| self.embed_via_embed_endpoint(chunk, timeout),
+                )
+                .await?
+                else {
+                    return Err(AiError::UnexpectedResponse(
+                        "ollama /api/embed returned 404 after a successful request".into(),
+                    ));
+                };
+                out.extend(embeddings);
+            }
+
+            return Ok(out);
+        }
+
+        self.embed_via_legacy_endpoint(input, &cancel, operation_start, &retry)
+            .await
     }
 }
 
