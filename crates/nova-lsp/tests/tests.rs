@@ -172,6 +172,9 @@ mod suite {
     #[cfg(feature = "ai")]
     #[path = "stdio_ai_env_overrides.rs"]
     mod stdio_ai_env_overrides;
+    #[cfg(feature = "ai")]
+    #[path = "stdio_ai_temperature_env.rs"]
+    mod stdio_ai_temperature_env;
     #[path = "stdio_codelens.rs"]
     mod stdio_codelens;
 }

@@ -877,9 +877,10 @@ from prompts, and Nova avoids attaching file path metadata for excluded files.
 sent to an LLM provider (local or cloud).
 
 When using the legacy env-var AI configuration mode (`NOVA_AI_PROVIDER=...`), provider tuning env
-vars `NOVA_AI_MAX_TOKENS` / `NOVA_AI_CONCURRENCY` can also be used to override
-`ai.provider.max_tokens` / `ai.provider.concurrency` (values are clamped to >= 1). This list can be
-set server-side via:
+vars `NOVA_AI_MAX_TOKENS` / `NOVA_AI_TEMPERATURE` / `NOVA_AI_CONCURRENCY` can also be used to
+override `ai.provider.max_tokens` / `ai.provider.temperature` / `ai.provider.concurrency`
+(`max_tokens`/`concurrency` are clamped to >= 1; `temperature` must be >= 0). This list can be set
+server-side via:
 
 - `NOVA_AI_EXCLUDED_PATHS` — a comma- or newline-separated list of glob patterns (whitespace trimmed;
   empty entries ignored).

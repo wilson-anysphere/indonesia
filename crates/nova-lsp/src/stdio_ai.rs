@@ -1578,6 +1578,24 @@ pub(super) fn load_ai_config_from_env(
       return Err("invalid NOVA_AI_MAX_TOKENS: value is not valid unicode".to_string());
     }
   };
+  let provider_temperature = match std::env::var("NOVA_AI_TEMPERATURE") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<f32>().map_err(|_| {
+        format!("invalid NOVA_AI_TEMPERATURE: `{raw}` (expected a float >= 0)")
+      })?;
+      if value.is_nan() || value < 0.0 {
+        return Err(format!(
+          "invalid NOVA_AI_TEMPERATURE: `{raw}` (expected a float >= 0)"
+        ));
+      }
+      Some(value)
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err("invalid NOVA_AI_TEMPERATURE: value is not valid unicode".to_string());
+    }
+  };
   let provider_concurrency = match std::env::var("NOVA_AI_CONCURRENCY") {
     Ok(raw) => {
       let trimmed = raw.trim();
@@ -1667,6 +1685,7 @@ pub(super) fn load_ai_config_from_env(
   //
   // Supported env vars (legacy env-var based AI wiring):
   // - `NOVA_AI_MAX_TOKENS=<n>` overrides `ai.provider.max_tokens` (values are clamped to >= 1).
+  // - `NOVA_AI_TEMPERATURE=<f>` overrides `ai.provider.temperature` (must be >= 0).
   // - `NOVA_AI_CONCURRENCY=<n>` overrides `ai.provider.concurrency` (values are clamped to >= 1).
   // - `NOVA_AI_RETRY_MAX_RETRIES=<n>` overrides `ai.provider.retry_max_retries`.
   // - `NOVA_AI_RETRY_INITIAL_BACKOFF_MS=<n>` overrides `ai.provider.retry_initial_backoff_ms`
@@ -1736,6 +1755,7 @@ pub(super) fn load_ai_config_from_env(
   if let Some(value) = provider_max_tokens {
     cfg.provider.max_tokens = value;
   }
+  cfg.provider.temperature = provider_temperature;
   if let Some(value) = provider_retry_max_retries {
     cfg.provider.retry_max_retries = value;
   }

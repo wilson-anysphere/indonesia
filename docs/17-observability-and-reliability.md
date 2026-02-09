@@ -88,7 +88,8 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 
 > Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
 > In that mode, provider tuning env vars are supported:
-> `NOVA_AI_MAX_TOKENS=<n>` (overrides `ai.provider.max_tokens`, clamped to >= 1) and
+> `NOVA_AI_MAX_TOKENS=<n>` (overrides `ai.provider.max_tokens`, clamped to >= 1),
+> `NOVA_AI_TEMPERATURE=<f>` (overrides `ai.provider.temperature`, must be >= 0), and
 > `NOVA_AI_CONCURRENCY=<n>` (overrides `ai.provider.concurrency`, clamped to >= 1).
 > Retry policy knobs are also supported:
 > - `NOVA_AI_RETRY_MAX_RETRIES=<n>` (overrides `ai.provider.retry_max_retries`)
@@ -311,7 +312,7 @@ Privacy implications:
 
 Separately from the dedicated `nova.ai.audit` file channel, Nova’s cloud-backed AI wiring (used by
 `nova-lsp` when configured via `NOVA_AI_PROVIDER=...`, optionally tuned via `NOVA_AI_MAX_TOKENS` /
-`NOVA_AI_CONCURRENCY`) supports:
+`NOVA_AI_TEMPERATURE` / `NOVA_AI_CONCURRENCY`) supports:
 
 - `NOVA_AI_AUDIT_LOGGING=1|true`
 
