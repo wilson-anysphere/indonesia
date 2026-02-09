@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use nova_ai::AiClient;
+use nova_ai::{AiClient, NovaAi};
 use nova_bugreport::{
     global_crash_store, install_panic_hook, BugReportBuilder, BugReportOptions, PanicHookConfig,
     PerfStats,
@@ -113,11 +113,32 @@ struct AiArgs {
 enum AiCommand {
     /// List models (best effort) or validate backend connectivity.
     Models(AiModelsArgs),
+    /// Review a unified diff (from stdin, a file, or `git diff`) using the configured AI backend.
+    Review(AiReviewArgs),
 }
 
 #[derive(Args)]
 struct AiModelsArgs {
     /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AiReviewArgs {
+    /// Read a unified diff from this file instead of stdin.
+    #[arg(long, conflicts_with = "git")]
+    diff_file: Option<PathBuf>,
+
+    /// Use `git diff` to generate the diff input (best-effort).
+    #[arg(long, conflicts_with = "diff_file")]
+    git: bool,
+
+    /// With `--git`, review staged changes (`git diff --staged`).
+    #[arg(long, requires = "git")]
+    staged: bool,
+
+    /// Emit JSON suitable for scripting: `{ "review": "..." }`.
     #[arg(long)]
     json: bool,
 }
@@ -567,7 +588,116 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
             }
         }
     }
-    NovaConfig::default()
+
+    let workspace_root = workspace_root_for_config_discovery(cli);
+    match nova_config::load_for_workspace(&workspace_root)
+        .with_context(|| format!("load config for workspace {}", workspace_root.display()))
+    {
+        Ok((config, path)) => {
+            if let Some(path) = path {
+                env::set_var(NOVA_CONFIG_ENV_VAR, &path);
+            }
+            config
+        }
+        Err(err) => {
+            eprintln!("{:#}", err);
+            std::process::exit(2);
+        }
+    }
+}
+
+fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
+    fn root_with_config_marker(start: &Path) -> Option<PathBuf> {
+        const CANDIDATES: [&str; 4] = [
+            "nova.toml",
+            ".nova.toml",
+            "nova.config.toml",
+            // Legacy workspace-local config (kept for backwards compatibility).
+            ".nova/config.toml",
+        ];
+
+        let mut dir = start;
+        loop {
+            if CANDIDATES.iter().any(|name| dir.join(name).is_file()) {
+                return Some(dir.to_path_buf());
+            }
+
+            let Some(parent) = dir.parent() else {
+                break;
+            };
+            if parent == dir {
+                break;
+            }
+            dir = parent;
+        }
+
+        None
+    }
+
+    fn start_dir(path: &Path) -> PathBuf {
+        match fs::metadata(path) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    path.to_path_buf()
+                } else {
+                    path.parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                }
+            }
+            Err(_) => {
+                // Best effort: treat paths with an extension as files even if they don't exist yet.
+                if path.extension().is_some() {
+                    path.parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    path.to_path_buf()
+                }
+            }
+        }
+    }
+
+    let candidate_path: Option<&Path> = match &cli.command {
+        Command::Index(args) => Some(args.path.as_path()),
+        Command::Diagnostics(args) => Some(args.path.as_path()),
+        Command::Symbols(args) => Some(args.path.as_path()),
+        Command::Cache(args) => match &args.command {
+            CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
+                Some(args.path.as_path())
+            }
+            CacheCommand::Pack(args) => Some(args.path.as_path()),
+            CacheCommand::Install(args) => Some(args.path.as_path()),
+            CacheCommand::Fetch(args) => Some(args.path.as_path()),
+            CacheCommand::Gc(_) | CacheCommand::List(_) => None,
+        },
+        Command::Perf(args) => match &args.command {
+            PerfCommand::Report(args) => Some(args.path.as_path()),
+            PerfCommand::CaptureRuntime { workspace_cache, .. } => Some(workspace_cache.as_path()),
+            PerfCommand::Capture { .. }
+            | PerfCommand::Compare { .. }
+            | PerfCommand::CompareRuntime { .. } => None,
+        },
+        Command::Parse(args) => Some(args.file.as_path()),
+        Command::Format(args) => Some(args.file.as_path()),
+        Command::OrganizeImports(args) => Some(args.file.as_path()),
+        Command::Refactor(args) => match &args.command {
+            RefactorCommand::Rename(args) => Some(args.file.as_path()),
+        },
+        Command::Extensions(args) => match &args.command {
+            extensions::ExtensionsCommand::List(args) => Some(args.root.as_path()),
+            extensions::ExtensionsCommand::Validate(args) => Some(args.root.as_path()),
+        },
+        _ => None,
+    };
+
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let start = candidate_path.map(start_dir).unwrap_or(cwd);
+    let start = start.canonicalize().unwrap_or(start);
+    if let Some(root) = root_with_config_marker(&start) {
+        return root;
+    }
+    nova_project::workspace_root(&start).unwrap_or(start)
 }
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
@@ -1025,6 +1155,37 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 
                 Ok(0)
             }
+            AiCommand::Review(args) => {
+                if !config.ai.enabled {
+                    anyhow::bail!(
+                        "AI is disabled. Enable it by setting `[ai].enabled = true` in nova.toml \
+                         (or pass `--config <path>` / set {NOVA_CONFIG_ENV_VAR})."
+                    );
+                }
+
+                let diff = load_ai_review_diff(&args)?;
+                if diff.trim().is_empty() {
+                    anyhow::bail!(
+                        "No diff content provided. Pass `--diff-file <path>`, pipe a diff on stdin, \
+                         or use `--git`."
+                    );
+                }
+
+                let ai = NovaAi::new(&config.ai)?;
+                let rt = tokio::runtime::Runtime::new()?;
+                let review = rt.block_on(ai.code_review(&diff, CancellationToken::new()))?;
+
+                if args.json {
+                    print_output(&serde_json::json!({ "review": review }), true)?;
+                } else {
+                    print!("{review}");
+                    if !review.ends_with('\n') {
+                        println!();
+                    }
+                }
+
+                Ok(0)
+            }
         },
         Command::Parse(args) => {
             let ws = Workspace::open_with_config(&args.file, config)?;
@@ -1034,6 +1195,46 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             Ok(exit)
         }
     }
+}
+
+fn load_ai_review_diff(args: &AiReviewArgs) -> Result<String> {
+    use std::io::Read;
+
+    if args.git {
+        return load_git_diff(args.staged);
+    }
+
+    if let Some(path) = args.diff_file.as_ref() {
+        return fs::read_to_string(path)
+            .with_context(|| format!("failed to read diff file {}", path.display()));
+    }
+
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("failed to read diff from stdin")?;
+    Ok(buf)
+}
+
+fn load_git_diff(staged: bool) -> Result<String> {
+    use std::process::Command;
+
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    if staged {
+        cmd.arg("--staged");
+    }
+
+    let output = cmd.output().context("failed to run `git diff`")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`git diff` failed with exit code {:?}.\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Result<i32> {

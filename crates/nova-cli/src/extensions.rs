@@ -60,9 +60,22 @@ struct Discovery {
 
 #[cfg(feature = "extensions")]
 fn load_workspace_config(root: &Path) -> Result<(PathBuf, NovaConfig, Option<PathBuf>)> {
-    let ws = nova_workspace::Workspace::open(root)
-        .with_context(|| format!("failed to open workspace at {}", root.display()))?;
-    let workspace_root = ws.root().to_path_buf();
+    // Treat `--root` as the workspace root for config discovery and relative path resolution.
+    //
+    // `nova_project::workspace_root` falls back to the nearest ancestor containing `src/`, which
+    // can be accidentally "stolen" by shared temp directories (e.g. `/tmp/src`). The extensions
+    // CLI already requires an explicit `--root`, so prefer that root directly.
+    let workspace_root = match std::fs::metadata(root) {
+        Ok(meta) if meta.is_dir() => root.to_path_buf(),
+        Ok(_) => root
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| root.to_path_buf()),
+        Err(_) => root.to_path_buf(),
+    };
+    let workspace_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.clone());
     let (config, config_path) = nova_config::load_for_workspace(&workspace_root)
         .with_context(|| format!("failed to load config for {}", workspace_root.display()))?;
     Ok((workspace_root, config, config_path))
