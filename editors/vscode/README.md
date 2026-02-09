@@ -359,6 +359,7 @@ restarting the language server to take full effect.
     are ignored.
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
 - `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.
+- `nova.aiCompletions.autoRefreshSuggestions` (boolean): when async AI completion items arrive, automatically re-trigger the suggest widget so the new items appear without additional user action. Disable to avoid extra completion requests; Nova will show a brief status bar hint instead.
 
 #### AI code actions (Explain error / Generate tests / Generate method body)
 
