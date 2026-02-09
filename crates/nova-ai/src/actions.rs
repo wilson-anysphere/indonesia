@@ -49,6 +49,9 @@ Notes:
 ```
 
 Return plain Markdown (no JSON) using this structure:
+- Do not wrap the entire response in a single fenced code block (no leading/trailing ``` around the
+  whole answer). Only use code fences for small code snippets.
+- Start your response with the `## Summary` heading.
 
 ## Summary
 - 1-3 bullets describing what changed and overall risk.

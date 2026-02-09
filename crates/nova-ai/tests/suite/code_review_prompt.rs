@@ -125,6 +125,11 @@ async fn code_review_prompt_requests_structured_markdown_output() {
         // Plain Markdown requirement (no structured JSON output).
         assert!(user_prompt.contains("plain Markdown"), "{user_prompt}");
         assert!(user_prompt.contains("no JSON"), "{user_prompt}");
+        assert!(
+            user_prompt.contains("Do not wrap the entire response"),
+            "{user_prompt}"
+        );
+        assert!(user_prompt.contains("Start your response"), "{user_prompt}");
 
         // Expected per-issue fields.
         for field in ["Where:", "Why it matters:", "Suggestion:"] {

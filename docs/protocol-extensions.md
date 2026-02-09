@@ -1168,6 +1168,8 @@ JSON string (the code review, typically markdown).
 Output format (model response):
 
 - **Plain Markdown** (not JSON).
+- The model should not wrap the entire response in a single fenced code block (no surrounding
+  ``` fences for the whole answer). Code fences are ok for small code snippets.
 - Expected sections:
   - `## Summary` — 1–3 bullets describing what changed and the overall risk.
   - `## Issues & Suggestions` — findings grouped by file (`### path/to/File.java`) when file paths are
