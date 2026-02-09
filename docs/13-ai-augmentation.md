@@ -519,12 +519,19 @@ At a high level:
 
 #### Cargo feature gating (build-time)
 
-Embedding-backed semantic search is compiled behind the `nova-ai` Cargo feature `embeddings`.
+Embedding-backed semantic search is compiled behind `nova-ai` Cargo features:
 
-- If Nova is built **with** `nova-ai/embeddings` enabled and `ai.embeddings.enabled=true`, Nova will
-  use the configured embeddings backend.
-- If Nova is built **without** that Cargo feature, Nova will log a warning and fall back to the
-  trigram matcher even when embeddings are enabled in `nova.toml`.
+- `nova-ai/embeddings` — enables the embedding-backed index (`EmbeddingSemanticSearch`) and the
+  `ai.embeddings.*` configuration surface.
+- `nova-ai/embeddings-local` — enables `ai.embeddings.backend = "local"` by linking in the
+  in-process embedding model implementation. This feature implies `nova-ai/embeddings`.
+
+Build-time fallback behavior:
+
+- If Nova is built **without** `nova-ai/embeddings`, Nova logs a warning and falls back to the
+  trigram matcher even when `ai.embeddings.enabled=true`.
+- If Nova is built **with** `nova-ai/embeddings` but **without** `nova-ai/embeddings-local`, setting
+  `ai.embeddings.backend="local"` logs a warning and falls back to `backend="hash"`.
 
 Example (building `nova-lsp` from source with embedding-backed semantic search):
 
@@ -545,25 +552,34 @@ When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors a
 - `hash` — deterministic/offline hashing-trick embeddings (recommended for tests).
 - `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`). Supported
   provider kinds: `ollama`, `open_ai_compatible`, `open_ai`, `azure_open_ai`, `http`.
-- `local` — in-process embedding model. Requires building `nova-ai` with `--features embeddings-local`
-  (otherwise Nova falls back to `hash`). Model selection and caching are configured via
+- `local` — in-process embedding model. Requires building with `nova-ai/embeddings-local` (otherwise
+  Nova falls back to `hash`). Model selection and caching are configured via
   `ai.embeddings.local_model` and `ai.embeddings.model_dir`.
 
 `ai.embeddings.model` optionally overrides the embedding model used by provider embeddings.
 When unset, Nova reuses `ai.provider.model`. It is ignored for `backend="hash"`.
 
-Other useful knobs (see `nova_config::AiEmbeddingsConfig` for the full set):
+#### Embeddings performance knobs
 
-- `ai.embeddings.timeout_ms` — timeout override (ms) for provider-backed embeddings (defaults to
-  `ai.provider.timeout_ms`).
-- `ai.embeddings.model_dir` — directory for embedding model files and caches. Nova also stores a
-  local on-disk embedding cache here for provider-backed embeddings (so repeated indexing/searches
-  can avoid redundant network calls). Defaults to `.nova/models/embeddings` (relative to the
-  workspace root).
-- `ai.embeddings.max_memory_bytes` — soft memory budget for the embedding-backed index. When the
-  budget is exceeded, Nova truncates the index (dropping whole files) to stay within the limit.
-- `ai.embeddings.batch_size` — maximum batch size for embedding requests. Used by the in-process
-  local embedder and to chunk provider-backed embeddings requests.
+Semantic search indexing typically produces **multiple embedding inputs per file** (for example:
+types/methods/fields for Java, or chunks for non-Java files).
+
+- `ai.embeddings.timeout_ms` is a timeout override (in milliseconds) for provider-backed embeddings.
+  When unset, Nova reuses `ai.provider.timeout_ms`.
+- `ai.embeddings.model_dir` is a directory for embedding model files and caches. Nova also stores an
+  on-disk embedding cache here for provider-backed embeddings (so repeated indexing/searches can
+  avoid redundant network calls). Default: `.nova/models/embeddings` (relative to the workspace
+  root).
+- `ai.embeddings.batch_size` is the maximum number of input strings Nova will hand to an embeddings
+  backend in one batch. Smaller values reduce peak memory and request size; larger values reduce
+  overhead (fewer provider calls / fewer local model invocations).
+- `ai.embeddings.max_memory_bytes` is a **soft** memory budget for the embedding-backed semantic
+  index. When exceeded, Nova truncates/drops entries to stay within budget and logs a warning.
+
+  This value supports both:
+
+  - integer byte counts (e.g. `536870912`)
+  - human-friendly strings (e.g. `"512MiB"`, `"2G"`, `"1024KiB"`)
 
 #### Deterministic/offline embeddings (recommended default for tests)
 
@@ -579,9 +595,12 @@ enabled = true
 backend = "hash"
 ```
 
-#### Local embeddings (in-process)
+#### Local embeddings (`backend = "local"`, in-process model)
 
-Requires building Nova with `nova-ai/embeddings-local` (see the Cargo feature section above).
+Local embeddings are fully offline and run inside the Nova process.
+
+> Requires building Nova with `nova-ai/embeddings-local` (which implies `nova-ai/embeddings`). When
+> `nova-ai/embeddings-local` is missing, Nova logs a warning and falls back to `backend="hash"`.
 
 ```toml
 [ai]
@@ -594,11 +613,15 @@ semantic_search = true
 enabled = true
 backend = "local"
 
-# Optional: override the default model (defaults to "all-MiniLM-L6-v2").
+# Optional: override the default model (default: "all-MiniLM-L6-v2").
 local_model = "all-MiniLM-L6-v2"
 
-# Cache directory for downloaded model files.
+# Directory used for model downloads/caching.
 model_dir = ".nova/models/embeddings"
+
+# Optional tuning knobs.
+batch_size = 32
+max_memory_bytes = "512MiB"
 ```
 
 #### Provider embeddings (Ollama)
@@ -645,19 +668,53 @@ model = "text-embedding-3-small"
 
 Note: When using cloud providers for embeddings:
 
-- `ai.provider.kind="open_ai"` requires `ai.api_key`.
-- `ai.provider.kind="azure_open_ai"` requires `ai.api_key` and `ai.provider.azure_deployment`.
+- `ai.provider.kind="open_ai"` requires `ai.api_key` and `ai.privacy.local_only = false`.
+- `ai.provider.kind="azure_open_ai"` requires `ai.api_key`, `ai.provider.azure_deployment`, and
+  `ai.privacy.local_only = false`.
 
-#### Privacy note: `ai.privacy.local_only=true` + provider embeddings
+#### Provider embeddings (Azure OpenAI)
 
-When `ai.privacy.local_only=true`, Nova validates that HTTP providers (including provider-backed
-embeddings) point to **localhost/loopback** (for example `http://localhost:11434`).
-Non-local endpoints are rejected in local-only mode (and provider embeddings will fall back to
-`backend="hash"`).
+Azure OpenAI uses **deployments** instead of raw model names. Configure the deployment name and API
+version under `ai.provider.*`:
 
-Additionally, `ai.privacy.excluded_paths` is enforced for semantic search indexing: excluded files
-are never embedded or returned as related-code context, which helps keep sensitive code off any
-provider-backed embeddings endpoint.
+```toml
+[ai]
+enabled = true
+api_key = "..." # Azure OpenAI key
+
+[ai.features]
+semantic_search = true
+
+[ai.privacy]
+local_only = false # required for cloud providers
+
+[ai.provider]
+kind = "azure_open_ai"
+url = "https://{resource}.openai.azure.com"
+azure_deployment = "my-embedding-deployment"
+azure_api_version = "2024-02-01"
+
+[ai.embeddings]
+enabled = true
+backend = "provider"
+```
+
+Note: Azure OpenAI embeddings support may depend on your Nova build/version. If provider embeddings
+are not supported for the selected `ai.provider.kind`, Nova will log a warning and fall back to
+`backend="hash"`.
+
+#### Privacy notes: provider embeddings + semantic search
+
+- **`ai.privacy.local_only` is enforced for provider embeddings.** In local-only mode, Nova only
+  allows provider-backed embeddings to connect to loopback/localhost URLs (and forbids cloud
+  providers). Misconfigured endpoints are rejected by config validation and/or will fall back to
+  deterministic `backend="hash"` embeddings at runtime.
+- **By default (`ai.privacy.include_file_paths = false`), file paths are not sent to provider
+  embedding APIs.** This includes provider-backed semantic-search indexing: embeddings payloads
+  contain only the extracted code/text, not filesystem metadata. Set
+  `ai.privacy.include_file_paths = true` to explicitly opt in.
+- **`ai.privacy.excluded_paths` applies to semantic search.** Excluded files are not embedded/indexed
+  and therefore cannot appear in semantic-search results or be surfaced as related-code context.
 
 ### Server-side overrides (environment variables)
 
@@ -762,8 +819,14 @@ Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never 
 
 ### Including file paths in prompts (`ai.privacy.include_file_paths`)
 
-By default, Nova does **not** include filesystem paths in prompts/context sent to an LLM. Paths can
-leak sensitive metadata such as user names, organization names, and internal directory structure.
+By default, Nova does **not** include filesystem paths in:
+
+- prompts/context sent to an LLM, and
+- provider-backed embeddings payloads (when `ai.embeddings.backend = "provider"` is used for
+  semantic-search indexing).
+
+Paths can leak sensitive metadata such as user names, organization names, and internal directory
+structure.
 
 To explicitly opt in:
 
@@ -777,6 +840,8 @@ When enabled, Nova may include:
 - a `## File` section in built context bundles (focal file path)
 - path labels in `Related code:` / `Extra file:` section titles
 - full classpath entries under `Project context` (instead of only basenames)
+- path metadata in semantic-search embedding inputs sent to provider embedding APIs (which may
+  slightly improve retrieval/disambiguation, but is higher-sensitivity)
 
 `ai.privacy.excluded_paths` is still enforced regardless of this flag: excluded files are omitted
 from prompts, and Nova avoids attaching file path metadata for excluded files.
@@ -837,7 +902,7 @@ Nova’s behavior depends on the AI action:
    also disabled for excluded files.
 
 4. **Semantic search indexing** omits excluded files entirely (they are not embedded/indexed and
-   therefore cannot be surfaced as related-code context).
+   therefore cannot be surfaced as semantic-search results or related-code context).
 
 5. **Extra context items**: when an AI request is otherwise allowed, any “extra files” /
    “related code” context items whose paths match `excluded_paths` are omitted from the prompt. If
