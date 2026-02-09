@@ -556,4 +556,64 @@ mod tests {
 
         metrics.reset();
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explain_error_records_action_metrics_on_timeout() {
+        #[derive(Debug, Clone)]
+        struct TimeoutLlm;
+
+        #[async_trait]
+        impl LlmClient for TimeoutLlm {
+            async fn chat(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<String, AiError> {
+                Err(AiError::Timeout)
+            }
+
+            async fn chat_stream(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<crate::types::AiStream, AiError> {
+                Err(AiError::Timeout)
+            }
+
+            async fn list_models(
+                &self,
+                _cancel: CancellationToken,
+            ) -> Result<Vec<String>, AiError> {
+                Ok(Vec::new())
+            }
+        }
+
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+
+        let metrics = MetricsRegistry::global();
+        metrics.reset();
+
+        let config = AiConfig::default();
+        let mut ai = NovaAi::new(&config).expect("NovaAi should build with dummy config");
+        ai.llm = Arc::new(TimeoutLlm);
+
+        let err = ai
+            .explain_error("diagnostic", minimal_ctx(), CancellationToken::new())
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, AiError::Timeout));
+
+        let snap = metrics.snapshot();
+        let method = snap
+            .methods
+            .get(AI_ACTION_EXPLAIN_ERROR_METRIC)
+            .expect("action metric present");
+        assert_eq!(method.request_count, 1);
+        assert_eq!(method.error_count, 1);
+        assert_eq!(method.timeout_count, 1);
+
+        metrics.reset();
+    }
 }
