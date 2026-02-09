@@ -601,6 +601,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_invalid_json_falls_back_to_input_order() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = MetricsRegistry::global();
         let before = metrics.snapshot();
         let before_main = before
@@ -747,6 +750,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_provider_error_increments_error_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = MetricsRegistry::global();
         let before = metrics.snapshot();
         let before_main = before
