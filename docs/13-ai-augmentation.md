@@ -544,7 +544,7 @@ When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors a
 
 - `hash` — deterministic/offline hashing-trick embeddings (recommended for tests).
 - `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`). Supported
-  provider kinds: `ollama`, `open_ai_compatible`, `open_ai`, `azure_open_ai`.
+  provider kinds: `ollama`, `open_ai_compatible`, `open_ai`, `azure_open_ai`, `http`.
 - `local` — in-process embedding model. Requires building `nova-ai` with `--features embeddings-local`
   (otherwise Nova falls back to `hash`). Model selection and caching are configured via
   `ai.embeddings.local_model` and `ai.embeddings.model_dir`.
