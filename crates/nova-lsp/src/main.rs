@@ -134,6 +134,7 @@ fn main() -> std::io::Result<()> {
         config.ai.features.semantic_search = false;
         config.ai.features.multi_token_completion = false;
     } else if disable_ai_completions {
+        config.ai.features.completion_ranking = false;
         config.ai.features.multi_token_completion = false;
     }
     nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
