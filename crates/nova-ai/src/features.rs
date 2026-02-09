@@ -21,7 +21,7 @@ impl NovaAi {
         Ok(Self {
             client: Arc::new(AiClient::from_config(config)?),
             context_builder: ContextBuilder::new(),
-            max_output_tokens: 512,
+            max_output_tokens: config.provider.max_tokens,
         })
     }
 
@@ -232,6 +232,49 @@ mod tests {
     };
     use nova_config::AiPrivacyConfig;
     use std::path::PathBuf;
+
+    fn minimal_ctx() -> ContextRequest {
+        ContextRequest {
+            file_path: None,
+            focal_code: "class Main {}".to_string(),
+            enclosing_context: None,
+            project_context: None,
+            semantic_context: None,
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: Vec::new(),
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 10_000,
+            privacy: PrivacyMode::default(),
+        }
+    }
+
+    #[test]
+    fn max_tokens_defaults_to_provider_config() {
+        let mut config = AiConfig::default();
+        config.provider.max_tokens = 123;
+
+        let ai = NovaAi::new(&config).expect("NovaAi should build with dummy config");
+        let request = ai.explain_error_request("boom", minimal_ctx());
+
+        assert_eq!(request.max_tokens, Some(123));
+    }
+
+    #[test]
+    fn with_max_output_tokens_overrides_provider_config() {
+        let mut config = AiConfig::default();
+        config.provider.max_tokens = 123;
+
+        let ai = NovaAi::new(&config)
+            .expect("NovaAi should build with dummy config")
+            .with_max_output_tokens(7);
+        let request = ai.explain_error_request("boom", minimal_ctx());
+
+        assert_eq!(request.max_tokens, Some(7));
+    }
 
     #[test]
     fn excluded_paths_are_removed_from_related_code_and_extra_files_in_prompts() {
