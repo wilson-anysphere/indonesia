@@ -1386,7 +1386,14 @@ Field semantics:
   - workspace-relative (with forward slashes) when the server has a workspace root
     (`initialize.rootUri` / legacy `initialize.rootPath`) and the result file is under it.
   - otherwise an absolute path string (may contain platform path separators like `\` on Windows).
-- `kind` (string): what the match represents. Current values are `"file"` and `"method"`.
+- `kind` (string): what the match represents (backend-dependent; treat as a display hint). Current
+  values include:
+  - `"file"` — file-level match (common with the lightweight trigram fallback backend).
+  - `"type"` — Java type declaration match (class/interface/enum/record/annotation).
+  - `"method"` — Java method declaration match.
+  - `"field"` — Java field declaration match.
+  - `"chunk"` — chunk of a non-Java file (for example: markdown/build scripts/Kotlin) when using
+    embedding-backed indexing.
 - `score` (number): non-normalized similarity score (higher is better). Treat as an opaque ranking
   signal (not stable across Nova versions).
 - `snippet` (string): best-effort preview string for display (may be truncated).
