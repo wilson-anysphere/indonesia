@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::client::validate_local_only_url;
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
 
@@ -19,6 +20,31 @@ use super::EmbeddingsClient;
 pub(super) fn provider_embeddings_client_from_config(
     config: &AiConfig,
 ) -> Result<Box<dyn EmbeddingsClient>, AiError> {
+    if config.privacy.local_only {
+        match &config.provider.kind {
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                if let Err(err) = validate_local_only_url(&config.provider.url) {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        provider_kind = ?config.provider.kind,
+                        url = %config.provider.url,
+                        ?err,
+                        "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            }
+            other => {
+                tracing::warn!(
+                    target = "nova.ai",
+                    provider_kind = ?other,
+                    "ai.privacy.local_only=true forbids provider-backed embeddings for cloud providers; falling back to hash embeddings"
+                );
+                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+            }
+        }
+    }
+
     let timeout = config
         .embeddings
         .timeout_ms
@@ -36,93 +62,243 @@ pub(super) fn provider_embeddings_client_from_config(
 
     match &config.provider.kind {
         AiProviderKind::AzureOpenAi => {
-            let api_key = config.api_key.clone().ok_or_else(|| {
-                AiError::InvalidConfig("Azure OpenAI embeddings require ai.api_key".into())
-            })?;
-            let deployment = config.provider.azure_deployment.clone().ok_or_else(|| {
-                AiError::InvalidConfig(
-                    "Azure OpenAI embeddings require ai.provider.azure_deployment".into(),
-                )
-            })?;
+            let Some(api_key) = config.api_key.clone() else {
+                tracing::warn!(
+                    target = "nova.ai",
+                    "Azure OpenAI embeddings require ai.api_key; falling back to hash embeddings"
+                );
+                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+            };
+            let Some(deployment) = config.provider.azure_deployment.clone() else {
+                tracing::warn!(
+                    target = "nova.ai",
+                    "Azure OpenAI embeddings require ai.provider.azure_deployment; falling back to hash embeddings"
+                );
+                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+            };
             let api_version = config
                 .provider
                 .azure_api_version
                 .clone()
                 .unwrap_or_else(|| "2024-02-01".to_string());
 
-            let base = AzureOpenAiEmbeddingsClient::new(
+            let base = match AzureOpenAiEmbeddingsClient::new(
                 config.provider.url.clone(),
                 api_key,
                 deployment,
                 api_version,
                 timeout,
-            )?;
-            let endpoint_id = base.endpoint_id()?;
-            let cached = CachedEmbeddingsClient::new(
+            ) {
+                Ok(base) => base,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to build Azure OpenAI embeddings client; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let endpoint_id = match base.endpoint_id() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute Azure OpenAI embeddings endpoint id; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let model_id = match cached_model_id_for_azure(config) {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute Azure OpenAI embeddings cache key; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "azure_open_ai",
                 endpoint_id,
-                // Azure uses deployment-bound embeddings. Include it as the model id so caches don't
-                // cross-contaminate deployments.
-                cached_model_id_for_azure(config)?,
+                model_id,
                 disk_cache,
-            );
-            Ok(Box::new(cached))
+            )))
         }
         AiProviderKind::OpenAi => {
-            let api_key = config
-                .api_key
-                .clone()
-                .ok_or_else(|| AiError::InvalidConfig("OpenAI embeddings require ai.api_key".into()))?;
-            let base = OpenAiCompatibleEmbeddingsClient::new(
+            let Some(api_key) = config.api_key.clone() else {
+                tracing::warn!(
+                    target = "nova.ai",
+                    "OpenAI embeddings require ai.api_key; falling back to hash embeddings"
+                );
+                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+            };
+
+            let base = match OpenAiCompatibleEmbeddingsClient::new(
                 config.provider.url.clone(),
                 model.clone(),
                 Some(api_key),
                 timeout,
-            )?;
-            let endpoint_id = base.embeddings_endpoint_id()?;
-            let cached = CachedEmbeddingsClient::new(
+            ) {
+                Ok(base) => base,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to build OpenAI embeddings client; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let endpoint_id = match base.embeddings_endpoint_id() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute OpenAI embeddings endpoint id; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "openai",
                 endpoint_id,
                 model,
                 disk_cache,
-            );
-            Ok(Box::new(cached))
+            )))
         }
         AiProviderKind::OpenAiCompatible => {
-            let base = OpenAiCompatibleEmbeddingsClient::new(
+            let base = match OpenAiCompatibleEmbeddingsClient::new(
                 config.provider.url.clone(),
                 model.clone(),
                 config.api_key.clone(),
                 timeout,
-            )?;
-            let endpoint_id = base.embeddings_endpoint_id()?;
-            let cached = CachedEmbeddingsClient::new(
+            ) {
+                Ok(base) => base,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to build embeddings client; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let endpoint_id = match base.embeddings_endpoint_id() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute embeddings endpoint id; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "openai_compatible",
                 endpoint_id,
                 model,
                 disk_cache,
-            );
-            Ok(Box::new(cached))
+            )))
+        }
+        AiProviderKind::Http => {
+            let base = match OpenAiCompatibleEmbeddingsClient::new(
+                config.provider.url.clone(),
+                model.clone(),
+                config.api_key.clone(),
+                timeout,
+            ) {
+                Ok(base) => base,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to build HTTP embeddings client; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let endpoint_id = match base.embeddings_endpoint_id() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute HTTP embeddings endpoint id; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            Ok(Box::new(CachedEmbeddingsClient::new(
+                Box::new(base),
+                "http",
+                endpoint_id,
+                model,
+                disk_cache,
+            )))
         }
         AiProviderKind::Ollama => {
-            let base =
-                OllamaEmbeddingsClient::new(config.provider.url.clone(), model.clone(), timeout)?;
-            let endpoint_id = base.endpoint_id()?;
-            let cached = CachedEmbeddingsClient::new(
+            let base = match OllamaEmbeddingsClient::new(
+                config.provider.url.clone(),
+                model.clone(),
+                timeout,
+            ) {
+                Ok(base) => base,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to build Ollama embeddings client; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            let endpoint_id = match base.endpoint_id() {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to compute Ollama embeddings endpoint id; falling back to hash embeddings"
+                    );
+                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                }
+            };
+
+            Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "ollama",
                 endpoint_id,
                 model,
                 disk_cache,
-            );
-            Ok(Box::new(cached))
+            )))
         }
-        other => Err(AiError::InvalidConfig(format!(
-            "ai.provider.kind = {other:?} does not support provider-backed embeddings"
-        ))),
+        other => {
+            tracing::warn!(
+                target = "nova.ai",
+                provider_kind = ?other,
+                "ai.embeddings.backend=provider is not supported for this provider; falling back to hash embeddings"
+            );
+            Ok(Box::new(super::LocalEmbeddingsClient::default()))
+        }
     }
 }
 

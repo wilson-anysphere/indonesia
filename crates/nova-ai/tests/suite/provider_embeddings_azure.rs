@@ -38,6 +38,7 @@ async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() 
     config.provider.url = Url::parse(&format!("{}/", server.base_url())).unwrap();
     config.provider.azure_deployment = Some("my-deployment".to_string());
     config.api_key = Some("test-key".to_string());
+    config.privacy.local_only = false;
 
     let client = embeddings_client_from_config(&config).expect("build embeddings client");
     let out = client
@@ -48,4 +49,3 @@ async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() 
     mock.assert();
     assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
 }
-
