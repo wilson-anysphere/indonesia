@@ -623,6 +623,22 @@ export function registerNovaServerCommands(
 
       if (isUnknownExecuteCommandError(err)) {
         const details = formatError(err);
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+        const routedWorkspaceKey = routeWorkspaceFolderUri({
+          workspaceFolders: workspaces.map((workspace) => ({
+            name: workspace.name,
+            fsPath: workspace.uri.fsPath,
+            uri: workspace.uri.toString(),
+          })),
+          activeDocumentUri,
+          method: 'workspace/executeCommand',
+          params: { command: 'nova.extractMethod', arguments: args },
+        });
+        const workspaceFolder = routedWorkspaceKey
+          ? workspaces.find((workspace) => workspace.uri.toString() === routedWorkspaceKey)
+          : undefined;
+
         const picked = await vscode.window.showErrorMessage(
           'Nova: Extract method is not supported by your nova-lsp version (unknown command: nova.extractMethod). Update the server.',
           'Install/Update Server',
@@ -632,7 +648,7 @@ export function registerNovaServerCommands(
         if (picked === 'Install/Update Server') {
           await vscode.commands.executeCommand('nova.installOrUpdateServer');
         } else if (picked === 'Show Server Version') {
-          await vscode.commands.executeCommand('nova.showServerVersion');
+          await vscode.commands.executeCommand('nova.showServerVersion', workspaceFolder);
         } else if (picked === 'Copy Details') {
           try {
             await vscode.env.clipboard.writeText(details);
