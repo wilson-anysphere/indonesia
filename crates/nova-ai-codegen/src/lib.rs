@@ -1475,6 +1475,53 @@ mod tests {
         assert_eq!(provider.calls(), 0);
     }
 
+    #[test]
+    fn edit_range_safety_invalid_range_fails_fast_without_model_call() {
+        let provider = CountingProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let workspace = VirtualWorkspace::new([(
+            "Example.java".to_string(),
+            "public class Example {}".to_string(),
+        )]);
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: "Example.java".to_string(),
+            allowed_range: nova_ai::patch::Range {
+                start: nova_ai::patch::Position {
+                    line: 10,
+                    character: 0,
+                },
+                end: nova_ai::patch::Position {
+                    line: 10,
+                    character: 0,
+                },
+            },
+        });
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Generate a patch.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("expected invalid insert range failure");
+
+        let CodeGenerationError::InvalidInsertRange { file, .. } = err else {
+            panic!("expected InvalidInsertRange, got {err:?}");
+        };
+        assert_eq!(file, "Example.java");
+        assert_eq!(provider.calls(), 0);
+    }
+
     fn patch_pos_for_offset(text: &str, offset: usize) -> nova_ai::patch::Position {
         let index = LineIndex::new(text);
         let pos = index.position(text, TextSize::from(offset as u32));
