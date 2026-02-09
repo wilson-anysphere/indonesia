@@ -479,7 +479,7 @@ temperature = 0.2
 ### Server-side overrides (environment variables)
 
 Some editor integrations set environment variables when starting `nova-lsp` to provide **server-side
-hard overrides** for AI behavior (for example: to disable multi-token completions without modifying
+hard overrides** for AI behavior (for example: to disable AI completion features without modifying
 `nova.toml`).
 
 These overrides are read at **process startup**, so changing them requires restarting the server.
@@ -490,7 +490,8 @@ For details (including `NOVA_AI_COMPLETIONS_MAX_ITEMS`) and how they affect the 
 Common overrides:
 
 - `NOVA_DISABLE_AI=1` — force-disable all AI features server-side.
-- `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable multi-token completions server-side.
+- `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable AI completion features server-side (multi-token
+  completions and completion ranking).
 - `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` — override the server’s AI multi-token completion max-items.
   `0` disables multi-token completions entirely (and the server clamps large values; see the
   protocol docs for details).
