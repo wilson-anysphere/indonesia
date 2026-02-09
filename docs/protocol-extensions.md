@@ -1171,7 +1171,7 @@ Behavior depends on the operation:
 See `crates/nova-lsp/src/stdio_ai.rs` (request-level enforcement) and `crates/nova-ai/src/features.rs`
 (prompt sanitization).
 
-### AI JSON-RPC error data (`nova/ai/*`)
+### AI JSON-RPC error data (nova/ai/*)
 
 AI endpoints use standard JSON-RPC error responses. When available, Nova includes a structured
 `error.data` object so clients can reliably categorize failures while still surfacing a
