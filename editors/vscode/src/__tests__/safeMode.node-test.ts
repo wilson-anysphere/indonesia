@@ -77,6 +77,10 @@ test('isSafeModeError matches fallback guard messages without explicit "safe mod
 test('isUnknownExecuteCommandError detects JSON-RPC -32602 unknown executeCommand variants', () => {
   assert.equal(isUnknownExecuteCommandError({ code: -32602, message: 'unknown command: nova.ai.explainError' }), true);
   assert.equal(isUnknownExecuteCommandError({ code: -32602, message: 'Unknown command: nova.ai.generateTests' }), true);
+
+  const err = new Error('unknown command: nova.ai.generateMethodBody') as Error & { code?: number };
+  err.code = -32602;
+  assert.equal(isUnknownExecuteCommandError(err), true);
 });
 
 test('isUnknownExecuteCommandError ignores other errors', () => {
