@@ -263,6 +263,69 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
 
 #[cfg(feature = "embeddings")]
 #[test]
+fn semantic_search_from_config_provider_backend_batches_openai_compatible_requests_for_multi_doc_files(
+) {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings");
+        then.status(200).json_body(json!({
+            "data": [
+                { "index": 0, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 1, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 2, "embedding": [1.0, 0.0, 0.0] },
+            ]
+        }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            package com.example;
+
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+
+                public String goodbye() {
+                    return "goodbye";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let cfg = AiConfig {
+        enabled: true,
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::OpenAiCompatible,
+            url: Url::parse(&format!("{}/v1", server.base_url())).unwrap(),
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("text-embedding-3-small".to_string()),
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+
+    // One request for indexing (batched) + one request for query embedding.
+    mock.assert_hits(2);
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
 fn semantic_search_from_config_embeddings_supports_incremental_updates() {
     let cfg = AiConfig {
         enabled: true,

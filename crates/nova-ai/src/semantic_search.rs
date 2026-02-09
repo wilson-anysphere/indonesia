@@ -591,6 +591,27 @@ mod embeddings {
             Ok(first.embedding)
         }
 
+        fn embed_openai_compatible_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if inputs.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let url = openai_compatible_endpoint(&self.base_url, "/embeddings")?;
+            let body = OpenAiEmbeddingBatchRequest {
+                model: &self.model,
+                input: inputs,
+            };
+
+            let mut request = self.client.post(url).json(&body);
+            if let Some(key) = self.api_key.as_deref() {
+                request = request.bearer_auth(key);
+            }
+
+            let response = request.send()?.error_for_status()?;
+            let parsed: OpenAiEmbeddingResponse = response.json()?;
+            parse_openai_embeddings(parsed, inputs.len())
+        }
+
         fn embed_ollama(&self, text: &str) -> Result<Vec<f32>, AiError> {
             let mut base = self.base_url.clone();
             let base_str = base.as_str().trim_end_matches('/').to_string();
@@ -650,6 +671,19 @@ mod embeddings {
             }
 
             Ok(embedding)
+        }
+
+        fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            match &self.provider_kind {
+                AiProviderKind::Ollama => inputs.iter().map(|input| self.embed_ollama(input)).collect(),
+                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
+                    self.embed_openai_compatible_batch(inputs)
+                }
+                _ => Err(AiError::InvalidConfig(format!(
+                    "provider-backed embeddings are not supported for ai.provider.kind={:?}",
+                    self.provider_kind
+                ))),
+            }
         }
     }
 
@@ -791,6 +825,12 @@ mod embeddings {
         input: &'a str,
     }
 
+    #[derive(Serialize)]
+    struct OpenAiEmbeddingBatchRequest<'a> {
+        model: &'a str,
+        input: &'a [String],
+    }
+
     #[derive(Deserialize)]
     struct OpenAiEmbeddingResponse {
         #[serde(default)]
@@ -801,6 +841,40 @@ mod embeddings {
     struct OpenAiEmbeddingData {
         #[serde(default)]
         embedding: Vec<f32>,
+        #[serde(default)]
+        index: Option<usize>,
+    }
+
+    fn parse_openai_embeddings(
+        response: OpenAiEmbeddingResponse,
+        expected: usize,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
+        let mut out = vec![None::<Vec<f32>>; expected];
+        for (pos, item) in response.data.into_iter().enumerate() {
+            let idx = item.index.unwrap_or(pos);
+            if idx >= expected {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "embeddings index {} out of range (expected < {expected})",
+                    idx
+                )));
+            }
+            if out[idx].is_some() {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "duplicate embeddings index {}",
+                    idx
+                )));
+            }
+            out[idx] = Some(item.embedding);
+        }
+
+        out.into_iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                item.filter(|v| !v.is_empty()).ok_or_else(|| {
+                    AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
+                })
+            })
+            .collect()
     }
 
     #[derive(Serialize)]
