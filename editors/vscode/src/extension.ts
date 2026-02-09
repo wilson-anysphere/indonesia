@@ -2645,14 +2645,32 @@ export async function activate(context: vscode.ExtensionContext) {
             if (isSafeModeError(err)) {
               setWorkspaceSafeModeEnabled?.(entry.workspaceKey, true);
             }
+
+            const workspaceKey = entry.workspaceKey;
+
+            // Best-effort: tag the error with the workspace it was routed to so downstream handlers
+            // can route actions (bug report, show version) correctly. Some error objects may be
+            // frozen/non-extensible, in which case we wrap the error with a new extensible `Error`.
             if (err && typeof err === 'object') {
               try {
-                (err as { novaWorkspaceKey?: WorkspaceKey }).novaWorkspaceKey = entry.workspaceKey;
-              } catch {
-                // Best-effort only: some error objects may be non-extensible/frozen.
+                (err as { novaWorkspaceKey?: WorkspaceKey }).novaWorkspaceKey = workspaceKey;
+                throw err;
+              } catch (tagErr) {
+                if (tagErr === err) {
+                  throw err;
+                }
               }
             }
-            throw err;
+
+            const wrapped = new Error(formatError(err)) as Error & { code?: unknown; novaWorkspaceKey?: WorkspaceKey; cause?: unknown };
+            try {
+              wrapped.code = (err as { code?: unknown } | undefined)?.code;
+            } catch {
+              // Ignore.
+            }
+            wrapped.novaWorkspaceKey = workspaceKey;
+            wrapped.cause = err;
+            throw wrapped;
           }
           if (token.isCancellationRequested) {
             throw new Error('RequestCancelled');
