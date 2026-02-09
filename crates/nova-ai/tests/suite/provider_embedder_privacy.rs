@@ -5,6 +5,7 @@ use hyper::{
     Body, Request, Response, Server,
 };
 use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
+use nova_ai::{semantic_search_from_config, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};
 use serde_json::{json, Value};
 use std::{convert::Infallible, net::SocketAddr};
@@ -51,13 +52,19 @@ async fn provider_embeddings_redacts_privacy_patterns_before_sending_to_http_bac
         let bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
         let request_json: Value = serde_json::from_slice(&bytes).unwrap();
 
-        let inputs = request_json["input"]
-            .as_array()
-            .expect("expected input to be an array of strings");
+        let inputs: Vec<&str> = if let Some(array) = request_json["input"].as_array() {
+            array
+                .iter()
+                .map(|item| item.as_str().expect("input items should be strings"))
+                .collect()
+        } else if let Some(text) = request_json["input"].as_str() {
+            vec![text]
+        } else {
+            panic!("expected input to be a string or array of strings");
+        };
 
         // Ensure we never send raw secrets over provider-backed embeddings.
-        for item in inputs {
-            let text = item.as_str().expect("input items should be strings");
+        for text in &inputs {
             assert!(
                 !text.contains("supersecret"),
                 "unsanitized embedding text leaked"
@@ -117,4 +124,70 @@ async fn provider_embeddings_redacts_privacy_patterns_before_sending_to_http_bac
     assert_eq!(out.len(), queries.len());
 
     handle.abort();
+}
+
+#[test]
+fn provider_semantic_search_embeddings_redact_privacy_patterns_before_sending_to_http_backend() {
+    use httpmock::prelude::*;
+
+    let server = MockServer::start();
+
+    // If the raw secret leaks into the request body, fail the request.
+    let leak_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains("supersecret");
+        then.status(500);
+    });
+
+    // Only accept redacted requests.
+    let redacted_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains("[REDACTED]");
+        then.status(200).json_body(json!({
+            "data": [{
+                "embedding": [0.0, 0.1]
+            }]
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.features.semantic_search = true;
+    cfg.embeddings.enabled = true;
+    cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model_dir = model_dir;
+    cfg.provider.kind = AiProviderKind::OpenAiCompatible;
+    cfg.provider.url = Url::parse(&server.base_url()).unwrap();
+    cfg.provider.model = "test-embedding-model".to_string();
+    cfg.provider.timeout_ms = 1_000;
+    cfg.provider.concurrency = Some(1);
+
+    cfg.privacy.local_only = false;
+    cfg.privacy.anonymize_identifiers = Some(false);
+    cfg.privacy.redact_sensitive_strings = Some(false);
+    cfg.privacy.redact_numeric_literals = Some(false);
+    cfg.privacy.strip_or_redact_comments = Some(false);
+    cfg.privacy.redact_patterns = vec!["supersecret".to_string()];
+
+    let db = VirtualWorkspace::new([(
+        "src/Secret.txt".to_string(),
+        "supersecret".to_string(),
+    )]);
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_project(&db);
+    let _results = search.search("supersecret");
+
+    leak_mock.assert_hits(0);
+
+    let hits = redacted_mock.hits();
+    assert!(
+        hits >= 2,
+        "expected at least 2 provider embedding requests (index + query)"
+    );
 }

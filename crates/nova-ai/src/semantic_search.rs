@@ -658,6 +658,15 @@ mod embeddings {
             }
         }
 
+        fn sanitize_query_text(&self, session: &mut SanitizationSession, text: &str) -> String {
+            let sanitized = self.privacy.sanitize_prompt_text(session, text);
+            if self.redact_paths {
+                redact_file_paths(&sanitized)
+            } else {
+                sanitized
+            }
+        }
+
         fn embed_uncached(&self, text: &str) -> Result<Vec<f32>, AiError> {
             match &self.provider_kind {
                 AiProviderKind::Ollama => self.embed_ollama(text),
@@ -898,7 +907,7 @@ mod embeddings {
             }
 
             let mut session = self.privacy.new_session();
-            let sanitized = self.sanitize_text(&mut session, text);
+            let sanitized = self.sanitize_query_text(&mut session, text);
             let embedding = self.embed_uncached(&sanitized)?;
 
             if !embedding.is_empty() {
@@ -1936,15 +1945,7 @@ mod embeddings {
                 meta.push((range, kind, snippet));
                 inputs.push(embed_text);
             }
-
-            let embeddings = if inputs.len() <= 1 {
-                match inputs.first() {
-                    Some(input) => self.embedder.embed(input).map(|vec| vec![vec]),
-                    None => Ok(Vec::new()),
-                }
-            } else {
-                self.embedder.embed_batch(&inputs)
-            };
+            let embeddings = self.embedder.embed_batch(&inputs);
 
             let embeddings = match embeddings {
                 Ok(embeddings) => {
@@ -1973,8 +1974,9 @@ mod embeddings {
                     // failures don't wipe out the entire file.
                     let mut out = Vec::with_capacity(inputs.len());
                     for input in &inputs {
-                        match self.embedder.embed(input) {
-                            Ok(vec) => out.push(Some(vec)),
+                        match self.embedder.embed_batch(std::slice::from_ref(input)) {
+                            Ok(mut batch) if batch.len() == 1 => out.push(batch.pop()),
+                            Ok(_) => out.push(None),
                             Err(err) => {
                                 tracing::warn!(
                                     target = "nova.ai",
