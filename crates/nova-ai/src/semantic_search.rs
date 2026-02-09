@@ -495,6 +495,8 @@ mod embeddings {
         base_url: Url,
         model: String,
         api_key: Option<String>,
+        azure_deployment: Option<String>,
+        azure_api_version: Option<String>,
         client: BlockingClient,
         backend_id: &'static str,
         endpoint_id: String,
@@ -516,6 +518,7 @@ mod embeddings {
                 AiProviderKind::Ollama => "ollama",
                 AiProviderKind::OpenAiCompatible => "openai_compatible",
                 AiProviderKind::OpenAi => "openai",
+                AiProviderKind::AzureOpenAi => "azure_open_ai",
                 AiProviderKind::Http => "http",
                 _ => "unknown",
             };
@@ -540,6 +543,8 @@ mod embeddings {
                 base_url,
                 model,
                 api_key,
+                azure_deployment: None,
+                azure_api_version: None,
                 client,
                 backend_id,
                 endpoint_id,
@@ -564,6 +569,7 @@ mod embeddings {
                 AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
                     self.embed_openai_compatible(text)
                 }
+                AiProviderKind::AzureOpenAi => self.embed_azure_openai(text),
                 _ => Err(AiError::InvalidConfig(format!(
                     "provider-backed embeddings are not supported for ai.provider.kind={:?}",
                     self.provider_kind
@@ -610,6 +616,46 @@ mod embeddings {
             let response = request.send()?.error_for_status()?;
             let parsed: OpenAiEmbeddingResponse = response.json()?;
             parse_openai_embeddings(parsed, inputs.len())
+        }
+
+        fn embed_azure_openai_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if inputs.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let api_key = self.api_key.as_deref().ok_or_else(|| {
+                AiError::InvalidConfig("Azure OpenAI embeddings require ai.api_key".into())
+            })?;
+            let deployment = self.azure_deployment.as_deref().ok_or_else(|| {
+                AiError::InvalidConfig(
+                    "Azure OpenAI embeddings require ai.provider.azure_deployment".into(),
+                )
+            })?;
+            let api_version = self
+                .azure_api_version
+                .as_deref()
+                .unwrap_or("2024-02-01");
+
+            let url = azure_openai_embeddings_endpoint(&self.base_url, deployment, api_version)?;
+            let body = AzureOpenAiEmbeddingBatchRequest { input: inputs };
+
+            let response = self
+                .client
+                .post(url)
+                .header("api-key", api_key)
+                .json(&body)
+                .send()?
+                .error_for_status()?;
+
+            let parsed: OpenAiEmbeddingResponse = response.json()?;
+            parse_openai_embeddings(parsed, inputs.len())
+        }
+
+        fn embed_azure_openai(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            let mut batch = self.embed_azure_openai_batch(&[text.to_string()])?;
+            batch.pop().ok_or_else(|| {
+                AiError::UnexpectedResponse("missing embeddings data[0].embedding".into())
+            })
         }
 
         fn embed_ollama(&self, text: &str) -> Result<Vec<f32>, AiError> {
@@ -679,6 +725,7 @@ mod embeddings {
                 AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
                     self.embed_openai_compatible_batch(inputs)
                 }
+                AiProviderKind::AzureOpenAi => self.embed_azure_openai_batch(inputs),
                 _ => Err(AiError::InvalidConfig(format!(
                     "provider-backed embeddings are not supported for ai.provider.kind={:?}",
                     self.provider_kind
@@ -763,6 +810,63 @@ mod embeddings {
                     }
                 }
             }
+            AiProviderKind::AzureOpenAi => {
+                let Some(api_key) = api_key else {
+                    warn!(
+                        target = "nova.ai",
+                        "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires ai.api_key; falling back to hash embeddings"
+                    );
+                    return None;
+                };
+
+                let Some(deployment) = config.provider.azure_deployment.clone() else {
+                    warn!(
+                        target = "nova.ai",
+                        "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires ai.provider.azure_deployment; falling back to hash embeddings"
+                    );
+                    return None;
+                };
+
+                let api_version = config
+                    .provider
+                    .azure_api_version
+                    .clone()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or_else(|| "2024-02-01".to_string());
+
+                match ProviderEmbedder::try_new(
+                    provider_kind,
+                    config.provider.url.clone(),
+                    // Azure selects the embedding model by deployment, so use deployment as the
+                    // cache model identifier.
+                    deployment.clone(),
+                    Some(api_key),
+                    timeout,
+                    disk_cache.clone(),
+                ) {
+                    Ok(mut embedder) => {
+                        embedder.azure_deployment = Some(deployment);
+                        embedder.azure_api_version = Some(api_version.clone());
+                        embedder.endpoint_id = azure_openai_embeddings_endpoint(
+                            &embedder.base_url,
+                            embedder.azure_deployment.as_deref().unwrap_or_default(),
+                            &api_version,
+                        )
+                        .map(|url| url.to_string())
+                        .unwrap_or_else(|_| embedder.base_url.to_string());
+                        Some(embedder)
+                    }
+                    Err(err) => {
+                        warn!(
+                            target = "nova.ai",
+                            provider = ?config.provider.kind,
+                            ?err,
+                            "failed to build provider embedder; falling back to hash embeddings"
+                        );
+                        None
+                    }
+                }
+            }
             AiProviderKind::OpenAi => {
                 let Some(api_key) = api_key else {
                     warn!(
@@ -819,6 +923,23 @@ mod embeddings {
         }
     }
 
+    fn azure_openai_embeddings_endpoint(
+        endpoint: &Url,
+        deployment: &str,
+        api_version: &str,
+    ) -> Result<Url, AiError> {
+        let mut base = endpoint.clone();
+        let base_str = base.as_str().trim_end_matches('/').to_string();
+        base = Url::parse(&format!("{base_str}/"))?;
+
+        let mut url = base
+            .join(&format!("openai/deployments/{deployment}/embeddings"))
+            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        url.query_pairs_mut()
+            .append_pair("api-version", api_version);
+        Ok(url)
+    }
+
     #[derive(Serialize)]
     struct OpenAiEmbeddingRequest<'a> {
         model: &'a str,
@@ -828,6 +949,11 @@ mod embeddings {
     #[derive(Serialize)]
     struct OpenAiEmbeddingBatchRequest<'a> {
         model: &'a str,
+        input: &'a [String],
+    }
+
+    #[derive(Serialize)]
+    struct AzureOpenAiEmbeddingBatchRequest<'a> {
         input: &'a [String],
     }
 
