@@ -2544,7 +2544,11 @@ export async function activate(context: vscode.ExtensionContext) {
               setWorkspaceSafeModeEnabled?.(entry.workspaceKey, true);
             }
             if (err && typeof err === 'object') {
-              (err as { novaWorkspaceKey?: WorkspaceKey }).novaWorkspaceKey = entry.workspaceKey;
+              try {
+                (err as { novaWorkspaceKey?: WorkspaceKey }).novaWorkspaceKey = entry.workspaceKey;
+              } catch {
+                // Best-effort only: some error objects may be non-extensible/frozen.
+              }
             }
             throw err;
           }
