@@ -350,6 +350,81 @@ model = "test-model"
 }
 
 #[test]
+fn ai_review_path_flag_controls_config_discovery_and_git_diff_workdir() {
+    if ProcessCommand::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nPath flag OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let _config = write_http_ai_config(&temp, &server);
+
+    // Init a tiny git repo with one tracked file, then modify it so `git diff` is non-empty.
+    let src = temp.child("README.md");
+    src.write_str("hello\n").unwrap();
+
+    let git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    src.write_str("hello world\n").unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(outside.path())
+        .env_remove("NOVA_CONFIG_PATH")
+        .args(["ai", "review"])
+        .arg("--path")
+        .arg(temp.path())
+        .args(["--git", "--json"])
+        .output()
+        .expect("run nova ai review --path ... --git");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Path flag OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
+
+#[test]
 fn ai_review_git_staged_flag_uses_git_diff_staged_output() {
     if ProcessCommand::new("git")
         .arg("--version")

@@ -126,6 +126,12 @@ struct AiModelsArgs {
 
 #[derive(Args)]
 struct AiReviewArgs {
+    /// Workspace root / target directory (defaults to current directory).
+    ///
+    /// This is used for config discovery and as the working directory for `--git`.
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+
     /// Read a unified diff from this file instead of stdin.
     #[arg(long, conflicts_with = "git")]
     diff_file: Option<PathBuf>,
@@ -699,6 +705,10 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         Command::Index(args) => Some(args.path.as_path()),
         Command::Diagnostics(args) => Some(args.path.as_path()),
         Command::Symbols(args) => Some(args.path.as_path()),
+        Command::Ai(args) => match &args.command {
+            AiCommand::Review(args) => Some(args.path.as_path()),
+            _ => None,
+        },
         Command::Cache(args) => match &args.command {
             CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
                 Some(args.path.as_path())
@@ -1251,7 +1261,8 @@ fn load_ai_review_diff(args: &AiReviewArgs) -> Result<String> {
     use std::io::Read;
 
     if args.git {
-        return load_git_diff(args.staged);
+        let workdir = resolve_path_workdir(&args.path);
+        return load_git_diff(&workdir, args.staged);
     }
 
     if let Some(path) = args.diff_file.as_ref() {
@@ -1266,7 +1277,30 @@ fn load_ai_review_diff(args: &AiReviewArgs) -> Result<String> {
     Ok(buf)
 }
 
-fn load_git_diff(staged: bool) -> Result<String> {
+fn resolve_path_workdir(path: &Path) -> PathBuf {
+    match fs::metadata(path) {
+        Ok(meta) => {
+            if meta.is_dir() {
+                path.to_path_buf()
+            } else {
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            }
+        }
+        Err(_) => {
+            if path.extension().is_some() {
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            } else {
+                path.to_path_buf()
+            }
+        }
+    }
+}
+
+fn load_git_diff(workdir: &Path, staged: bool) -> Result<String> {
     use std::process::Command;
 
     let mut cmd = Command::new("git");
@@ -1276,6 +1310,7 @@ fn load_git_diff(staged: bool) -> Result<String> {
     if staged {
         cmd.arg("--staged");
     }
+    cmd.current_dir(workdir);
 
     let output = cmd.output().context("failed to run `git diff`")?;
     if !output.status.success() {
