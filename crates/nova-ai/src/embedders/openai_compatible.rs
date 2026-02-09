@@ -102,14 +102,8 @@ impl OpenAiCompatibleEmbedder {
 }
 
 impl Embedder for OpenAiCompatibleEmbedder {
-    fn embed(&self, text: &str) -> Vec<f32> {
-        match self.embed_once(text) {
-            Ok(vec) => vec,
-            Err(err) => {
-                tracing::warn!(target = "nova.ai", "embedding request failed: {err}");
-                Vec::new()
-            }
-        }
+    fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+        self.embed_once(text)
     }
 }
 
@@ -128,4 +122,3 @@ struct OpenAiEmbeddingResponse {
 struct OpenAiEmbeddingData {
     embedding: Vec<f32>,
 }
-
