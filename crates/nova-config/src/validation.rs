@@ -633,12 +633,13 @@ fn validate_ai(
                     | AiProviderKind::OpenAiCompatible
                     | AiProviderKind::OpenAi
                     | AiProviderKind::AzureOpenAi
+                    | AiProviderKind::Http
             )
         {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.provider.kind".to_string(),
                 message: format!(
-                    "embeddings are not supported for provider kind {}; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai",
+                    "embeddings are not supported for provider kind {}; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai, http",
                     ai_provider_kind_name(&config.ai.provider.kind)
                 ),
             });

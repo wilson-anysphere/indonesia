@@ -532,9 +532,13 @@ fn validates_ai_embeddings_provider_backend_requires_supported_provider() {
     let text = r#"
 [ai]
 enabled = true
+api_key = "test-key"
+
+[ai.privacy]
+local_only = false
 
 [ai.provider]
-kind = "http"
+kind = "anthropic"
 
 [ai.embeddings]
 enabled = true
@@ -548,7 +552,7 @@ backend = "provider"
         diagnostics.errors,
         vec![ConfigValidationError::InvalidValue {
             toml_path: "ai.provider.kind".to_string(),
-            message: "embeddings are not supported for provider kind http; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai".to_string(),
+            message: "embeddings are not supported for provider kind anthropic; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai, http".to_string(),
         }]
     );
 }
