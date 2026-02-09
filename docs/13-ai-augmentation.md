@@ -556,6 +556,10 @@ Other useful knobs (see `nova_config::AiEmbeddingsConfig` for the full set):
 
 - `ai.embeddings.timeout_ms` — timeout override (ms) for provider-backed embeddings (defaults to
   `ai.provider.timeout_ms`).
+- `ai.embeddings.model_dir` — directory for embedding model files and caches. Nova also stores a
+  local on-disk embedding cache here for provider-backed embeddings (so repeated indexing/searches
+  can avoid redundant network calls). Defaults to `.nova/models/embeddings` (relative to the
+  workspace root).
 - `ai.embeddings.max_memory_bytes` — soft memory budget for the embedding-backed index. When the
   budget is exceeded, Nova truncates the index (dropping whole files) to stay within the limit.
 - `ai.embeddings.batch_size` — maximum batch size for embedding requests. Used by the in-process
