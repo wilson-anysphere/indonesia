@@ -248,8 +248,14 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
   nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
     .map_err(|e| (-32603, e.to_string()))?;
 
-  let uri_string = args
-    .uri
+  let GenerateMethodBodyArgs {
+    method_signature,
+    context,
+    uri,
+    range,
+  } = args;
+
+  let uri_string = uri
     .as_deref()
     .ok_or_else(|| (-32602, "missing uri".to_string()))?;
   let uri = uri_string
@@ -275,9 +281,7 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     ));
   };
 
-  let selection = args
-    .range
-    .ok_or_else(|| (-32602, "missing range".to_string()))?;
+  let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
   let insert_range =
     insert_range_for_method_body(&source, selection).map_err(|message| (-32602, message))?;
 
@@ -308,6 +312,8 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
       AiCodeAction::GenerateMethodBody {
         file: file_rel,
         insert_range,
+        method_signature,
+        context,
       },
       &workspace,
       &root_uri,

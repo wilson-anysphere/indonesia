@@ -29,6 +29,15 @@ pub enum AiCodeAction {
     GenerateMethodBody {
         file: String,
         insert_range: Range,
+        /// The method signature (including modifiers, return type, name, and parameters).
+        ///
+        /// This comes from `GenerateMethodBodyArgs.method_signature` and should be included in the
+        /// prompt even if the annotated source snippet is minimal (e.g. an empty method body).
+        method_signature: String,
+        /// Optional surrounding context (enclosing class, nearby members, etc).
+        ///
+        /// This comes from `GenerateMethodBodyArgs.context`.
+        context: Option<String>,
     },
     GenerateTest {
         file: String,
@@ -118,7 +127,12 @@ impl<'a> AiCodeActionExecutor<'a> {
                 let explanation = self.provider.complete(&prompt, cancel).await?;
                 Ok(CodeActionOutcome::Explanation(explanation))
             }
-            AiCodeAction::GenerateMethodBody { file, insert_range } => {
+            AiCodeAction::GenerateMethodBody {
+                file,
+                insert_range,
+                method_signature,
+                context,
+            } => {
                 if let Some(progress) = progress {
                     progress.report(CodegenProgressEvent {
                         stage: CodegenProgressStage::BuildingPrompt,
@@ -126,13 +140,14 @@ impl<'a> AiCodeActionExecutor<'a> {
                         message: "Building context…".to_string(),
                     });
                 }
-                let prompt = build_insert_prompt(
-                    "Generate a Java method body for the marked range.",
+                let prompt = build_generate_method_body_prompt(
                     &file,
                     insert_range,
                     workspace,
                     root_uri,
                     &self.privacy,
+                    &method_signature,
+                    context.as_deref(),
                 );
 
                 let mut config = self.config.clone();
@@ -217,6 +232,45 @@ impl<'a> AiCodeActionExecutor<'a> {
                 Ok(CodeActionOutcome::WorkspaceEdit(edit))
             }
         }
+    }
+}
+
+fn build_generate_method_body_prompt(
+    file: &str,
+    insert_range: Range,
+    workspace: &VirtualWorkspace,
+    root_uri: &Uri,
+    privacy: &AiPrivacyConfig,
+    method_signature: &str,
+    context: Option<&str>,
+) -> String {
+    let mut preamble = String::new();
+
+    if !method_signature.trim().is_empty() {
+        preamble.push_str("Method signature:\n```java\n");
+        preamble.push_str(method_signature.trim_end());
+        preamble.push_str("\n```\n");
+    }
+
+    if let Some(context) = context.filter(|s| !s.trim().is_empty()) {
+        preamble.push_str("\nSurrounding context:\n```java\n");
+        preamble.push_str(context.trim_end());
+        preamble.push_str("\n```\n");
+    }
+
+    let insert = build_insert_prompt(
+        "Generate a Java method body for the method described above and write it into the marked range.",
+        file,
+        insert_range,
+        workspace,
+        root_uri,
+        privacy,
+    );
+
+    if preamble.trim().is_empty() {
+        insert
+    } else {
+        format!("{preamble}\n{insert}")
     }
 }
 
@@ -693,6 +747,8 @@ mod tests {
                     character: 0,
                 },
             },
+            method_signature: "public int add(int a, int b)".into(),
+            context: None,
         }
     }
 
