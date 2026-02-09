@@ -78,9 +78,14 @@ type VsTestMetadata = {
 };
 const vscodeTestMetadataById = new Map<string, VsTestMetadata>();
 
+type CompletionPosition = { line: number; character: number };
+
 let aiRefreshInProgress = false;
 let lastCompletionContextKey: string | undefined;
 let lastCompletionDocumentUri: string | undefined;
+let lastCompletionPosition: CompletionPosition | undefined;
+let lastAiCompletionContextKey: string | undefined;
+let lastAiCompletionPosition: CompletionPosition | undefined;
 const aiItemsByContextKey = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
@@ -108,6 +113,12 @@ function clearAiCompletionCacheForWorkspace(workspaceKey: string): void {
   if (lastCompletionContextKey?.startsWith(prefix)) {
     lastCompletionContextKey = undefined;
     lastCompletionDocumentUri = undefined;
+    lastCompletionPosition = undefined;
+  }
+
+  if (lastAiCompletionContextKey?.startsWith(prefix)) {
+    lastAiCompletionContextKey = undefined;
+    lastAiCompletionPosition = undefined;
   }
 }
 
@@ -173,6 +184,9 @@ function clearAiCompletionCache(): void {
   aiRequestsInFlight.clear();
   lastCompletionContextKey = undefined;
   lastCompletionDocumentUri = undefined;
+  lastCompletionPosition = undefined;
+  lastAiCompletionContextKey = undefined;
+  lastAiCompletionPosition = undefined;
 }
 
 function readLspLaunchConfig(workspaceFolder: vscode.WorkspaceFolder): { args: string[]; env: NodeJS.ProcessEnv } {
@@ -758,13 +772,14 @@ export async function activate(context: vscode.ExtensionContext) {
             return result;
           }
 
-          const contextKey = makeAiContextKey(workspaceKey, contextId);
-          lastCompletionContextKey = contextKey;
-          lastCompletionDocumentUri = document.uri.toString();
+           const contextKey = makeAiContextKey(workspaceKey, contextId);
+           lastCompletionContextKey = contextKey;
+           lastCompletionDocumentUri = document.uri.toString();
+           lastCompletionPosition = { line: position.line, character: position.character };
 
-          // Only poll `nova/completion/more` when the base completion list indicates more results
-          // may arrive. When multi-token completions are disabled (server-side or by privacy
-          // policy), Nova returns `isIncomplete = false`.
+           // Only poll `nova/completion/more` when the base completion list indicates more results
+           // may arrive. When multi-token completions are disabled (server-side or by privacy
+           // policy), Nova returns `isIncomplete = false`.
           if (!Array.isArray(result) && typeof result?.isIncomplete === 'boolean' && result.isIncomplete === false) {
             return result;
           }
@@ -819,14 +834,16 @@ export async function activate(context: vscode.ExtensionContext) {
               decorateNovaAiCompletionItems(more);
 
               // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
-              if (aiItemsByContextKey.has(contextKey)) {
-                aiItemsByContextKey.delete(contextKey);
-              }
-              aiItemsByContextKey.set(contextKey, more);
-              while (aiItemsByContextKey.size > MAX_AI_CONTEXT_IDS) {
-                const oldestKey = aiItemsByContextKey.keys().next().value;
-                if (typeof oldestKey !== 'string') {
-                  break;
+               if (aiItemsByContextKey.has(contextKey)) {
+                 aiItemsByContextKey.delete(contextKey);
+               }
+               aiItemsByContextKey.set(contextKey, more);
+               lastAiCompletionContextKey = contextKey;
+               lastAiCompletionPosition = { line: position.line, character: position.character };
+               while (aiItemsByContextKey.size > MAX_AI_CONTEXT_IDS) {
+                 const oldestKey = aiItemsByContextKey.keys().next().value;
+                 if (typeof oldestKey !== 'string') {
+                   break;
                 }
                 aiItemsByContextKey.delete(oldestKey);
               }
@@ -1691,26 +1708,53 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(javaDocumentSelector, {
-      provideCompletionItems: (document) => {
+      provideCompletionItems: (document, position) => {
         if (!isAiEnabled() || !isAiCompletionsEnabled()) {
           return undefined;
         }
 
-        if (!lastCompletionContextKey) {
+        const uri = document.uri.toString();
+        if (!lastCompletionDocumentUri || lastCompletionDocumentUri !== uri) {
           return undefined;
         }
 
-        if (!lastCompletionDocumentUri || lastCompletionDocumentUri !== document.uri.toString()) {
-          return undefined;
+        const matches = (expected: CompletionPosition | undefined): boolean => {
+          if (!expected) {
+            return false;
+          }
+          return expected.line === position.line && expected.character === position.character;
+        };
+
+        const touch = (key: string | undefined): vscode.CompletionItem[] | undefined => {
+          if (!key) {
+            return undefined;
+          }
+          const cached = aiItemsByContextKey.get(key);
+          if (cached) {
+            // Touch for LRU.
+            aiItemsByContextKey.delete(key);
+            aiItemsByContextKey.set(key, cached);
+          }
+          return cached;
+        };
+
+        // Prefer the completion context key captured from the base completion request.
+        if (lastCompletionContextKey && matches(lastCompletionPosition)) {
+          const cached = touch(lastCompletionContextKey);
+          if (cached) {
+            return cached;
+          }
         }
 
-        const cached = aiItemsByContextKey.get(lastCompletionContextKey);
-        if (cached) {
-          // Touch for LRU.
-          aiItemsByContextKey.delete(lastCompletionContextKey);
-          aiItemsByContextKey.set(lastCompletionContextKey, cached);
+        // Fallback: when async AI items are ready but we did not auto-refresh the suggest widget,
+        // a manual re-trigger can race with the LSP completion provider updating the context id.
+        // Surface the most recent AI items for the current document/position so users can still
+        // see the results without waiting for a new poll cycle.
+        if (lastAiCompletionContextKey && matches(lastAiCompletionPosition)) {
+          return touch(lastAiCompletionContextKey);
         }
-        return cached;
+
+        return undefined;
       },
       resolveCompletionItem: async (item, token) => {
         if (token.isCancellationRequested) {
@@ -1827,6 +1871,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
       lastCompletionContextKey = undefined;
       lastCompletionDocumentUri = undefined;
+      lastCompletionPosition = undefined;
+      lastAiCompletionContextKey = undefined;
+      lastAiCompletionPosition = undefined;
       aiItemsByContextKey.clear();
     }),
   );
@@ -1840,6 +1887,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
       lastCompletionContextKey = undefined;
       lastCompletionDocumentUri = undefined;
+      lastCompletionPosition = undefined;
+      lastAiCompletionContextKey = undefined;
+      lastAiCompletionPosition = undefined;
     }),
   );
 
