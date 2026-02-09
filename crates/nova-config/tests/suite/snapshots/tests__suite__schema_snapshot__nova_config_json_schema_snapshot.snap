@@ -676,6 +676,7 @@ expression: schema
         },
         "enabled": false,
         "features": {
+          "code_review_max_diff_chars": 50000,
           "completion_ranking": false,
           "multi_token_completion": false,
           "semantic_search": false
@@ -685,6 +686,7 @@ expression: schema
           "allow_code_edits_without_anonymization": false,
           "anonymize_identifiers": null,
           "excluded_paths": [],
+          "include_file_paths": false,
           "local_only": true,
           "redact_numeric_literals": null,
           "redact_patterns": [],
@@ -883,6 +885,7 @@ expression: schema
         "features": {
           "description": "Local augmentation features and their individual toggles.",
           "default": {
+            "code_review_max_diff_chars": 50000,
             "completion_ranking": false,
             "multi_token_completion": false,
             "semantic_search": false
@@ -900,6 +903,7 @@ expression: schema
             "allow_code_edits_without_anonymization": false,
             "anonymize_identifiers": null,
             "excluded_paths": [],
+            "include_file_paths": false,
             "local_only": true,
             "redact_numeric_literals": null,
             "redact_patterns": [],
@@ -1043,6 +1047,13 @@ expression: schema
     "AiFeaturesConfig": {
       "type": "object",
       "properties": {
+        "code_review_max_diff_chars": {
+          "description": "Maximum number of diff characters included in AI code review prompts.\n\nLarge diffs can exceed LLM provider limits and increase latency/cost. When the diff exceeds this limit, Nova keeps the beginning and end of the diff and inserts a truncation marker indicating how much was omitted.",
+          "default": 50000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1.0
+        },
         "completion_ranking": {
           "description": "Enables AI-assisted completion re-ranking.",
           "default": false,
@@ -1109,6 +1120,11 @@ expression: schema
             "type": "string",
             "minLength": 1
           }
+        },
+        "include_file_paths": {
+          "description": "Allow including file system paths (file names, workspace-relative paths, or absolute paths) in prompts/context sent to the LLM.\n\nThis is a **high-sensitivity** setting: file paths can leak user names, organization names, internal directory structure, and other metadata. The safe default is `false`.\n\nNote: `ai.privacy.excluded_paths` is still enforced regardless of this flag. Excluded files are omitted from prompts, and Nova avoids attaching file path metadata for excluded files.",
+          "default": false,
+          "type": "boolean"
         },
         "local_only": {
           "description": "If true, Nova will not use any cloud providers. This is the recommended setting for privacy-sensitive environments.",
