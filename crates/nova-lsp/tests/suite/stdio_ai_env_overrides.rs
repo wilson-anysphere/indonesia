@@ -1,5 +1,6 @@
-use lsp_types::{CompletionList, Position};
+use lsp_types::{CompletionList, Position, Range};
 use nova_lsp::MoreCompletionsResult;
+use nova_lsp::text_pos::TextPos;
 use serde_json::json;
 use std::fs;
 use std::io::BufReader;
@@ -522,6 +523,11 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
         .arg("--stdio")
         // Configure AI via the legacy env-var provider wiring, but also set the override env var
         // under test. The server should never hit the provider endpoint when AI is force-disabled.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         .env("NOVA_AI_PROVIDER", "http")
         .env("NOVA_AI_ENDPOINT", &endpoint)
         .env("NOVA_AI_MODEL", "default")
@@ -607,6 +613,296 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
     ai_server.assert_hits(0);
 }
 
+fn run_ai_code_action_request_with_env_override(env_key: &str, env_value: &str) {
+    let _lock = support::stdio_server_lock();
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock" }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+code_actions = true
+explain_errors = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
+    let file_path = temp.path().join("Main.java");
+    let file_uri = support::file_uri_string(&file_path);
+    let text = "class Test { void foo() { } }";
+    fs::write(&file_path, text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure the only overrides in effect are the ones explicitly under test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env(env_key, env_value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "void foo() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("start"),
+        end: pos.lsp_position(end_offset).expect("end"),
+    };
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+    let code_actions_resp = support::read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    for forbidden in ["Explain this error", "Generate method body with AI", "Generate tests with AI"]
+    {
+        assert!(
+            !actions
+                .iter()
+                .any(|a| a.get("title").and_then(|t| t.as_str()) == Some(forbidden)),
+            "expected `{forbidden}` to be hidden when {env_key}={env_value}"
+        );
+    }
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "void foo()",
+                "uri": file_uri,
+                "range": { "start": { "line": range.start.line, "character": range.start.character }, "end": { "line": range.end.line, "character": range.end.character } }
+            }
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 3);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("disabled"),
+        "expected disabled error kind, got: {resp:#?}"
+    );
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("feature"))
+            .and_then(|v| v.as_str()),
+        Some("ai.features.code_actions"),
+        "expected disabled error feature, got: {resp:#?}"
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 4);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
+
+fn run_ai_code_review_request_with_env_override(env_key: &str, env_value: &str) {
+    let _lock = support::stdio_server_lock();
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock review" }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+code_review = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure the only overrides in effect are the ones explicitly under test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env(env_key, env_value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": { "diff": "diff --git a/Main.java b/Main.java\n--- a/Main.java\n+++ b/Main.java\n@@\n-class Main {}\n+class Main { int x; }\n" }
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("disabled"),
+        "expected disabled error kind, got: {resp:#?}"
+    );
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("feature"))
+            .and_then(|v| v.as_str()),
+        Some("ai.features.code_review"),
+        "expected disabled error feature, got: {resp:#?}"
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
+
 #[test]
 fn stdio_server_honors_nova_disable_ai_env_var() {
     run_completion_request_with_env("NOVA_DISABLE_AI", "1");
@@ -640,6 +936,16 @@ fn stdio_server_honors_nova_ai_completions_max_items_env_var() {
 #[test]
 fn stdio_server_honors_nova_disable_ai_env_var_for_ai_requests() {
     run_ai_explain_error_request_with_env("NOVA_DISABLE_AI", "1");
+}
+
+#[test]
+fn stdio_server_honors_nova_disable_ai_code_actions_env_var() {
+    run_ai_code_action_request_with_env_override("NOVA_DISABLE_AI_CODE_ACTIONS", "1");
+}
+
+#[test]
+fn stdio_server_honors_nova_disable_ai_code_review_env_var() {
+    run_ai_code_review_request_with_env_override("NOVA_DISABLE_AI_CODE_REVIEW", "1");
 }
 
 #[test]

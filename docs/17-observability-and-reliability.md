@@ -94,6 +94,12 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` disables **AI completion features**, including:
 > - multi-token completions (`nova/completion/more`), and
 > - completion ranking (LLM-backed re-ordering of standard completion results), when enabled.
+> `NOVA_DISABLE_AI_CODE_ACTIONS=1` disables LLM-backed AI code actions server-side:
+> - `nova/ai/explainError`
+> - `nova/ai/generateMethodBody`
+> - `nova/ai/generateTests`
+> `NOVA_DISABLE_AI_CODE_REVIEW=1` disables LLM-backed AI code review (`nova/ai/codeReview` and
+> `nova ai review`).
 > `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s **multi-token completion** max-items;
 > `0` is treated as a hard disable (values are clamped to a reasonable max, currently 32, and
 > invalid/empty values are ignored). These overrides are read at process start (restart required).
