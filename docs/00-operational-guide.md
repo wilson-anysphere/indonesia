@@ -63,6 +63,27 @@ cargo build --all-targets     # Compiles everything
 cargo check --all-features    # Unbounded work
 ```
 
+### Rust toolchain selection (pinned)
+
+Nova pins its Rust toolchain to keep CI/agent/dev builds reproducible and to avoid `rustfmt`/`clippy`
+drift.
+
+- **Pinned toolchain**: **Rust 1.92.0** (see [`rust-toolchain.toml`](../rust-toolchain.toml); CI also
+  installs the same version explicitly).
+- **Wrapper behavior**: `scripts/cargo_agent.sh` is designed to **prefer the pinned toolchain**, even
+  when an external environment sets `RUSTUP_TOOLCHAIN` (common in shared runners).
+
+To use a different toolchain (debugging only), pass an explicit toolchain spec as the first
+argument:
+
+```bash
+# Example: nightly (required for some workflows like fuzzing)
+bash scripts/cargo_agent.sh +nightly fuzz list
+
+# Example: debug a toolchain-specific issue
+bash scripts/cargo_agent.sh +1.93.0 check --locked -p nova-core
+```
+
 ---
 
 ## Mandatory Rules for Cargo Commands
@@ -135,7 +156,8 @@ Features:
 - Enforces RAM cap via `RLIMIT_AS` (default: `4G`)
 - Throttles concurrent cargo commands with slot locks
 - Caps `RUST_TEST_THREADS` to avoid spawning hundreds of test threads
-- Handles toolchain specs (`+nightly`, etc.)
+- Uses the repo-pinned Rust toolchain (`rust-toolchain.toml`, **1.92.0**) for reproducible builds.
+- Supports explicit toolchain overrides via rustup syntax (`+nightly`, `+1.93.0`, etc.)
 
 Environment variables:
 - `NOVA_CARGO_LIMIT_AS`: Address-space cap (default: `4G`)

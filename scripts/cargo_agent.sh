@@ -141,6 +141,16 @@ deny_unscoped_cargo_test "$@"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Nova pins its Rust toolchain via `rust-toolchain.toml` (kept in sync with CI). Some environments
+# (notably shared runners / agent sandboxes) export `RUSTUP_TOOLCHAIN` globally, which would
+# otherwise override the repo pin and lead to hard-to-debug fmt/clippy drift.
+#
+# Prefer the repo pin by clearing the ambient override unless the caller explicitly selected a
+# toolchain via rustup's `+<toolchain>` syntax.
+if [[ "${1:-}" != +* ]]; then
+  unset RUSTUP_TOOLCHAIN || true
+fi
+
 # Some environments (including multi-agent sandboxes) ship with a global Cargo config that enables
 # `sccache` as a `rustc` wrapper. When the daemon isn't available this causes all builds/tests to
 # fail at `sccache rustc -vV`.

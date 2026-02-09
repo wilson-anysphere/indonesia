@@ -98,6 +98,26 @@ cargo build --all-targets     # Will OOM
 cargo check --all-features    # Will OOM
 ```
 
+### Rust Toolchain (Pinned)
+
+Nova pins the Rust toolchain via [`rust-toolchain.toml`](rust-toolchain.toml) to keep CI and local
+builds reproducible (most importantly: `rustfmt` + `clippy` output).
+
+- **Pinned toolchain**: **Rust 1.92.0** (see `rust-toolchain.toml` and `.github/workflows/*.yml`)
+- **Wrapper behavior**: `bash scripts/cargo_agent.sh …` **prefers the pinned toolchain**, even if your
+  environment sets `RUSTUP_TOOLCHAIN` (common in shared runner / agent environments).
+
+If you need to run with a different toolchain (debugging toolchain regressions / forward-compat only),
+pass an explicit rustup toolchain spec as the first argument:
+
+```bash
+# Use nightly for workflows that require it (e.g. fuzzing).
+bash scripts/cargo_agent.sh +nightly fuzz list
+
+# Debug a toolchain-specific issue (do not use for normal development).
+bash scripts/cargo_agent.sh +1.93.0 check --locked -p nova-core
+```
+
 ### Test Organization
 
 **Avoid creating loose `tests/*.rs` files.** Each `.rs` file in `tests/` becomes a separate binary.

@@ -13,6 +13,9 @@ In those environments:
 - Prefer `bash scripts/cargo_agent.sh …` over invoking `cargo …` directly (enforces memory limits).
 - Scope builds/tests to what you’re changing (for example `-p <crate>` or `--manifest-path <path>`, and for tests
   further scope with `--lib` / `--test=<name>` / `--bin <name>`).
+- Nova pins the Rust toolchain to **1.92.0** (see `rust-toolchain.toml`). The wrapper is intended to
+  **prefer the pinned toolchain**, even if your environment sets `RUSTUP_TOOLCHAIN`. To use a
+  different toolchain (debugging only), pass it explicitly: `bash scripts/cargo_agent.sh +<toolchain> …`.
 
 Note: CI uses `cargo nextest run --locked --workspace --profile ci` for the main suite and runs
 doctests separately via `cargo test --locked --workspace --doc` on dedicated runners.
@@ -29,7 +32,7 @@ doctests separately via `cargo test --locked --workspace --doc` on dedicated run
 
 ## Prerequisites
 
-- Rust (see `rust-toolchain.toml`)
+- Rust (**pinned to 1.92.0** via `rust-toolchain.toml`; CI uses the same toolchain)
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
