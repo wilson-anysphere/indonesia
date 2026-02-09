@@ -362,6 +362,7 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use crate::AiError;
+    use nova_core::ProjectDatabase;
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
@@ -449,6 +450,8 @@ mod embeddings {
         dims: usize,
         id_to_doc: Vec<(PathBuf, usize)>,
         dirty: bool,
+        #[cfg(any(test, debug_assertions))]
+        rebuild_count: usize,
     }
 
     impl EmbeddedIndex {
@@ -458,6 +461,8 @@ mod embeddings {
                 dims: 0,
                 id_to_doc: Vec::new(),
                 dirty: false,
+                #[cfg(any(test, debug_assertions))]
+                rebuild_count: 0,
             }
         }
     }
@@ -565,6 +570,11 @@ mod embeddings {
         }
 
         fn rebuild_index_locked(&self, index: &mut EmbeddedIndex) {
+            #[cfg(any(test, debug_assertions))]
+            {
+                index.rebuild_count = index.rebuild_count.saturating_add(1);
+            }
+
             index.hnsw = None;
             index.dims = 0;
             index.id_to_doc.clear();
@@ -656,6 +666,21 @@ mod embeddings {
             self.embedding_bytes_used = 0;
             let mut index = self.index.lock().expect("semantic search mutex poisoned");
             *index = EmbeddedIndex::empty();
+        }
+
+        fn index_project(&mut self, db: &dyn ProjectDatabase) {
+            // Bulk indexing is often triggered during project open/refresh. Pre-build the HNSW
+            // structure here so the first `search()` call doesn't pay the full rebuild cost.
+            self.clear();
+            for path in db.project_files() {
+                let Some(text) = db.file_text(&path) else {
+                    continue;
+                };
+                self.index_file(path, text);
+            }
+
+            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            self.rebuild_index_locked(&mut index);
         }
 
         fn index_file(&mut self, path: PathBuf, text: String) {
@@ -929,6 +954,29 @@ mod embeddings {
             });
             results.truncate(50);
             results
+        }
+    }
+
+    // -----------------------------------------------------------------------------
+    // Test / debug-only helpers
+    // -----------------------------------------------------------------------------
+
+    #[cfg(any(test, debug_assertions))]
+    impl<E: Embedder> EmbeddingSemanticSearch<E> {
+        #[doc(hidden)]
+        pub fn __index_is_dirty_for_tests(&self) -> bool {
+            self.index
+                .lock()
+                .expect("semantic search mutex poisoned")
+                .dirty
+        }
+
+        #[doc(hidden)]
+        pub fn __index_rebuild_count_for_tests(&self) -> usize {
+            self.index
+                .lock()
+                .expect("semantic search mutex poisoned")
+                .rebuild_count
         }
     }
 

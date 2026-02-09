@@ -47,6 +47,35 @@ fn embedding_search_ranks_most_relevant_method_first() {
 }
 
 #[test]
+fn embedding_index_project_prewarms_hnsw_index() {
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    search.index_project(&db);
+
+    assert!(
+        !search.__index_is_dirty_for_tests(),
+        "index_project should rebuild the HNSW index eagerly"
+    );
+    assert_eq!(search.__index_rebuild_count_for_tests(), 1);
+
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
+    assert_eq!(search.__index_rebuild_count_for_tests(), 1);
+}
+
+#[test]
 fn context_builder_can_include_embedding_related_code() {
     let db = VirtualWorkspace::new([
         (
