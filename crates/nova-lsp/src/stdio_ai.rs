@@ -1619,6 +1619,8 @@ mod tests {
     let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
     let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
     let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+    let _max_tokens = EnvVarGuard::remove("NOVA_AI_MAX_TOKENS");
+    let _concurrency = EnvVarGuard::remove("NOVA_AI_CONCURRENCY");
 
     // Baseline: no explicit code-edit opt-ins.
     let _local_only = EnvVarGuard::remove("NOVA_AI_LOCAL_ONLY");
@@ -1729,6 +1731,7 @@ mod tests {
     let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
     let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
     let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+    let _concurrency = EnvVarGuard::remove("NOVA_AI_CONCURRENCY");
     let _max_tokens = EnvVarGuard::set("NOVA_AI_MAX_TOKENS", "2048");
 
     let (cfg, _privacy) = load_ai_config_from_env()
@@ -1744,6 +1747,7 @@ mod tests {
     let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
     let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
     let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+    let _max_tokens = EnvVarGuard::remove("NOVA_AI_MAX_TOKENS");
     let _concurrency = EnvVarGuard::set("NOVA_AI_CONCURRENCY", "3");
 
     let (cfg, _privacy) = load_ai_config_from_env()
