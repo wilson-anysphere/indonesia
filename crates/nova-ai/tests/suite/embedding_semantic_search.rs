@@ -354,6 +354,45 @@ fn embedding_search_returns_empty_when_query_embedding_fails() {
 }
 
 #[test]
+fn embedding_search_sizes_hnsw_to_inserted_docs() {
+    #[derive(Debug, Clone, Copy)]
+    struct VariableDimsEmbedder;
+
+    impl Embedder for VariableDimsEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            if text.contains("EMPTY") {
+                return Ok(Vec::new());
+            }
+
+            // Return different dimensionalities based on content so the HNSW builder must skip
+            // some docs and size the index based on the vectors that will actually be inserted.
+            if text.contains("DIM3") {
+                Ok(vec![1.0, 0.0, 0.0])
+            } else {
+                Ok(vec![1.0, 0.0])
+            }
+        }
+    }
+
+    let mut search = EmbeddingSemanticSearch::new(VariableDimsEmbedder);
+    search.index_file(PathBuf::from("a.txt"), "DIM3 hello".to_string());
+    search.index_file(PathBuf::from("b.txt"), "DIM2 skip-me".to_string());
+    search.index_file(PathBuf::from("c.txt"), "DIM3 hello again".to_string());
+    search.index_file(PathBuf::from("d.txt"), "EMPTY".to_string());
+
+    // Trigger a rebuild (and ensure we don't panic).
+    let results = search.search("DIM3 hello");
+    assert!(!results.is_empty());
+
+    // The mismatched-dimension doc should not be returned (it isn't inserted into HNSW).
+    assert!(!results.iter().any(|r| r.path == PathBuf::from("b.txt")));
+
+    // The internal HNSW allocation should be right-sized to the number of inserted embeddings.
+    assert_eq!(search.__index_id_to_doc_len_for_tests(), 2);
+    assert_eq!(search.__index_max_elements_for_tests(), 2);
+}
+
+#[test]
 fn embedding_search_chunks_non_java_files_with_aligned_ranges() {
     let mut readme = String::new();
     readme.push_str("# Example Project\n\n");

@@ -1427,6 +1427,16 @@ mod embeddings {
         pub fn __index_rebuild_count_for_tests(&self) -> usize {
             self.lock_index().rebuild_count
         }
+
+        #[doc(hidden)]
+        pub fn __index_max_elements_for_tests(&self) -> usize {
+            self.lock_index().max_elements
+        }
+
+        #[doc(hidden)]
+        pub fn __index_id_to_doc_len_for_tests(&self) -> usize {
+            self.lock_index().id_to_doc.len()
+        }
     }
 
     fn is_java_file(path: &Path) -> bool {
