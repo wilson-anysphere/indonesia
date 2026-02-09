@@ -44,14 +44,22 @@ pub fn embeddings_client_from_config(config: &AiConfig) -> Result<Box<dyn Embedd
         }
         AiEmbeddingsBackend::Local => {
             #[cfg(feature = "embeddings-local")]
-            let out: Result<Box<dyn EmbeddingsClient>, AiError> = {
-                let embedder = crate::LocalEmbedder::from_config(&config.embeddings)?;
-                Ok(Box::new(LocalNeuralEmbeddingsClient::new(
-                    Arc::new(embedder),
-                    max_memory_bytes,
-                    config.embeddings.local_model.clone(),
-                )))
-            };
+            let out: Result<Box<dyn EmbeddingsClient>, AiError> =
+                match crate::LocalEmbedder::from_config(&config.embeddings) {
+                    Ok(embedder) => Ok(Box::new(LocalNeuralEmbeddingsClient::new(
+                        Arc::new(embedder),
+                        max_memory_bytes,
+                        config.embeddings.local_model.trim().to_string(),
+                    ))),
+                    Err(err) => {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            ?err,
+                            "failed to initialize local embeddings; falling back to hash embeddings"
+                        );
+                        Ok(Box::new(LocalEmbeddingsClient::new(max_memory_bytes)))
+                    }
+                };
 
             #[cfg(not(feature = "embeddings-local"))]
             let out: Result<Box<dyn EmbeddingsClient>, AiError> = {
@@ -207,9 +215,20 @@ impl EmbeddingsClient for LocalNeuralEmbeddingsClient {
         if !miss_inputs.is_empty() {
             let expected = miss_inputs.len();
             let embedder = self.embedder.clone();
-            let embeddings = tokio::task::spawn_blocking(move || embedder.embed_batch(&miss_inputs))
-                .await
-                .map_err(|err| AiError::UnexpectedResponse(format!("local embedder task failed: {err}")))??;
+            let mut task = tokio::task::spawn_blocking(move || embedder.embed_batch(&miss_inputs));
+
+            let embeddings = tokio::select! {
+                _ = cancel.cancelled() => {
+                    task.abort();
+                    Err(AiError::Cancelled)
+                }
+                res = &mut task => match res {
+                    Ok(inner) => inner,
+                    Err(err) => Err(AiError::UnexpectedResponse(format!(
+                        "local embedder task failed: {err}"
+                    ))),
+                },
+            }?;
 
             if cancel.is_cancelled() {
                 return Err(AiError::Cancelled);
