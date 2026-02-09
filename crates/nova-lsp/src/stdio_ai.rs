@@ -146,6 +146,90 @@ fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AiActionFeature {
+  ExplainErrors,
+  CodeActions,
+  CodeReview,
+}
+
+impl AiActionFeature {
+  pub(super) fn config_key(self) -> &'static str {
+    match self {
+      AiActionFeature::ExplainErrors => "ai.features.explain_errors",
+      AiActionFeature::CodeActions => "ai.features.code_actions",
+      AiActionFeature::CodeReview => "ai.features.code_review",
+    }
+  }
+}
+
+pub(super) fn ai_action_feature_for_method(method: &str) -> Option<AiActionFeature> {
+  match method {
+    nova_lsp::AI_EXPLAIN_ERROR_METHOD => Some(AiActionFeature::ExplainErrors),
+    nova_lsp::AI_GENERATE_METHOD_BODY_METHOD | nova_lsp::AI_GENERATE_TESTS_METHOD => {
+      Some(AiActionFeature::CodeActions)
+    }
+    nova_lsp::AI_CODE_REVIEW_METHOD => Some(AiActionFeature::CodeReview),
+    _ => None,
+  }
+}
+
+pub(super) fn ai_action_feature_for_command(command: &str) -> Option<AiActionFeature> {
+  match command {
+    nova_ide::COMMAND_EXPLAIN_ERROR => Some(AiActionFeature::ExplainErrors),
+    nova_ide::COMMAND_GENERATE_METHOD_BODY | nova_ide::COMMAND_GENERATE_TESTS => {
+      Some(AiActionFeature::CodeActions)
+    }
+    nova_ide::COMMAND_CODE_REVIEW => Some(AiActionFeature::CodeReview),
+    _ => None,
+  }
+}
+
+pub(super) fn ai_action_feature_enabled(state: &ServerState, feature: AiActionFeature) -> bool {
+  match feature {
+    AiActionFeature::ExplainErrors => state.ai_config.features.explain_errors,
+    AiActionFeature::CodeActions => state.ai_config.features.code_actions,
+    AiActionFeature::CodeReview => state.ai_config.features.code_review,
+  }
+}
+
+pub(super) fn ai_action_feature_disabled_message(feature: AiActionFeature) -> String {
+  match feature {
+    AiActionFeature::ExplainErrors => format!(
+      "AI explain-error actions are disabled ({key}=false). To enable, set {key}=true in nova.toml. \
+Note: the server can hard-disable all AI code actions via NOVA_DISABLE_AI_CODE_ACTIONS=1.",
+      key = feature.config_key(),
+    ),
+    AiActionFeature::CodeActions => format!(
+      "AI code actions are disabled ({key}=false). To enable, set {key}=true in nova.toml. \
+Note: the server can hard-disable AI code actions via NOVA_DISABLE_AI_CODE_ACTIONS=1.",
+      key = feature.config_key(),
+    ),
+    AiActionFeature::CodeReview => format!(
+      "AI code review is disabled ({key}=false). To enable, set {key}=true in nova.toml. \
+Note: the server can hard-disable AI code review via NOVA_DISABLE_AI_CODE_REVIEW=1.",
+      key = feature.config_key(),
+    ),
+  }
+}
+
+pub(super) fn ai_action_feature_disabled_error(feature: AiActionFeature) -> (i32, String) {
+  (-32600, ai_action_feature_disabled_message(feature))
+}
+
+pub(super) fn ai_action_feature_disabled_error_data(feature: AiActionFeature) -> serde_json::Value {
+  json!({
+    "kind": "disabled",
+    "feature": feature.config_key(),
+  })
+}
+
+pub(super) fn ai_action_feature_disabled_rpc_error(feature: AiActionFeature) -> AiRpcError {
+  let (code, message) = ai_action_feature_disabled_error(feature);
+  let data = ai_action_feature_disabled_error_data(feature);
+  (code, message, Some(data))
+}
+
 pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
   method: &str,
   params: serde_json::Value,
@@ -238,6 +322,9 @@ pub(super) fn run_ai_code_review(
     .ok_or_else(|| {
       rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
     })?;
+  if !state.ai_config.features.code_review {
+    return Err(ai_action_feature_disabled_rpc_error(AiActionFeature::CodeReview));
+  }
   let runtime = state
     .runtime
     .as_ref()
@@ -314,6 +401,8 @@ fn env_truthy(key: &str) -> bool {
 fn ai_status_payload(state: &ServerState) -> serde_json::Value {
   let disable_ai = env_truthy("NOVA_DISABLE_AI");
   let disable_ai_completions = env_truthy("NOVA_DISABLE_AI_COMPLETIONS");
+  let disable_ai_code_actions = env_truthy("NOVA_DISABLE_AI_CODE_ACTIONS");
+  let disable_ai_code_review = env_truthy("NOVA_DISABLE_AI_CODE_REVIEW");
 
   json!({
     "enabled": state.ai_config.enabled,
@@ -330,12 +419,18 @@ fn ai_status_payload(state: &ServerState) -> serde_json::Value {
       "completion_ranking": state.ai_config.features.completion_ranking,
       "semantic_search": state.ai_config.features.semantic_search,
       "multi_token_completion": state.ai_config.features.multi_token_completion,
+      "explain_errors": state.ai_config.features.explain_errors,
+      "code_actions": state.ai_config.features.code_actions,
+      "code_review": state.ai_config.features.code_review,
+      "code_review_max_diff_chars": state.ai_config.features.code_review_max_diff_chars,
     },
     "cacheEnabled": state.ai_config.cache_enabled,
     "auditLogEnabled": state.ai_config.audit_log.enabled,
     "envOverrides": {
       "disableAi": disable_ai,
       "disableAiCompletions": disable_ai_completions,
+      "disableAiCodeActions": disable_ai_code_actions,
+      "disableAiCodeReview": disable_ai_code_review,
     }
   })
 }
@@ -379,6 +474,9 @@ pub(super) fn run_ai_explain_error(
     .ok_or_else(|| {
       rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
     })?;
+  if !state.ai_config.features.explain_errors {
+    return Err(ai_action_feature_disabled_rpc_error(AiActionFeature::ExplainErrors));
+  }
   let runtime = state
     .runtime
     .as_ref()
@@ -493,6 +591,9 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     .ok_or_else(|| {
       rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
     })?;
+  if !state.ai_config.features.code_actions {
+    return Err(ai_action_feature_disabled_rpc_error(AiActionFeature::CodeActions));
+  }
   let runtime = state
     .runtime
     .as_ref()
@@ -620,6 +721,9 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     .ok_or_else(|| {
       rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
     })?;
+  if !state.ai_config.features.code_actions {
+    return Err(ai_action_feature_disabled_rpc_error(AiActionFeature::CodeActions));
+  }
   let runtime = state
     .runtime
     .as_ref()

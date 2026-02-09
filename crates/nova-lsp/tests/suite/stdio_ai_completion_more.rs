@@ -78,6 +78,8 @@ model = "default"
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         // Ensure completion-specific env overrides don't accidentally disable the AI completion
         // background tasks this test is asserting on.
         .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
@@ -661,6 +663,8 @@ model = "default"
         .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         .env("NOVA_DISABLE_AI", "1")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         // Ensure legacy AI env vars cannot override the config file.
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")

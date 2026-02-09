@@ -287,34 +287,38 @@ pub(super) fn handle_code_action(
     let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
     if ai_enabled && !safe_mode {
         let allow_code_edit_actions =
-            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
+            state.ai_config.features.code_actions
+                && nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
 
         // Explain error (diagnostic-driven).
         //
         // This action is read-only, so we continue to offer it even when the document matches
         // `ai.privacy.excluded_paths`. When excluded, strip any file-backed context (code snippet).
-        if let Some(diagnostic) = params.context.diagnostics.first() {
-            let uri = Some(params.text_document.uri.clone());
-            let range = Some(to_ide_range(&diagnostic.range));
-            let code = if ai_excluded {
-                None
-            } else {
-                text.map(|t| {
-                    let range = to_lsp_types_range(&diagnostic.range);
-                    crate::stdio_ai::extract_snippet(t, &range, 2)
-                })
-            };
-            let action = explain_error_action(ExplainErrorArgs {
-                diagnostic_message: diagnostic.message.clone(),
-                code,
-                uri,
-                range,
-            });
-            actions.push(code_action_to_lsp(action));
+        if state.ai_config.features.explain_errors {
+            if let Some(diagnostic) = params.context.diagnostics.first() {
+                let uri = Some(params.text_document.uri.clone());
+                let range = Some(to_ide_range(&diagnostic.range));
+                let code = if ai_excluded {
+                    None
+                } else {
+                    text.map(|t| {
+                        let range = to_lsp_types_range(&diagnostic.range);
+                        crate::stdio_ai::extract_snippet(t, &range, 2)
+                    })
+                };
+                let action = explain_error_action(ExplainErrorArgs {
+                    diagnostic_message: diagnostic.message.clone(),
+                    code,
+                    uri,
+                    range,
+                });
+                actions.push(code_action_to_lsp(action));
+            }
         }
 
         // Patch-based AI code actions are only offered when (a) privacy policy allows code edits
-        // and (b) the file path is not excluded via `ai.privacy.excluded_paths`.
+        // and (b) the file path is not excluded via `ai.privacy.excluded_paths` and (c)
+        // `ai.features.code_actions` is enabled.
         if allow_code_edit_actions && !ai_excluded {
             if let Some(text) = text {
                 let selection_range = to_lsp_types_range(&params.range);

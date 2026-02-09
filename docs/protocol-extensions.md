@@ -1020,6 +1020,20 @@ tuning env vars `NOVA_AI_MAX_TOKENS` / `NOVA_AI_CONCURRENCY` can override `ai.pr
 require AI to be configured and returns a non-sensitive snapshot of the server’s effective AI state
 even when AI is disabled.
 
+Config-level feature toggles:
+
+- `ai.enabled = true` enables AI infrastructure.
+- `ai.features.explain_errors = true|false` controls `nova/ai/explainError`.
+- `ai.features.code_actions = true|false` controls patch-based code actions:
+  `nova/ai/generateMethodBody` and `nova/ai/generateTests`.
+- `ai.features.code_review = true|false` controls `nova/ai/codeReview` (and `nova ai review`).
+
+Server-side (env var) hard overrides (restart required):
+
+- `NOVA_DISABLE_AI_CODE_ACTIONS=1` hard-disables `nova/ai/explainError`,
+  `nova/ai/generateMethodBody`, and `nova/ai/generateTests` regardless of `nova.toml`.
+- `NOVA_DISABLE_AI_CODE_REVIEW=1` hard-disables `nova/ai/codeReview` regardless of `nova.toml`.
+
 Read-only AI endpoints (`nova/ai/explainError`, `nova/ai/codeReview`, `nova/ai/models`) return a
 result payload without applying edits. Patch-based endpoints (`nova/ai/generateMethodBody`,
 `nova/ai/generateTests`) are **code-editing operations** that apply a `WorkspaceEdit` via
@@ -1066,11 +1080,20 @@ No params are required; clients should send `{}` or `null`.
   "features": {
     "completion_ranking": false,
     "semantic_search": false,
-    "multi_token_completion": false
+    "multi_token_completion": false,
+    "explain_errors": true,
+    "code_actions": true,
+    "code_review": true,
+    "code_review_max_diff_chars": 50000
   },
   "cacheEnabled": false,
   "auditLogEnabled": false,
-  "envOverrides": { "disableAi": false, "disableAiCompletions": false }
+  "envOverrides": {
+    "disableAi": false,
+    "disableAiCompletions": false,
+    "disableAiCodeActions": false,
+    "disableAiCodeReview": false
+  }
 }
 ```
 
@@ -1173,9 +1196,12 @@ invent file paths, line numbers, or surrounding code that is not present in the 
 
 #### Errors
 
-- `-32600` if AI is not configured.
-- `-32603` for model/provider failures.
-- `-32800` if the request is cancelled.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available), or if the
+  action is disabled (`ai.features.code_review=false` or `NOVA_DISABLE_AI_CODE_REVIEW=1`). When
+  disabled by feature toggle, the server may include
+  `error.data = { "kind": "disabled", "feature": "ai.features.code_review" }`.
+- `-32603` for model/provider failures (`error.data.kind = "provider"` when available).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 #### Privacy: `ai.privacy.excluded_paths`
 
@@ -1209,6 +1235,7 @@ human-friendly `error.message`.
 Known `kind` values:
 
 - `notConfigured` — AI is not configured/enabled.
+- `disabled` — the requested action is disabled by config/env override. Includes `feature`.
 - `excludedPath` — the request targets a file blocked by `ai.privacy.excluded_paths`.
 - `policy` — blocked by the cloud code-edit policy. Includes `policy`.
 - `provider` — model/provider request failed.
@@ -1266,7 +1293,10 @@ JSON string (the explanation).
 
 #### Errors
 
-- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available).
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available), or if the
+  action is disabled (`ai.features.explain_errors=false` or `NOVA_DISABLE_AI_CODE_ACTIONS=1`). When
+  disabled by feature toggle, the server may include
+  `error.data = { "kind": "disabled", "feature": "ai.features.explain_errors" }`.
 - `-32603` for model/provider failures (`error.data.kind = "provider"` when available).
 - `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
@@ -1308,8 +1338,11 @@ containing a standard LSP `WorkspaceEdit`.
 
 #### Errors
 
-- `-32600` if AI is not configured (`error.data.kind = "notConfigured"`) or if the target file is
-  blocked by `ai.privacy.excluded_paths` (`error.data.kind = "excludedPath"`).
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available), if the
+  action is disabled (`ai.features.code_actions=false` or `NOVA_DISABLE_AI_CODE_ACTIONS=1`), or if
+  the target file is blocked by `ai.privacy.excluded_paths` (`error.data.kind = "excludedPath"` when
+  available). When disabled by feature toggle, the server may include
+  `error.data = { "kind": "disabled", "feature": "ai.features.code_actions" }`.
 - `-32602` for invalid params (e.g. missing `uri`/`range`).
 - `-32603` for internal failures (model/provider errors, patch parsing/validation failures) **or**
   when blocked by privacy policy (cloud code-edit policy enforcement). When available,

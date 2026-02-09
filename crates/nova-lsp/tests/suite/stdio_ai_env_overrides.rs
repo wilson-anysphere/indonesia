@@ -80,6 +80,8 @@ model = "default"
         // Ensure the only overrides in effect are the ones explicitly under test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         .env(env_key, env_value)
         .stdin(Stdio::piped())
@@ -400,6 +402,8 @@ model = "default"
         // Ensure the only overrides in effect are the ones explicitly under test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         // Audit logging forces `ai.enabled=true` in the legacy env-var AI mode; the disable env vars
         // must always win over this special case.

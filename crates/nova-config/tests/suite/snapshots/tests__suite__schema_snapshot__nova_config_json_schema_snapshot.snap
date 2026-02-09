@@ -676,8 +676,11 @@ expression: schema
         },
         "enabled": false,
         "features": {
+          "code_actions": true,
+          "code_review": true,
           "code_review_max_diff_chars": 50000,
           "completion_ranking": false,
+          "explain_errors": true,
           "multi_token_completion": false,
           "semantic_search": false
         },
@@ -887,10 +890,13 @@ expression: schema
           "type": "boolean"
         },
         "features": {
-          "description": "Local augmentation features and their individual toggles.",
+          "description": "AI feature toggles (local augmentation + LLM-backed actions).",
           "default": {
+            "code_actions": true,
+            "code_review": true,
             "code_review_max_diff_chars": 50000,
             "completion_ranking": false,
+            "explain_errors": true,
             "multi_token_completion": false,
             "semantic_search": false
           },
@@ -1060,6 +1066,16 @@ expression: schema
     "AiFeaturesConfig": {
       "type": "object",
       "properties": {
+        "code_actions": {
+          "description": "Enables LLM-backed code-editing actions (patch-based edits), such as:\n\n- \"Generate method body with AI\" (`nova/ai/generateMethodBody`) - \"Generate tests with AI\" (`nova/ai/generateTests`)\n\nDefaults to `true` so existing configs that set `ai.enabled=true` but do not mention `ai.features.code_actions` continue to offer code-editing actions.",
+          "default": true,
+          "type": "boolean"
+        },
+        "code_review": {
+          "description": "Enables LLM-backed code review actions (for example: `nova ai review` when available).\n\nDefaults to `true` so existing configs that set `ai.enabled=true` but do not mention `ai.features.code_review` continue to allow code review actions.",
+          "default": true,
+          "type": "boolean"
+        },
         "code_review_max_diff_chars": {
           "description": "Maximum number of diff characters included in AI code review prompts.\n\nLarge diffs can exceed LLM provider limits and increase latency/cost. When the diff exceeds this limit, Nova keeps the beginning and end of the diff and inserts a truncation marker indicating how much was omitted.",
           "default": 50000,
@@ -1070,6 +1086,11 @@ expression: schema
         "completion_ranking": {
           "description": "Enables AI-assisted completion re-ranking.",
           "default": false,
+          "type": "boolean"
+        },
+        "explain_errors": {
+          "description": "Enables the LLM-backed \"Explain this error\" action (`nova/ai/explainError`).\n\nDefaults to `true` so existing configs that set `ai.enabled=true` but do not mention `ai.features.explain_errors` continue to offer explain-error functionality.",
+          "default": true,
           "type": "boolean"
         },
         "multi_token_completion": {

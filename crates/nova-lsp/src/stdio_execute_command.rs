@@ -30,6 +30,15 @@ pub(super) fn handle_execute_command(
     let params: ExecuteCommandParams =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
 
+    if state.ai.is_some() {
+        if let Some(feature) = crate::stdio_ai::ai_action_feature_for_command(params.command.as_str())
+        {
+            if !crate::stdio_ai::ai_action_feature_enabled(state, feature) {
+                return Err(crate::stdio_ai::ai_action_feature_disabled_error(feature));
+            }
+        }
+    }
+
     match params.command.as_str() {
         "nova.runTest" => {
             #[derive(Debug, Deserialize)]

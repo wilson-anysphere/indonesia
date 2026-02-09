@@ -128,14 +128,32 @@ fn main() -> std::io::Result<()> {
         std::env::var("NOVA_DISABLE_AI_COMPLETIONS").as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE")
     );
+    let disable_ai_code_actions = matches!(
+        std::env::var("NOVA_DISABLE_AI_CODE_ACTIONS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let disable_ai_code_review = matches!(
+        std::env::var("NOVA_DISABLE_AI_CODE_REVIEW").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
     if disable_ai {
         config.ai.enabled = false;
         config.ai.features.completion_ranking = false;
         config.ai.features.semantic_search = false;
         config.ai.features.multi_token_completion = false;
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+        config.ai.features.code_review = false;
     } else if disable_ai_completions {
         config.ai.features.completion_ranking = false;
         config.ai.features.multi_token_completion = false;
+    }
+    if disable_ai_code_actions {
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+    }
+    if disable_ai_code_review {
+        config.ai.features.code_review = false;
     }
     nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
     stdio_fs::gc_decompiled_document_store_best_effort();

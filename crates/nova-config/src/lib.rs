@@ -689,6 +689,30 @@ pub struct AiFeaturesConfig {
     #[serde(default)]
     pub multi_token_completion: bool,
 
+    /// Enables the LLM-backed "Explain this error" action (`nova/ai/explainError`).
+    ///
+    /// Defaults to `true` so existing configs that set `ai.enabled=true` but do not mention
+    /// `ai.features.explain_errors` continue to offer explain-error functionality.
+    #[serde(default = "default_ai_action_feature_enabled")]
+    pub explain_errors: bool,
+
+    /// Enables LLM-backed code-editing actions (patch-based edits), such as:
+    ///
+    /// - "Generate method body with AI" (`nova/ai/generateMethodBody`)
+    /// - "Generate tests with AI" (`nova/ai/generateTests`)
+    ///
+    /// Defaults to `true` so existing configs that set `ai.enabled=true` but do not mention
+    /// `ai.features.code_actions` continue to offer code-editing actions.
+    #[serde(default = "default_ai_action_feature_enabled")]
+    pub code_actions: bool,
+
+    /// Enables LLM-backed code review actions (for example: `nova ai review` when available).
+    ///
+    /// Defaults to `true` so existing configs that set `ai.enabled=true` but do not mention
+    /// `ai.features.code_review` continue to allow code review actions.
+    #[serde(default = "default_ai_action_feature_enabled")]
+    pub code_review: bool,
+
     /// Maximum number of diff characters included in AI code review prompts.
     ///
     /// Large diffs can exceed LLM provider limits and increase latency/cost.
@@ -710,9 +734,16 @@ impl Default for AiFeaturesConfig {
             completion_ranking: false,
             semantic_search: false,
             multi_token_completion: false,
+            explain_errors: default_ai_action_feature_enabled(),
+            code_actions: default_ai_action_feature_enabled(),
+            code_review: default_ai_action_feature_enabled(),
             code_review_max_diff_chars: default_code_review_max_diff_chars(),
         }
     }
+}
+
+fn default_ai_action_feature_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -784,7 +815,7 @@ pub struct AiConfig {
     #[serde(default)]
     pub audit_log: AuditLogConfig,
 
-    /// Local augmentation features and their individual toggles.
+    /// AI feature toggles (local augmentation + LLM-backed actions).
     #[serde(default)]
     pub features: AiFeaturesConfig,
 

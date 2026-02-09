@@ -557,6 +557,70 @@ enabled = false
 }
 
 #[test]
+fn ai_review_errors_when_code_review_feature_disabled() {
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = temp.child("nova.toml");
+    config
+        .write_str(&format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+code_review = false
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "test-model"
+"#,
+            server.base_url()
+        ))
+        .unwrap();
+
+    let diff = sample_diff();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(diff.as_bytes())?;
+            drop(child.stdin.take());
+            child.wait_with_output()
+        })
+        .expect("run nova ai review (code review disabled)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ai.features.code_review"),
+        "expected feature-disabled message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
+
+#[test]
 fn ai_review_errors_when_diff_is_empty() {
     let server = MockServer::start();
     // Should never hit the network.

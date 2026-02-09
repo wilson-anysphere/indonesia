@@ -1222,6 +1222,13 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                         config_env = NOVA_CONFIG_ENV_VAR
                     );
                 }
+                if !config.ai.features.code_review {
+                    anyhow::bail!(
+                        "AI code review is disabled (ai.features.code_review=false). Enable it by setting \
+                         `ai.features.code_review = true` in nova.toml (or pass `--config <path>` / set {config_env}).",
+                        config_env = NOVA_CONFIG_ENV_VAR
+                    );
+                }
 
                 let diff = load_ai_review_diff(&args)?;
                 if diff.trim().is_empty() {

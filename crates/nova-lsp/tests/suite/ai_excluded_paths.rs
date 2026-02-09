@@ -62,6 +62,8 @@ excluded_paths = ["secret/**"]
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

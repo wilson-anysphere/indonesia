@@ -906,6 +906,27 @@ fn handle_request_json(
                         "error": { "code": code, "message": message }
                     }));
                 }
+
+                // Config-level feature toggles for LLM-backed AI actions.
+                //
+                // The stdio server still advertises `nova/ai/*` endpoints, but must hard-reject
+                // requests when the user has disabled that action via config/env overrides.
+                if state.ai.is_some() {
+                    if let Some(feature) = stdio_ai::ai_action_feature_for_method(method) {
+                        if !stdio_ai::ai_action_feature_enabled(state, feature) {
+                            let (code, message) = stdio_ai::ai_action_feature_disabled_error(feature);
+                            return Ok(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": code,
+                                    "message": message,
+                                    "data": stdio_ai::ai_action_feature_disabled_error_data(feature),
+                                }
+                            }));
+                        }
+                    }
+                }
                 let result =
                     stdio_ai::handle_ai_custom_request(method, params, state, client, cancel);
                 Ok(match result {

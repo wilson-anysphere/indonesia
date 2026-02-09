@@ -8,6 +8,8 @@ mod ai_code_actions;
 #[cfg(feature = "ai")]
 #[path = "suite/ai_custom_requests.rs"]
 mod ai_custom_requests;
+#[path = "suite/ai_action_feature_toggles.rs"]
+mod ai_action_feature_toggles;
 #[cfg(feature = "ai")]
 #[path = "suite/ai_completion_more.rs"]
 mod ai_completion_more;

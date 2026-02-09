@@ -97,6 +97,8 @@ local_only = false
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -286,6 +288,8 @@ local_only = true
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -482,6 +486,8 @@ local_only = true
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -702,6 +708,8 @@ local_only = true
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -926,6 +934,8 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
         .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2189,6 +2199,8 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
         .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2643,6 +2655,8 @@ local_only = true
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2881,6 +2895,8 @@ excluded_paths = ["secret/**"]
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3054,6 +3070,8 @@ excluded_paths = ["secret/**"]
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3211,6 +3229,8 @@ excluded_paths = ["secret/**"]
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3352,6 +3372,8 @@ fn stdio_server_handles_ai_explain_error_code_action() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         // Enable code-edit actions for this test (cloud-mode policy would otherwise hide them for
         // the `http` provider).
         .env("NOVA_AI_LOCAL_ONLY", "1")
@@ -3545,6 +3567,8 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -3737,6 +3761,8 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         .arg("--stdio")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -3964,6 +3990,8 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
         .arg("--stdio")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -4117,6 +4145,8 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
         .arg("--stdio")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -4287,6 +4317,8 @@ excluded_paths = ["src/test/java/**"]
         .arg(&config_path)
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         // Ensure a developer's environment doesn't override `--config`.
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
@@ -4597,6 +4629,8 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
         .arg("--stdio")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -4870,6 +4904,8 @@ excluded_paths = ["src/test/java/**"]
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -5114,6 +5150,8 @@ excluded_paths = ["src/secrets/**"]
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -6134,6 +6172,8 @@ fn stdio_server_ai_custom_requests_require_document_text() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -6255,6 +6295,8 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -6464,6 +6506,8 @@ completion_ranking = true
         .arg(&config_path)
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -6571,6 +6615,8 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         // Enable code-edit actions for this test (cloud-mode policy would otherwise hide them for
         // the `http` provider).
         .env("NOVA_AI_LOCAL_ONLY", "1")
@@ -6710,6 +6756,8 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env("NOVA_AI_PROVIDER", "http")
         // Force local-only so absence of code actions is due to invalid UTF-16,
         // not privacy policy gating.
@@ -6852,6 +6900,8 @@ local_only = false
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -7047,6 +7097,8 @@ local_only = true
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -7385,6 +7437,8 @@ local_only = true
         // Ensure env vars don't override the config file.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -7540,6 +7594,8 @@ excluded_paths = ["src/Main.java"]
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")

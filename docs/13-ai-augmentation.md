@@ -442,6 +442,11 @@ enabled = true
 completion_ranking = true
 semantic_search = true
 multi_token_completion = true
+# LLM-backed actions (enabled by default when `ai.enabled=true`)
+explain_errors = true
+code_actions = true
+code_review = true
+
 # Limits the diff text sent for `nova/ai/codeReview` prompts. Diffs longer than
 # this are truncated (head+tail) with a `"[diff truncated: omitted N chars]"`
 # marker. Default: 50000.
@@ -623,6 +628,9 @@ Common overrides:
 - `NOVA_DISABLE_AI=1` — force-disable all AI features server-side.
 - `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable AI completion features server-side (multi-token
   completions and completion ranking).
+- `NOVA_DISABLE_AI_CODE_ACTIONS=1` — force-disable LLM-backed AI code actions server-side
+  (explain error + code-editing actions).
+- `NOVA_DISABLE_AI_CODE_REVIEW=1` — force-disable LLM-backed AI code review server-side.
 - `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` — override the server’s AI multi-token completion max-items.
   `0` disables multi-token completions entirely (and the server clamps large values; see the
   protocol docs for details).
