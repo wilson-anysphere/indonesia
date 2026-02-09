@@ -98,6 +98,11 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             diff_part.contains("+class Main { int x = 1; }"),
             "expected diff hunk contents to be present; got:\n{diff_part}"
         );
+        assert_eq!(
+            user_prompt.match_indices("```").count(),
+            2,
+            "expected only the diff fence markers in the prompt; got:\n{user_prompt}"
+        );
 
         // Grouping instructions
         assert!(user_prompt.contains("### path/to/File.java"), "{user_prompt}");
