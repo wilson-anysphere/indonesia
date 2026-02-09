@@ -382,7 +382,8 @@ impl AiClient {
         builder.push_str(self.endpoint.as_str());
         builder.push_str(&self.model);
         builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
-        // Include the option discriminant so `None` doesn't collide with `Some(0.0)`.
+        // Include the option discriminant so `temperature: None` doesn't collide with
+        // `temperature: Some(0.0)` (whose IEEE-754 bits are also zero).
         match request.temperature {
             Some(temp) => {
                 builder.push_u32(1);
@@ -1093,6 +1094,36 @@ mod tests {
             .filter(|event| event.target == nova_config::AI_AUDIT_TARGET)
             .cloned()
             .collect()
+    }
+
+    #[test]
+    fn cache_key_distinguishes_temperature_none_from_zero() {
+        let client = make_test_client(Arc::new(DummyProvider));
+        let messages = vec![ChatMessage::user("hello".to_string())];
+
+        let request_without_temp = ChatRequest {
+            messages: messages.clone(),
+            max_tokens: Some(16),
+            temperature: None,
+        };
+        let request_with_zero_temp = ChatRequest {
+            messages,
+            max_tokens: Some(16),
+            temperature: Some(0.0),
+        };
+
+        let key_without = client.build_cache_key(&request_without_temp);
+        let key_zero = client.build_cache_key(&request_with_zero_temp);
+
+        assert_ne!(
+            key_without, key_zero,
+            "expected cache keys to differ for temperature=None vs temperature=Some(0.0)"
+        );
+        assert_eq!(
+            key_zero,
+            client.build_cache_key(&request_with_zero_temp),
+            "expected cache key to be stable for temperature=Some(0.0)"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
