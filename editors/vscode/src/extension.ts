@@ -857,11 +857,27 @@ export async function activate(context: vscode.ExtensionContext) {
                 .getConfiguration('nova', document.uri)
                 .get<boolean>('aiCompletions.autoRefreshSuggestions', true);
               if (autoRefresh) {
-                aiRefreshInProgress = true;
-                try {
-                  await vscode.commands.executeCommand('editor.action.triggerSuggest');
-                } finally {
-                  aiRefreshInProgress = false;
+                const activeEditor = vscode.window.activeTextEditor;
+                const activeUri = activeEditor?.document.uri.toString();
+                const activePos = activeEditor?.selection?.active;
+                const canAutoRefresh =
+                  activeUri === document.uri.toString() &&
+                  activePos?.line === position.line &&
+                  activePos?.character === position.character;
+
+                if (canAutoRefresh) {
+                  aiRefreshInProgress = true;
+                  try {
+                    await vscode.commands.executeCommand('editor.action.triggerSuggest');
+                  } finally {
+                    aiRefreshInProgress = false;
+                  }
+                } else {
+                  // Avoid re-triggering suggestions when the user has already moved on; it would
+                  // generate a fresh LSP completion request at the new cursor location. Instead,
+                  // keep the results cached (so a manual suggest refresh can surface them) and show
+                  // a lightweight hint.
+                  vscode.window.setStatusBarMessage('Nova AI completions ready', 2000);
                 }
               } else {
                 vscode.window.setStatusBarMessage('Nova AI completions ready', 2000);
