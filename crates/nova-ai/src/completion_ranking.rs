@@ -212,89 +212,93 @@ impl CompletionRanker for LlmCompletionRanker {
         items: Vec<CompletionItem>,
     ) -> BoxFuture<'a, Vec<CompletionItem>> {
         Box::pin(async move {
-            // Defensive limits: avoid prompting the model with huge lists.
-            let rank_len = items.len().min(self.max_candidates);
-            if rank_len <= 1 {
-                return items;
-            }
+            let metrics = MetricsRegistry::global();
+            let metrics_start = Instant::now();
 
-            let mut to_rank = items;
-            let rest = if to_rank.len() > rank_len {
-                to_rank.split_off(rank_len)
-            } else {
-                Vec::new()
-            };
-
-            let prompt = match self.build_prompt(ctx, &to_rank) {
-                Some(prompt) => prompt,
-                None => {
-                    // Prompt too large (or otherwise invalid): fall back to deterministic local
-                    // ranking rather than returning the input order unchanged.
-                    let mut all = to_rank;
-                    all.extend(rest);
-                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
+            let out = 'rank: {
+                // Defensive limits: avoid prompting the model with huge lists.
+                let rank_len = items.len().min(self.max_candidates);
+                if rank_len <= 1 {
+                    break 'rank items;
                 }
-            };
-            let prompt = redact_file_paths(&prompt);
 
-            let cancel = CancellationToken::new();
-            let _guard = cancel.clone().drop_guard();
+                let mut to_rank = items;
+                let rest = if to_rank.len() > rank_len {
+                    to_rank.split_off(rank_len)
+                } else {
+                    Vec::new()
+                };
 
-            let request = ChatRequest {
-                messages: vec![
-                    ChatMessage::system("Return JSON only.".to_string()),
-                    ChatMessage::user(prompt),
-                ],
-                max_tokens: Some(self.max_output_tokens),
-                temperature: Some(0.0),
-            };
+                let prompt = match self.build_prompt(ctx, &to_rank) {
+                    Some(prompt) => prompt,
+                    None => {
+                        // Prompt too large (or otherwise invalid): fall back to deterministic local
+                        // ranking rather than returning the input order unchanged.
+                        let mut all = to_rank;
+                        all.extend(rest);
+                        break 'rank BaselineCompletionRanker.rank_completions(ctx, all).await;
+                    }
+                };
+                let prompt = redact_file_paths(&prompt);
 
-            let chat_future = self.llm.chat(request, cancel.clone());
-            let chat_future = std::panic::AssertUnwindSafe(chat_future).catch_unwind();
+                let cancel = CancellationToken::new();
+                let _guard = cancel.clone().drop_guard();
 
-            let response = match util::timeout(self.timeout, chat_future).await {
-                Ok(Ok(Ok(text))) => text,
-                Ok(Ok(Err(_err))) => {
-                    let metrics = MetricsRegistry::global();
+                let request = ChatRequest {
+                    messages: vec![
+                        ChatMessage::system("Return JSON only.".to_string()),
+                        ChatMessage::user(prompt),
+                    ],
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: Some(0.0),
+                };
+
+                let chat_future = self.llm.chat(request, cancel.clone());
+                let chat_future = std::panic::AssertUnwindSafe(chat_future).catch_unwind();
+
+                let response = match util::timeout(self.timeout, chat_future).await {
+                    Ok(Ok(Ok(text))) => text,
+                    Ok(Ok(Err(_err))) => {
+                        metrics.record_error(AI_COMPLETION_RANKING_METRIC);
+                        metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
+                        let mut all = to_rank;
+                        all.extend(rest);
+                        break 'rank BaselineCompletionRanker.rank_completions(ctx, all).await;
+                    }
+                    Ok(Err(_panic)) => {
+                        metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
+                        let mut all = to_rank;
+                        all.extend(rest);
+                        break 'rank BaselineCompletionRanker.rank_completions(ctx, all).await;
+                    }
+                    Err(_timeout) => {
+                        metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
+                        // Cancel eagerly so the in-flight request can abort while we compute the
+                        // baseline result.
+                        cancel.cancel();
+                        let mut all = to_rank;
+                        all.extend(rest);
+                        break 'rank BaselineCompletionRanker.rank_completions(ctx, all).await;
+                    }
+                };
+
+                let Some(order) = parse_ranked_ids(&response, to_rank.len()) else {
+                    // Parse failures are treated the same as provider errors: preserve the original
+                    // ordering (via baseline heuristics).
                     metrics.record_error(AI_COMPLETION_RANKING_METRIC);
                     metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
                     let mut all = to_rank;
                     all.extend(rest);
-                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
-                }
-                Ok(Err(_panic)) => {
-                    let metrics = MetricsRegistry::global();
-                    metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
-                    let mut all = to_rank;
-                    all.extend(rest);
-                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
-                }
-                Err(_timeout) => {
-                    let metrics = MetricsRegistry::global();
-                    metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
-                    // Cancel eagerly so the in-flight request can abort while we compute the
-                    // baseline result.
-                    cancel.cancel();
-                    let mut all = to_rank;
-                    all.extend(rest);
-                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
-                }
+                    break 'rank BaselineCompletionRanker.rank_completions(ctx, all).await;
+                };
+
+                let mut ranked = apply_rank_order(to_rank, &order);
+                ranked.extend(rest);
+                break 'rank ranked;
             };
 
-            let Some(order) = parse_ranked_ids(&response, to_rank.len()) else {
-                // Parse failures are treated the same as provider errors: preserve the original
-                // ordering (via baseline heuristics).
-                let metrics = MetricsRegistry::global();
-                metrics.record_error(AI_COMPLETION_RANKING_METRIC);
-                metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
-                let mut all = to_rank;
-                all.extend(rest);
-                return BaselineCompletionRanker.rank_completions(ctx, all).await;
-            };
-
-            let mut ranked = apply_rank_order(to_rank, &order);
-            ranked.extend(rest);
-            ranked
+            metrics.record_request(AI_COMPLETION_RANKING_METRIC, metrics_start.elapsed());
+            out
         })
     }
 }
@@ -575,6 +579,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_reorders_candidates_from_json() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let llm = Arc::new(MockLlm::new("[1,0,2]"));
         let ranker = LlmCompletionRanker::new(llm);
 
@@ -686,6 +693,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_missing_and_duplicate_ids_are_merged_gracefully() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let llm = Arc::new(MockLlm::new("```json\n[1,1,0,99]\n```"));
         let ranker = LlmCompletionRanker::new(llm);
 
@@ -704,6 +714,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_uses_deterministic_request_parameters() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let mock = MockLlm::new("[0]");
         let llm = Arc::new(mock.clone());
         let ranker = LlmCompletionRanker::new(llm.clone()).with_max_output_tokens(42);
@@ -728,6 +741,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_redacts_absolute_paths_in_prompt() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let mock = MockLlm::new("[0]");
         let llm = Arc::new(mock.clone());
         let ranker = LlmCompletionRanker::new(llm);
