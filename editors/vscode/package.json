@@ -500,6 +500,16 @@
           "default": true,
           "description": "Enable Nova AI completion features, including async multi-token completions via nova/completion/more and completion ranking (re-ordering of standard textDocument/completion results) when enabled server-side. When disabled, the extension stops polling and disables AI completion features server-side (e.g. via NOVA_DISABLE_AI_COMPLETIONS=1)."
         },
+        "nova.aiCodeActions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Nova AI code actions (Explain Error, Generate Method Body, Generate Tests) when enabled server-side. When disabled, the extension hides AI code actions and force-disables them server-side (e.g. via NOVA_DISABLE_AI_CODE_ACTIONS=1)."
+        },
+        "nova.aiCodeReview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Nova AI code review features when enabled server-side. When disabled, the extension force-disables AI code review server-side (e.g. via NOVA_DISABLE_AI_CODE_REVIEW=1)."
+        },
         "nova.aiCompletions.maxItems": {
           "type": "number",
           "default": 5,

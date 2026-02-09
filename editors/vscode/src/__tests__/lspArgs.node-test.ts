@@ -81,13 +81,41 @@ test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when AI completi
   assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, undefined);
 });
 
-test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI and NOVA_DISABLE_AI_COMPLETIONS when AI and AI completion features are enabled', () => {
-  const baseEnv: NodeJS.ProcessEnv = { NOVA_DISABLE_AI: '1', NOVA_DISABLE_AI_COMPLETIONS: '1', OTHER: 'x' };
+test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_CODE_ACTIONS when AI code actions are disabled', () => {
+  const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCodeActionsEnabled: false, baseEnv });
+
+  assert.equal(config.env.NOVA_DISABLE_AI, undefined);
+  assert.equal(config.env.NOVA_DISABLE_AI_CODE_ACTIONS, '1');
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_DISABLE_AI_CODE_ACTIONS, undefined);
+});
+
+test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_CODE_REVIEW when AI code review is disabled', () => {
+  const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCodeReviewEnabled: false, baseEnv });
+
+  assert.equal(config.env.NOVA_DISABLE_AI, undefined);
+  assert.equal(config.env.NOVA_DISABLE_AI_CODE_REVIEW, '1');
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_DISABLE_AI_CODE_REVIEW, undefined);
+});
+
+test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI* hard-disable env vars when AI features are enabled', () => {
+  const baseEnv: NodeJS.ProcessEnv = {
+    NOVA_DISABLE_AI: '1',
+    NOVA_DISABLE_AI_COMPLETIONS: '1',
+    NOVA_DISABLE_AI_CODE_ACTIONS: '1',
+    NOVA_DISABLE_AI_CODE_REVIEW: '1',
+    OTHER: 'x',
+  };
   const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: true, baseEnv });
 
   assert.notEqual(config.env, baseEnv);
   assert.equal(config.env.NOVA_DISABLE_AI, undefined);
   assert.equal(config.env.NOVA_DISABLE_AI_COMPLETIONS, undefined);
+  assert.equal(config.env.NOVA_DISABLE_AI_CODE_ACTIONS, undefined);
+  assert.equal(config.env.NOVA_DISABLE_AI_CODE_REVIEW, undefined);
   assert.equal(config.env.OTHER, 'x');
   assert.equal(baseEnv.NOVA_DISABLE_AI, '1');
   assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, '1');

@@ -36,6 +36,21 @@ export interface NovaLspLaunchConfigOptions {
    */
   aiCompletionsEnabled?: boolean;
   /**
+   * Toggle for LLM-backed AI code actions.
+   *
+   * When false, the server is started with `NOVA_DISABLE_AI_CODE_ACTIONS=1` so
+   * `nova.toml` cannot re-enable AI code actions (explain error / patch-based
+   * code generation).
+   */
+  aiCodeActionsEnabled?: boolean;
+  /**
+   * Toggle for LLM-backed AI code review.
+   *
+   * When false, the server is started with `NOVA_DISABLE_AI_CODE_REVIEW=1` so
+   * `nova.toml` cannot re-enable AI code review behavior.
+   */
+  aiCodeReviewEnabled?: boolean;
+  /**
    * Maximum number of AI completion items to request from the provider.
    *
    * When set, the server is started with `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>`.
@@ -81,12 +96,16 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
 
   const aiEnabled = options.aiEnabled ?? true;
   const aiCompletionsEnabled = options.aiCompletionsEnabled ?? true;
+  const aiCodeActionsEnabled = options.aiCodeActionsEnabled ?? true;
+  const aiCodeReviewEnabled = options.aiCodeReviewEnabled ?? true;
   const aiCompletionsMaxItems = options.aiCompletionsMaxItems;
   const baseEnv = options.baseEnv ?? process.env;
 
   const disableAi = !aiEnabled;
   // If AI is disabled, AI completion features are also disabled.
   const disableAiCompletions = disableAi || !aiCompletionsEnabled;
+  const disableAiCodeActions = disableAi || !aiCodeActionsEnabled;
+  const disableAiCodeReview = disableAi || !aiCodeReviewEnabled;
   const aiCompletionsMaxItemsEnv =
     !disableAi && typeof aiCompletionsMaxItems === 'number' && Number.isFinite(aiCompletionsMaxItems)
       ? String(Math.max(0, Math.floor(aiCompletionsMaxItems)))
@@ -99,6 +118,12 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
   const needsDisableAiCompletionsMutation = disableAiCompletions
     ? baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== '1'
     : typeof baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== 'undefined';
+  const needsDisableAiCodeActionsMutation = disableAiCodeActions
+    ? baseEnv.NOVA_DISABLE_AI_CODE_ACTIONS !== '1'
+    : typeof baseEnv.NOVA_DISABLE_AI_CODE_ACTIONS !== 'undefined';
+  const needsDisableAiCodeReviewMutation = disableAiCodeReview
+    ? baseEnv.NOVA_DISABLE_AI_CODE_REVIEW !== '1'
+    : typeof baseEnv.NOVA_DISABLE_AI_CODE_REVIEW !== 'undefined';
   const needsAiCompletionsMaxItemsMutation =
     typeof aiCompletionsMaxItemsEnv === 'string'
       ? baseEnv.NOVA_AI_COMPLETIONS_MAX_ITEMS !== aiCompletionsMaxItemsEnv
@@ -108,6 +133,8 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
     needsConfigPathMutation ||
     needsDisableAiMutation ||
     needsDisableAiCompletionsMutation ||
+    needsDisableAiCodeActionsMutation ||
+    needsDisableAiCodeReviewMutation ||
     needsAiCompletionsMaxItemsMutation ||
     baseHasNovaAiVars;
 
@@ -134,6 +161,18 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
       env.NOVA_DISABLE_AI_COMPLETIONS = '1';
     } else {
       delete env.NOVA_DISABLE_AI_COMPLETIONS;
+    }
+
+    if (disableAiCodeActions) {
+      env.NOVA_DISABLE_AI_CODE_ACTIONS = '1';
+    } else {
+      delete env.NOVA_DISABLE_AI_CODE_ACTIONS;
+    }
+
+    if (disableAiCodeReview) {
+      env.NOVA_DISABLE_AI_CODE_REVIEW = '1';
+    } else {
+      delete env.NOVA_DISABLE_AI_CODE_REVIEW;
     }
 
     if (typeof aiCompletionsMaxItemsEnv === 'string') {

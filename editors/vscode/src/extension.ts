@@ -179,6 +179,14 @@ function isAiCompletionsEnabled(): boolean {
   return vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
 }
 
+function isAiCodeActionsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('nova').get<boolean>('aiCodeActions.enabled', true);
+}
+
+function isAiCodeReviewEnabled(): boolean {
+  return vscode.workspace.getConfiguration('nova').get<boolean>('aiCodeReview.enabled', true);
+}
+
 function clearAiCompletionCache(): void {
   aiItemsByContextKey.clear();
   aiRequestsInFlight.clear();
@@ -198,6 +206,8 @@ function readLspLaunchConfig(workspaceFolder: vscode.WorkspaceFolder): { args: s
 
   const aiEnabled = config.get<boolean>('ai.enabled', true);
   const aiCompletionsEnabled = config.get<boolean>('aiCompletions.enabled', true);
+  const aiCodeActionsEnabled = config.get<boolean>('aiCodeActions.enabled', true);
+  const aiCodeReviewEnabled = config.get<boolean>('aiCodeReview.enabled', true);
   const aiCompletionsMaxItems = config.get<number>('aiCompletions.maxItems', 5);
 
   const launch = buildNovaLspLaunchConfig({
@@ -206,6 +216,8 @@ function readLspLaunchConfig(workspaceFolder: vscode.WorkspaceFolder): { args: s
     workspaceRoot,
     aiEnabled,
     aiCompletionsEnabled,
+    aiCodeActionsEnabled,
+    aiCodeReviewEnabled,
     aiCompletionsMaxItems,
     baseEnv: process.env,
   });
@@ -898,9 +910,10 @@ export async function activate(context: vscode.ExtensionContext) {
           }
 
           let out = result;
-          if (!isAiEnabled()) {
-            // Hide AI code actions when AI is disabled in settings, even if the
-            // server is configured to advertise them.
+          if (!isAiEnabled() || !isAiCodeActionsEnabled()) {
+            // Hide AI code actions when AI is disabled in settings, or when AI
+            // code actions are disabled, even if the server is configured to
+            // advertise them.
             out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
           }
 
@@ -2815,6 +2828,78 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const handleAiCodeActionsDisabled = async (): Promise<void> => {
+    const options: string[] = [];
+    if ((vscode.workspace.workspaceFolders ?? []).length > 0) {
+      options.push('Enable AI Code Actions (Workspace)');
+    }
+    options.push('Enable AI Code Actions (User)', 'Open Settings', 'Restart Language Server');
+
+    const picked = await vscode.window.showWarningMessage(
+      'Nova AI code actions are disabled by settings (`nova.aiCodeActions.enabled = false`). Enable them and restart the language server to use AI code actions.',
+      ...options,
+    );
+    if (picked === 'Enable AI Code Actions (Workspace)' || picked === 'Enable AI Code Actions (User)') {
+      const target =
+        picked === 'Enable AI Code Actions (Workspace)' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+      try {
+        await vscode.workspace.getConfiguration('nova').update('aiCodeActions.enabled', true, target);
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: failed to enable AI code actions: ${message}`);
+        return;
+      }
+
+      const restart = await vscode.window.showInformationMessage(
+        'Nova: AI code actions enabled. Restart nova-lsp to apply changes.',
+        'Restart Language Server',
+      );
+      if (restart === 'Restart Language Server') {
+        await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+      }
+    } else if (picked === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.aiCodeActions.enabled');
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
+  const handleAiCodeReviewDisabled = async (): Promise<void> => {
+    const options: string[] = [];
+    if ((vscode.workspace.workspaceFolders ?? []).length > 0) {
+      options.push('Enable AI Code Review (Workspace)');
+    }
+    options.push('Enable AI Code Review (User)', 'Open Settings', 'Restart Language Server');
+
+    const picked = await vscode.window.showWarningMessage(
+      'Nova AI code review is disabled by settings (`nova.aiCodeReview.enabled = false`). Enable it and restart the language server to use AI code review.',
+      ...options,
+    );
+    if (picked === 'Enable AI Code Review (Workspace)' || picked === 'Enable AI Code Review (User)') {
+      const target =
+        picked === 'Enable AI Code Review (Workspace)' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+      try {
+        await vscode.workspace.getConfiguration('nova').update('aiCodeReview.enabled', true, target);
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: failed to enable AI code review: ${message}`);
+        return;
+      }
+
+      const restart = await vscode.window.showInformationMessage(
+        'Nova: AI code review enabled. Restart nova-lsp to apply changes.',
+        'Restart Language Server',
+      );
+      if (restart === 'Restart Language Server') {
+        await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+      }
+    } else if (picked === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.aiCodeReview.enabled');
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
   const workspaceKeyFromAiError = (err: unknown): WorkspaceKey | undefined => {
     if (!err || typeof err !== 'object') {
       return undefined;
@@ -2891,6 +2976,10 @@ export async function activate(context: vscode.ExtensionContext) {
         await handleAiDisabled();
         return;
       }
+      if (!isAiCodeActionsEnabled()) {
+        await handleAiCodeActionsDisabled();
+        return;
+      }
 
       const args =
         payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
@@ -2952,6 +3041,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND, async (payload: unknown) => {
       if (!isAiEnabled()) {
         await handleAiDisabled();
+        return;
+      }
+      if (!isAiCodeActionsEnabled()) {
+        await handleAiCodeActionsDisabled();
         return;
       }
 
@@ -3019,6 +3112,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_TESTS_COMMAND, async (payload: unknown) => {
       if (!isAiEnabled()) {
         await handleAiDisabled();
+        return;
+      }
+      if (!isAiCodeActionsEnabled()) {
+        await handleAiCodeActionsDisabled();
         return;
       }
 
@@ -3095,6 +3192,10 @@ export async function activate(context: vscode.ExtensionContext) {
           : undefined;
       if (!args) {
         void vscode.window.showErrorMessage('Nova AI: missing command payload.');
+        return;
+      }
+      if (args.lspCommand === 'nova.ai.codeReview' && !isAiCodeReviewEnabled()) {
+        await handleAiCodeReviewDisabled();
         return;
       }
 
