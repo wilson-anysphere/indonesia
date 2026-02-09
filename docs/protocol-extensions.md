@@ -1111,6 +1111,7 @@ Notes:
 
 - **Kind:** request
 - **Stability:** experimental
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`CodeReviewArgs`)
 
 Perform a read-only code review of a diff/patch string.
 
@@ -1154,9 +1155,10 @@ JSON string (the code review, typically markdown).
 `ai.privacy.excluded_paths` is a server-side allow/deny list for **file-backed** AI context.
 Behavior depends on the operation:
 
-- **Explain-only** requests (e.g. `nova/ai/explainError`) are still accepted for excluded files, but
-  the server omits file-backed source text and file path metadata from the prompt (it will ignore
-  any client-supplied `code` snippet for excluded files).
+- **Explain-only** requests (e.g. `nova/ai/explainError`, `nova/ai/codeReview`) are still accepted
+  for excluded files, but the server omits file-backed content and file path metadata from the
+  prompt (for example: it ignores any client-supplied `code` snippet for excluded files and may
+  replace diffs with a placeholder).
 - **Patch-based code edits** (e.g. `nova/ai/generateMethodBody`, `nova/ai/generateTests`) are
   rejected when the target file is excluded.
 - **Semantic search indexing** omits excluded files from the embeddings/index, so they will not be
@@ -1354,7 +1356,7 @@ available, best-effort workspace indexing).
 { "query": "zebraToken", "limit": 10 }
 ```
 
-Fields:
+Fields (camelCase):
 
 - `query` (string, required): search query text.
 - `limit` (number, optional): maximum number of results to return.
@@ -1382,7 +1384,8 @@ Field semantics:
 - `results` (array): list of matches sorted by descending `score` (ties are broken deterministically).
 - `path` (string): best-effort filesystem path for the match:
   - workspace-relative (with forward slashes) when the server has a workspace root
-    (`initialize.rootUri`) and the result file is under it; otherwise an absolute path string.
+    (`initialize.rootUri` / legacy `initialize.rootPath`) and the result file is under it.
+  - otherwise an absolute path string (may contain platform path separators like `\` on Windows).
 - `kind` (string): what the match represents. Current values are `"file"` and `"method"`.
 - `score` (number): non-normalized similarity score (higher is better). Treat as an opaque ranking
   signal (not stable across Nova versions).
@@ -1393,7 +1396,7 @@ Notes:
 - If semantic search is disabled in config (`ai.enabled=false` or `ai.features.semantic_search=false`),
   the server returns `{ "results": [] }`.
 - The index is best-effort and may be incomplete. In particular:
-  - Open documents are indexed eagerly.
+  - Open documents are indexed eagerly (subject to the file-extension filter and `ai.privacy.excluded_paths`).
   - Workspace indexing (when available) is bounded (currently: up to 2,000 files / 10 MiB total /
     256 KiB per file) and only indexes selected extensions (`.java`, `.kt`, `.kts`, `.gradle`, `.md`).
   - Files matching `ai.privacy.excluded_paths` are never indexed.
