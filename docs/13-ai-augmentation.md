@@ -459,7 +459,7 @@ Provider settings (model selection, endpoint, and request defaults) live under `
 ```toml
 [ai.provider]
 # Backend implementation.
-kind = "ollama" # "ollama" | "open_ai_compatible" | "open_ai" | "anthropic" | "gemini" | "azure_open_ai" | "http"
+kind = "ollama" # "ollama" | "open_ai_compatible" | "in_process_llama" | "open_ai" | "anthropic" | "gemini" | "azure_open_ai" | "http"
 
 # Default model name.
 model = "llama3"
