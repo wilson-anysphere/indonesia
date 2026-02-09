@@ -118,10 +118,15 @@ nova cache clean --path <workspace>
 # Debug parsing for a single file
 nova parse <file>
 
-# AI (optional; requires `[ai].enabled = true` in nova.toml)
+# AI utilities (optional; requires `[ai].enabled = true` in nova.toml)
 nova ai models
+
+# AI code review (reads a unified diff; outputs Markdown by default)
+git diff | nova ai review
+nova ai review --diff-file changes.diff
 nova ai review --git
-nova ai review --diff-file <path>
+nova ai review --git --staged
+nova ai review --json < changes.diff
 
 # Launch the Nova language server (LSP) (defaults to `nova-lsp --stdio`)
 nova lsp
