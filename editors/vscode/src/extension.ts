@@ -38,6 +38,7 @@ import {
   formatSafeModeReason,
   isMethodNotFoundError,
   isSafeModeError,
+  isUnknownExecuteCommandError,
   parseSafeModeEnabled,
   parseSafeModeReason,
 } from './safeMode';
@@ -2519,15 +2520,26 @@ export async function activate(context: vscode.ExtensionContext) {
             throw new Error('RequestCancelled');
           }
           // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
-          const resp = await c.sendRequest(
-            'workspace/executeCommand',
-            {
-              command: args.lspCommand,
-              arguments: lspArgs,
-              workDoneToken,
-            },
-            token,
-          );
+          let resp: unknown;
+          try {
+            resp = await c.sendRequest(
+              'workspace/executeCommand',
+              {
+                command: args.lspCommand,
+                arguments: lspArgs,
+                workDoneToken,
+              },
+              token,
+            );
+          } catch (err) {
+            if (isSafeModeError(err)) {
+              setWorkspaceSafeModeEnabled?.(entry.workspaceKey, true);
+            }
+            if (err && typeof err === 'object') {
+              (err as { novaWorkspaceKey?: WorkspaceKey }).novaWorkspaceKey = entry.workspaceKey;
+            }
+            throw err;
+          }
           if (token.isCancellationRequested) {
             throw new Error('RequestCancelled');
           }
@@ -2648,6 +2660,66 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const workspaceKeyFromAiError = (err: unknown): WorkspaceKey | undefined => {
+    if (!err || typeof err !== 'object') {
+      return undefined;
+    }
+    const workspaceKey = (err as { novaWorkspaceKey?: unknown }).novaWorkspaceKey;
+    return typeof workspaceKey === 'string' ? (workspaceKey as WorkspaceKey) : undefined;
+  };
+
+  const handleAiSafeModeExecuteCommandError = async (err: unknown, featureLabel: string): Promise<void> => {
+    const workspaceKey = workspaceKeyFromAiError(err);
+    if (workspaceKey) {
+      // Avoid stacking multiple warning prompts if the safe-mode status change already triggered
+      // the global safe-mode notification (see `setWorkspaceSafeModeEnabledInternal`).
+      const safeModeState = safeModeByWorkspaceKey.get(workspaceKey);
+      if (safeModeState?.warningInFlight) {
+        return;
+      }
+    }
+
+    const folder = workspaceKey ? workspaceFolderForKey(workspaceKey) : undefined;
+    const workspaceSuffix = workspaceKey ? ` in ${workspaceNameForKey(workspaceKey)}` : '';
+    const picked = await vscode.window.showWarningMessage(
+      `Nova AI: ${featureLabel} is unavailable because nova-lsp is running in safe mode${workspaceSuffix}. Generate a bug report to help diagnose the issue.`,
+      'Generate Bug Report',
+    );
+    if (picked === 'Generate Bug Report') {
+      await vscode.commands.executeCommand(BUG_REPORT_COMMAND, folder);
+    }
+  };
+
+  const handleAiUnknownExecuteCommandError = async (
+    err: unknown,
+    featureLabel: string,
+    commandId: string,
+  ): Promise<void> => {
+    const details = formatError(err);
+    const workspaceKey = workspaceKeyFromAiError(err);
+    const folder = workspaceKey ? workspaceFolderForKey(workspaceKey) : undefined;
+
+    const picked = await vscode.window.showErrorMessage(
+      `Nova AI: ${featureLabel} is not supported by your nova-lsp version (unknown command: ${commandId}). Update the server.`,
+      'Install/Update Server',
+      'Show Server Version',
+      'Copy Details',
+    );
+    if (picked === 'Install/Update Server') {
+      await vscode.commands.executeCommand('nova.installOrUpdateServer');
+    } else if (picked === 'Show Server Version') {
+      await vscode.commands.executeCommand('nova.showServerVersion', folder);
+    } else if (picked === 'Copy Details') {
+      try {
+        await vscode.env.clipboard.writeText(details);
+        void vscode.window.showInformationMessage('Nova AI: Copied to clipboard.');
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: failed to copy to clipboard: ${message}`);
+      }
+    }
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND, async (payload: unknown) => {
       if (!isAiEnabled()) {
@@ -2695,6 +2767,14 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (isAiPrivacyExcludedError(err)) {
           await handleAiPrivacyExcluded();
+          return;
+        }
+        if (isSafeModeError(err)) {
+          await handleAiSafeModeExecuteCommandError(err, 'Explain Error');
+          return;
+        }
+        if (isUnknownExecuteCommandError(err)) {
+          await handleAiUnknownExecuteCommandError(err, 'Explain Error', args.lspCommand);
           return;
         }
         const message = formatError(err);
@@ -2756,6 +2836,14 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiUnsupportedUri();
           return;
         }
+        if (isSafeModeError(err)) {
+          await handleAiSafeModeExecuteCommandError(err, 'Generate Method Body');
+          return;
+        }
+        if (isUnknownExecuteCommandError(err)) {
+          await handleAiUnknownExecuteCommandError(err, 'Generate Method Body', args.lspCommand);
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: generate method body failed: ${message}`);
       }
@@ -2813,6 +2901,14 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (isAiUnsupportedUriError(err)) {
           await handleAiUnsupportedUri();
+          return;
+        }
+        if (isSafeModeError(err)) {
+          await handleAiSafeModeExecuteCommandError(err, 'Generate Tests');
+          return;
+        }
+        if (isUnknownExecuteCommandError(err)) {
+          await handleAiUnknownExecuteCommandError(err, 'Generate Tests', args.lspCommand);
           return;
         }
         const message = formatError(err);

@@ -72,6 +72,19 @@ export function isSafeModeError(err: unknown): boolean {
   return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
 }
 
+export function isUnknownExecuteCommandError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+
+  const code = (err as { code?: unknown }).code;
+  if (code !== -32602) {
+    return false;
+  }
+
+  return formatError(err).toLowerCase().includes('unknown command');
+}
+
 export function parseSafeModeEnabled(payload: unknown): boolean | undefined {
   if (typeof payload === 'boolean') {
     return payload;

@@ -6,6 +6,7 @@ import {
   formatSafeModeReason,
   isMethodNotFoundError,
   isSafeModeError,
+  isUnknownExecuteCommandError,
   parseSafeModeEnabled,
   parseSafeModeReason,
 } from '../safeMode';
@@ -71,6 +72,17 @@ test('isSafeModeError matches fallback guard messages without explicit "safe mod
     ),
     true,
   );
+});
+
+test('isUnknownExecuteCommandError detects JSON-RPC -32602 unknown executeCommand variants', () => {
+  assert.equal(isUnknownExecuteCommandError({ code: -32602, message: 'unknown command: nova.ai.explainError' }), true);
+  assert.equal(isUnknownExecuteCommandError({ code: -32602, message: 'Unknown command: nova.ai.generateTests' }), true);
+});
+
+test('isUnknownExecuteCommandError ignores other errors', () => {
+  assert.equal(isUnknownExecuteCommandError({ code: -32602, message: 'unsupported uri: untitled:foo.java' }), false);
+  assert.equal(isUnknownExecuteCommandError({ code: -32601, message: 'unknown command: nova.ai.explainError' }), false);
+  assert.equal(isUnknownExecuteCommandError('unknown command: nova.ai.explainError'), false);
 });
 
 test('SAFE_MODE_EXEMPT_REQUESTS includes nova/java/organizeImports', () => {
