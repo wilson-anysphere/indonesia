@@ -13,6 +13,7 @@ use lsp_server::{Request, Response};
 use nova_index::Index;
 use serde::Deserialize;
 use serde_json::json;
+use std::path::{Component, Path};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use nova_vfs::VfsPath;
@@ -92,6 +93,78 @@ fn handle_request_json(
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": state.semantic_search_workspace_index_status_json(),
+            }))
+        }
+        nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD)
+            {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SemanticSearchParams {
+                query: String,
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+
+            let params: SemanticSearchParams = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            if !state.semantic_search_enabled() {
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "results": [] }
+                }));
+            }
+
+            let limit = params.limit.unwrap_or(50).min(50);
+            let matches = {
+                let search = state
+                    .semantic_search
+                    .read()
+                    .unwrap_or_else(|err| err.into_inner());
+                search.search(params.query.as_str())
+            };
+
+            let root = state.project_root.as_deref();
+            let results: Vec<serde_json::Value> = matches
+                .into_iter()
+                .take(limit)
+                .map(|m| {
+                    json!({
+                        "path": semantic_search_result_path(root, &m.path),
+                        "kind": m.kind,
+                        "score": m.score,
+                        "snippet": m.snippet,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "results": results }
             }))
         }
         nova_lsp::MEMORY_STATUS_METHOD => {
@@ -809,3 +882,31 @@ fn handle_request_json(
     }
 }
 
+fn semantic_search_result_path(project_root: Option<&Path>, path: &Path) -> String {
+    if let Some(root) = project_root {
+        if let Ok(rel) = path.strip_prefix(root) {
+            if let Some(rel_str) = path_to_forward_slash_rel(rel) {
+                return rel_str;
+            }
+        }
+    }
+
+    path.to_string_lossy().to_string()
+}
+
+fn path_to_forward_slash_rel(path: &Path) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(seg) => parts.push(seg.to_string_lossy().to_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}

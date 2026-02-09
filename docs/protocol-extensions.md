@@ -1208,6 +1208,55 @@ server is in safe-mode.
 
 ---
 
+### `nova/semanticSearch/search`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+Query Nova’s in-process semantic-search index (populated via open-document indexing and, when
+available, best-effort workspace indexing).
+
+#### Request params
+
+```json
+{ "query": "zebraToken", "limit": 10 }
+```
+
+Fields:
+
+- `query` (string, required): search query.
+- `limit` (number, optional): maximum number of results to return (server clamps internally).
+
+#### Response
+
+```json
+{
+  "results": [
+    {
+      "path": "src/UsesZebra.java",
+      "kind": "file",
+      "score": 1.23,
+      "snippet": "class UsesZebra { String token = \"zebraToken\"; }"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `path` is workspace-relative (with forward slashes) when the server has a workspace root
+  (`initialize.rootUri`) and the result file is under it; otherwise it is an absolute path string.
+- If semantic search is disabled in config (`ai.enabled=false` or `ai.features.semantic_search=false`),
+  the server returns `{ "results": [] }`.
+
+#### Safe-mode
+
+This request is guarded by `nova_lsp::hardening::guard_method()` and fails with `-32603` while the
+server is in safe-mode.
+
+---
+
 ## Performance / observability endpoints
 
 ### `nova/memoryStatus`

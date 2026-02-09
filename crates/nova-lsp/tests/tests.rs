@@ -60,6 +60,8 @@ mod references;
 mod salsa_cancellation;
 #[path = "suite/semantic_search_index_status_stdio.rs"]
 mod semantic_search_index_status_stdio;
+#[path = "suite/semantic_search_search_stdio.rs"]
+mod semantic_search_search_stdio;
 #[cfg(feature = "ai")]
 #[path = "suite/semantic_search_workspace_indexing.rs"]
 mod semantic_search_workspace_indexing;
