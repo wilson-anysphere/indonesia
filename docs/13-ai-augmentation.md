@@ -512,10 +512,22 @@ At a high level:
 
 Embedding-backed semantic search is compiled behind the `nova-ai` Cargo feature `embeddings`.
 
-- If Nova is built **with** `nova-ai --features embeddings` and `ai.embeddings.enabled=true`, Nova
-  will use the configured embeddings backend.
+- If Nova is built **with** `nova-ai/embeddings` enabled and `ai.embeddings.enabled=true`, Nova will
+  use the configured embeddings backend.
 - If Nova is built **without** that Cargo feature, Nova will log a warning and fall back to the
   trigram matcher even when embeddings are enabled in `nova.toml`.
+
+Example (building `nova-lsp` from source with embedding-backed semantic search):
+
+```bash
+cargo build -p nova-lsp --features "nova-ai/embeddings"
+```
+
+To enable the in-process local embedder (`backend="local"`), build with:
+
+```bash
+cargo build -p nova-lsp --features "nova-ai/embeddings-local"
+```
 
 #### `ai.embeddings.backend` (runtime selection)
 
