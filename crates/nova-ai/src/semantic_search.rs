@@ -308,6 +308,7 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 #[cfg(feature = "embeddings")]
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
+    use crate::AiError;
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
@@ -334,7 +335,11 @@ mod embeddings {
     }
 
     pub trait Embedder: Send + Sync {
-        fn embed(&self, text: &str) -> Vec<f32>;
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError>;
+
+        fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            inputs.iter().map(|input| self.embed(input)).collect()
+        }
     }
 
     /// A lightweight, fully-local embedder based on the hashing trick.
@@ -365,7 +370,7 @@ mod embeddings {
     }
 
     impl Embedder for HashEmbedder {
-        fn embed(&self, text: &str) -> Vec<f32> {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
             let mut vec = vec![0.0f32; self.dims];
 
             for token in tokenize(text) {
@@ -374,7 +379,7 @@ mod embeddings {
             }
 
             l2_normalize(&mut vec);
-            vec
+            Ok(vec)
         }
     }
 
@@ -529,12 +534,84 @@ mod embeddings {
         }
 
         fn index_file(&mut self, path: PathBuf, text: String) {
+            let extracted = self.docs_for_file(&path, &text);
+            if extracted.is_empty() {
+                if self.docs_by_path.remove(&path).is_some() {
+                    self.invalidate_index();
+                }
+                return;
+            }
+
+            let mut meta = Vec::with_capacity(extracted.len());
+            let mut inputs = Vec::with_capacity(extracted.len());
+            for (range, kind, snippet, embed_text) in extracted {
+                meta.push((range, kind, snippet));
+                inputs.push(embed_text);
+            }
+
+            let embeddings = if inputs.len() <= 1 {
+                match inputs.first() {
+                    Some(input) => self.embedder.embed(input).map(|vec| vec![vec]),
+                    None => Ok(Vec::new()),
+                }
+            } else {
+                self.embedder.embed_batch(&inputs)
+            };
+
+            let embeddings = match embeddings {
+                Ok(embeddings) => {
+                    if embeddings.len() != meta.len() {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            path = %path.to_string_lossy(),
+                            expected = meta.len(),
+                            got = embeddings.len(),
+                            "embedder returned unexpected batch size; skipping file"
+                        );
+                        Vec::new()
+                    } else {
+                        embeddings.into_iter().map(Some).collect::<Vec<_>>()
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        path = %path.to_string_lossy(),
+                        ?err,
+                        "failed to embed extracted docs; skipping failing docs"
+                    );
+
+                    // Best-effort fallback: attempt to embed each doc individually so partial
+                    // failures don't wipe out the entire file.
+                    let mut out = Vec::with_capacity(inputs.len());
+                    for input in &inputs {
+                        match self.embedder.embed(input) {
+                            Ok(vec) => out.push(Some(vec)),
+                            Err(err) => {
+                                tracing::warn!(
+                                    target = "nova.ai",
+                                    path = %path.to_string_lossy(),
+                                    ?err,
+                                    "failed to embed doc"
+                                );
+                                out.push(None);
+                            }
+                        }
+                    }
+                    out
+                }
+            };
+
             let mut docs = Vec::new();
-            for (range, kind, snippet, embed_text) in self.docs_for_file(&path, &text) {
-                let mut embedding = self.embedder.embed(&embed_text);
+            for ((range, kind, snippet), embedding) in meta.into_iter().zip(embeddings) {
+                let Some(mut embedding) = embedding else {
+                    continue;
+                };
+
                 if embedding.is_empty() {
                     continue;
                 }
+
                 l2_normalize(&mut embedding);
                 docs.push(EmbeddedDoc {
                     range,
@@ -571,7 +648,18 @@ mod embeddings {
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
-            let mut query_embedding = self.embedder.embed(query);
+            let mut query_embedding = match self.embedder.embed(query) {
+                Ok(embedding) => embedding,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to embed query; returning empty results"
+                    );
+                    return Vec::new();
+                }
+            };
+
             if query_embedding.is_empty() {
                 return Vec::new();
             }

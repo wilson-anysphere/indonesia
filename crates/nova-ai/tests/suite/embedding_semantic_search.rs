@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use nova_ai::{
-    ContextBuilder, ContextRequest, EmbeddingSemanticSearch, HashEmbedder, PrivacyMode,
+    AiError, ContextBuilder, ContextRequest, Embedder, EmbeddingSemanticSearch, HashEmbedder,
+    PrivacyMode,
     SemanticSearch, VirtualWorkspace,
 };
 
@@ -131,4 +132,84 @@ fn embedding_search_supports_incremental_indexing() {
 
     search.remove_file(path.as_path());
     assert!(search.search("hello world").is_empty());
+}
+
+#[test]
+fn embedding_search_skips_failed_doc_embeddings() {
+    #[derive(Debug, Clone)]
+    struct SelectiveFailEmbedder {
+        inner: HashEmbedder,
+    }
+
+    impl Embedder for SelectiveFailEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            if text.contains("return \"goodbye\"") {
+                return Err(AiError::UnexpectedResponse(
+                    "forced embedding failure".to_string(),
+                ));
+            }
+            self.inner.embed(text)
+        }
+    }
+
+    let mut search = EmbeddingSemanticSearch::new(SelectiveFailEmbedder {
+        inner: HashEmbedder::default(),
+    });
+
+    // Two methods ensures `EmbeddingSemanticSearch` uses `embed_batch` internally.
+    search.index_file(
+        PathBuf::from("src/Hello.java"),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+
+                public String goodbye() {
+                    return "goodbye";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].kind, "method");
+    assert!(results[0].snippet.contains("helloWorld"));
+
+    // The failing doc should be absent from the index.
+    let results = search.search("goodbye");
+    assert!(!results.is_empty());
+    assert!(!results[0].snippet.contains("goodbye"));
+}
+
+#[test]
+fn embedding_search_returns_empty_when_query_embedding_fails() {
+    #[derive(Debug, Clone)]
+    struct QueryFailEmbedder {
+        inner: HashEmbedder,
+    }
+
+    impl Embedder for QueryFailEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            if text == "boom" {
+                return Err(AiError::UnexpectedResponse(
+                    "forced query embedding failure".to_string(),
+                ));
+            }
+            self.inner.embed(text)
+        }
+    }
+
+    let mut search = EmbeddingSemanticSearch::new(QueryFailEmbedder {
+        inner: HashEmbedder::default(),
+    });
+    search.index_file(
+        PathBuf::from("src/Hello.java"),
+        "public class Hello { public String helloWorld() { return \"hello world\"; } }"
+            .to_string(),
+    );
+
+    assert!(search.search("boom").is_empty());
 }
