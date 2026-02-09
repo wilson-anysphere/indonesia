@@ -225,6 +225,11 @@ Those files must never be sent to an LLM. Remove them from the workspace snapsho
     Safety(#[from] SafetyError),
     #[error(transparent)]
     Apply(#[from] PatchApplyError),
+    #[error(
+        "invalid insert range for '{file}': {range}. \
+This usually means the editor selection is out of date. Re-run the code action."
+    )]
+    InvalidInsertRange { file: String, range: String },
     #[error("validation failed: {report:?}")]
     ValidationFailed { report: ErrorReport },
 }

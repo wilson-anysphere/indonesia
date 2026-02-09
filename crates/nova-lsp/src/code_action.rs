@@ -6,8 +6,9 @@ use lsp_types::{
     OptionalVersionedTextDocumentIdentifier, Position, Range, ResourceOp, TextDocumentEdit,
     TextEdit, Uri, WorkspaceEdit,
 };
+use nova_ai::safety::SafetyError;
 use nova_ai::context::{ContextBuilder, ContextRequest};
-use nova_ai::workspace::VirtualWorkspace;
+use nova_ai::workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 use nova_ai::PrivacyMode;
 use nova_ai_codegen::{
     generate_patch, CodeGenerationConfig, CodeGenerationError, CodegenProgressEvent,
@@ -15,7 +16,7 @@ use nova_ai_codegen::{
     ValidationConfig,
 };
 use nova_config::AiPrivacyConfig;
-use nova_core::{LineIndex, Position as CorePosition};
+use nova_core::{LineIndex, Position as CorePosition, TextRange, TextSize};
 use nova_db::InMemoryFileStore;
 use nova_ide::diagnostics::Diagnostic;
 use thiserror::Error;
@@ -181,6 +182,18 @@ impl<'a> AiCodeActionExecutor<'a> {
                     progress,
                 )
                 .await?;
+
+                // Method-body generation is a range-scoped code action: AI patches must not touch
+                // anything outside the computed method-body insert range, even if the model tries
+                // to rewrite other parts of the file. We enforce this using the touched ranges
+                // reported by patch application.
+                enforce_touched_ranges_within_insert_range(
+                    &file,
+                    insert_range,
+                    workspace,
+                    &result.applied,
+                )?;
+
                 let edit = workspace_edit_from_virtual_workspace(
                     root_uri,
                     workspace,
@@ -292,6 +305,109 @@ fn build_generate_method_body_prompt(
     } else {
         format!("{preamble}\n{insert}")
     }
+}
+
+fn enforce_touched_ranges_within_insert_range(
+    file: &str,
+    insert_range: Range,
+    workspace: &VirtualWorkspace,
+    applied: &AppliedPatch,
+) -> Result<(), CodeGenerationError> {
+    // Fail closed: if we can't compute the allowed byte range, we can't safely enforce it.
+    let before_text = workspace
+        .get(file)
+        .ok_or_else(|| PatchApplyError::MissingFile {
+            file: file.to_string(),
+        })?;
+
+    let (allowed_start_before, allowed_end_before) =
+        lsp_range_to_offsets(before_text, insert_range).ok_or_else(|| {
+            CodeGenerationError::InvalidInsertRange {
+                file: file.to_string(),
+                range: format!(
+                    "{}:{} - {}:{}",
+                    insert_range.start.line + 1,
+                    insert_range.start.character + 1,
+                    insert_range.end.line + 1,
+                    insert_range.end.character + 1
+                ),
+            }
+        })?;
+
+    let after_text = applied.workspace.get(file).unwrap_or("");
+    let delta = after_text.len() as i64 - before_text.len() as i64;
+    let allowed_end_after = (allowed_end_before as i64 + delta).max(0) as usize;
+    if allowed_start_before > allowed_end_after {
+        return Err(CodeGenerationError::InvalidInsertRange {
+            file: file.to_string(),
+            range: format!(
+                "{}:{} - {}:{}",
+                insert_range.start.line + 1,
+                insert_range.start.character + 1,
+                insert_range.end.line + 1,
+                insert_range.end.character + 1
+            ),
+        });
+    }
+
+    let allowed = TextRange::new(
+        TextSize::from((allowed_start_before.min(u32::MAX as usize)) as u32),
+        TextSize::from((allowed_end_after.min(u32::MAX as usize)) as u32),
+    );
+
+    // Reject any file edits outside the target file entirely.
+    for (touched_file, ranges) in &applied.touched_ranges {
+        if touched_file != file {
+            return Err(CodeGenerationError::Safety(
+                SafetyError::EditOutsideAllowedRange {
+                    file: touched_file.clone(),
+                    allowed: format!(
+                        "{file}:{}:{}-{}:{}",
+                        insert_range.start.line + 1,
+                        insert_range.start.character + 1,
+                        insert_range.end.line + 1,
+                        insert_range.end.character + 1,
+                    ),
+                    touched: format!("touched file '{touched_file}' ({})", ranges.len()),
+                },
+            ));
+        }
+    }
+
+    // Check that all touched ranges for the target file are contained within the allowed range.
+    if let Some(ranges) = applied.touched_ranges.get(file) {
+        let index = LineIndex::new(after_text);
+        for range in ranges {
+            if allowed.start() <= range.start() && range.end() <= allowed.end() {
+                continue;
+            }
+
+            let touched_start = index.position(after_text, range.start());
+            let touched_end = index.position(after_text, range.end());
+
+            return Err(CodeGenerationError::Safety(
+                SafetyError::EditOutsideAllowedRange {
+                    file: file.to_string(),
+                    allowed: format!(
+                        "{}:{}-{}:{}",
+                        insert_range.start.line + 1,
+                        insert_range.start.character + 1,
+                        insert_range.end.line + 1,
+                        insert_range.end.character + 1
+                    ),
+                    touched: format!(
+                        "{}:{}-{}:{}",
+                        touched_start.line + 1,
+                        touched_start.character + 1,
+                        touched_end.line + 1,
+                        touched_end.character + 1
+                    ),
+                },
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn build_generate_tests_prompt(
@@ -479,6 +595,7 @@ fn build_insert_prompt(
 File: {file}\n\
 Range: {}:{} - {}:{}\n\
 The region to edit is delimited by the markers `/*__NOVA_AI_RANGE_START__*/` and `/*__NOVA_AI_RANGE_END__*/` below.\n\
+Edits outside the marked region will be rejected.\n\
 Do NOT include these marker comments in the output patch.\n\
 {context}\n\
 ```java\n{annotated}\n```\n",
@@ -777,9 +894,6 @@ mod tests {
             method_signature: "public int add(int a, int b)".into(),
             context: None,
             prompt_context: None,
-            method_signature: "public int add(int a, int b)".into(),
-            context: None,
-            prompt_context: None,
         }
     }
 
@@ -1020,6 +1134,79 @@ mod tests {
             }
             _ => panic!("expected edits"),
         }
+    }
+
+    #[tokio::test]
+    async fn generate_method_body_rejects_patch_outside_insert_range() {
+        // This patch is syntactically valid, but it touches line 0 instead of the method body.
+        let patch = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+      "text": "// not allowed\n"
+    }
+  ]
+}"#;
+
+        let provider = MockAiProvider::new(vec![Ok(patch.into())]);
+        let mut config = CodeGenerationConfig::default();
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
+
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = example_workspace();
+        let cancel = CancellationToken::new();
+
+        let err = executor
+            .execute(example_action(), &workspace, &root_uri(), &cancel, None)
+            .await
+            .unwrap_err();
+        assert_eq!(provider.call_count(), 1);
+
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Safety(
+                SafetyError::EditOutsideAllowedRange { file, .. },
+            )) => assert_eq!(file, "Example.java"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_method_body_accepts_patch_within_insert_range() {
+        let patch = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 2, "character": 0 }, "end": { "line": 3, "character": 0 } },
+      "text": "        return a + b;\n"
+    }
+  ]
+}"#;
+
+        let provider = MockAiProvider::new(vec![Ok(patch.into())]);
+        let mut config = CodeGenerationConfig::default();
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
+
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = example_workspace();
+        let cancel = CancellationToken::new();
+
+        let outcome = executor
+            .execute(example_action(), &workspace, &root_uri(), &cancel, None)
+            .await
+            .expect("success");
+        assert_eq!(provider.call_count(), 1);
+
+        let CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+            panic!("expected workspace edit");
+        };
+        let changes = edit.changes.expect("changes");
+        let uri = crate::workspace_edit::join_uri(&root_uri(), Path::new("Example.java"));
+        let edits = changes.get(&uri).expect("edit for file");
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.contains("return a + b;"));
     }
 
     #[tokio::test]

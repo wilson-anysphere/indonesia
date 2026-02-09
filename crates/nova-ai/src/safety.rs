@@ -122,6 +122,17 @@ pub enum SafetyError {
     RenameNotAllowed { from: String, to: String },
     #[error("patch introduces new imports in '{file}': {imports:?}")]
     NewImports { file: String, imports: Vec<String> },
+    #[error(
+        "AI patch attempted to edit outside the allowed range in '{file}' (allowed: {allowed}, touched: {touched}). \
+This is a safety measure. Try running the code action again; if it persists, reselect the method body range."
+    )]
+    EditOutsideAllowedRange {
+        file: String,
+        /// Human-readable allowed range for the edit (typically 1-based line/column).
+        allowed: String,
+        /// Human-readable touched range (typically 1-based line/column).
+        touched: String,
+    },
 }
 
 pub fn enforce_patch_safety(
