@@ -264,6 +264,16 @@ local_only = true
         Some(-32800),
         "expected cancelled explainError request to return -32800, got: {resp:?}"
     );
+    let kind = resp
+        .get("error")
+        .and_then(|err| err.get("data"))
+        .and_then(|data| data.get("kind"))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        kind,
+        Some("cancelled"),
+        "expected cancelled explainError response to include error.data.kind=\"cancelled\", got: {resp:?}"
+    );
 
     shutdown_server(child, stdin, pump);
     let _ = reader_handle.join();
@@ -665,6 +675,16 @@ local_only = true
         code,
         Some(-32800),
         "expected cancelled generateMethodBody request to return -32800, got: {resp:?}"
+    );
+    let kind = resp
+        .get("error")
+        .and_then(|err| err.get("data"))
+        .and_then(|data| data.get("kind"))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        kind,
+        Some("cancelled"),
+        "expected cancelled generateMethodBody response to include error.data.kind=\"cancelled\", got: {resp:?}"
     );
 
     shutdown_server(child, stdin, pump);

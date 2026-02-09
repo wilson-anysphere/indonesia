@@ -5514,6 +5514,610 @@ local_only = true
 }
 
 #[test]
+fn stdio_server_ai_custom_requests_include_patch_parse_error_data() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_path = root.join("Test.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { int answer() { } }\n";
+    std::fs::write(&file_path, text).expect("write Test.java");
+
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "not a patch" }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("patchParse"),
+        "expected error.data.kind == \"patchParse\", got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    assert!(
+        ai_server.hits() > 0,
+        "expected at least one provider hit for patch parsing attempts"
+    );
+}
+
+#[test]
+fn stdio_server_ai_custom_requests_include_patch_safety_error_data() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_path = root.join("Test.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { int answer() { } }\n";
+    std::fs::write(&file_path, text).expect("write Test.java");
+
+    let patch = json!({
+        "edits": [{
+            "file": "Other.java",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "text": "class Other {}"
+        }]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("patchSafety"),
+        "expected error.data.kind == \"patchSafety\", got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(1);
+}
+
+#[test]
+fn stdio_server_ai_custom_requests_include_patch_apply_error_data() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_path = root.join("Test.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { int answer() { } }\n";
+    std::fs::write(&file_path, text).expect("write Test.java");
+
+    // Out-of-bounds LSP range triggers PatchApplyError::InvalidRange.
+    let patch = json!({
+        "edits": [{
+            "file": "Test.java",
+            "range": {
+                "start": { "line": 999, "character": 0 },
+                "end": { "line": 999, "character": 0 }
+            },
+            "text": "}"
+        }]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("patchApply"),
+        "expected error.data.kind == \"patchApply\", got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    assert!(
+        ai_server.hits() > 0,
+        "expected at least one provider hit for patch apply attempts"
+    );
+}
+
+#[test]
+fn stdio_server_ai_custom_requests_include_validation_error_data() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_path = root.join("Test.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { int answer() { } }\n";
+    std::fs::write(&file_path, text).expect("write Test.java");
+
+    // Inserts an unmatched brace, introducing a syntax error (validation must fail).
+    let patch = json!({
+        "edits": [{
+            "file": "Test.java",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "text": "}"
+        }]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("validation"),
+        "expected error.data.kind == \"validation\", got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    assert!(
+        ai_server.hits() > 0,
+        "expected at least one provider hit for validation repair attempts"
+    );
+}
+
+#[test]
 fn stdio_server_ai_custom_requests_require_document_text() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));

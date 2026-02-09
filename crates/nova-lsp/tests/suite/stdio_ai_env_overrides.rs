@@ -580,6 +580,14 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
         -32600,
         "expected AI request to fail with 'AI is not configured' when {env_key}={env_value}"
     );
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("notConfigured"),
+        "expected error.data.kind == \"notConfigured\" when AI is disabled, got: {explain_resp:#?}"
+    );
 
     support::write_jsonrpc_message(
         &mut stdin,
