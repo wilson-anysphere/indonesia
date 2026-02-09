@@ -166,6 +166,25 @@ impl ServerState {
         self.semantic_search_workspace_index_cancel.cancel();
     }
 
+    pub(super) fn reset_semantic_search_workspace_index_status(&mut self) {
+        if !self.semantic_search_enabled() {
+            return;
+        }
+
+        self.semantic_search_workspace_index_status
+            .current_run_id
+            .store(0, Ordering::SeqCst);
+        self.semantic_search_workspace_index_status
+            .completed_run_id
+            .store(0, Ordering::SeqCst);
+        self.semantic_search_workspace_index_status
+            .indexed_files
+            .store(0, Ordering::SeqCst);
+        self.semantic_search_workspace_index_status
+            .indexed_bytes
+            .store(0, Ordering::SeqCst);
+    }
+
     pub(super) fn clear_semantic_search_index(&mut self) {
         if !self.semantic_search_enabled() {
             return;

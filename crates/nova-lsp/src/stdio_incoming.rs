@@ -395,6 +395,7 @@ pub(super) fn handle_notification(
 
             if next_root != previous_root {
                 state.cancel_semantic_search_workspace_indexing();
+                state.reset_semantic_search_workspace_index_status();
                 state.clear_semantic_search_index();
 
                 state.project_root = next_root;

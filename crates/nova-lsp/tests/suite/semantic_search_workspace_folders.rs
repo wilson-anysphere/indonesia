@@ -35,6 +35,26 @@ fn current_semantic_search_run_id(
         .expect("indexStatus.currentRunId must be a number")
 }
 
+fn semantic_search_index_status(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    id: i64,
+) -> serde_json::Value {
+    write_jsonrpc_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
+            "params": {}
+        }),
+    );
+    read_response_with_id(stdout, id)
+        .get("result")
+        .cloned()
+        .expect("indexStatus result")
+}
+
 #[test]
 fn stdio_workspace_folder_change_restarts_semantic_search_workspace_indexing() {
     let _lock = stdio_server_lock();
@@ -166,3 +186,127 @@ max_tokens = 64
     assert!(status.success());
 }
 
+#[test]
+fn stdio_workspace_folder_remove_resets_semantic_search_workspace_index_state() {
+    let _lock = stdio_server_lock();
+
+    let ai_server = TestAiServer::start(json!({ "completion": "ok" }));
+
+    let temp = TempDir::new().expect("tempdir");
+    let root1 = temp.path().join("ws1");
+    std::fs::create_dir_all(&root1).expect("create ws1");
+    std::fs::write(root1.join("Foo.java"), "class Foo {}").expect("write Foo.java");
+
+    let config_path = temp.path().join("nova.config.toml");
+    let config = format!(
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+timeout_ms = 2000
+max_tokens = 64
+"#,
+        endpoint = format!("{}/complete", ai_server.base_url())
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let root1_uri = uri_for_path(&root1);
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root1_uri.clone(), "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Ensure indexing run started for the initial root.
+    let run_id_1 = (0..20)
+        .find_map(|attempt| {
+            let id = 10 + attempt as i64;
+            let run_id = current_semantic_search_run_id(&mut stdin, &mut stdout, id);
+            (run_id != 0).then_some(run_id)
+        })
+        .expect("expected semantic-search workspace indexing to start for initial root");
+    assert_ne!(run_id_1, 0);
+
+    // Remove the current workspace folder. The server should clear the active project root and
+    // reset workspace indexing state so indexStatus reports `missing_workspace_root`.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWorkspaceFolders",
+            "params": {
+                "event": {
+                    "added": [],
+                    "removed": [{ "uri": root1_uri, "name": "ws1" }]
+                }
+            }
+        }),
+    );
+
+    let status = semantic_search_index_status(&mut stdin, &mut stdout, 2);
+    assert_eq!(
+        status.get("enabled").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected indexStatus.enabled=true; got {status:#}"
+    );
+    assert_eq!(
+        status.get("reason").and_then(|v| v.as_str()),
+        Some("missing_workspace_root"),
+        "expected indexStatus.reason=\"missing_workspace_root\"; got {status:#}"
+    );
+    assert_eq!(
+        status.get("currentRunId").and_then(|v| v.as_u64()),
+        Some(0),
+        "expected indexStatus.currentRunId to reset to 0; got {status:#}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
