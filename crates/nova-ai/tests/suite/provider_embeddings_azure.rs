@@ -1,7 +1,7 @@
 #![cfg(feature = "embeddings")]
 
 use httpmock::prelude::*;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -42,7 +42,11 @@ async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() 
 
     let client = embeddings_client_from_config(&config).expect("build embeddings client");
     let out = client
-        .embed(&["hello".to_string()], CancellationToken::new())
+        .embed(
+            &["hello".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
 

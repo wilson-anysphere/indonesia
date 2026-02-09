@@ -1,5 +1,5 @@
 use httpmock::prelude::*;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -36,7 +36,11 @@ async fn embeddings_retries_on_http_429() {
     let task = {
         tokio::spawn(async move {
             client
-                .embed(&["hello".to_string()], CancellationToken::new())
+                .embed(
+                    &["hello".to_string()],
+                    EmbeddingInputKind::Query,
+                    CancellationToken::new(),
+                )
                 .await
         })
     };

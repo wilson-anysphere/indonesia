@@ -1,7 +1,7 @@
 #![cfg(feature = "embeddings")]
 
 use httpmock::prelude::*;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_ai::{semantic_search_from_config, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};
 use serde_json::json;
@@ -105,7 +105,11 @@ async fn provider_embeddings_client_remote_url_falls_back_to_hash_in_local_only_
 
     let client = embeddings_client_from_config(&cfg).expect("embeddings client");
     let out = client
-        .embed(&["hello".to_string()], CancellationToken::new())
+        .embed(
+            &["hello".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
 
@@ -137,7 +141,11 @@ async fn provider_embeddings_client_loopback_url_is_allowed_in_local_only_mode()
 
     let client = embeddings_client_from_config(&cfg).expect("embeddings client");
     let out = client
-        .embed(&["hello".to_string()], CancellationToken::new())
+        .embed(
+            &["hello".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
 

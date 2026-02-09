@@ -458,8 +458,8 @@ fn embedding_search_truncates_when_memory_budget_is_too_small() {
         baseline_results.len()
     );
 
-    // Each method doc stores a `Vec<f32>` embedding. Use the embedder output length to compute a
-    // tiny budget that can only hold fewer docs than the baseline index.
+    // Each doc stores a `Vec<f32>` embedding. Use the embedder output length to compute a tiny
+    // budget that can only hold fewer docs than the baseline index.
     let dims = HashEmbedder::default()
         .embed("hello")
         .expect("hash embedding")

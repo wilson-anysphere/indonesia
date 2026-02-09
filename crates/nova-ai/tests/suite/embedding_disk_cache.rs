@@ -1,7 +1,7 @@
 #![cfg(feature = "embeddings")]
 
 use httpmock::prelude::*;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_ai::semantic_search_from_config;
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind, ByteSize};
 use serde_json::json;
@@ -41,7 +41,11 @@ async fn provider_embeddings_are_cached_on_disk() {
     let client = embeddings_client_from_config(&config).expect("embeddings client");
 
     let out1 = client
-        .embed(&["hello world".to_string()], CancellationToken::new())
+        .embed(
+            &["hello world".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
     assert_eq!(out1, vec![vec![0.25, 0.5, 0.75]]);
@@ -52,7 +56,11 @@ async fn provider_embeddings_are_cached_on_disk() {
     let client = embeddings_client_from_config(&config).expect("embeddings client");
 
     let out2 = client
-        .embed(&["hello world".to_string()], CancellationToken::new())
+        .embed(
+            &["hello world".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
     assert_eq!(out2, vec![vec![0.25, 0.5, 0.75]]);

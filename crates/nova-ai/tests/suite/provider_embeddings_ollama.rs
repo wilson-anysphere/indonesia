@@ -1,7 +1,7 @@
 #![cfg(feature = "embeddings")]
 
 use httpmock::prelude::*;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +39,7 @@ async fn ollama_provider_embeddings_prefers_batch_embed_endpoint() {
     let out = client
         .embed(
             &["alpha".to_string(), "beta".to_string()],
+            EmbeddingInputKind::Query,
             CancellationToken::new(),
         )
         .await
@@ -101,6 +102,7 @@ async fn ollama_provider_embeddings_falls_back_to_legacy_embeddings_endpoint() {
     let out = client
         .embed(
             &["first".to_string(), "second".to_string()],
+            EmbeddingInputKind::Query,
             CancellationToken::new(),
         )
         .await
@@ -115,4 +117,3 @@ async fn ollama_provider_embeddings_falls_back_to_legacy_embeddings_endpoint() {
         "expected embeddings in the same order as inputs"
     );
 }
-

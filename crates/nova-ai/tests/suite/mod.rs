@@ -24,6 +24,7 @@ mod provider_embeddings_azure;
 mod provider_embeddings_ollama;
 mod project_database_adapters;
 mod provider_embedder_sync;
+mod provider_embedder_privacy;
 mod provider_embeddings_privacy;
 mod retry_config;
 mod semantic_context_builder;

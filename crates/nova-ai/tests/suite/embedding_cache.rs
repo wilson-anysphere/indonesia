@@ -2,7 +2,7 @@
 
 use httpmock::prelude::*;
 use nova_ai::embeddings::cache::EmbeddingVectorCache;
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind, ByteSize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -65,6 +65,7 @@ async fn provider_embeddings_use_memory_cache_for_partial_hits() {
     let out1 = client
         .embed(
             &["alpha".to_string(), "beta".to_string()],
+            EmbeddingInputKind::Query,
             CancellationToken::new(),
         )
         .await
@@ -74,6 +75,7 @@ async fn provider_embeddings_use_memory_cache_for_partial_hits() {
     let out2 = client
         .embed(
             &["alpha".to_string(), "gamma".to_string()],
+            EmbeddingInputKind::Query,
             CancellationToken::new(),
         )
         .await
@@ -118,35 +120,35 @@ async fn provider_embeddings_memory_cache_evicts_lru_entries() {
     let client = embeddings_client_from_config(&config).expect("embeddings client");
 
     let _ = client
-        .embed(&["a".to_string()], CancellationToken::new())
+        .embed(&["a".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed a");
     let _ = client
-        .embed(&["b".to_string()], CancellationToken::new())
+        .embed(&["b".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed b");
 
     // Touch a so it becomes most-recently-used (b becomes LRU).
     let _ = client
-        .embed(&["a".to_string()], CancellationToken::new())
+        .embed(&["a".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed a (hit)");
 
     // Insert c, evicting b.
     let _ = client
-        .embed(&["c".to_string()], CancellationToken::new())
+        .embed(&["c".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed c");
 
     // a should still be cached.
     let _ = client
-        .embed(&["a".to_string()], CancellationToken::new())
+        .embed(&["a".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed a (still hit)");
 
     // b should have been evicted.
     let _ = client
-        .embed(&["b".to_string()], CancellationToken::new())
+        .embed(&["b".to_string()], EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed b (miss)");
 

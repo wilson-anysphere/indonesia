@@ -10,13 +10,16 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::client::validate_local_only_url;
+use crate::llm_privacy::PrivacyFilter;
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
 use nova_metrics::MetricsRegistry;
 
 use super::cache::{EmbeddingCacheKey as MemoryCacheKey, EmbeddingCacheKeyBuilder, EmbeddingVectorCache};
-use super::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1};
-use super::EmbeddingsClient;
+use super::disk_cache::{
+    DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1,
+};
+use super::{EmbeddingInputKind, EmbeddingsClient};
 
 const AI_EMBEDDINGS_RETRY_METRIC: &str = "ai/embeddings/retry";
 
@@ -176,6 +179,7 @@ pub(super) fn provider_embeddings_client_from_config(
         .unwrap_or_else(|| config.provider.model.clone());
     let batch_size = config.embeddings.batch_size.max(1);
 
+    let privacy = Arc::new(PrivacyFilter::new(&config.privacy)?);
     let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
         .map(Arc::new)
         .ok();
@@ -252,6 +256,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model_id,
                 max_memory_bytes,
                 disk_cache,
+                privacy.clone(),
             )))
         }
         AiProviderKind::OpenAi => {
@@ -300,6 +305,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model,
                 max_memory_bytes,
                 disk_cache,
+                privacy.clone(),
             )))
         }
         AiProviderKind::OpenAiCompatible => {
@@ -340,6 +346,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model,
                 max_memory_bytes,
                 disk_cache,
+                privacy.clone(),
             )))
         }
         AiProviderKind::Http => {
@@ -380,6 +387,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model,
                 max_memory_bytes,
                 disk_cache,
+                privacy.clone(),
             )))
         }
         AiProviderKind::Ollama => {
@@ -419,6 +427,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model,
                 max_memory_bytes,
                 disk_cache,
+                privacy.clone(),
             )))
         }
         other => {
@@ -453,6 +462,7 @@ struct CachedEmbeddingsClient {
     model: String,
     memory_cache: EmbeddingVectorCache,
     disk_cache: Option<Arc<DiskEmbeddingCache>>,
+    privacy: Arc<PrivacyFilter>,
 }
 
 impl CachedEmbeddingsClient {
@@ -463,6 +473,7 @@ impl CachedEmbeddingsClient {
         model: String,
         max_memory_bytes: usize,
         disk_cache: Option<Arc<DiskEmbeddingCache>>,
+        privacy: Arc<PrivacyFilter>,
     ) -> Self {
         Self {
             inner,
@@ -471,6 +482,7 @@ impl CachedEmbeddingsClient {
             model,
             memory_cache: EmbeddingVectorCache::new(max_memory_bytes),
             disk_cache,
+            privacy,
         }
     }
 
@@ -499,6 +511,7 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
@@ -508,13 +521,24 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
             return Err(AiError::Cancelled);
         }
 
+        // Sanitize all inputs with the same session so anonymization/redaction is stable
+        // within a single embeddings request batch.
+        let mut session = self.privacy.new_session();
+        let sanitized_input: Vec<String> = input
+            .iter()
+            .map(|text| match kind {
+                EmbeddingInputKind::Document => self.privacy.sanitize_code_text(&mut session, text),
+                EmbeddingInputKind::Query => self.privacy.sanitize_prompt_text(&mut session, text),
+            })
+            .collect();
+
         let mut out = vec![None::<Vec<f32>>; input.len()];
         let mut miss_indices = Vec::new();
         let mut miss_disk_keys = Vec::new();
         let mut miss_memory_keys = Vec::new();
         let mut miss_inputs = Vec::new();
 
-        for (idx, text) in input.iter().enumerate() {
+        for (idx, text) in sanitized_input.iter().enumerate() {
             let memory_key = self.memory_key_for(text);
             if let Some(hit) = self.memory_cache.get(memory_key) {
                 out[idx] = Some(hit);
@@ -566,7 +590,7 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
 
             // Rebuild still_inputs based on still_indices to preserve ordering.
             for idx in &still_indices {
-                if let Some(text) = input.get(*idx) {
+                if let Some(text) = sanitized_input.get(*idx) {
                     still_inputs.push(text.clone());
                 }
             }
@@ -579,7 +603,7 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
 
         // Network for cache misses.
         if !miss_inputs.is_empty() {
-            let embeddings = self.inner.embed(&miss_inputs, cancel).await?;
+            let embeddings = self.inner.embed(&miss_inputs, kind, cancel).await?;
             if embeddings.len() != miss_inputs.len() {
                 return Err(AiError::UnexpectedResponse(format!(
                     "embedder returned unexpected batch size: expected {}, got {}",
@@ -711,6 +735,7 @@ impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        _kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
@@ -835,6 +860,7 @@ impl EmbeddingsClient for OpenAiCompatibleEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        _kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
@@ -1058,6 +1084,7 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        _kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {

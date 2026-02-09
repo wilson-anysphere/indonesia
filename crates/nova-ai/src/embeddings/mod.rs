@@ -14,11 +14,21 @@ pub(crate) mod disk_cache;
 mod provider;
 
 /// An embeddings backend which can produce vector embeddings for batches of input strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingInputKind {
+    /// Code-like inputs (semantic-search indexed documents).
+    Document,
+    /// Natural language inputs (best-effort sanitization).
+    Query,
+}
+
+/// An embeddings backend which can produce vector embeddings for batches of input strings.
 #[async_trait]
 pub trait EmbeddingsClient: Send + Sync {
     async fn embed(
         &self,
         input: &[String],
+        kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError>;
 }
@@ -81,6 +91,7 @@ impl EmbeddingsClient for LocalEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        _kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {

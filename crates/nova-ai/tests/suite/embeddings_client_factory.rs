@@ -1,6 +1,6 @@
 #![cfg(all(feature = "embeddings", not(feature = "embeddings-local")))]
 
-use nova_ai::embeddings::embeddings_client_from_config;
+use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
 use nova_config::{AiConfig, AiEmbeddingsBackend};
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +13,11 @@ async fn embeddings_client_from_config_local_backend_without_feature_falls_back_
 
     let client = embeddings_client_from_config(&config).expect("build embeddings client");
     let out = client
-        .embed(&["hello world".to_string()], CancellationToken::new())
+        .embed(
+            &["hello world".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
         .await
         .expect("embed");
 
@@ -24,4 +28,3 @@ async fn embeddings_client_from_config_local_backend_without_feature_falls_back_
         "expected local backend to fall back to HashEmbedder when `embeddings-local` is disabled"
     );
 }
-
