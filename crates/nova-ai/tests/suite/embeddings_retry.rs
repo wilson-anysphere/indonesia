@@ -78,7 +78,7 @@ async fn embeddings_retries_on_http_429() {
     mock_ok.assert_hits(1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn embeddings_retry_max_retries_zero_disables_retries() {
     let server = MockServer::start();
     let dir = tempfile::tempdir().expect("tempdir");
