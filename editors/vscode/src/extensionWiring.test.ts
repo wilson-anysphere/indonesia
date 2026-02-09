@@ -81,4 +81,21 @@ describe('extension wiring', () => {
     expect(afterDiscoverRegistration).toMatch(/discoverTestsForWorkspaces\(\s*workspaces\s*,\s*\{\s*token\s*\}\s*\)/);
     expect(afterDiscoverRegistration).toMatch(/refreshTests\(\s*discovered\s*,\s*\{\s*token\s*\}\s*\)/);
   });
+
+  it('gates nova/completion/more polling on CompletionList.isIncomplete', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const contents = await fs.readFile(extensionPath, 'utf8');
+
+    const completionMiddlewareIdx = contents.search(/provideCompletionItem:\s*async/);
+    expect(completionMiddlewareIdx).toBeGreaterThanOrEqual(0);
+
+    const afterCompletionMiddleware = contents.slice(completionMiddlewareIdx);
+    const gateIdx = afterCompletionMiddleware.indexOf('result.isIncomplete === false');
+    expect(gateIdx).toBeGreaterThanOrEqual(0);
+
+    const pollIdx = afterCompletionMiddleware.indexOf('requestMoreCompletions');
+    expect(pollIdx).toBeGreaterThanOrEqual(0);
+    expect(gateIdx).toBeLessThan(pollIdx);
+  });
 });
