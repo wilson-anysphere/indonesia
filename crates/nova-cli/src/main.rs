@@ -1159,7 +1159,8 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 if !config.ai.enabled {
                     anyhow::bail!(
                         "AI is disabled. Enable it by setting `[ai].enabled = true` in nova.toml \
-                         (or pass `--config <path>` / set {NOVA_CONFIG_ENV_VAR})."
+                         (or pass `--config <path>` / set {config_env}).",
+                        config_env = NOVA_CONFIG_ENV_VAR
                     );
                 }
 
