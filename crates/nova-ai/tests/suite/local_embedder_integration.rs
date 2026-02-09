@@ -120,9 +120,23 @@ async fn embeddings_client_from_config_local_backend_can_embed_with_prepared_mod
     assert_eq!(embeddings.len(), inputs.len());
     let dims = embeddings.first().map(|vec| vec.len()).unwrap_or_default();
     assert!(dims > 0, "expected non-empty embedding vectors");
-    let expected_hash_dims = HashEmbedder::default().dims();
-    assert_ne!(
-        dims, expected_hash_dims,
-        "expected local neural embeddings (not hash embeddings); got {dims} dims"
-    );
+    let hash_embedder = HashEmbedder::default();
+    let expected_hash_dims = hash_embedder.dims();
+
+    // Prefer a simple dimension check, but don't assume neural models can never be 256-dim.
+    // If the dims match, compare values against the hashing-trick embedder output to ensure we
+    // didn't silently fall back.
+    if dims == expected_hash_dims {
+        let hash = hash_embedder
+            .embed(&inputs[0])
+            .expect("hash embedder should succeed");
+        let differs = embeddings[0]
+            .iter()
+            .zip(hash.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(
+            differs,
+            "expected local neural embeddings (not hash embeddings); got identical vectors"
+        );
+    }
 }
