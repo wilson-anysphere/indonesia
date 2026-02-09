@@ -1945,7 +1945,7 @@ to use this endpoint reliably.
 
 ---
 
-### AI patch-based code actions via `workspace/executeCommand`
+### AI code actions via `workspace/executeCommand`
 
 Nova’s AI code actions are surfaced to clients as standard LSP `workspace/executeCommand` commands
 (emitted by `textDocument/codeAction` in `crates/nova-lsp/src/main.rs`; argument types are defined in
@@ -1954,9 +1954,14 @@ Nova’s AI code actions are surfaced to clients as standard LSP `workspace/exec
 The server advertises these command IDs via the standard LSP capability:
 `initializeResult.capabilities.executeCommandProvider.commands`.
 
-These commands are intended to support **patch-based code edits**. When patch edits are allowed by
-privacy policy, the server **sends** a `workspace/applyEdit` request containing a `WorkspaceEdit`
-(similar to Safe Delete / Organize Imports).
+These commands include:
+
+- **Explain-only actions** (returning text)
+- **Patch-based code edits** (applied via `workspace/applyEdit`)
+
+When patch edits are allowed by privacy policy, the server **sends** a `workspace/applyEdit` request
+containing a `WorkspaceEdit` (similar to Safe Delete / Organize Imports). Explain-only actions do
+not apply edits and instead return a JSON string result.
 
 Like other AI endpoints, these commands accept an optional `workDoneToken` (standard LSP work-done
 progress token). When present, the server emits `$/progress` notifications for user-visible progress.
@@ -1967,6 +1972,49 @@ response does **not** return the edit payload.
 Compatibility note: older Nova builds may return a JSON string result (a generated snippet) instead
 of applying an edit via `workspace/applyEdit`. Clients should gracefully handle both behaviors when
 targeting multiple Nova versions.
+
+#### `nova.ai.explainError`
+
+- **Kind:** `workspace/executeCommand` command
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`ExplainErrorArgs`)
+
+##### ExecuteCommand params
+
+The first (and only) entry in `arguments` is an `ExplainErrorArgs` object:
+
+```json
+{
+  "command": "nova.ai.explainError",
+  "arguments": [
+    {
+      "diagnostic_message": "cannot find symbol",
+      "code": "optional snippet",
+      "uri": "file:///…",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+    }
+  ],
+  "workDoneToken": "optional"
+}
+```
+
+Note: the argument object uses **snake_case** field names (e.g. `diagnostic_message`) because the
+Rust type does not use `rename_all = "camelCase"`.
+
+##### Response
+
+JSON string (the explanation).
+
+##### Errors
+
+- `-32600` if AI is not configured.
+- `-32603` for model/provider failures.
+
+##### Notes
+
+- This is an explain-only action; it does not apply edits.
+- When the target file is blocked by `ai.privacy.excluded_paths`, the server still accepts the
+  request but omits file-backed code context from the prompt (it will ignore any client-supplied
+  `code` snippet).
 
 #### `nova.ai.generateMethodBody`
 
