@@ -1,7 +1,27 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::mem;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+
+fn warn_poisoned_embedding_cache_mutex_once() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        tracing::warn!(
+            target = "nova.ai",
+            "embedding cache mutex was poisoned by a previous panic; attempting best-effort recovery"
+        );
+    });
+}
+
+fn warn_poisoned_embedding_cache_registry_mutex_once() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        tracing::warn!(
+            target = "nova.ai",
+            "embedding cache registry mutex was poisoned by a previous panic; attempting best-effort recovery"
+        );
+    });
+}
 
 /// Opaque cache key for embedding vectors.
 ///
@@ -118,9 +138,16 @@ impl EmbeddingVectorCache {
         Self::estimate_entry_bytes(vec.len())
     }
 
+    fn lock_inner(&self) -> MutexGuard<'_, CacheInner> {
+        self.inner.lock().unwrap_or_else(|err| {
+            warn_poisoned_embedding_cache_mutex_once();
+            err.into_inner()
+        })
+    }
+
     /// Look up an embedding vector and update its LRU position on a hit.
     pub fn get(&self, key: EmbeddingCacheKey) -> Option<Vec<f32>> {
-        let mut inner = self.inner.lock().expect("embedding cache mutex poisoned");
+        let mut inner = self.lock_inner();
         let &idx = inner.map.get(&key)?;
         let value = inner.nodes.get(idx)?.as_ref()?.value.clone();
         Self::touch_locked(&mut inner, idx);
@@ -138,7 +165,7 @@ impl EmbeddingVectorCache {
             return;
         }
 
-        let mut inner = self.inner.lock().expect("embedding cache mutex poisoned");
+        let mut inner = self.lock_inner();
 
         if let Some(&idx) = inner.map.get(&key) {
             // Replace in-place.
@@ -193,19 +220,12 @@ impl EmbeddingVectorCache {
 
     /// Current approximate memory usage for the cache.
     pub fn used_memory_bytes(&self) -> usize {
-        self.inner
-            .lock()
-            .expect("embedding cache mutex poisoned")
-            .used_bytes
+        self.lock_inner().used_bytes
     }
 
     /// Number of cached entries.
     pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .expect("embedding cache mutex poisoned")
-            .map
-            .len()
+        self.lock_inner().map.len()
     }
 
     fn touch_locked(inner: &mut CacheInner, idx: usize) {
@@ -306,7 +326,10 @@ static CACHE_REGISTRY: OnceLock<Mutex<HashMap<EmbeddingCacheSettings, Weak<Embed
 /// Create or reuse a shared embedding cache for the given settings.
 pub fn shared_embedding_cache(settings: EmbeddingCacheSettings) -> Arc<EmbeddingVectorCache> {
     let registry = CACHE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().expect("embedding cache registry mutex poisoned");
+    let mut registry = registry.lock().unwrap_or_else(|err| {
+        warn_poisoned_embedding_cache_registry_mutex_once();
+        err.into_inner()
+    });
 
     if let Some(existing) = registry.get(&settings).and_then(|weak| weak.upgrade()) {
         return existing;
