@@ -132,7 +132,6 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
     assert!(search.search("hello world").is_empty());
 }
 
-#[cfg(feature = "embeddings")]
 #[test]
 fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_unsupported() {
     let db = VirtualWorkspace::new([(
@@ -167,5 +166,11 @@ fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_un
     let results = search.search("hello world");
     assert!(!results.is_empty());
     assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
-    assert_eq!(results[0].kind, "method");
+
+    let expected_kind = if cfg!(feature = "embeddings") {
+        "method"
+    } else {
+        "file"
+    };
+    assert_eq!(results[0].kind, expected_kind);
 }
