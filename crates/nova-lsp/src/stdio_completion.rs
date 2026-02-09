@@ -40,6 +40,7 @@ pub(super) fn handle_completion(
         return Err(format!("missing document text for `{}`", uri.as_str()));
     };
 
+    #[cfg(feature = "ai")]
     let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
 
     let doc_path = path_from_uri(uri.as_str());
