@@ -2159,7 +2159,7 @@ The first (and only) entry in `arguments` is an `ExplainErrorArgs` object:
   "command": "nova.ai.explainError",
   "arguments": [
     {
-      "diagnostic_message": "cannot find symbol",
+      "diagnosticMessage": "cannot find symbol",
       "code": "optional snippet",
       "uri": "file:///…",
       "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
@@ -2169,8 +2169,9 @@ The first (and only) entry in `arguments` is an `ExplainErrorArgs` object:
 }
 ```
 
-Note: the argument object uses **snake_case** field names (e.g. `diagnostic_message`) because the
-Rust type does not use `rename_all = "camelCase"`.
+Notes:
+
+- `diagnosticMessage` also accepts the legacy alias `diagnostic_message`.
 
 ##### Response
 
