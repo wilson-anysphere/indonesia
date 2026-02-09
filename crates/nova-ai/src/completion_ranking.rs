@@ -589,6 +589,19 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_invalid_json_falls_back_to_input_order() {
+        let metrics = MetricsRegistry::global();
+        let before = metrics.snapshot();
+        let before_main = before
+            .methods
+            .get(AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let before_error = before
+            .methods
+            .get(AI_COMPLETION_RANKING_ERROR_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
         let llm = Arc::new(MockLlm::new("not json"));
         let ranker = LlmCompletionRanker::new(llm);
 
@@ -600,6 +613,27 @@ mod tests {
 
         let ranked = ranker.rank_completions(&ctx, items.clone()).await;
         assert_eq!(ranked, items);
+
+        let after = metrics.snapshot();
+        let after_main = after
+            .methods
+            .get(AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let after_error = after
+            .methods
+            .get(AI_COMPLETION_RANKING_ERROR_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_main >= before_main.saturating_add(1),
+            "expected {AI_COMPLETION_RANKING_METRIC} error_count to increment"
+        );
+        assert!(
+            after_error >= before_error.saturating_add(1),
+            "expected {AI_COMPLETION_RANKING_ERROR_METRIC} error_count to increment"
+        );
     }
 
     #[tokio::test]
@@ -641,6 +675,83 @@ mod tests {
                 .iter()
                 .any(|m| m.content.contains(COMPLETION_RANKING_PROMPT_VERSION)),
             "expected prompt version marker in request"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct ErrorLlm;
+
+    #[async_trait::async_trait]
+    impl LlmClient for ErrorLlm {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Err(AiError::Timeout)
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "streaming not supported for mock".into(),
+            ))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_ranker_provider_error_increments_error_metrics() {
+        let metrics = MetricsRegistry::global();
+        let before = metrics.snapshot();
+        let before_main = before
+            .methods
+            .get(AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let before_error = before
+            .methods
+            .get(AI_COMPLETION_RANKING_ERROR_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        let llm = Arc::new(ErrorLlm::default());
+        let ranker = LlmCompletionRanker::new(llm);
+
+        let ctx = CompletionContext::new("p", "");
+        let items = vec![
+            CompletionItem::new("println", CompletionItemKind::Method),
+            CompletionItem::new("print", CompletionItemKind::Method),
+        ];
+
+        let ranked = ranker.rank_completions(&ctx, items.clone()).await;
+        assert_eq!(ranked, items);
+
+        let after = metrics.snapshot();
+        let after_main = after
+            .methods
+            .get(AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let after_error = after
+            .methods
+            .get(AI_COMPLETION_RANKING_ERROR_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_main >= before_main.saturating_add(1),
+            "expected {AI_COMPLETION_RANKING_METRIC} error_count to increment"
+        );
+        assert!(
+            after_error >= before_error.saturating_add(1),
+            "expected {AI_COMPLETION_RANKING_ERROR_METRIC} error_count to increment"
         );
     }
 }
