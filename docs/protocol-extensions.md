@@ -1158,6 +1158,8 @@ Behavior depends on the operation:
   any client-supplied `code` snippet for excluded files).
 - **Patch-based code edits** (e.g. `nova/ai/generateMethodBody`, `nova/ai/generateTests`) are
   rejected when the target file is excluded.
+- **Semantic search indexing** omits excluded files from the embeddings/index, so they will not be
+  returned as semantic-search results or surfaced as “related code” context.
 - Any additional context snippets whose paths match `excluded_paths` (semantic-search related code,
   “extra files”) are omitted and replaced with an omission placeholder.
 
