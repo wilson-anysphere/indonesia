@@ -863,12 +863,27 @@ mod embeddings {
         }
 
         fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if inputs.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let batch_size = self.batch_size.max(1);
             match &self.provider_kind {
                 AiProviderKind::Ollama => self.embed_ollama_batch(inputs),
                 AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
-                    self.embed_openai_compatible_batch(inputs)
+                    let mut out = Vec::with_capacity(inputs.len());
+                    for chunk in inputs.chunks(batch_size) {
+                        out.extend(self.embed_openai_compatible_batch(chunk)?);
+                    }
+                    Ok(out)
                 }
-                AiProviderKind::AzureOpenAi => self.embed_azure_openai_batch(inputs),
+                AiProviderKind::AzureOpenAi => {
+                    let mut out = Vec::with_capacity(inputs.len());
+                    for chunk in inputs.chunks(batch_size) {
+                        out.extend(self.embed_azure_openai_batch(chunk)?);
+                    }
+                    Ok(out)
+                }
                 _ => Err(AiError::InvalidConfig(format!(
                     "provider-backed embeddings are not supported for ai.provider.kind={:?}",
                     self.provider_kind
