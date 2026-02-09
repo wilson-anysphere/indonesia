@@ -562,8 +562,16 @@ async function showSafeModeError(workspaceFolder: vscode.WorkspaceFolder): Promi
     'Nova: nova-lsp is running in safe mode. Framework search is unavailable. ' +
       'Run “Nova: Generate Bug Report” to help diagnose the issue.',
     'Generate Bug Report',
+    'Show Safe Mode',
   );
   if (picked === 'Generate Bug Report') {
     await vscode.commands.executeCommand(BUG_REPORT_COMMAND, workspaceFolder);
+  } else if (picked === 'Show Safe Mode') {
+    try {
+      await vscode.commands.executeCommand('workbench.view.explorer');
+      await vscode.commands.executeCommand('novaFrameworks.focus');
+    } catch {
+      // Best-effort: ignore.
+    }
   }
 }

@@ -1517,9 +1517,17 @@ async function showProjectModel(cache: ProjectModelCache, request: NovaRequest, 
       const picked = await vscode.window.showWarningMessage(
         'Nova: nova-lsp is running in safe mode. Project model requests are unavailable.',
         'Generate Bug Report',
+        'Show Safe Mode',
       );
       if (picked === 'Generate Bug Report') {
         await vscode.commands.executeCommand('nova.bugReport', workspace);
+      } else if (picked === 'Show Safe Mode') {
+        try {
+          await vscode.commands.executeCommand('workbench.view.explorer');
+          await vscode.commands.executeCommand('novaFrameworks.focus');
+        } catch {
+          // Best-effort: ignore.
+        }
       }
       return;
     }
@@ -1572,9 +1580,17 @@ async function showProjectConfiguration(
       const picked = await vscode.window.showWarningMessage(
         'Nova: nova-lsp is running in safe mode. Project configuration requests are unavailable.',
         'Generate Bug Report',
+        'Show Safe Mode',
       );
       if (picked === 'Generate Bug Report') {
         await vscode.commands.executeCommand('nova.bugReport', workspace);
+      } else if (picked === 'Show Safe Mode') {
+        try {
+          await vscode.commands.executeCommand('workbench.view.explorer');
+          await vscode.commands.executeCommand('novaFrameworks.focus');
+        } catch {
+          // Best-effort: ignore.
+        }
       }
       return;
     }
