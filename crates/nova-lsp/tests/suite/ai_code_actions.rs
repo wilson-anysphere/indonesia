@@ -1800,6 +1800,15 @@ fn stdio_server_generate_method_body_semantic_search_omits_excluded_related_file
             .body_contains(marker);
         then.status(500).body("unexpected excluded marker in prompt");
     });
+    // `ai.privacy.excluded_paths` should be enforced regardless of `include_file_paths`. If an
+    // excluded file is included, its path would appear in related-code titles.
+    let unexpected_related_path = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Generate a Java method body")
+            .body_contains("Helper.java");
+        then.status(500).body("unexpected excluded related file path in prompt");
+    });
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
@@ -1825,6 +1834,7 @@ model = "default"
 
 [ai.privacy]
 local_only = true
+include_file_paths = true
 excluded_paths = ["secret/**"]
 "#,
             mock_server.base_url()
@@ -1927,6 +1937,7 @@ excluded_paths = ["secret/**"]
 
     mock.assert_hits(1);
     unexpected_marker.assert_hits(0);
+    unexpected_related_path.assert_hits(0);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -2464,6 +2475,15 @@ fn stdio_server_generate_tests_semantic_search_omits_excluded_related_files() {
             .body_contains(marker);
         then.status(500).body("unexpected excluded marker in prompt");
     });
+    // `ai.privacy.excluded_paths` should be enforced regardless of `include_file_paths`. If an
+    // excluded file is included, its path would appear in related-code titles.
+    let unexpected_related_path = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Generate Java unit tests")
+            .body_contains("Helper.java");
+        then.status(500).body("unexpected excluded related file path in prompt");
+    });
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
@@ -2489,6 +2509,7 @@ model = "default"
 
 [ai.privacy]
 local_only = true
+include_file_paths = true
 excluded_paths = ["secret/**"]
 "#,
             mock_server.base_url()
@@ -2591,6 +2612,7 @@ excluded_paths = ["secret/**"]
 
     mock.assert_hits(1);
     unexpected_marker.assert_hits(0);
+    unexpected_related_path.assert_hits(0);
 
     write_jsonrpc_message(
         &mut stdin,
