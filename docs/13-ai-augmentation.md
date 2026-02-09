@@ -532,7 +532,8 @@ Other useful knobs (see `nova_config::AiEmbeddingsConfig` for the full set):
   `ai.provider.timeout_ms`).
 - `ai.embeddings.max_memory_bytes` — soft memory budget for the embedding-backed index. When the
   budget is exceeded, Nova truncates the index (dropping whole files) to stay within the limit.
-- `ai.embeddings.batch_size` — local-embedder batch size (only used when `backend="local"`).
+- `ai.embeddings.batch_size` — maximum batch size for embedding requests. Used by the in-process
+  local embedder and to chunk provider-backed embeddings requests.
 
 #### Deterministic/offline embeddings (recommended default for tests)
 
