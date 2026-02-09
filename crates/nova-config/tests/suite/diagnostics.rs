@@ -1124,6 +1124,30 @@ completion_ranking_ms = 250
 }
 
 #[test]
+fn validates_ai_embeddings_local_model_is_non_empty_when_backend_local() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+backend = "local"
+local_model = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.embeddings.local_model".to_string(),
+            message: "must be non-empty when ai.embeddings.backend = \"local\"".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_embeddings_limits_are_positive() {
     let text = r#"
 [ai]
