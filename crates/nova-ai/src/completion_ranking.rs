@@ -406,17 +406,27 @@ pub async fn rank_completions_with_timeout<R: CompletionRanker>(
     let metrics_start = Instant::now();
     let fallback = items.clone();
 
-    let ranked_future = ranker.rank_completions(ctx, items);
-    let ranked_future = std::panic::AssertUnwindSafe(ranked_future).catch_unwind();
+    let ranked_future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ranker.rank_completions(ctx, items)
+    }));
 
-    let out = match util::timeout(timeout, ranked_future).await {
-        Ok(Ok(ranked)) => ranked,
-        Ok(Err(_panic)) => {
-            metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
-            fallback
+    let out = match ranked_future {
+        Ok(ranked_future) => {
+            let ranked_future = std::panic::AssertUnwindSafe(ranked_future).catch_unwind();
+            match util::timeout(timeout, ranked_future).await {
+                Ok(Ok(ranked)) => ranked,
+                Ok(Err(_panic)) => {
+                    metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
+                    fallback
+                }
+                Err(_timeout) => {
+                    metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
+                    fallback
+                }
+            }
         }
-        Err(_timeout) => {
-            metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
+        Err(_panic) => {
+            metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
             fallback
         }
     };

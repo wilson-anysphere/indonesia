@@ -257,7 +257,7 @@ mod tests {
                 _ctx: &'a CompletionContext,
                 _items: Vec<CompletionItem>,
             ) -> BoxFuture<'a, Vec<CompletionItem>> {
-                async move { panic!("boom") }.boxed()
+                panic!("boom")
             }
         }
 
