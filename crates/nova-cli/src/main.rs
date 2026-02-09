@@ -607,7 +607,7 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 }
 
 fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
-    fn root_with_explicit_config_env(start: &Path) -> Option<PathBuf> {
+    fn root_with_explicit_config_env(start: &Path, stop_at: &Path) -> Option<PathBuf> {
         let value = env::var_os(NOVA_CONFIG_ENV_VAR)?;
         if value.is_empty() {
             return None;
@@ -624,6 +624,10 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
                 return Some(dir.to_path_buf());
             }
 
+            if dir == stop_at {
+                break;
+            }
+
             let Some(parent) = dir.parent() else {
                 break;
             };
@@ -636,7 +640,7 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         None
     }
 
-    fn root_with_config_marker(start: &Path) -> Option<PathBuf> {
+    fn root_with_config_marker(start: &Path, stop_at: &Path) -> Option<PathBuf> {
         const CANDIDATES: [&str; 4] = [
             "nova.toml",
             ".nova.toml",
@@ -649,6 +653,10 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         loop {
             if CANDIDATES.iter().any(|name| dir.join(name).is_file()) {
                 return Some(dir.to_path_buf());
+            }
+
+            if dir == stop_at {
+                break;
             }
 
             let Some(parent) = dir.parent() else {
@@ -723,21 +731,22 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let start = candidate_path.map(start_dir).unwrap_or(cwd);
     let start = start.canonicalize().unwrap_or(start);
+    let project_root = nova_project::workspace_root(&start).unwrap_or_else(|| start.clone());
 
     // If the user explicitly provided `NOVA_CONFIG_PATH` (relative to the workspace root),
     // prefer a workspace-root that actually contains that path. This avoids scenarios where a
     // nested `nova.toml` would otherwise "steal" the workspace-root and cause the explicit config
     // lookup to fail.
-    if let Some(root) = root_with_explicit_config_env(&start) {
+    if let Some(root) = root_with_explicit_config_env(&start, &project_root) {
         return root;
     }
     if env::var_os(NOVA_CONFIG_ENV_VAR).is_some() {
-        return nova_project::workspace_root(&start).unwrap_or(start);
+        return project_root;
     }
-    if let Some(root) = root_with_config_marker(&start) {
+    if let Some(root) = root_with_config_marker(&start, &project_root) {
         return root;
     }
-    nova_project::workspace_root(&start).unwrap_or(start)
+    project_root
 }
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
