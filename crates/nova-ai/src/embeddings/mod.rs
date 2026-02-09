@@ -173,7 +173,7 @@ impl EmbeddingsClient for LocalNeuralEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
-        _kind: EmbeddingInputKind,
+        kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
@@ -188,8 +188,13 @@ impl EmbeddingsClient for LocalNeuralEmbeddingsClient {
         let mut miss_keys = Vec::new();
         let mut miss_inputs = Vec::new();
 
+        let embedder_identity = match kind {
+            EmbeddingInputKind::Document => "local_document",
+            EmbeddingInputKind::Query => "local_query",
+        };
+
         for (idx, text) in input.iter().enumerate() {
-            let key = EmbeddingCacheKey::new("local", &self.model, text);
+            let key = EmbeddingCacheKey::new(embedder_identity, &self.model, text);
             if let Some(hit) = self.cache.get(key) {
                 out[idx] = Some(hit);
             } else {

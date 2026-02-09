@@ -1,5 +1,6 @@
 use nova_ai::embeddings::embeddings_client_from_config;
-use nova_ai::{Embedder, LocalEmbedder};
+use nova_ai::embeddings::EmbeddingInputKind;
+use nova_ai::{Embedder, HashEmbedder, LocalEmbedder};
 use nova_config::AiConfig;
 use nova_config::{AiEmbeddingsBackend, AiEmbeddingsConfig};
 use std::path::PathBuf;
@@ -112,15 +113,16 @@ async fn embeddings_client_from_config_local_backend_can_embed_with_prepared_mod
 
     let inputs = vec!["hello world".to_string(), "goodbye world".to_string()];
     let embeddings = client
-        .embed(&inputs, CancellationToken::new())
+        .embed(&inputs, EmbeddingInputKind::Query, CancellationToken::new())
         .await
         .expect("embed");
 
     assert_eq!(embeddings.len(), inputs.len());
     let dims = embeddings.first().map(|vec| vec.len()).unwrap_or_default();
     assert!(dims > 0, "expected non-empty embedding vectors");
+    let expected_hash_dims = HashEmbedder::default().dims();
     assert_ne!(
-        dims, 256,
-        "expected local neural embeddings (not hash embeddings); got 256 dims"
+        dims, expected_hash_dims,
+        "expected local neural embeddings (not hash embeddings); got {dims} dims"
     );
 }
