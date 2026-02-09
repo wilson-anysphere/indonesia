@@ -134,10 +134,10 @@ impl<'a> AiCodeActionExecutor<'a> {
                 // NOTE: `nova-ai` privacy anonymization is primarily applied to fenced code blocks
                 // (e.g. ```text ... ```). Keep the raw diagnostic inside a fence so cloud-mode
                 // sanitization can safely redact identifiers.
-                let diagnostic_text = format!(
-                    "kind: {:?}\nseverity: {:?}\nmessage: {}\nrange: {:?}",
-                    diagnostic.kind, diagnostic.severity, diagnostic.message, diagnostic.range
-                );
+                // Use the Diagnostic's debug format to avoid prompt injection via fence markers
+                // in the error message (newlines are escaped and the overall representation is
+                // a single, stable line).
+                let diagnostic_text = format!("{diagnostic:?}");
                 let prompt = nova_ai::explain_error_prompt(&diagnostic_text, "");
                 let explanation = self.provider.complete(&prompt, cancel).await?;
                 Ok(CodeActionOutcome::Explanation(explanation))
