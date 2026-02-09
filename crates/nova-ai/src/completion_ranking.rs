@@ -465,6 +465,47 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct CapturingLlmClient {
+        captured_cancel: Arc<std::sync::Mutex<Option<CancellationToken>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for CapturingLlmClient {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            *self
+                .captured_cancel
+                .lock()
+                .expect("captured cancellation token mutex poisoned") = Some(cancel.clone());
+
+            // Block forever unless the ranker drops/cancels the request token.
+            cancel.cancelled().await;
+
+            // If the ranker cancels early (e.g. via an incorrectly-scoped drop guard),
+            // return an ordering that would change the output so tests can detect the
+            // difference (i.e. this should not return the fallback ordering).
+            Ok("[1,0]".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "streaming not supported for capturing mock".into(),
+            ))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
     #[async_trait::async_trait]
     impl LlmClient for MockLlm {
         async fn chat(
@@ -507,6 +548,43 @@ mod tests {
         assert_eq!(ranked[0].label, "print");
         assert_eq!(ranked[1].label, "private");
         assert_eq!(ranked[2].label, "println");
+    }
+
+    #[tokio::test]
+    async fn llm_ranker_timeout_cancels_in_flight_llm_request() {
+        let llm = Arc::new(CapturingLlmClient::default());
+        let ranker = LlmCompletionRanker::new(llm.clone());
+
+        let ctx = CompletionContext::new("pri", "System.out.");
+        let items = vec![
+            CompletionItem::new("private", CompletionItemKind::Keyword),
+            CompletionItem::new("print", CompletionItemKind::Method),
+        ];
+
+        let ranked = rank_completions_with_timeout(
+            &ranker,
+            &ctx,
+            items.clone(),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        // Ensure we really hit the timeout fallback. If the ranker ever returns early
+        // (e.g. because the cancellation token was cancelled immediately), we'd see a
+        // reordered output since the mock returns [1,0] after cancellation.
+        assert_eq!(ranked, items);
+
+        let cancel = llm
+            .captured_cancel
+            .lock()
+            .expect("captured cancellation token mutex poisoned")
+            .clone()
+            .expect("expected LLM client to receive a cancellation token");
+
+        assert!(
+            cancel.is_cancelled(),
+            "expected ranking timeout to drop the ranker future and cancel the in-flight LLM request"
+        );
     }
 
     #[tokio::test]
