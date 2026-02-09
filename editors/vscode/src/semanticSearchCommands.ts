@@ -32,7 +32,11 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        let pickedWorkspace: vscode.WorkspaceFolder | undefined;
+        const pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        if (!pickedWorkspace) {
+          return;
+        }
+
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
             location: vscode.ProgressLocation.Notification,
@@ -40,10 +44,6 @@ export function registerNovaSemanticSearchCommands(
             cancellable: true,
           },
           async (_progress, token) => {
-            pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(token);
-            if (!pickedWorkspace) {
-              return undefined;
-            }
             return await request<unknown>(
               'nova/semanticSearch/indexStatus',
               { projectRoot: pickedWorkspace.uri.fsPath },
@@ -102,7 +102,11 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        let pickedWorkspace: vscode.WorkspaceFolder | undefined;
+        const pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        if (!pickedWorkspace) {
+          return;
+        }
+
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
             location: vscode.ProgressLocation.Notification,
@@ -110,11 +114,6 @@ export function registerNovaSemanticSearchCommands(
             cancellable: true,
           },
           async (progress, token) => {
-            pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(token);
-            if (!pickedWorkspace) {
-              return undefined;
-            }
-
             // Route all polling calls to the same workspace folder. Without an explicit routing
             // hint, `sendNovaRequest` will prompt on every poll in a multi-root workspace when there
             // is no active editor.
