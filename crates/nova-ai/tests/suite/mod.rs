@@ -26,6 +26,7 @@ mod provider_embeddings;
 mod provider_embeddings_azure;
 mod provider_embeddings_batch_size;
 mod provider_embeddings_ollama;
+mod provider_embeddings_memory_cache_eviction;
 mod project_database_adapters;
 mod provider_embedder_sync;
 mod provider_embedder_privacy;

@@ -115,12 +115,6 @@ pub struct EmbeddingVectorCache {
 }
 
 impl EmbeddingVectorCache {
-    /// Approximate per-entry overhead (in bytes) beyond the raw `Vec<f32>` allocation.
-    ///
-    /// The goal is to avoid unbounded cache growth even though the cache doesn't account for every
-    /// byte of allocator / hash table overhead precisely.
-    const ENTRY_OVERHEAD_BYTES: usize = 96;
-
     pub fn new(max_memory_bytes: usize) -> Self {
         Self {
             max_memory_bytes: max_memory_bytes.max(1),
@@ -131,7 +125,6 @@ impl EmbeddingVectorCache {
     /// Estimate the memory usage (in bytes) for an embedding vector with `dims` dimensions.
     pub fn estimate_entry_bytes(dims: usize) -> usize {
         dims.saturating_mul(mem::size_of::<f32>())
-            .saturating_add(Self::ENTRY_OVERHEAD_BYTES)
     }
 
     fn estimate_vec_bytes(vec: &[f32]) -> usize {
