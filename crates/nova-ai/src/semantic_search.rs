@@ -552,7 +552,7 @@ mod embeddings {
             let mut extracted = if is_java_file(path) {
                 extract_java_methods(path, text)
             } else {
-                Vec::new()
+                extract_non_java_chunks(path, text)
             };
 
             if extracted.is_empty() {
@@ -804,6 +804,57 @@ mod embeddings {
             .unwrap_or(false)
     }
 
+    /// Deterministically chunk non-Java files so semantic search can return meaningful
+    /// snippets + ranges without language-specific parsers.
+    ///
+    /// This intentionally only embeds the first few chunks to avoid runaway indexing
+    /// costs for very large documentation/config files.
+    fn extract_non_java_chunks(
+        path: &PathBuf,
+        text: &str,
+    ) -> Vec<(Range<usize>, String, String, String)> {
+        const CHUNK_SIZE_CHARS: usize = 1_000;
+        const CHUNK_OVERLAP_CHARS: usize = 100;
+        const MAX_CHUNKS: usize = 8;
+
+        // Keep the existing behaviour for small files: embed as a single document so
+        // we don't introduce additional docs for tiny configs.
+        if is_very_small_file(text, CHUNK_SIZE_CHARS) {
+            return Vec::new();
+        }
+
+        let stride = CHUNK_SIZE_CHARS.saturating_sub(CHUNK_OVERLAP_CHARS).max(1);
+        let mut out = Vec::new();
+        let mut start_char = 0usize;
+
+        for _ in 0..MAX_CHUNKS {
+            let start = byte_offset_for_char(text, start_char);
+            if start >= text.len() {
+                break;
+            }
+
+            let end = byte_offset_for_char(text, start_char.saturating_add(CHUNK_SIZE_CHARS));
+            let end = end.min(text.len()).max(start);
+            if end == start {
+                break;
+            }
+
+            // Range indices are guaranteed to be UTF-8 boundaries because they're derived
+            // from `char_indices`.
+            let snippet = text[start..end].to_string();
+            let embed_text = format!("{}\n{}", path.to_string_lossy(), snippet);
+            out.push((start..end, "chunk".to_string(), snippet, embed_text));
+
+            if end >= text.len() {
+                break;
+            }
+
+            start_char = start_char.saturating_add(stride);
+        }
+
+        out
+    }
+
     fn extract_java_methods(
         path: &PathBuf,
         source: &str,
@@ -843,6 +894,23 @@ mod embeddings {
 
     fn preview(text: &str, max_chars: usize) -> String {
         text.chars().take(max_chars).collect()
+    }
+
+    fn is_very_small_file(text: &str, chunk_size_chars: usize) -> bool {
+        // Avoid `text.chars().count()` because files can be large; we only need to know if the
+        // file exceeds our chunking threshold.
+        text.chars().take(chunk_size_chars + 1).count() <= chunk_size_chars
+    }
+
+    fn byte_offset_for_char(text: &str, char_idx: usize) -> usize {
+        if char_idx == 0 {
+            return 0;
+        }
+
+        text.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or_else(|| text.len())
     }
 
     fn extract_signature(snippet: &str) -> String {

@@ -244,3 +244,47 @@ fn embedding_search_returns_empty_when_query_embedding_fails() {
 
     assert!(search.search("boom").is_empty());
 }
+
+#[test]
+fn embedding_search_chunks_non_java_files_with_aligned_ranges() {
+    let mut readme = String::new();
+    readme.push_str("# Example Project\n\n");
+
+    // Add enough text to exceed the chunking threshold while mixing in multi-byte UTF-8
+    // characters (Δ) so incorrect byte slicing would show up in range validation.
+    for idx in 0..80 {
+        readme.push_str(&format!(
+            "Section {idx}: This is filler text with unicode Δ to grow the README for chunking.\n"
+        ));
+    }
+
+    readme.push_str("\nNeedle phrase: flibbertigibbet quizzaciously\n\n");
+
+    for idx in 0..80 {
+        readme.push_str(&format!(
+            "More filler {idx}: Additional markdown-ish text with unicode Δ.\n"
+        ));
+    }
+
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    let path = PathBuf::from("README.md");
+    search.index_file(path.clone(), readme.clone());
+
+    let results = search.search("flibbertigibbet quizzaciously");
+    assert!(
+        results.iter().any(|result| result.kind == "chunk"),
+        "expected at least one chunk result, got: {results:?}"
+    );
+
+    let chunk = results
+        .iter()
+        .find(|result| result.kind == "chunk")
+        .expect("chunk result missing");
+
+    assert_eq!(chunk.path, path);
+    assert!(readme.is_char_boundary(chunk.range.start));
+    assert!(readme.is_char_boundary(chunk.range.end));
+    assert_eq!(&readme[chunk.range.clone()], chunk.snippet);
+    assert!(chunk.snippet.contains("flibbertigibbet"));
+    assert!(chunk.range.end.saturating_sub(chunk.range.start) < readme.len());
+}
