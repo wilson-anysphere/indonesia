@@ -409,6 +409,20 @@ fn validate_ai(
         }
     }
 
+    if config.ai.provider.retry_initial_backoff_ms == 0 {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.retry_initial_backoff_ms".to_string(),
+            message: "must be >= 1".to_string(),
+        });
+    }
+
+    if config.ai.provider.retry_max_backoff_ms == 0 {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.retry_max_backoff_ms".to_string(),
+            message: "must be >= 1".to_string(),
+        });
+    }
+
     if matches!(config.ai.provider.concurrency, Some(0)) {
         out.errors.push(ConfigValidationError::AiConcurrencyZero);
     }

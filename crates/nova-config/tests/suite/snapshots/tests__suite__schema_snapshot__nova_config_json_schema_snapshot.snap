@@ -1,6 +1,5 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
-assertion_line: 4
 expression: schema
 ---
 {
@@ -702,6 +701,9 @@ expression: schema
           "kind": "ollama",
           "max_tokens": 1024,
           "model": "llama3",
+          "retry_initial_backoff_ms": 200,
+          "retry_max_backoff_ms": 2000,
+          "retry_max_retries": 2,
           "temperature": null,
           "timeout_ms": 60000,
           "url": "http://localhost:11434/"
@@ -928,6 +930,9 @@ expression: schema
             "kind": "ollama",
             "max_tokens": 1024,
             "model": "llama3",
+            "retry_initial_backoff_ms": 200,
+            "retry_max_backoff_ms": 2000,
+            "retry_max_retries": 2,
             "temperature": null,
             "timeout_ms": 60000,
             "url": "http://localhost:11434/"
@@ -1239,6 +1244,27 @@ expression: schema
           "default": "llama3",
           "type": "string",
           "minLength": 1
+        },
+        "retry_initial_backoff_ms": {
+          "description": "Initial exponential backoff delay between retries (in milliseconds).",
+          "default": 200,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "retry_max_backoff_ms": {
+          "description": "Maximum exponential backoff delay between retries (in milliseconds).",
+          "default": 2000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "retry_max_retries": {
+          "description": "Maximum number of retries for failed LLM requests.\n\nSet to `0` to disable retries entirely (useful for latency-sensitive environments).",
+          "default": 2,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         },
         "temperature": {
           "description": "Optional default sampling temperature applied to chat requests.\n\nWhen unset, Nova omits the `temperature` field entirely and the provider's default is used (often `1.0`).",

@@ -305,7 +305,11 @@ impl AiClient {
             endpoint,
             azure_cache_key,
             cache,
-            retry: RetryConfig::default(),
+            retry: RetryConfig {
+                max_retries: config.provider.retry_max_retries,
+                initial_backoff: Duration::from_millis(config.provider.retry_initial_backoff_ms),
+                max_backoff: Duration::from_millis(config.provider.retry_max_backoff_ms),
+            },
         })
     }
 

@@ -1069,6 +1069,23 @@ pub struct AiProviderConfig {
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
 
+    /// Maximum number of retries for failed LLM requests.
+    ///
+    /// Set to `0` to disable retries entirely (useful for latency-sensitive environments).
+    #[serde(default = "default_retry_max_retries")]
+    #[schemars(range(min = 0))]
+    pub retry_max_retries: usize,
+
+    /// Initial exponential backoff delay between retries (in milliseconds).
+    #[serde(default = "default_retry_initial_backoff_ms")]
+    #[schemars(range(min = 1))]
+    pub retry_initial_backoff_ms: u64,
+
+    /// Maximum exponential backoff delay between retries (in milliseconds).
+    #[serde(default = "default_retry_max_backoff_ms")]
+    #[schemars(range(min = 1))]
+    pub retry_max_backoff_ms: u64,
+
     /// Maximum number of concurrent requests Nova will make to the backend.
     ///
     /// If unset, defaults to:
@@ -1094,6 +1111,9 @@ impl fmt::Debug for AiProviderConfig {
             .field("max_tokens", &self.max_tokens)
             .field("temperature", &self.temperature)
             .field("timeout_ms", &self.timeout_ms)
+            .field("retry_max_retries", &self.retry_max_retries)
+            .field("retry_initial_backoff_ms", &self.retry_initial_backoff_ms)
+            .field("retry_max_backoff_ms", &self.retry_max_backoff_ms)
             .field("concurrency", &self.concurrency)
             .field("in_process_llama", &self.in_process_llama)
             .finish()
@@ -1175,6 +1195,18 @@ fn default_timeout_ms() -> u64 {
     60_000
 }
 
+fn default_retry_max_retries() -> usize {
+    2
+}
+
+fn default_retry_initial_backoff_ms() -> u64 {
+    200
+}
+
+fn default_retry_max_backoff_ms() -> u64 {
+    2_000
+}
+
 fn default_concurrency() -> usize {
     4
 }
@@ -1190,6 +1222,9 @@ impl Default for AiProviderConfig {
             max_tokens: default_max_tokens(),
             temperature: None,
             timeout_ms: default_timeout_ms(),
+            retry_max_retries: default_retry_max_retries(),
+            retry_initial_backoff_ms: default_retry_initial_backoff_ms(),
+            retry_max_backoff_ms: default_retry_max_backoff_ms(),
             concurrency: None,
             in_process_llama: None,
         }

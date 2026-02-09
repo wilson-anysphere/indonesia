@@ -470,11 +470,23 @@ url = "http://localhost:11434"
 # Default max tokens for responses (used when callers don't provide `max_tokens`).
 max_tokens = 1024
 
+# Total request budget (including retries + backoff).
+timeout_ms = 60000
+
 # Optional default sampling temperature applied when callers don't set `temperature`.
 # When unset (the default), Nova omits the `temperature` field and the provider's own default applies
 # (often `1.0`).
 temperature = 0.2
+
+# Retry policy for transient failures (timeouts, connection errors, 408/429, and 5xx).
+# Set to 0 to disable retries entirely.
+retry_max_retries = 2
+retry_initial_backoff_ms = 200
+retry_max_backoff_ms = 2000
 ```
+
+Note: retries are always bounded by `ai.provider.timeout_ms`—Nova clamps each retry's backoff delay
+to the remaining timeout budget.
 
 ### Server-side overrides (environment variables)
 
