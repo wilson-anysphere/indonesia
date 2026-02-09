@@ -7,6 +7,7 @@ mod code_review_prompt;
 mod completion_ranking_privacy;
 mod default_temperature;
 mod embedding_disk_cache;
+mod embeddings_client_factory;
 mod embedding_semantic_search;
 mod explain_error_providers;
 mod in_process_llama_smoke;

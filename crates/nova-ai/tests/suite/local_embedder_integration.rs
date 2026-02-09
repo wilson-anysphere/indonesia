@@ -1,6 +1,9 @@
+use nova_ai::embeddings::embeddings_client_from_config;
 use nova_ai::{Embedder, LocalEmbedder};
+use nova_config::AiConfig;
 use nova_config::{AiEmbeddingsBackend, AiEmbeddingsConfig};
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 /// Optional smoke test for the in-process neural embeddings backend.
 ///
@@ -78,3 +81,46 @@ fn local_embedder_can_embed_with_prepared_model_dir() {
     );
 }
 
+/// Like [`local_embedder_can_embed_with_prepared_model_dir`] but exercises the async
+/// `EmbeddingsClient` factory wiring (`ai.embeddings.backend = "local"`).
+#[tokio::test]
+async fn embeddings_client_from_config_local_backend_can_embed_with_prepared_model_dir() {
+    let model_dir = match std::env::var("NOVA_TEST_EMBEDDINGS_MODEL_DIR") {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+
+    let model_dir = PathBuf::from(model_dir);
+    assert!(
+        model_dir.is_dir(),
+        "NOVA_TEST_EMBEDDINGS_MODEL_DIR must be an existing directory: {}",
+        model_dir.display()
+    );
+
+    let model_id = std::env::var("NOVA_TEST_EMBEDDINGS_MODEL")
+        .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string());
+
+    let mut config = AiConfig::default();
+    config.enabled = true;
+    config.embeddings.enabled = true;
+    config.embeddings.backend = AiEmbeddingsBackend::Local;
+    config.embeddings.local_model = model_id;
+    config.embeddings.model_dir = model_dir;
+    config.embeddings.batch_size = 2;
+
+    let client = embeddings_client_from_config(&config).expect("build embeddings client");
+
+    let inputs = vec!["hello world".to_string(), "goodbye world".to_string()];
+    let embeddings = client
+        .embed(&inputs, CancellationToken::new())
+        .await
+        .expect("embed");
+
+    assert_eq!(embeddings.len(), inputs.len());
+    let dims = embeddings.first().map(|vec| vec.len()).unwrap_or_default();
+    assert!(dims > 0, "expected non-empty embedding vectors");
+    assert_ne!(
+        dims, 256,
+        "expected local neural embeddings (not hash embeddings); got 256 dims"
+    );
+}

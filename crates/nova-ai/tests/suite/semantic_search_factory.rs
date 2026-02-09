@@ -315,7 +315,7 @@ fn semantic_search_from_config_provider_backend_batches_openai_compatible_reques
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
