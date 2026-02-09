@@ -178,7 +178,7 @@ npm run compile
 
 - **Nova: Wait for Semantic Search Indexing** (`nova.waitForSemanticSearchIndex`)
   - Polls `nova/semanticSearch/indexStatus` until indexing is done (or you cancel).
-  - If indexing has not started (`currentRunId === 0`), Nova shows troubleshooting guidance (semantic search disabled in config, missing workspace root, AI runtime unavailable, or safe mode).
+  - If semantic search is disabled (`enabled === false`) or indexing has not started (`currentRunId === 0`), Nova shows troubleshooting guidance including the server-provided `reason` (for example: `disabled`, `missing_workspace_root`, `runtime_unavailable`, `safe_mode`).
 
 - **Nova: Search Framework Items…** (`nova.frameworks.search`)
   - Prompts for a workspace folder and framework kind, then searches endpoints/beans and navigates to the selected result.
@@ -414,7 +414,7 @@ To debug whether semantic search context is available (or to wait for it), use:
 - **Nova: Show Semantic Search Index Status** (`nova.showSemanticSearchIndexStatus`)
 - **Nova: Wait for Semantic Search Indexing** (`nova.waitForSemanticSearchIndex`)
 
-If indexing does not start (`currentRunId === 0`), check that semantic search is enabled in your Nova config (for example `ai.features.semantic_search=true` in `nova.toml`), and restart the language server after changing configuration.
+If indexing does not start (`enabled === false` or `currentRunId === 0`), check the `reason` field in the `nova/semanticSearch/indexStatus` payload and verify that semantic search is enabled in your Nova config (for example `ai.enabled=true` and `ai.features.semantic_search=true` in `nova.toml`). Restart the language server after changing configuration.
 
 ### Debugging
 
