@@ -114,7 +114,7 @@ export function registerNovaSemanticSearchCommands(
                 return status;
               }
 
-              if (fields.done === true) {
+              if (semanticSearchIndexingDone(fields) === true) {
                 return status;
               }
 
@@ -209,12 +209,13 @@ function formatSemanticSearchIndexSummary(payload: unknown): string | undefined 
   const bytesSuffix = typeof indexedBytes === 'number' ? `${indexedBytes.toLocaleString()} bytes${formattedBytes ? ` (${formattedBytes})` : ''}` : undefined;
   const filesSuffix = typeof indexedFiles === 'number' ? `${indexedFiles.toLocaleString()} files` : undefined;
 
+  const done = semanticSearchIndexingDone(fields);
   const state =
     fields.currentRunId === 0
       ? 'not started'
-      : fields.done === true
+      : done === true
         ? 'done'
-        : fields.done === false
+        : done === false
           ? 'in progress'
           : 'unknown';
 
@@ -247,6 +248,21 @@ function formatSemanticSearchWaitMessage(fields: SemanticSearchIndexStatusFields
 
   const parts = [filesPart, bytesPart].filter((value): value is string => Boolean(value));
   return `Indexed ${parts.join(', ')}…`;
+}
+
+function semanticSearchIndexingDone(fields: SemanticSearchIndexStatusFields): boolean | undefined {
+  if (typeof fields.done === 'boolean') {
+    return fields.done;
+  }
+
+  if (typeof fields.currentRunId === 'number' && typeof fields.completedRunId === 'number') {
+    if (fields.currentRunId === 0) {
+      return false;
+    }
+    return fields.currentRunId === fields.completedRunId;
+  }
+
+  return undefined;
 }
 
 function formatBytes(bytes: number | undefined): string | undefined {
