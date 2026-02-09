@@ -623,9 +623,7 @@ fn validate_ai(
     }
 
     if config.ai.embeddings.enabled {
-        if config.ai.embeddings.backend == crate::AiEmbeddingsBackend::Local
-            && config.ai.embeddings.model_dir.as_os_str().is_empty()
-        {
+        if config.ai.embeddings.model_dir.as_os_str().is_empty() {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.embeddings.model_dir".to_string(),
                 message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
