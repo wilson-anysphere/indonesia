@@ -1,15 +1,50 @@
-use std::path::PathBuf;
+use std::{
+    io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 #[cfg(feature = "embeddings")]
 use httpmock::prelude::*;
 use nova_ai::{semantic_search_from_config, VirtualWorkspace};
-use nova_config::{AiConfig, AiEmbeddingsBackend, AiEmbeddingsConfig};
-#[cfg(feature = "embeddings")]
-use nova_config::AiProviderKind;
+use nova_config::{AiConfig, AiEmbeddingsBackend, AiEmbeddingsConfig, AiProviderKind};
 #[cfg(feature = "embeddings")]
 use serde_json::json;
 #[cfg(feature = "embeddings")]
 use url::Url;
+use tracing_subscriber::fmt::MakeWriter;
+
+#[derive(Clone, Default)]
+struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl SharedLogBuffer {
+    fn as_string(&self) -> String {
+        let bytes = self.0.lock().expect("log buffer mutex poisoned");
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+}
+
+struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for SharedLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut out = self.0.lock().expect("log buffer mutex poisoned");
+        out.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for SharedLogBuffer {
+    type Writer = SharedLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedLogWriter(self.0.clone())
+    }
+}
 
 #[test]
 fn semantic_search_from_config_respects_feature_flag() {
@@ -268,7 +303,7 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
 }
 
 #[test]
-fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_unsupported() {
+fn semantic_search_from_config_provider_backend_with_unsupported_provider_falls_back() {
     let db = VirtualWorkspace::new([(
         "src/Hello.java".to_string(),
         r#"
@@ -281,8 +316,12 @@ fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_un
         .to_string(),
     )]);
 
-    let mut cfg = AiConfig {
+    let cfg = AiConfig {
         enabled: true,
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::Anthropic,
+            ..nova_config::AiProviderConfig::default()
+        },
         embeddings: AiEmbeddingsConfig {
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
@@ -294,18 +333,40 @@ fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_un
         },
         ..AiConfig::default()
     };
-    cfg.provider.kind = nova_config::AiProviderKind::Anthropic;
 
-    let mut search = semantic_search_from_config(&cfg);
-    search.index_project(&db);
-    let results = search.search("hello world");
+    let logs = SharedLogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(logs.clone())
+        .finish();
+
+    let results = tracing::subscriber::with_default(subscriber, || {
+        let mut search = semantic_search_from_config(&cfg);
+        search.index_project(&db);
+        search.search("hello world")
+    });
+
     assert!(!results.is_empty());
     assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
-
     let expected_kind = if cfg!(feature = "embeddings") {
         "method"
     } else {
         "file"
     };
     assert_eq!(results[0].kind, expected_kind);
+
+    let text = logs.as_string();
+    if cfg!(feature = "embeddings") {
+        assert!(
+            text.contains("falling back to hash embeddings"),
+            "expected provider embedder fallback warning, got:\n{text}"
+        );
+    } else {
+        assert!(
+            text.contains("falling back to trigram search"),
+            "expected trigram fallback warning, got:\n{text}"
+        );
+    }
 }

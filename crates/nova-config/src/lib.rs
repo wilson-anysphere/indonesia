@@ -867,6 +867,7 @@ pub enum AiEmbeddingsBackend {
     Local,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AiEmbeddingsBackend {
     fn default() -> Self {
         Self::Hash

@@ -84,7 +84,7 @@ pub trait SemanticSearch: Send + Sync {
 
 /// Construct a [`SemanticSearch`] implementation from runtime configuration.
 ///
-/// If `ai.embeddings.enabled = true` and the crate is compiled with the
+/// When `ai.embeddings.enabled = true` and the crate is compiled with the
 /// `embeddings` Cargo feature, this returns an [`EmbeddingSemanticSearch`]
 /// instance backed by the configured embeddings backend (`hash`, `provider`,
 /// or `local`).
