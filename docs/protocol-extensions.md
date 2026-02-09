@@ -1225,8 +1225,11 @@ available, best-effort workspace indexing).
 
 Fields:
 
-- `query` (string, required): search query.
-- `limit` (number, optional): maximum number of results to return (server clamps internally).
+- `query` (string, required): search query text.
+- `limit` (number, optional): maximum number of results to return.
+  - When omitted or `null`, the server returns up to `50` results.
+  - Values are clamped to `50` (the underlying semantic-search engine currently returns at most 50).
+  - `0` is allowed and returns `{ "results": [] }`.
 
 #### Response
 
@@ -1243,12 +1246,32 @@ Fields:
 }
 ```
 
+Field semantics:
+
+- `results` (array): list of matches sorted by descending `score` (ties are broken deterministically).
+- `path` (string): best-effort filesystem path for the match:
+  - workspace-relative (with forward slashes) when the server has a workspace root
+    (`initialize.rootUri`) and the result file is under it; otherwise an absolute path string.
+- `kind` (string): what the match represents. Current values are `"file"` and `"method"`.
+- `score` (number): non-normalized similarity score (higher is better). Treat as an opaque ranking
+  signal (not stable across Nova versions).
+- `snippet` (string): best-effort preview string for display (may be truncated).
+
 Notes:
 
-- `path` is workspace-relative (with forward slashes) when the server has a workspace root
-  (`initialize.rootUri`) and the result file is under it; otherwise it is an absolute path string.
 - If semantic search is disabled in config (`ai.enabled=false` or `ai.features.semantic_search=false`),
   the server returns `{ "results": [] }`.
+- The index is best-effort and may be incomplete. In particular:
+  - Open documents are indexed eagerly.
+  - Workspace indexing (when available) is bounded (currently: up to 2,000 files / 10 MiB total /
+    256 KiB per file) and only indexes selected extensions (`.java`, `.kt`, `.kts`, `.gradle`, `.md`).
+  - Files matching `ai.privacy.excluded_paths` are never indexed.
+
+#### Errors
+
+- `-32602` for invalid params (missing `query`, non-integer `limit`, etc).
+- `-32603` for internal errors (including safe-mode enforcement).
+- `-32800` if the request is cancelled.
 
 #### Safe-mode
 
