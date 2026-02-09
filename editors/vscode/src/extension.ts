@@ -2260,9 +2260,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const prev = safeModeByWorkspaceKey.get(workspaceKey);
     const prevEnabled = prev?.enabled ?? false;
 
+    const resolvedReason = enabled ? reason ?? (prevEnabled ? prev?.reason : undefined) : undefined;
+
     const nextState: WorkspaceSafeModeState = {
       enabled,
-      reason: enabled ? reason : undefined,
+      reason: resolvedReason,
       warningInFlight: prev?.warningInFlight,
     };
     safeModeByWorkspaceKey.set(workspaceKey, nextState);
@@ -2270,7 +2272,7 @@ export async function activate(context: vscode.ExtensionContext) {
     updateAggregateObservabilityUi();
 
     if (enabled && !prevEnabled && !nextState.warningInFlight) {
-      const reasonSuffix = reason ? ` (${formatSafeModeReason(reason)})` : '';
+      const reasonSuffix = resolvedReason ? ` (${formatSafeModeReason(resolvedReason)})` : '';
       const workspaceName = workspaceNameForKey(workspaceKey);
       const folder = workspaceFolderForKey(workspaceKey);
 
