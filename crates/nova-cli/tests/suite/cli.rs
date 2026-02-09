@@ -122,6 +122,7 @@ fn help_mentions_core_commands() {
             .and(predicate::str::contains("perf"))
             .and(predicate::str::contains("parse"))
             .and(predicate::str::contains("extensions"))
+            .and(predicate::str::contains("Local AI utilities"))
             .and(predicate::str::contains("lsp"))
             .and(predicate::str::contains("dap"))
             .and(predicate::str::contains("bugreport")),

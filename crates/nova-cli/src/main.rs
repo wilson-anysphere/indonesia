@@ -743,19 +743,26 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let start = candidate_path.map(start_dir).unwrap_or(cwd);
     let start = start.canonicalize().unwrap_or(start);
-    let project_root = nova_project::workspace_root(&start).unwrap_or_else(|| start.clone());
+    let project_root_opt = nova_project::workspace_root(&start);
+    let project_root = project_root_opt.clone().unwrap_or_else(|| start.clone());
+    let stop_at = project_root_opt.as_deref().unwrap_or_else(|| {
+        // No project-root markers were found (e.g. a tempdir with only `nova.toml`); allow config
+        // discovery to walk all the way up to the filesystem root so we can still locate the
+        // nearest config file.
+        start.ancestors().last().unwrap_or(&start)
+    });
 
     // If the user explicitly provided `NOVA_CONFIG_PATH` (relative to the workspace root),
     // prefer a workspace-root that actually contains that path. This avoids scenarios where a
     // nested `nova.toml` would otherwise "steal" the workspace-root and cause the explicit config
     // lookup to fail.
-    if let Some(root) = root_with_explicit_config_env(&start, &project_root) {
+    if let Some(root) = root_with_explicit_config_env(&start, stop_at) {
         return root;
     }
     if env::var_os(NOVA_CONFIG_ENV_VAR).is_some() {
         return project_root;
     }
-    if let Some(root) = root_with_config_marker(&start, &project_root) {
+    if let Some(root) = root_with_config_marker(&start, stop_at) {
         return root;
     }
     project_root
