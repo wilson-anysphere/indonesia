@@ -163,6 +163,47 @@ fn embedding_search_supports_incremental_indexing() {
 }
 
 #[test]
+fn embedding_search_recovers_after_mutex_poisoning() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    let path = PathBuf::from("src/Hello.java");
+
+    search.index_file(
+        path.clone(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    // Simulate a previous panic during indexing/search.
+    let poisoned = catch_unwind(AssertUnwindSafe(|| search.__poison_index_mutex_for_test()));
+    assert!(poisoned.is_err(), "expected poisoning helper to panic");
+
+    // Subsequent operations should recover and continue to work.
+    search.index_file(
+        path,
+        r#"
+            public class Hello {
+                public String greetings() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    let results = search.search("hello world");
+    assert!(!results.is_empty(), "search should still return results after recovery");
+    assert!(results[0].snippet.contains("greetings"));
+}
+
+#[test]
 fn embedding_search_boosts_exact_substring_matches() {
     let db = VirtualWorkspace::new([(
         "src/Multi.java".to_string(),
@@ -263,7 +304,6 @@ fn embedding_search_skips_failed_doc_embeddings() {
                 public String helloWorld() {
                     return "hello world";
                 }
-
                 public String goodbye() {
                     return "goodbye";
                 }

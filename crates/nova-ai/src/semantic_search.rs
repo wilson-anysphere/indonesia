@@ -371,9 +371,19 @@ mod embeddings {
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use hnsw_rs::prelude::*;
+
+    fn warn_poisoned_mutex_once() {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                target = "nova.ai",
+                "EmbeddingSemanticSearch index mutex was poisoned by a previous panic; attempting best-effort recovery"
+            );
+        });
+    }
 
     fn ensure_rayon_global_pool() {
         static INIT: OnceLock<()> = OnceLock::new();
@@ -494,6 +504,21 @@ mod embeddings {
             }
         }
 
+        fn lock_index(&self) -> MutexGuard<'_, EmbeddedIndex> {
+            self.index.lock().unwrap_or_else(|err| {
+                warn_poisoned_mutex_once();
+                err.into_inner()
+            })
+        }
+
+        #[doc(hidden)]
+        pub fn __poison_index_mutex_for_test(&self) {
+            // This is used by regression tests to ensure we recover from poisoning.
+            // Panicking while holding the lock will poison it.
+            let _guard = self.lock_index();
+            panic!("poison EmbeddingSemanticSearch index mutex for test");
+        }
+
         pub fn with_ef_search(mut self, ef_search: usize) -> Self {
             self.ef_search = ef_search.max(1);
             self
@@ -565,7 +590,7 @@ mod embeddings {
         }
 
         fn invalidate_index(&self) {
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             index.hnsw = None;
             index.dims = 0;
             index.id_to_doc.clear();
@@ -679,7 +704,7 @@ mod embeddings {
         fn clear(&mut self) {
             self.docs_by_path.clear();
             self.embedding_bytes_used = 0;
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             *index = EmbeddedIndex::empty();
         }
 
@@ -694,7 +719,7 @@ mod embeddings {
                 self.index_file(path, text);
             }
 
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             self.rebuild_index_locked(&mut index);
         }
 
@@ -886,7 +911,7 @@ mod embeddings {
             let query_substring = query.trim();
             let query_substring_lower = query_substring.to_lowercase();
 
-            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            let mut index = self.lock_index();
             if index.dirty {
                 self.rebuild_index_locked(&mut index);
             }
@@ -980,18 +1005,12 @@ mod embeddings {
     impl<E: Embedder> EmbeddingSemanticSearch<E> {
         #[doc(hidden)]
         pub fn __index_is_dirty_for_tests(&self) -> bool {
-            self.index
-                .lock()
-                .expect("semantic search mutex poisoned")
-                .dirty
+            self.lock_index().dirty
         }
 
         #[doc(hidden)]
         pub fn __index_rebuild_count_for_tests(&self) -> usize {
-            self.index
-                .lock()
-                .expect("semantic search mutex poisoned")
-                .rebuild_count
+            self.lock_index().rebuild_count
         }
     }
 
@@ -1554,7 +1573,7 @@ mod embeddings {
             // The mismatched-dimension doc should not be returned.
             assert!(!results.iter().any(|r| r.path == PathBuf::from("b.txt")));
 
-            let index = search.index.lock().expect("semantic search mutex poisoned");
+            let index = search.lock_index();
             assert_eq!(
                 index.id_to_doc.len(),
                 2,
