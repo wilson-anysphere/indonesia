@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -100,6 +101,19 @@ pub(super) fn provider_embeddings_client_from_config(
             let cached = CachedEmbeddingsClient::new(
                 Box::new(base),
                 "openai_compatible",
+                endpoint_id,
+                model,
+                disk_cache,
+            );
+            Ok(Box::new(cached))
+        }
+        AiProviderKind::Ollama => {
+            let base =
+                OllamaEmbeddingsClient::new(config.provider.url.clone(), model.clone(), timeout)?;
+            let endpoint_id = base.endpoint_id()?;
+            let cached = CachedEmbeddingsClient::new(
+                Box::new(base),
+                "ollama",
                 endpoint_id,
                 model,
                 disk_cache,
@@ -535,4 +549,165 @@ fn parse_openai_embeddings(
             })
         })
         .collect()
+}
+
+/// Ollama embeddings provider.
+///
+/// Supports both:
+/// - `/api/embed` (preferred, batch)
+/// - `/api/embeddings` (legacy, one input per request)
+#[derive(Clone)]
+struct OllamaEmbeddingsClient {
+    base_url: Url,
+    model: String,
+    timeout: Duration,
+    client: reqwest::Client,
+}
+
+impl OllamaEmbeddingsClient {
+    fn new(base_url: Url, model: String, timeout: Duration) -> Result<Self, AiError> {
+        let client = reqwest::Client::builder().build()?;
+        Ok(Self {
+            base_url,
+            model,
+            timeout,
+            client,
+        })
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url, AiError> {
+        let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+        let base = Url::parse(&format!("{base_str}/"))?;
+        Ok(base.join(path.trim_start_matches('/'))?)
+    }
+
+    fn endpoint_id(&self) -> Result<String, AiError> {
+        Ok(self.endpoint("/api/embed")?.to_string())
+    }
+
+    async fn embed_via_embed_endpoint(
+        &self,
+        input: &[String],
+    ) -> Result<Option<Vec<Vec<f32>>>, AiError> {
+        let url = self.endpoint("/api/embed")?;
+        let body = json!({
+            "model": &self.model,
+            "input": input,
+        });
+
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let response = response.error_for_status()?;
+        let parsed: OllamaEmbedResponse = response.json().await?;
+        let embeddings = parsed.into_embeddings().ok_or_else(|| {
+            AiError::UnexpectedResponse("missing `embeddings` in Ollama /api/embed response".into())
+        })?;
+
+        if embeddings.len() != input.len() {
+            return Err(AiError::UnexpectedResponse(format!(
+                "Ollama /api/embed returned {} embeddings for {} inputs",
+                embeddings.len(),
+                input.len()
+            )));
+        }
+
+        if embeddings.iter().any(|emb| emb.is_empty()) {
+            return Err(AiError::UnexpectedResponse(
+                "Ollama /api/embed returned empty embedding vector".into(),
+            ));
+        }
+
+        Ok(Some(embeddings))
+    }
+
+    async fn embed_via_legacy_endpoint(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        let url = self.endpoint("/api/embeddings")?;
+        let mut out = Vec::with_capacity(input.len());
+
+        for prompt in input {
+            let body = json!({
+                "model": &self.model,
+                "prompt": prompt,
+            });
+            let response = self
+                .client
+                .post(url.clone())
+                .json(&body)
+                .timeout(self.timeout)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            let parsed: OllamaEmbeddingsResponse = response.json().await?;
+            if parsed.embedding.is_empty() {
+                return Err(AiError::UnexpectedResponse(
+                    "missing `embedding` in Ollama /api/embeddings response".into(),
+                ));
+            }
+            out.push(parsed.embedding);
+        }
+
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl EmbeddingsClient for OllamaEmbeddingsClient {
+    async fn embed(
+        &self,
+        input: &[String],
+        cancel: CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let fut = async {
+            if let Some(embeddings) = self.embed_via_embed_endpoint(input).await? {
+                return Ok(embeddings);
+            }
+            self.embed_via_legacy_endpoint(input).await
+        };
+
+        tokio::select! {
+            _ = cancel.cancelled() => Err(AiError::Cancelled),
+            res = fut => res,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaEmbedResponse {
+    #[serde(default)]
+    embeddings: Vec<Vec<f32>>,
+    #[serde(default)]
+    embedding: Vec<f32>,
+}
+
+impl OllamaEmbedResponse {
+    fn into_embeddings(self) -> Option<Vec<Vec<f32>>> {
+        if !self.embeddings.is_empty() {
+            Some(self.embeddings)
+        } else if !self.embedding.is_empty() {
+            Some(vec![self.embedding])
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaEmbeddingsResponse {
+    #[serde(default)]
+    embedding: Vec<f32>,
 }
