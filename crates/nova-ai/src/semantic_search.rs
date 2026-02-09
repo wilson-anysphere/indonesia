@@ -463,6 +463,10 @@ mod embeddings {
             Self { dims: dims.max(1) }
         }
 
+        pub fn dims(&self) -> usize {
+            self.dims
+        }
+
         fn token_hash(token: &str) -> u64 {
             let mut hasher = DefaultHasher::new();
             token.hash(&mut hasher);

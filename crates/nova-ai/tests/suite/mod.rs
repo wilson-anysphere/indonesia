@@ -6,6 +6,7 @@ mod completion_ranking_cache;
 mod code_review_prompt;
 mod completion_ranking_privacy;
 mod default_temperature;
+mod embedding_cache;
 mod embedding_disk_cache;
 mod embedding_batching;
 mod embeddings_client_factory;

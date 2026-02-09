@@ -3,10 +3,8 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -14,11 +12,13 @@ use crate::client::validate_local_only_url;
 use crate::AiError;
 use nova_config::{AiConfig, AiProviderKind};
 
-use super::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey, DISK_CACHE_NAMESPACE_V1};
+use super::cache::{EmbeddingCacheKey as MemoryCacheKey, EmbeddingCacheKeyBuilder, EmbeddingVectorCache};
+use super::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1};
 use super::EmbeddingsClient;
 
 pub(super) fn provider_embeddings_client_from_config(
     config: &AiConfig,
+    max_memory_bytes: usize,
 ) -> Result<Box<dyn EmbeddingsClient>, AiError> {
     if config.privacy.local_only {
         match &config.provider.kind {
@@ -31,7 +31,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             }
             other => {
@@ -40,7 +40,7 @@ pub(super) fn provider_embeddings_client_from_config(
                     provider_kind = ?other,
                     "ai.privacy.local_only=true forbids provider-backed embeddings for cloud providers; falling back to hash embeddings"
                 );
-                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             }
         }
     }
@@ -68,14 +68,14 @@ pub(super) fn provider_embeddings_client_from_config(
                     target = "nova.ai",
                     "Azure OpenAI embeddings require ai.api_key; falling back to hash embeddings"
                 );
-                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             };
             let Some(deployment) = config.provider.azure_deployment.clone() else {
                 tracing::warn!(
                     target = "nova.ai",
                     "Azure OpenAI embeddings require ai.provider.azure_deployment; falling back to hash embeddings"
                 );
-                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             };
             let api_version = config
                 .provider
@@ -98,7 +98,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to build Azure OpenAI embeddings client; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -110,7 +110,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute Azure OpenAI embeddings endpoint id; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -122,7 +122,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute Azure OpenAI embeddings cache key; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -131,6 +131,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 "azure_open_ai",
                 endpoint_id,
                 model_id,
+                max_memory_bytes,
                 disk_cache,
             )))
         }
@@ -140,7 +141,7 @@ pub(super) fn provider_embeddings_client_from_config(
                     target = "nova.ai",
                     "OpenAI embeddings require ai.api_key; falling back to hash embeddings"
                 );
-                return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             };
 
             let base = match OpenAiCompatibleEmbeddingsClient::new(
@@ -157,7 +158,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to build OpenAI embeddings client; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -169,7 +170,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute OpenAI embeddings endpoint id; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -178,6 +179,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 "openai",
                 endpoint_id,
                 model,
+                max_memory_bytes,
                 disk_cache,
             )))
         }
@@ -196,7 +198,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to build embeddings client; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -208,7 +210,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute embeddings endpoint id; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -217,6 +219,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 "openai_compatible",
                 endpoint_id,
                 model,
+                max_memory_bytes,
                 disk_cache,
             )))
         }
@@ -235,7 +238,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to build HTTP embeddings client; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -247,7 +250,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute HTTP embeddings endpoint id; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -256,6 +259,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 "http",
                 endpoint_id,
                 model,
+                max_memory_bytes,
                 disk_cache,
             )))
         }
@@ -273,7 +277,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to build Ollama embeddings client; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -285,7 +289,7 @@ pub(super) fn provider_embeddings_client_from_config(
                         ?err,
                         "failed to compute Ollama embeddings endpoint id; falling back to hash embeddings"
                     );
-                    return Ok(Box::new(super::LocalEmbeddingsClient::default()));
+                    return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
                 }
             };
 
@@ -294,6 +298,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 "ollama",
                 endpoint_id,
                 model,
+                max_memory_bytes,
                 disk_cache,
             )))
         }
@@ -303,7 +308,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 provider_kind = ?other,
                 "ai.embeddings.backend=provider is not supported for this provider; falling back to hash embeddings"
             );
-            Ok(Box::new(super::LocalEmbeddingsClient::default()))
+            Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)))
         }
     }
 }
@@ -327,7 +332,7 @@ struct CachedEmbeddingsClient {
     backend_id: &'static str,
     endpoint_id: String,
     model: String,
-    memory_cache: Arc<Mutex<HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>>>,
+    memory_cache: EmbeddingVectorCache,
     disk_cache: Option<Arc<DiskEmbeddingCache>>,
 }
 
@@ -337,6 +342,7 @@ impl CachedEmbeddingsClient {
         backend_id: &'static str,
         endpoint_id: String,
         model: String,
+        max_memory_bytes: usize,
         disk_cache: Option<Arc<DiskEmbeddingCache>>,
     ) -> Self {
         Self {
@@ -344,19 +350,28 @@ impl CachedEmbeddingsClient {
             backend_id,
             endpoint_id,
             model,
-            memory_cache: Arc::new(Mutex::new(HashMap::new())),
+            memory_cache: EmbeddingVectorCache::new(max_memory_bytes),
             disk_cache,
         }
     }
 
-    fn key_for(&self, input: &str) -> EmbeddingCacheKey {
-        EmbeddingCacheKey::new(
+    fn disk_key_for(&self, input: &str) -> DiskCacheKey {
+        DiskCacheKey::new(
             DISK_CACHE_NAMESPACE_V1,
             self.backend_id,
             &self.endpoint_id,
             &self.model,
             input.as_bytes(),
         )
+    }
+
+    fn memory_key_for(&self, input: &str) -> MemoryCacheKey {
+        let mut builder = EmbeddingCacheKeyBuilder::new("nova-ai-embeddings-memory-cache-v1");
+        builder.push_str(self.backend_id);
+        builder.push_str(&self.endpoint_id);
+        builder.push_str(&self.model);
+        builder.push_str(input);
+        builder.finish()
     }
 }
 
@@ -376,26 +391,25 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
 
         let mut out = vec![None::<Vec<f32>>; input.len()];
         let mut miss_indices = Vec::new();
-        let mut miss_keys = Vec::new();
+        let mut miss_disk_keys = Vec::new();
+        let mut miss_memory_keys = Vec::new();
         let mut miss_inputs = Vec::new();
 
-        {
-            let cache = self.memory_cache.lock().await;
-            for (idx, text) in input.iter().enumerate() {
-                let key = self.key_for(text);
-                if let Some(hit) = cache.get(&key) {
-                    out[idx] = Some((**hit).clone());
-                } else {
-                    miss_indices.push(idx);
-                    miss_keys.push(key);
-                    miss_inputs.push(text.clone());
-                }
+        for (idx, text) in input.iter().enumerate() {
+            let memory_key = self.memory_key_for(text);
+            if let Some(hit) = self.memory_cache.get(memory_key) {
+                out[idx] = Some(hit);
+            } else {
+                miss_indices.push(idx);
+                miss_memory_keys.push(memory_key);
+                miss_disk_keys.push(self.disk_key_for(text));
+                miss_inputs.push(text.clone());
             }
         }
 
         // Disk cache lookups.
         if let Some(disk) = self.disk_cache.clone() {
-            let disk_keys = miss_keys.clone();
+            let disk_keys = miss_disk_keys.clone();
             let expected = disk_keys.len();
             let disk_hits = match tokio::task::spawn_blocking(move || {
                 disk_keys
@@ -410,21 +424,23 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
             };
 
             let mut still_indices = Vec::new();
-            let mut still_keys = Vec::new();
+            let mut still_disk_keys = Vec::new();
+            let mut still_memory_keys = Vec::new();
             let mut still_inputs = Vec::new();
-            let mut memory_inserts = Vec::new();
 
-            for ((idx, key), hit) in miss_indices
+            for (((idx, memory_key), disk_key), hit) in miss_indices
                 .into_iter()
-                .zip(miss_keys.into_iter())
+                .zip(miss_memory_keys.into_iter())
+                .zip(miss_disk_keys.into_iter())
                 .zip(disk_hits.into_iter())
             {
                 if let Some(vec) = hit {
                     out[idx] = Some(vec.clone());
-                    memory_inserts.push((key, vec));
+                    self.memory_cache.insert(memory_key, vec);
                 } else {
                     still_indices.push(idx);
-                    still_keys.push(key);
+                    still_memory_keys.push(memory_key);
+                    still_disk_keys.push(disk_key);
                     // `miss_inputs` matched the same order as the keys.
                 }
             }
@@ -436,15 +452,9 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
                 }
             }
 
-            if !memory_inserts.is_empty() {
-                let mut cache = self.memory_cache.lock().await;
-                for (key, vec) in memory_inserts {
-                    cache.insert(key, Arc::new(vec));
-                }
-            }
-
             miss_indices = still_indices;
-            miss_keys = still_keys;
+            miss_disk_keys = still_disk_keys;
+            miss_memory_keys = still_memory_keys;
             miss_inputs = still_inputs;
         }
 
@@ -459,24 +469,17 @@ impl EmbeddingsClient for CachedEmbeddingsClient {
                 )));
             }
 
-            let mut memory_inserts = Vec::with_capacity(embeddings.len());
             let mut disk_inserts = Vec::with_capacity(embeddings.len());
 
-            for ((orig_idx, key), embedding) in miss_indices
+            for (((orig_idx, memory_key), disk_key), embedding) in miss_indices
                 .into_iter()
-                .zip(miss_keys.into_iter())
+                .zip(miss_memory_keys.into_iter())
+                .zip(miss_disk_keys.into_iter())
                 .zip(embeddings.into_iter())
             {
                 out[orig_idx] = Some(embedding.clone());
-                memory_inserts.push((key, embedding.clone()));
-                disk_inserts.push((key, embedding));
-            }
-
-            if !memory_inserts.is_empty() {
-                let mut cache = self.memory_cache.lock().await;
-                for (key, vec) in memory_inserts {
-                    cache.insert(key, Arc::new(vec));
-                }
+                self.memory_cache.insert(memory_key, embedding.clone());
+                disk_inserts.push((disk_key, embedding));
             }
 
             if let Some(disk) = self.disk_cache.clone() {
