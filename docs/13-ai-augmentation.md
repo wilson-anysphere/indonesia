@@ -644,8 +644,8 @@ Common overrides:
   (explain error + code-editing actions).
 - `NOVA_DISABLE_AI_CODE_REVIEW=1` — force-disable LLM-backed AI code review server-side.
 - `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` — override the server’s AI multi-token completion max-items.
-  `0` disables multi-token completions entirely (and the server clamps large values; see the
-  protocol docs for details).
+  `0` disables multi-token completions entirely (this does **not** disable completion ranking; see
+  the protocol docs for details).
 
 ### Code-editing policy (patches / file edits)
 
