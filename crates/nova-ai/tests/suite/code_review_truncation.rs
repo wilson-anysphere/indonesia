@@ -69,6 +69,28 @@ fn base_config(url: Url) -> AiConfig {
     }
 }
 
+fn cloud_config(url: Url) -> AiConfig {
+    AiConfig {
+        provider: AiProviderConfig {
+            kind: AiProviderKind::OpenAiCompatible,
+            url,
+            model: "test-model".to_string(),
+            max_tokens: 128,
+            timeout_ms: 1_000,
+            concurrency: Some(1),
+            ..AiProviderConfig::default()
+        },
+        privacy: AiPrivacyConfig {
+            // Enable cloud-mode defaults (identifier anonymization + redaction).
+            local_only: false,
+            anonymize_identifiers: None,
+            ..AiPrivacyConfig::default()
+        },
+        enabled: true,
+        ..AiConfig::default()
+    }
+}
+
 #[tokio::test]
 async fn code_review_truncates_large_diffs_before_sending() {
     let limit = 200usize;
@@ -87,12 +109,11 @@ async fn code_review_truncates_large_diffs_before_sending() {
         let user = json["messages"][1]["content"]
             .as_str()
             .expect("messages[1].content string");
-        assert!(
-            user.contains("[diff truncated: omitted "),
-            "expected truncation marker in prompt; got: {user}"
-        );
-
         let diff_part = extract_diff_block(user).expect("diff fenced block present");
+        assert!(
+            diff_part.contains("[diff truncated: omitted "),
+            "expected truncation marker in diff block; got: {diff_part}"
+        );
 
         assert!(
             diff_part.starts_with(header),
@@ -142,12 +163,11 @@ async fn code_review_does_not_change_small_diffs() {
             .as_str()
             .expect("messages[1].content string");
 
-        assert!(
-            !user.contains("[diff truncated: omitted "),
-            "did not expect truncation marker for small diff; got: {user}"
-        );
-
         let diff_part = extract_diff_block(user).expect("diff fenced block present");
+        assert!(
+            !diff_part.contains("[diff truncated: omitted "),
+            "did not expect truncation marker in diff block for small diff; got: {diff_part}"
+        );
 
         assert_eq!(diff_part, diff);
 
@@ -162,6 +182,64 @@ async fn code_review_does_not_change_small_diffs() {
     let ai = NovaAi::new(&cfg).expect("NovaAi builds");
     let out = ai
         .code_review(diff, CancellationToken::new())
+        .await
+        .expect("code_review succeeds");
+    assert_eq!(out, "ok");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn code_review_truncation_marker_survives_identifier_anonymization() {
+    let limit = 200usize;
+    let diff = format!(
+        "diff --git a/src/Main.java b/src/Main.java\n\
+\"HEAD_MARKER\"\n\
+{}\n\
+\"TAIL_MARKER\"\n",
+        "~".repeat(2_000)
+    );
+
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("body bytes");
+        let json: Value = serde_json::from_slice(&bytes).expect("json body");
+
+        let user = json["messages"][1]["content"]
+            .as_str()
+            .expect("messages[1].content string");
+        let diff_part = extract_diff_block(user).expect("diff fenced block present");
+        assert!(
+            diff_part.contains("[diff truncated: omitted "),
+            "expected truncation marker to survive anonymization; got: {diff_part}"
+        );
+        assert!(
+            diff_part.contains("\"HEAD_MARKER\""),
+            "expected head marker to remain in diff block: {diff_part}"
+        );
+        assert!(
+            diff_part.contains("\"TAIL_MARKER\""),
+            "expected tail marker to remain in diff block: {diff_part}"
+        );
+        assert!(
+            diff_part.chars().count() <= limit,
+            "expected diff part <= {limit} chars; got {} chars",
+            diff_part.chars().count()
+        );
+
+        Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+
+    let mut cfg = cloud_config(Url::parse(&format!("http://{addr}")).unwrap());
+    cfg.features.code_review_max_diff_chars = limit;
+
+    let ai = NovaAi::new(&cfg).expect("NovaAi builds");
+    let out = ai
+        .code_review(&diff, CancellationToken::new())
         .await
         .expect("code_review succeeds");
     assert_eq!(out, "ok");

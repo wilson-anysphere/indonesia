@@ -233,7 +233,8 @@ impl NovaAi {
         diff: &str,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        self.code_review_with_llm(self.llm.as_ref(), diff, cancel).await
+        self.code_review_with_llm(self.llm.as_ref(), diff, cancel)
+            .await
     }
 
     /// Like [`NovaAi::code_review`], but allows the caller (tests) to provide an alternate LLM
@@ -246,9 +247,8 @@ impl NovaAi {
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
         let started_at = Instant::now();
-        let filtered = diff::filter_diff_for_excluded_paths(diff, |path| {
-            self.client.is_excluded_path(path)
-        });
+        let filtered =
+            diff::filter_diff_for_excluded_paths(diff, |path| self.client.is_excluded_path(path));
 
         let sanitized = self
             .client
@@ -270,11 +270,7 @@ impl NovaAi {
                 cancel,
             )
             .await;
-        record_action_metrics(
-            AI_ACTION_CODE_REVIEW_METRIC,
-            started_at.elapsed(),
-            &result,
-        );
+        record_action_metrics(AI_ACTION_CODE_REVIEW_METRIC, started_at.elapsed(), &result);
         result
     }
 
@@ -297,7 +293,9 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
     for _ in 0..8 {
         let available = max_chars.saturating_sub(marker_len);
         let omitted = total_chars.saturating_sub(available);
-        let next_marker = format!("\n[diff truncated: omitted {omitted} chars]\n");
+        // Keep the marker as a benign string literal so identifier anonymization (cloud mode)
+        // won't rewrite it when sanitizing the full prompt.
+        let next_marker = format!("\n\"[diff truncated: omitted {omitted} chars]\"\n");
         let next_len = next_marker.chars().count();
         marker = next_marker;
         if next_len == marker_len {

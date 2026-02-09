@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
-pub(crate) const DIFF_OMITTED_PLACEHOLDER: &str = "[diff omitted due to excluded_paths]";
+// Keep this as a benign string literal so identifier anonymization (cloud mode) won't rewrite it
+// when the full code-review prompt is sanitized.
+pub(crate) const DIFF_OMITTED_PLACEHOLDER: &str = "\"[diff omitted due to excluded_paths]\"";
 
 // We insert this sentinel for omitted file sections *before* running the diff through the privacy
-// anonymizer/redactor. The sentinel is encoded as a benign string literal so identifier anonymization
-// won't rewrite it. After sanitization, we replace the sentinel with the human-readable placeholder
-// above.
+// anonymizer/redactor. The sentinel is encoded as a benign string literal so identifier
+// anonymization won't rewrite it. After sanitization, we replace the sentinel with the
+// human-readable placeholder above (also kept as a string literal for the same reason).
 const DIFF_OMITTED_SENTINEL: &str = "\"__NOVA_AI_DIFF_OMITTED__\"";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,23 +96,22 @@ where
     }
 
     for (section_idx, &start) in starts.iter().enumerate() {
-        let end = starts
-            .get(section_idx + 1)
-            .copied()
-            .unwrap_or(lines.len());
+        let end = starts.get(section_idx + 1).copied().unwrap_or(lines.len());
         let header = lines
             .get(start)
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
-        let (old_raw, new_raw) = parse_diff_git_paths(header).ok_or(DiffParseError::InvalidHeader)?;
+        let (old_raw, new_raw) =
+            parse_diff_git_paths(header).ok_or(DiffParseError::InvalidHeader)?;
         let old_path = normalize_diff_path(&old_raw);
         let new_path = normalize_diff_path(&new_raw);
         if old_path.is_none() && new_path.is_none() {
             return Err(DiffParseError::InvalidHeader);
         }
 
-        let excluded = is_excluded_diff_paths(old_path.as_deref(), new_path.as_deref(), is_excluded);
+        let excluded =
+            is_excluded_diff_paths(old_path.as_deref(), new_path.as_deref(), is_excluded);
         if excluded {
             omitted_any = true;
             out.push_str(sentinel_line);
@@ -156,10 +157,7 @@ where
     }
 
     for (section_idx, &start) in starts.iter().enumerate() {
-        let end = starts
-            .get(section_idx + 1)
-            .copied()
-            .unwrap_or(lines.len());
+        let end = starts.get(section_idx + 1).copied().unwrap_or(lines.len());
         let old_header = lines
             .get(start)
             .copied()
@@ -169,8 +167,10 @@ where
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
-        let old_raw = parse_file_header_path(old_header, "--- ").ok_or(DiffParseError::InvalidHeader)?;
-        let new_raw = parse_file_header_path(new_header, "+++ ").ok_or(DiffParseError::InvalidHeader)?;
+        let old_raw =
+            parse_file_header_path(old_header, "--- ").ok_or(DiffParseError::InvalidHeader)?;
+        let new_raw =
+            parse_file_header_path(new_header, "+++ ").ok_or(DiffParseError::InvalidHeader)?;
 
         let old_path = normalize_diff_path(&old_raw);
         let new_path = normalize_diff_path(&new_raw);
@@ -178,7 +178,8 @@ where
             return Err(DiffParseError::InvalidHeader);
         }
 
-        let excluded = is_excluded_diff_paths(old_path.as_deref(), new_path.as_deref(), is_excluded);
+        let excluded =
+            is_excluded_diff_paths(old_path.as_deref(), new_path.as_deref(), is_excluded);
         if excluded {
             omitted_any = true;
             out.push_str(sentinel_line);

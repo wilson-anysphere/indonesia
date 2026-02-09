@@ -69,9 +69,10 @@ For each issue/suggestion include:
 (Optional) ## Positive Notes
 (Optional) ## Questions / Follow-ups
 
-If the diff is missing/omitted (e.g. the diff section contains an omission placeholder due to
-`excluded_paths`), explicitly state that you cannot give file-specific feedback and provide only
-general review guidance.
+If the diff is incomplete/omitted (e.g. the diff section contains an omission placeholder due to
+`excluded_paths`, or a truncation marker like "[diff truncated: omitted N chars]"), explicitly state
+that you cannot give complete file-specific feedback and call out which kinds of issues you may have
+missed due to the missing context.
 "#
     )
 }
