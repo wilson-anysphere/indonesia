@@ -6485,16 +6485,42 @@ fn stdio_server_ai_custom_requests_include_patch_apply_error_data() {
     let text = "class Test { int answer() { } }\n";
     std::fs::write(&file_path, text).expect("write Test.java");
 
-    // Out-of-bounds LSP range triggers PatchApplyError::InvalidRange.
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let open_brace_offset = start_offset
+        + selection
+            .find('{')
+            .expect("expected method selection to include '{'");
+    let close_brace_offset = start_offset
+        + selection
+            .rfind('}')
+            .expect("expected method selection to include '}'");
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+    let insert_start = pos
+        .lsp_position(open_brace_offset + 1)
+        .expect("insert start");
+    let insert_end = pos.lsp_position(close_brace_offset).expect("insert end");
+
+    // Trigger PatchApplyError::OverlappingEdits while staying within the allowed edit range for
+    // generateMethodBody.
     let patch = json!({
-        "edits": [{
-            "file": "Test.java",
-            "range": {
-                "start": { "line": 999, "character": 0 },
-                "end": { "line": 999, "character": 0 }
+        "edits": [
+            {
+                "file": "Test.java",
+                "range": { "start": insert_start, "end": insert_end },
+                "text": "return 1;"
             },
-            "text": "}"
-        }]
+            {
+                "file": "Test.java",
+                "range": { "start": insert_start, "end": insert_end },
+                "text": "return 2;"
+            }
+        ]
     })
     .to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
@@ -6571,15 +6597,6 @@ local_only = true
             }
         }),
     );
-
-    let selection = "int answer() { }";
-    let start_offset = text.find(selection).expect("selection start");
-    let end_offset = start_offset + selection.len();
-    let pos = TextPos::new(text);
-    let range = Range {
-        start: pos.lsp_position(start_offset).expect("range start"),
-        end: pos.lsp_position(end_offset).expect("range end"),
-    };
 
     write_jsonrpc_message(
         &mut stdin,
@@ -6640,14 +6657,32 @@ fn stdio_server_ai_custom_requests_include_validation_error_data() {
     let text = "class Test { int answer() { } }\n";
     std::fs::write(&file_path, text).expect("write Test.java");
 
-    // Inserts an unmatched brace, introducing a syntax error (validation must fail).
+    let selection = "int answer() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let open_brace_offset = start_offset
+        + selection
+            .find('{')
+            .expect("expected method selection to include '{'");
+    let close_brace_offset = start_offset
+        + selection
+            .rfind('}')
+            .expect("expected method selection to include '}'");
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("range start"),
+        end: pos.lsp_position(end_offset).expect("range end"),
+    };
+    let insert_start = pos
+        .lsp_position(open_brace_offset + 1)
+        .expect("insert start");
+    let insert_end = pos.lsp_position(close_brace_offset).expect("insert end");
+
+    // Introduce a syntax error (validation must fail) while staying within the allowed edit range.
     let patch = json!({
         "edits": [{
             "file": "Test.java",
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 0 }
-            },
+            "range": { "start": insert_start, "end": insert_end },
             "text": "}"
         }]
     })
@@ -6726,15 +6761,6 @@ local_only = true
             }
         }),
     );
-
-    let selection = "int answer() { }";
-    let start_offset = text.find(selection).expect("selection start");
-    let end_offset = start_offset + selection.len();
-    let pos = TextPos::new(text);
-    let range = Range {
-        start: pos.lsp_position(start_offset).expect("range start"),
-        end: pos.lsp_position(end_offset).expect("range end"),
-    };
 
     write_jsonrpc_message(
         &mut stdin,
