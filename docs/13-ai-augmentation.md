@@ -964,7 +964,7 @@ impl NovaServer {
                 kind: Some(CodeActionKind::new("nova.ai.generate")),
                 command: Some(command(
                     "nova.ai.generateMethodBody",
-                    [GenerateMethodBodyArgs { /* method_signature, context, uri, range */ }],
+                    [GenerateMethodBodyArgs { /* methodSignature, context, uri, range */ }],
                 )),
                 ..Default::default()
             });
@@ -977,7 +977,7 @@ impl NovaServer {
                 kind: Some(CodeActionKind::new("nova.explain")),
                 command: Some(command(
                     "nova.ai.explainError",
-                    [ExplainErrorArgs { /* diagnostic_message, code, uri, range */ }],
+                    [ExplainErrorArgs { /* diagnosticMessage, code, uri, range */ }],
                 )),
                 ..Default::default()
             });
