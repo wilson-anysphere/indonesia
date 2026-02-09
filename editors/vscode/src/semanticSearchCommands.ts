@@ -140,24 +140,42 @@ export function registerNovaSemanticSearchCommands(
         const json = jsonStringifyBestEffort(payload);
 
         if (fields.enabled === false || fields.currentRunId === 0) {
+          const reason = fields.reason;
+
           output.clear();
           output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/indexStatus`);
           if (summary) {
             output.appendLine(summary);
           }
           output.appendLine('');
+
           if (fields.enabled === false) {
             output.appendLine('Semantic search is disabled (`enabled === false`). Workspace indexing will not start.');
           } else {
-            output.appendLine('Semantic search indexing has not started yet (`currentRunId === 0`). This can happen when:');
+            output.appendLine('Semantic search indexing has not started yet (`currentRunId === 0`).');
           }
-          if (fields.reason) {
-            output.appendLine(`Reported reason: ${fields.reason}`);
+          if (reason) {
+            output.appendLine(`Reason: ${reason}`);
           }
-          output.appendLine('- Semantic search is disabled in your config (`ai.features.semantic_search=false`).');
-          output.appendLine('- The server is missing a workspace root (open a folder/workspace).');
-          output.appendLine('- The AI runtime is unavailable / not configured.');
-          output.appendLine('- Nova is running in safe mode (check the status bar).');
+          output.appendLine('');
+
+          if (fields.enabled === false || reason === 'disabled') {
+            output.appendLine('Enable semantic search by setting both:');
+            output.appendLine('- `ai.enabled = true`');
+            output.appendLine('- `ai.features.semantic_search = true`');
+          } else if (reason === 'missing_workspace_root') {
+            output.appendLine('The server is missing a workspace root (open a folder/workspace).');
+          } else if (reason === 'runtime_unavailable') {
+            output.appendLine('The AI runtime is unavailable / not configured.');
+          } else if (reason === 'safe_mode') {
+            output.appendLine('Nova is running in safe mode (check the status bar).');
+          } else {
+            output.appendLine('This can happen when:');
+            output.appendLine('- Semantic search is disabled in your config (`ai.features.semantic_search=false`).');
+            output.appendLine('- The server is missing a workspace root (open a folder/workspace).');
+            output.appendLine('- The AI runtime is unavailable / not configured.');
+            output.appendLine('- Nova is running in safe mode (check the status bar).');
+          }
           output.appendLine('');
           output.appendLine('Next steps:');
           output.appendLine('- Check the `nova.lsp.configPath` setting for your workspace folder.');
@@ -167,11 +185,11 @@ export function registerNovaSemanticSearchCommands(
           output.appendLine(json);
           output.show(true);
 
-          const reasonSuffix = fields.reason ? ` (reason: ${fields.reason})` : '';
+          const reasonSuffix = reason ? ` (reason: ${reason})` : '';
           const choice = await vscode.window.showWarningMessage(
             fields.enabled === false
               ? `Nova: Semantic search is disabled${reasonSuffix}. Enable semantic search in your config and restart the language server.`
-              : `Nova: Semantic search indexing has not started (currentRunId=0)${reasonSuffix}. This can happen if semantic search is disabled, the workspace root is unavailable, the AI runtime is not available, or Nova is in safe mode.`,
+              : `Nova: Semantic search indexing has not started (currentRunId=0)${reasonSuffix}.`,
             'Open Settings',
             'Restart Language Server',
           );
@@ -251,7 +269,9 @@ function formatSemanticSearchIndexSummary(payload: unknown): string | undefined 
 
   const parts = [runInfo, reasonSuffix, filesSuffix, bytesSuffix].filter((value): value is string => Boolean(value));
   const details = parts.length > 0 ? ` — ${parts.join(', ')}` : '';
-  return `Indexing: ${state}${details}`;
+  const semanticSearchPrefix =
+    fields.enabled === true ? 'Semantic search: enabled. ' : fields.enabled === false ? 'Semantic search: disabled. ' : '';
+  return `${semanticSearchPrefix}Indexing: ${state}${details}`;
 }
 
 function formatSemanticSearchWaitMessage(fields: SemanticSearchIndexStatusFields): string {
