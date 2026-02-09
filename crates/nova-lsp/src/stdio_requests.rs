@@ -30,6 +30,17 @@ pub(super) fn handle_request(
     let response_json = handle_request_json(&method, id_json, params, &cancel, state, client)?;
 
     if cancel.is_cancelled() {
+        if method.starts_with("nova/ai/") {
+            return Ok(Response {
+                id,
+                result: None,
+                error: Some(lsp_server::ResponseError {
+                    code: -32800,
+                    message: "Request cancelled".to_string(),
+                    data: Some(json!({ "kind": "cancelled" })),
+                }),
+            });
+        }
         return Ok(stdio_jsonrpc::response_error(id, -32800, "Request cancelled"));
     }
 
@@ -899,8 +910,14 @@ fn handle_request_json(
                     stdio_ai::handle_ai_custom_request(method, params, state, client, cancel);
                 Ok(match result {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err((code, message)) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                    Err((code, message, data)) => {
+                        let mut error = serde_json::Map::new();
+                        error.insert("code".to_string(), json!(code));
+                        error.insert("message".to_string(), json!(message));
+                        if let Some(data) = data {
+                            error.insert("data".to_string(), data);
+                        }
+                        json!({ "jsonrpc": "2.0", "id": id, "error": error })
                     }
                 })
             } else if method.starts_with("nova/") {

@@ -158,6 +158,7 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
+            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_GENERATE_METHOD_BODY => {
             nova_lsp::hardening::record_request();
@@ -175,6 +176,7 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
+            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_GENERATE_TESTS => {
             nova_lsp::hardening::record_request();
@@ -192,6 +194,7 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
+            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_CODE_REVIEW => {
             let args: CodeReviewArgs = parse_first_arg(params.arguments)?;
@@ -203,6 +206,7 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
+            .map_err(|(code, message, _data)| (code, message))
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();

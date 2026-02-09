@@ -19,12 +19,112 @@ use nova_db::InMemoryFileStore;
 use nova_ide::{
   CodeReviewArgs, ExplainErrorArgs, GenerateMethodBodyArgs, GenerateTestsArgs,
 };
-use nova_lsp::{AiCodeAction, AiCodeActionExecutor, CodeActionOutcome};
+use nova_lsp::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
+
+pub(super) type AiRpcError = (i32, String, Option<serde_json::Value>);
+pub(super) type AiRpcResult = Result<serde_json::Value, AiRpcError>;
+
+const AI_ERROR_KIND_NOT_CONFIGURED: &str = "notConfigured";
+const AI_ERROR_KIND_EXCLUDED_PATH: &str = "excludedPath";
+const AI_ERROR_KIND_POLICY: &str = "policy";
+const AI_ERROR_KIND_PROVIDER: &str = "provider";
+const AI_ERROR_KIND_PATCH_PARSE: &str = "patchParse";
+const AI_ERROR_KIND_PATCH_SAFETY: &str = "patchSafety";
+const AI_ERROR_KIND_PATCH_APPLY: &str = "patchApply";
+const AI_ERROR_KIND_VALIDATION: &str = "validation";
+const AI_ERROR_KIND_CANCELLED: &str = "cancelled";
+
+const AI_POLICY_CLOUD_EDITS_DISABLED: &str = "cloudEditsDisabled";
+const AI_POLICY_CLOUD_EDITS_WITH_ANONYMIZATION_ENABLED: &str =
+  "cloudEditsWithAnonymizationEnabled";
+const AI_POLICY_CLOUD_EDITS_WITHOUT_ANONYMIZATION_DISABLED: &str =
+  "cloudEditsWithoutAnonymizationDisabled";
+
+fn rpc_error((code, message): (i32, String)) -> AiRpcError {
+  (code, message, None)
+}
+
+fn rpc_error_with_kind(code: i32, message: impl Into<String>, kind: &'static str) -> AiRpcError {
+  (
+    code,
+    message.into(),
+    Some(json!({
+      "kind": kind,
+    })),
+  )
+}
+
+fn rpc_error_with_data(
+  code: i32,
+  message: impl Into<String>,
+  data: serde_json::Value,
+) -> AiRpcError {
+  (code, message.into(), Some(data))
+}
+
+fn code_edit_policy_error(code: i32, err: nova_ai::CodeEditPolicyError) -> AiRpcError {
+  let policy = match err {
+    nova_ai::CodeEditPolicyError::CloudEditsDisabled => AI_POLICY_CLOUD_EDITS_DISABLED,
+    nova_ai::CodeEditPolicyError::CloudEditsWithAnonymizationEnabled => {
+      AI_POLICY_CLOUD_EDITS_WITH_ANONYMIZATION_ENABLED
+    }
+    nova_ai::CodeEditPolicyError::CloudEditsWithoutAnonymizationDisabled => {
+      AI_POLICY_CLOUD_EDITS_WITHOUT_ANONYMIZATION_DISABLED
+    }
+  };
+  rpc_error_with_data(
+    code,
+    err.to_string(),
+    json!({
+      "kind": AI_ERROR_KIND_POLICY,
+      "policy": policy,
+    }),
+  )
+}
+
+fn prompt_completion_error(code: i32, err: PromptCompletionError) -> AiRpcError {
+  match err {
+    PromptCompletionError::Cancelled => {
+      rpc_error_with_kind(-32800, "Request cancelled", AI_ERROR_KIND_CANCELLED)
+    }
+    PromptCompletionError::Provider(_) => {
+      rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PROVIDER)
+    }
+  }
+}
+
+fn code_generation_error(code: i32, err: nova_ai_codegen::CodeGenerationError) -> AiRpcError {
+  use nova_ai_codegen::CodeGenerationError as E;
+  match err {
+    E::Cancelled => rpc_error_with_kind(-32800, "Request cancelled", AI_ERROR_KIND_CANCELLED),
+    E::Policy(policy) => code_edit_policy_error(code, policy),
+    E::InvalidPrivacyConfig(_) => (code, err.to_string(), None),
+    E::WorkspaceContainsExcludedPaths { .. } => rpc_error_with_kind(
+      -32600,
+      err.to_string(),
+      AI_ERROR_KIND_EXCLUDED_PATH,
+    ),
+    E::Provider(provider) => prompt_completion_error(code, provider),
+    E::PatchParse(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_PARSE),
+    E::Safety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
+    E::Apply(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_APPLY),
+    E::ValidationFailed { .. } => {
+      rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_VALIDATION)
+    }
+  }
+}
+
+fn code_action_error(code: i32, err: CodeActionError) -> AiRpcError {
+  match err {
+    CodeActionError::Provider(provider) => prompt_completion_error(code, provider),
+    CodeActionError::Codegen(codegen) => code_generation_error(code, codegen),
+  }
+}
 
 pub(super) fn is_ai_excluded_path(state: &ServerState, path: &Path) -> bool {
   if !state.ai_config.enabled {
@@ -49,7 +149,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
   state: &mut ServerState,
   rpc_out: &O,
   cancel: &CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   #[derive(Debug, Deserialize)]
   #[serde(rename_all = "camelCase")]
   struct AiRequestParams<T> {
@@ -62,7 +162,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
   match method {
     nova_lsp::AI_EXPLAIN_ERROR_METHOD => {
       let params: AiRequestParams<ExplainErrorArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       run_ai_explain_error(
         params.args,
         params.work_done_token,
@@ -73,7 +173,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     }
     nova_lsp::AI_CODE_REVIEW_METHOD => {
       let params: AiRequestParams<CodeReviewArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       run_ai_code_review(
         params.args.diff,
         params.args.uri,
@@ -86,18 +186,18 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     nova_lsp::AI_MODELS_METHOD => {
       // Allow `params` to be `{}` or `null`.
       let _: Option<serde_json::Value> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       run_ai_models(state, cancel.clone())
     }
     nova_lsp::AI_STATUS_METHOD => {
       // Allow `params` to be `{}` or `null`.
       let _: Option<serde_json::Value> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       Ok(ai_status_payload(state))
     }
     nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
       let params: AiRequestParams<GenerateMethodBodyArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       run_ai_generate_method_body_apply(
         params.args,
         params.work_done_token,
@@ -108,7 +208,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     }
     nova_lsp::AI_GENERATE_TESTS_METHOD => {
       let params: AiRequestParams<GenerateTestsArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
       run_ai_generate_tests_apply(
         params.args,
         params.work_done_token,
@@ -117,7 +217,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
         cancel.clone(),
       )
     }
-    _ => Err((-32601, format!("Method not found: {method}"))),
+    _ => Err((-32601, format!("Method not found: {method}"), None)),
   }
 }
 
@@ -128,15 +228,17 @@ pub(super) fn run_ai_code_review(
   state: &mut ServerState,
   rpc_out: &impl RpcOut,
   cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   let ai = state
     .ai
     .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    .ok_or_else(|| {
+      rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
+    })?;
   let runtime = state
     .runtime
     .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string(), None))?;
 
   let uri_path = uri.as_deref().and_then(path_from_uri);
   let excluded = uri_path
@@ -151,40 +253,43 @@ pub(super) fn run_ai_code_review(
     diff
   };
 
-  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Code review")?;
-  send_progress_report(
-    rpc_out,
-    work_done_token.as_ref(),
-    "Calling model…",
-    None,
-  )?;
-  send_log_message(rpc_out, "AI: reviewing diff…")?;
+  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Code review").map_err(rpc_error)?;
+  send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)
+    .map_err(rpc_error)?;
+  send_log_message(rpc_out, "AI: reviewing diff…").map_err(rpc_error)?;
 
   let output = runtime
     .block_on(ai.code_review(&diff, cancel.clone()))
     .map_err(|e| {
       let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      (-32603, e.to_string())
+      match e {
+        nova_ai::AiError::Cancelled => {
+          rpc_error_with_kind(-32800, "Request cancelled", AI_ERROR_KIND_CANCELLED)
+        }
+        other => rpc_error_with_kind(-32603, other.to_string(), AI_ERROR_KIND_PROVIDER),
+      }
     })?;
 
-  send_log_message(rpc_out, "AI: review ready")?;
+  send_log_message(rpc_out, "AI: review ready").map_err(rpc_error)?;
   send_ai_output(rpc_out, "AI codeReview", &output)?;
-  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+  send_progress_end(rpc_out, work_done_token.as_ref(), "Done").map_err(rpc_error)?;
   Ok(serde_json::Value::String(output))
 }
 
 pub(super) fn run_ai_models(
   state: &mut ServerState,
   cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   let ai = state
     .ai
     .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    .ok_or_else(|| {
+      rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
+    })?;
   let runtime = state
     .runtime
     .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string(), None))?;
 
   let llm = ai.llm();
   let models = runtime
@@ -264,24 +369,28 @@ pub(super) fn run_ai_explain_error(
   state: &mut ServerState,
   rpc_out: &impl RpcOut,
   cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   let ai = state
     .ai
     .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    .ok_or_else(|| {
+      rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
+    })?;
   let runtime = state
     .runtime
     .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string(), None))?;
 
   let uri_path = args.uri.as_deref().and_then(path_from_uri);
   let excluded = uri_path
     .as_deref()
     .is_some_and(|path| is_ai_excluded_path(state, path));
 
-  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")?;
-  send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
-  send_log_message(rpc_out, "AI: explaining error…")?;
+  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")
+    .map_err(rpc_error)?;
+  send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)
+    .map_err(rpc_error)?;
+  send_log_message(rpc_out, "AI: explaining error…").map_err(rpc_error)?;
   let mut ctx = if excluded {
     // `ai.privacy.excluded_paths` is a server-side hard stop for sending file-backed code to the
     // model. Even if a client supplies `code`, omit it and build a diagnostic-only prompt.
@@ -323,16 +432,22 @@ pub(super) fn run_ai_explain_error(
     message: args.diagnostic_message.clone(),
     kind: Some(ContextDiagnosticKind::Other),
   });
-  send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
+  send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)
+    .map_err(rpc_error)?;
   let output = runtime
     .block_on(ai.explain_error(&args.diagnostic_message, ctx, cancel.clone()))
     .map_err(|e| {
       let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      (-32603, e.to_string())
+      match e {
+        nova_ai::AiError::Cancelled => {
+          rpc_error_with_kind(-32800, "Request cancelled", AI_ERROR_KIND_CANCELLED)
+        }
+        other => rpc_error_with_kind(-32603, other.to_string(), AI_ERROR_KIND_PROVIDER),
+      }
     })?;
-  send_log_message(rpc_out, "AI: explanation ready")?;
+  send_log_message(rpc_out, "AI: explanation ready").map_err(rpc_error)?;
   send_ai_output(rpc_out, "AI explainError", &output)?;
-  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+  send_progress_end(rpc_out, work_done_token.as_ref(), "Done").map_err(rpc_error)?;
   Ok(serde_json::Value::String(output))
 }
 
@@ -368,20 +483,22 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
   state: &mut ServerState,
   rpc_out: &O,
   cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   let ai = state
     .ai
     .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    .ok_or_else(|| {
+      rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
+    })?;
   let runtime = state
     .runtime
     .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string(), None))?;
 
   // AI code generation is a code-editing operation. Enforce privacy policy early so clients
   // always see the policy error even if they invoke the command with incomplete arguments.
   nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
-    .map_err(|e| (-32603, e.to_string()))?;
+    .map_err(|e| code_edit_policy_error(-32603, e))?;
 
   let GenerateMethodBodyArgs {
     method_signature,
@@ -392,18 +509,19 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
 
   let uri_string = uri
     .as_deref()
-    .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    .ok_or_else(|| (-32602, "missing uri".to_string(), None))?;
   let uri = uri_string
     .parse::<LspUri>()
-    .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
+    .map_err(|e| (-32602, format!("invalid uri: {e}"), None))?;
 
-  let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state)?;
+  let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state).map_err(rpc_error)?;
 
   // Enforce excluded_paths *before* building prompts or calling the model.
   if ai.is_excluded_path(&abs_path) {
-    return Err((
+    return Err(rpc_error_with_kind(
       -32600,
       "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+      AI_ERROR_KIND_EXCLUDED_PATH,
     ));
   }
 
@@ -413,12 +531,13 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     return Err((
       -32602,
       format!("missing document text for `{}`", uri.as_str()),
+      None,
     ));
   };
 
-  let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
+  let selection = range.ok_or_else(|| (-32602, "missing range".to_string(), None))?;
   let insert_range =
-    insert_range_for_method_body(&source, selection).map_err(|message| (-32602, message))?;
+    insert_range_for_method_body(&source, selection).map_err(|message| (-32602, message, None))?;
 
   let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
 
@@ -433,7 +552,8 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     rpc_out,
     work_done_token.as_ref(),
     "AI: Generate method body",
-  )?;
+  )
+  .map_err(rpc_error)?;
   let progress = LspCodegenProgress {
     out: rpc_out,
     token: work_done_token.as_ref(),
@@ -457,16 +577,14 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     ))
     .map_err(|err| {
       let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      (-32603, err.to_string())
+      code_action_error(-32603, err)
     })?;
 
-  let _ = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out).map_err(
-    |err| {
-      let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      err
-    },
-  )?;
-  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+  apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out).map_err(|err| {
+    let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+    err
+  })?;
+  send_progress_end(rpc_out, work_done_token.as_ref(), "Done").map_err(rpc_error)?;
   // The `nova/ai/*` patch-based endpoints return `null` on success and apply edits via
   // `workspace/applyEdit`.
   Ok(serde_json::Value::Null)
@@ -478,20 +596,22 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
   state: &mut ServerState,
   rpc_out: &O,
   cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   let ai = state
     .ai
     .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    .ok_or_else(|| {
+      rpc_error_with_kind(-32600, "AI is not configured", AI_ERROR_KIND_NOT_CONFIGURED)
+    })?;
   let runtime = state
     .runtime
     .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string(), None))?;
 
   // AI test generation is a code-editing operation. Enforce privacy policy early so clients
   // always see the policy error even if they invoke the command with incomplete arguments.
   nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
-    .map_err(|e| (-32603, e.to_string()))?;
+    .map_err(|e| code_edit_policy_error(-32603, e))?;
 
   let GenerateTestsArgs {
     target,
@@ -501,18 +621,19 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
   } = args;
   let uri_string = uri
     .as_deref()
-    .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    .ok_or_else(|| (-32602, "missing uri".to_string(), None))?;
   let uri = uri_string
     .parse::<LspUri>()
-    .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
+    .map_err(|e| (-32602, format!("invalid uri: {e}"), None))?;
 
-  let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state)?;
+  let (root_uri, file_rel, abs_path) = resolve_ai_patch_target(&uri, state).map_err(rpc_error)?;
 
   // Enforce excluded_paths *before* building prompts or calling the model.
   if ai.is_excluded_path(&abs_path) {
-    return Err((
+    return Err(rpc_error_with_kind(
       -32600,
       "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+      AI_ERROR_KIND_EXCLUDED_PATH,
     ));
   }
 
@@ -522,14 +643,15 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     return Err((
       -32602,
       format!("missing document text for `{}`", uri.as_str()),
+      None,
     ));
   };
 
-  let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
+  let selection = range.ok_or_else(|| (-32602, "missing range".to_string(), None))?;
   // Always validate the incoming selection range (UTF-16 correctness, in-bounds) so we can
   // produce deterministic errors when clients send malformed ranges.
   let selection_range =
-    insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
+    insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message, None))?;
 
   let target = Some(target);
   let source_file = Some(file_rel.clone());
@@ -581,6 +703,7 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (
               -32603,
               format!("failed to determine workspace root for `{}`", abs_path.display()),
+              None,
             )
           })?;
         if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
@@ -603,7 +726,7 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
 
   let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
-  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
+  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests").map_err(rpc_error)?;
   let progress = LspCodegenProgress {
     out: rpc_out,
     token: work_done_token.as_ref(),
@@ -629,15 +752,14 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     ))
     .map_err(|err| {
       let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      (-32603, err.to_string())
+      code_action_error(-32603, err)
     })?;
 
-  let _ =
-    apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(|err| {
-      let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      err
-    })?;
-  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+  apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(|err| {
+    let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+    err
+  })?;
+  send_progress_end(rpc_out, work_done_token.as_ref(), "Done").map_err(rpc_error)?;
   // The `nova/ai/*` patch-based endpoints return `null` on success and apply edits via
   // `workspace/applyEdit`.
   Ok(serde_json::Value::Null)
@@ -648,11 +770,11 @@ fn apply_code_action_outcome<O: RpcOut>(
   label: &str,
   state: &mut ServerState,
   rpc_out: &O,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> AiRpcResult {
   match outcome {
     CodeActionOutcome::WorkspaceEdit(edit) => {
       let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| (-32603, e.to_string(), None))?;
       rpc_out
         .send_request(
           id,
@@ -662,7 +784,7 @@ fn apply_code_action_outcome<O: RpcOut>(
             "edit": edit.clone(),
           }),
         )
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| (-32603, e.to_string(), None))?;
       Ok(serde_json::Value::Null)
     }
     CodeActionOutcome::Explanation(text) => Ok(serde_json::Value::String(text)),
@@ -837,7 +959,7 @@ fn is_java_identifier(s: &str) -> bool {
 
 pub(super) const AI_LOG_MESSAGE_CHUNK_BYTES: usize = 6 * 1024;
 
-fn send_ai_output(out: &impl RpcOut, label: &str, output: &str) -> Result<(), (i32, String)> {
+fn send_ai_output(out: &impl RpcOut, label: &str, output: &str) -> Result<(), AiRpcError> {
   let chunks = chunk_utf8_by_bytes(output, AI_LOG_MESSAGE_CHUNK_BYTES);
   let total = chunks.len();
   for (idx, chunk) in chunks.into_iter().enumerate() {
@@ -846,7 +968,7 @@ fn send_ai_output(out: &impl RpcOut, label: &str, output: &str) -> Result<(), (i
     } else {
       format!("{label} ({}/{total}): {chunk}", idx + 1)
     };
-    send_log_message(out, &message)?;
+    send_log_message(out, &message).map_err(rpc_error)?;
   }
   Ok(())
 }

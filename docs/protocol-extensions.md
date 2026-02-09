@@ -1171,6 +1171,48 @@ Behavior depends on the operation:
 See `crates/nova-lsp/src/stdio_ai.rs` (request-level enforcement) and `crates/nova-ai/src/features.rs`
 (prompt sanitization).
 
+### AI JSON-RPC error data (`nova/ai/*`)
+
+AI endpoints use standard JSON-RPC error responses. When available, Nova includes a structured
+`error.data` object so clients can reliably categorize failures while still surfacing a
+human-friendly `error.message`.
+
+`error.data` (when present) is an object with at least:
+
+- `kind: string` — stable, machine-readable category.
+
+Known `kind` values:
+
+- `notConfigured` — AI is not configured/enabled.
+- `excludedPath` — the request targets a file blocked by `ai.privacy.excluded_paths`.
+- `policy` — blocked by the cloud code-edit policy. Includes `policy`.
+- `provider` — model/provider request failed.
+- `patchParse` — failed to parse the model’s patch output.
+- `patchSafety` — patch was rejected by safety checks (e.g. path restrictions).
+- `patchApply` — patch could not be applied.
+- `validation` — generated patch failed validation.
+- `cancelled` — request was cancelled (typically with error code `-32800`).
+
+For `kind: "policy"`, `error.data.policy` is one of:
+
+- `cloudEditsDisabled`
+- `cloudEditsWithAnonymizationEnabled`
+- `cloudEditsWithoutAnonymizationDisabled`
+
+Example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32600,
+    "message": "AI disabled for this file due to ai.privacy.excluded_paths",
+    "data": { "kind": "excludedPath" }
+  }
+}
+```
+
 ### `nova/ai/explainError`
 
 - **Kind:** request
@@ -1199,8 +1241,9 @@ JSON string (the explanation).
 
 #### Errors
 
-- `-32600` if AI is not configured.
-- `-32603` for model/provider failures.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available).
+- `-32603` for model/provider failures (`error.data.kind = "provider"` when available).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 ---
 
@@ -1240,11 +1283,14 @@ containing a standard LSP `WorkspaceEdit`.
 
 #### Errors
 
-- `-32600` if AI is not configured, or if the target file is blocked by `ai.privacy.excluded_paths`.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"`) or if the target file is
+  blocked by `ai.privacy.excluded_paths` (`error.data.kind = "excludedPath"`).
 - `-32602` for invalid params (e.g. missing `uri`/`range`).
 - `-32603` for internal failures (model/provider errors, patch parsing/validation failures) **or**
-  when blocked by privacy policy (cloud code-edit policy enforcement).
-- `-32800` if the request is cancelled.
+  when blocked by privacy policy (cloud code-edit policy enforcement). When available,
+  `error.data.kind` further categorizes these failures (`provider` / `policy` / `patchParse` /
+  `patchSafety` / `patchApply` / `validation`).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 ---
 
