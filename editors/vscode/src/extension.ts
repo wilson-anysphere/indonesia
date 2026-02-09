@@ -1005,6 +1005,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         if (event.newState === State.Starting || event.newState === State.Stopped) {
           resetNovaExperimentalCapabilities(workspaceKey);
+          clearAiCompletionCacheForWorkspace(workspaceKey);
           clearWorkspaceObservabilityState(workspaceKey);
           updateFrameworksMethodSupportContexts();
           frameworksView.refresh();
