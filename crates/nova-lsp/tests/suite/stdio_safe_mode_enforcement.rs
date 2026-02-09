@@ -569,6 +569,13 @@ fn stdio_server_blocks_ai_workspace_execute_command_in_safe_mode() {
             }),
         ),
         (
+            nova_ide::COMMAND_CODE_REVIEW,
+            json!({
+                "diff": "diff --git a/Main.java b/Main.java\n--- a/Main.java\n+++ b/Main.java\n@@\n- old\n+ new\n",
+                "uri": file_uri.clone(),
+            }),
+        ),
+        (
             nova_ide::COMMAND_GENERATE_METHOD_BODY,
             json!({
                 "methodSignature": "int add(int a, int b)",

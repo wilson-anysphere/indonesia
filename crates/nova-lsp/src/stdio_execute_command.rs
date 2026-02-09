@@ -197,6 +197,13 @@ pub(super) fn handle_execute_command(
             .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_CODE_REVIEW => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::AI_CODE_REVIEW_METHOD)
+            {
+                return Err(map_nova_lsp_error(err));
+            }
+
             let args: CodeReviewArgs = parse_first_arg(params.arguments)?;
             crate::stdio_ai::run_ai_code_review(
                 args.diff,
