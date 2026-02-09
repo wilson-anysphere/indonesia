@@ -1151,12 +1151,20 @@ Output format (model response):
     available in the diff; otherwise grouped by category (`### Correctness`, `### Performance`,
     `### Security`, `### Tests`, `### Maintainability`).
   - `## Tests` — missing tests / risky areas and specific test cases to add.
-- Each issue should include a severity label (`BLOCKER` / `MAJOR` / `MINOR`) and a concrete,
-  code-referencing suggestion when possible (file/function/hunk + rationale + proposed fix snippet).
+- Each issue should include:
+  - severity label (`BLOCKER` / `MAJOR` / `MINOR`)
+  - **Where:** file + function/method (or diff hunk)
+  - **Why it matters:** impact/risk
+  - **Suggestion:** a concrete, code-referencing change when possible (quote lines or show a small snippet)
+- Severity guidance:
+  - `BLOCKER`: must fix before merge (likely bug/security issue/crash/data loss)
+  - `MAJOR`: important to address soon (likely correctness/perf/maintainability risk)
+  - `MINOR`: nice-to-have improvements (style/naming/small refactor)
 
 Note: the diff/context may be incomplete because some file sections can be omitted by
 `ai.privacy.excluded_paths`, and very large diffs may be truncated to fit context limits. In those
-cases, the review may be more general and should call out the missing context.
+cases, the review may be more general and should call out the missing context. The model should not
+invent file paths, line numbers, or surrounding code that is not present in the diff.
 
 #### Side effects
 
