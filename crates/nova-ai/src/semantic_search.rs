@@ -708,6 +708,9 @@ mod embeddings {
             }
             l2_normalize(&mut query_embedding);
 
+            let query_substring = query.trim();
+            let query_substring_lower = query_substring.to_lowercase();
+
             let mut index = self.index.lock().expect("semantic search mutex poisoned");
             if index.dirty {
                 self.rebuild_index_locked(&mut index);
@@ -737,13 +740,26 @@ mod embeddings {
 
                 // Re-score with exact cosine similarity for deterministic ranking.
                 let mut score = cosine_similarity(&query_embedding, &doc.embedding);
+
+                const SUBSTRING_MATCH_BOOST: f32 = 0.05;
+                const MAX_LEXICAL_BOOST: f32 = 0.20;
+                let mut lexical_boost = 0.0f32;
+
+                if !query_substring_lower.is_empty()
+                    && doc.snippet.to_lowercase().contains(&query_substring_lower)
+                {
+                    lexical_boost += SUBSTRING_MATCH_BOOST;
+                }
+
                 let path_str = path.to_string_lossy();
                 if let Some(score_path) = fuzzy_match(query, &path_str) {
-                    score += match score_path.kind {
+                    lexical_boost += match score_path.kind {
                         MatchKind::Prefix => 0.15,
                         MatchKind::Fuzzy => 0.05,
                     };
                 }
+
+                score += lexical_boost.min(MAX_LEXICAL_BOOST);
                 results.push(SearchResult {
                     path: path.clone(),
                     range: doc.range.clone(),

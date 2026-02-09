@@ -135,6 +135,37 @@ fn embedding_search_supports_incremental_indexing() {
 }
 
 #[test]
+fn embedding_search_boosts_exact_substring_matches() {
+    let db = VirtualWorkspace::new([(
+        "src/Multi.java".to_string(),
+        r#"
+            package com.example;
+
+            public class First {
+                public String helloWorld() {
+                    return "hello  world";
+                }
+            }
+
+            public class Second {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    search.index_project(&db);
+
+    let results = search.search("HELLO WORLD");
+    assert_eq!(results.len(), 2);
+    assert!(results[0].snippet.contains("hello world"));
+    assert!(results[1].snippet.contains("hello  world"));
+}
+
+#[test]
 fn embedding_search_skips_failed_doc_embeddings() {
     #[derive(Debug, Clone)]
     struct SelectiveFailEmbedder {
