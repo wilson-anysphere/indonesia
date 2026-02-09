@@ -102,7 +102,10 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
     );
     let candidates = vec![
         CompletionItem::new("mySecretMethod", CompletionItemKind::Method),
-        CompletionItem::new("mySecretField", CompletionItemKind::Field),
+        // Keep both candidates the same kind so the prompt still needs distinct (anonymized) labels
+        // to be useful. If labels were dropped or JSON-quoted, the model would lose signal and/or
+        // identifiers could leak.
+        CompletionItem::new("mySecretField", CompletionItemKind::Method),
     ];
 
     // We don't care about the returned ordering for this regression test, only that the request is
@@ -138,24 +141,41 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
     }
 
     // Numeric candidate IDs must remain intact so the local caller can map the model's output.
-    for (idx, raw) in ["0:", "1:"].into_iter().enumerate() {
-        let line = candidates_block
-            .lines()
-            .find(|line| line.starts_with(raw))
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected candidates block to contain a line starting with {raw:?} (idx={idx})\n{candidates_block}"
-                )
-            });
+    let line0 = candidates_block
+        .lines()
+        .find(|line| line.starts_with("0:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected candidates block to contain a line starting with \"0:\"\n{candidates_block}"
+            )
+        });
+    let line1 = candidates_block
+        .lines()
+        .find(|line| line.starts_with("1:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected candidates block to contain a line starting with \"1:\"\n{candidates_block}"
+            )
+        });
+
+    for (idx, line) in [line0, line1].into_iter().enumerate() {
         assert!(
             line.contains("id_"),
-            "expected candidate label to be anonymized (contain id_*) on line: {line:?}\n{candidates_block}"
+            "expected candidate label to be anonymized (contain id_*) on line (idx={idx}): {line:?}\n{candidates_block}"
         );
         assert!(
             !line.contains('"'),
             "candidate labels must not be quoted as JSON strings inside the code fence (would bypass identifier anonymization)\nline={line:?}\n{candidates_block}"
         );
     }
+
+    let rest0 = line0.splitn(2, ':').nth(1).unwrap_or("").trim();
+    let rest1 = line1.splitn(2, ':').nth(1).unwrap_or("").trim();
+    assert_ne!(
+        rest0,
+        rest1,
+        "expected candidate lines to differ after anonymization (labels should remain distinguishable)\n{candidates_block}"
+    );
 
     // Ensure we actually anonymized (rather than dropping the candidate list entirely).
     assert!(
