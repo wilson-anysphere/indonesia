@@ -211,13 +211,25 @@ pub(super) fn provider_embeddings_client_from_config(
                 );
                 return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             };
-            let Some(deployment) = config.provider.azure_deployment.clone() else {
+            let Some(deployment) = config
+                .embeddings
+                .model
+                .clone()
+                .or_else(|| config.provider.azure_deployment.clone())
+            else {
                 tracing::warn!(
                     target = "nova.ai",
                     "Azure OpenAI embeddings require ai.provider.azure_deployment; falling back to hash embeddings"
                 );
                 return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
             };
+             if deployment.trim().is_empty() {
+                 tracing::warn!(
+                     target = "nova.ai",
+                     "Azure OpenAI embeddings require a non-empty deployment name; falling back to hash embeddings"
+                 );
+                return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
+             }
             let api_version = config
                 .provider
                 .azure_api_version
@@ -227,7 +239,7 @@ pub(super) fn provider_embeddings_client_from_config(
             let base = match AzureOpenAiEmbeddingsClient::new(
                 config.provider.url.clone(),
                 api_key,
-                deployment,
+                deployment.clone(),
                 api_version,
                 timeout,
                 batch_size,
@@ -470,8 +482,21 @@ pub(super) fn provider_embeddings_client_from_config(
 }
 
 fn cached_model_id_for_azure(config: &AiConfig) -> Result<String, AiError> {
-    // `AzureOpenAiEmbeddingsClient` is keyed by deployment. If we don't have a deployment, the
-    // config is already invalid; treat it as an error here so the cache key remains deterministic.
+    // `AzureOpenAiEmbeddingsClient` is keyed by deployment.
+    //
+    // When `ai.embeddings.model` is set we treat it as a deployment override (so users can point
+    // chat completions and embeddings at different Azure deployments).
+    if let Some(model) = config.embeddings.model.clone() {
+        if model.trim().is_empty() {
+            return Err(AiError::InvalidConfig(
+                "ai.embeddings.model must be non-empty when set".into(),
+            ));
+        }
+        return Ok(model);
+    }
+
+    // If we don't have a deployment, the config is already invalid; treat it as an error here so
+    // the cache key remains deterministic.
     config
         .provider
         .azure_deployment

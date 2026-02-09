@@ -1076,17 +1076,24 @@ mod embeddings {
                 };
 
                 let Some(deployment) = config
-                    .provider
-                    .azure_deployment
+                    .embeddings
+                    .model
                     .clone()
-                    .filter(|deployment| !deployment.trim().is_empty())
+                    .or_else(|| config.provider.azure_deployment.clone())
                 else {
                     warn!(
                         target = "nova.ai",
-                        "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires ai.provider.azure_deployment; falling back to hash embeddings"
+                        "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires ai.embeddings.model or ai.provider.azure_deployment; falling back to hash embeddings"
                     );
                     return None;
                 };
+                if deployment.trim().is_empty() {
+                    warn!(
+                        target = "nova.ai",
+                        "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires a non-empty deployment; falling back to hash embeddings"
+                    );
+                    return None;
+                }
 
                 let api_version = config
                     .provider

@@ -220,6 +220,7 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
         provider: nova_config::AiProviderConfig {
             kind: AiProviderKind::Ollama,
             url: Url::parse(&server.base_url()).unwrap(),
+            model: "chat-model".to_string(),
             ..nova_config::AiProviderConfig::default()
         },
         embeddings: AiEmbeddingsConfig {
@@ -253,7 +254,9 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
 fn semantic_search_from_config_provider_backend_supports_openai_compatible_embeddings() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/embeddings");
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains("\"model\":\"text-embedding-3-small\"");
         then.status(200).json_body(json!({
             "data": [
                 { "index": 0, "embedding": [1.0, 0.0, 0.0] },
@@ -279,6 +282,7 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
         provider: nova_config::AiProviderConfig {
             kind: AiProviderKind::OpenAiCompatible,
             url: Url::parse(&format!("{}/v1", server.base_url())).unwrap(),
+            model: "chat-model".to_string(),
             ..nova_config::AiProviderConfig::default()
         },
         embeddings: AiEmbeddingsConfig {
@@ -372,7 +376,7 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST)
-            .path("/openai/deployments/my-deployment/embeddings")
+            .path("/openai/deployments/embed-deployment/embeddings")
             .query_param("api-version", "2024-02-01")
             .header("api-key", "test-key");
         then.status(200).json_body(json!({
@@ -395,7 +399,7 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
         provider: nova_config::AiProviderConfig {
             kind: AiProviderKind::AzureOpenAi,
             url: Url::parse(&format!("{}/", server.base_url())).unwrap(),
-            azure_deployment: Some("my-deployment".to_string()),
+            azure_deployment: Some("chat-deployment".to_string()),
             // Assert the default API version.
             azure_api_version: None,
             ..nova_config::AiProviderConfig::default()
@@ -403,6 +407,7 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
         embeddings: AiEmbeddingsConfig {
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
+            model: Some("embed-deployment".to_string()),
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
