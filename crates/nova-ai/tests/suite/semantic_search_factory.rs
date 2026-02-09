@@ -177,14 +177,42 @@ fn semantic_search_from_config_supports_incremental_updates() {
 #[test]
 fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
     let server = MockServer::start();
-    let mock = server.mock(|when, then| {
+    let index_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/embed")
+            .body_contains("\"model\":\"nomic-embed-text\"")
+            .body_contains("src/Hello.java");
+        then.status(200).json_body(json!({
+            "embeddings": [
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ]
+        }));
+    });
+    let query_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/embed")
+            .body_contains("\"model\":\"nomic-embed-text\"")
+            .body_contains("\"input\":[\"hello world\"]");
+        then.status(200).json_body(json!({
+            "embeddings": [[1.0, 0.0, 0.0]]
+        }));
+    });
+    let mock_legacy = server.mock(|when, then| {
         when.method(POST).path("/api/embeddings");
-        then.status(200).json_body(json!({ "embedding": [1.0, 0.0, 0.0] }));
+        then.status(500);
     });
 
     let db = VirtualWorkspace::new([(
-        "src/example.txt".to_string(),
-        "hello world".to_string(),
+        "src/Hello.java".to_string(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
     )]);
 
     let cfg = AiConfig {
@@ -211,10 +239,13 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
-    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+    assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
 
-    // One request for indexing, one request for query embedding.
-    mock.assert_hits(2);
+    // One request for indexing (batched) + one request for query embedding. Both should go through
+    // the `/api/embed` endpoint when available.
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(1);
+    mock_legacy.assert_hits(0);
 }
 
 #[cfg(feature = "embeddings")]
@@ -223,13 +254,24 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/v1/embeddings");
-        then.status(200)
-            .json_body(json!({ "data": [{ "embedding": [1.0, 0.0, 0.0] }] }));
+        then.status(200).json_body(json!({
+            "data": [
+                { "index": 0, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 1, "embedding": [1.0, 0.0, 0.0] }
+            ]
+        }));
     });
 
     let db = VirtualWorkspace::new([(
-        "src/example.txt".to_string(),
-        "hello world".to_string(),
+        "src/Hello.java".to_string(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
     )]);
 
     let cfg = AiConfig {
@@ -256,7 +298,7 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
-    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+    assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
 
     mock.assert_hits(2);
 }
