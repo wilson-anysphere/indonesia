@@ -58,7 +58,7 @@ fn config_with_excluded_secrets() -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_omits_diffs_for_excluded_paths() {
     let ai = NovaAi::new(&config_with_excluded_secrets()).expect("NovaAi builds");
     let client = CapturingLlmClient::default();
@@ -94,7 +94,7 @@ index 0000000..1111111 100644
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_keeps_allowed_file_sections_intact() {
     let ai = NovaAi::new(&config_with_excluded_secrets()).expect("NovaAi builds");
     let client = CapturingLlmClient::default();

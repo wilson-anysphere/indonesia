@@ -61,7 +61,7 @@ fn http_config(url: Url) -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn max_retries_zero_disables_retries() {
     let request_count = Arc::new(AtomicUsize::new(0));
     let request_count_for_handler = request_count.clone();
@@ -116,7 +116,7 @@ async fn max_retries_zero_disables_retries() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn max_retries_allows_retry_on_500() {
     let request_count = Arc::new(AtomicUsize::new(0));
     let request_count_for_handler = request_count.clone();

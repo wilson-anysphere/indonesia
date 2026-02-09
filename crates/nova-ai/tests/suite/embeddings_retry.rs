@@ -21,7 +21,7 @@ fn openai_compatible_config(server: &MockServer, model_dir: std::path::PathBuf) 
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn embeddings_retries_on_http_429() {
     let server = MockServer::start();
     let dir = tempfile::tempdir().expect("tempdir");

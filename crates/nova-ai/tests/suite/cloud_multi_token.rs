@@ -60,7 +60,7 @@ fn provider_for_server_with_privacy(
         .with_privacy_mode(privacy)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn sends_prompt_with_context_and_parses_raw_json() {
     let server = MockServer::start();
 
@@ -100,7 +100,7 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
     assert!((out[0].confidence - 0.9).abs() < f32::EPSILON);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn cloud_multi_token_is_disabled_when_identifier_anonymization_is_enabled() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -142,7 +142,7 @@ async fn cloud_multi_token_is_disabled_when_identifier_anonymization_is_enabled(
     mock.assert_hits(0);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn parses_json_wrapped_in_fenced_block() {
     let server = MockServer::start();
     let completion_payload = r#"{"completions":[{"label":"fenced","insert_text":"map(x -> x)","format":"plain","additional_edits":[],"confidence":0.7}]}"#;
@@ -172,7 +172,7 @@ async fn parses_json_wrapped_in_fenced_block() {
     assert!((out[0].confidence - 0.7).abs() < f32::EPSILON);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn invalid_json_gracefully_degrades_to_empty() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -233,7 +233,7 @@ impl LlmClient for CapturingLlm {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn sanitization_respects_comment_redaction_flag() {
     let llm = Arc::new(CapturingLlm::default());
 

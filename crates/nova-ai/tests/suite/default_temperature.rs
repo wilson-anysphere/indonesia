@@ -20,7 +20,7 @@ fn http_config(url: Url) -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn default_temperature_is_sent_when_configured() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -52,7 +52,7 @@ async fn default_temperature_is_sent_when_configured() {
     mock.assert_hits(1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn temperature_field_is_omitted_when_unset() {
     let server = MockServer::start();
     let expected_body = json!({

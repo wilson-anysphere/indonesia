@@ -22,7 +22,7 @@ fn http_config(url: Url, model: &str) -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn llm_chat_is_cached_for_identical_requests() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -56,7 +56,7 @@ async fn llm_chat_is_cached_for_identical_requests() {
     mock.assert_hits(1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn llm_cache_misses_when_model_changes() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -93,7 +93,7 @@ async fn llm_cache_misses_when_model_changes() {
     mock.assert_hits(2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn llm_cache_misses_when_temperature_changes() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -135,7 +135,7 @@ async fn llm_cache_misses_when_temperature_changes() {
     mock.assert_hits(2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn llm_cache_misses_when_temperature_is_none_vs_zero() {
     // Regression test: cache keys must distinguish "unset" temperature from an explicit `0.0`.
     // (Without encoding the option discriminant, `None` would collide with `Some(0.0)`.)

@@ -91,7 +91,7 @@ fn cloud_config(url: Url) -> AiConfig {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_truncates_large_diffs_before_sending() {
     let limit = 200usize;
 
@@ -147,7 +147,7 @@ async fn code_review_truncates_large_diffs_before_sending() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_does_not_change_small_diffs() {
     let limit = 1_000usize;
     let diff = "diff --git a/src/Main.java b/src/Main.java\n+class Main {}\n";
@@ -189,7 +189,7 @@ async fn code_review_does_not_change_small_diffs() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_truncation_marker_survives_identifier_anonymization() {
     let limit = 200usize;
     let diff = format!(

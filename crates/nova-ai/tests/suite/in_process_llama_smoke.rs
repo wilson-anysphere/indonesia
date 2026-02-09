@@ -5,7 +5,7 @@ use nova_config::{AiConfig, AiProviderKind, InProcessLlamaConfig};
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn in_process_llama_smoke_test() {
     let model_path = std::env::var("NOVA_TEST_GGUF_MODEL")
         .map(PathBuf::from)

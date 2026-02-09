@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_use_memory_cache_for_partial_hits() {
     let server = MockServer::start();
 
@@ -86,7 +86,7 @@ async fn provider_embeddings_use_memory_cache_for_partial_hits() {
     only_miss.assert_hits(1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_memory_cache_evicts_lru_entries() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {

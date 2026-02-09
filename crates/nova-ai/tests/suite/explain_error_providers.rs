@@ -86,7 +86,7 @@ fn dummy_ctx() -> ContextRequest {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn explain_error_works_for_each_provider_kind() {
     // Ollama
     {

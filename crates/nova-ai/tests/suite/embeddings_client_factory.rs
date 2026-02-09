@@ -5,7 +5,7 @@ use nova_ai::HashEmbedder;
 use nova_config::{AiConfig, AiEmbeddingsBackend};
 use tokio_util::sync::CancellationToken;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn embeddings_client_from_config_local_backend_without_feature_falls_back_to_hash_embedder() {
     let mut config = AiConfig::default();
     config.enabled = true;

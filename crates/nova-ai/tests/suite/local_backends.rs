@@ -141,7 +141,7 @@ fn remote_urls_allowed_when_not_local_only() {
     AiClient::from_config(&config).expect("remote urls should be allowed when local_only=false");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_request_formatting() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 
@@ -191,7 +191,7 @@ async fn openai_compatible_request_formatting() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_sends_authorization_header_when_api_key_is_set() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.method(), hyper::Method::POST);
@@ -233,7 +233,7 @@ async fn openai_compatible_sends_authorization_header_when_api_key_is_set() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_list_models_sends_authorization_header_when_api_key_is_set() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.method(), hyper::Method::GET);
@@ -267,7 +267,7 @@ async fn openai_compatible_list_models_sends_authorization_header_when_api_key_i
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_stream_sends_authorization_header_when_api_key_is_set() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.method(), hyper::Method::POST);
@@ -326,7 +326,7 @@ async fn openai_compatible_stream_sends_authorization_header_when_api_key_is_set
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn ollama_request_formatting() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 
@@ -373,7 +373,7 @@ async fn ollama_request_formatting() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_streaming_parsing() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 
@@ -439,7 +439,7 @@ async fn openai_compatible_streaming_parsing() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn cancellation_stops_in_flight_request() {
     let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
 
@@ -491,7 +491,7 @@ async fn cancellation_stops_in_flight_request() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn cancellation_while_waiting_for_client_semaphore() {
     let request_count = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(Notify::new());
@@ -599,7 +599,7 @@ async fn cancellation_while_waiting_for_client_semaphore() {
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn ai_actions_work_end_to_end_with_local_backend() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 

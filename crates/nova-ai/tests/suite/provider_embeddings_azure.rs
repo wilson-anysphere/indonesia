@@ -8,7 +8,7 @@ use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() {
     let server = MockServer::start();
 
@@ -55,7 +55,7 @@ async fn azure_openai_provider_embeddings_hits_deployment_embeddings_endpoint() 
     assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn azure_openai_provider_embeddings_redacts_absolute_paths_in_cloud_mode() {
     let server = MockServer::start();
 

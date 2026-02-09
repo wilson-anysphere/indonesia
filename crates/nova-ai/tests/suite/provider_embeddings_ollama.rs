@@ -7,7 +7,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn ollama_provider_embeddings_prefers_batch_embed_endpoint() {
     let server = MockServer::start();
 
@@ -53,7 +53,7 @@ async fn ollama_provider_embeddings_prefers_batch_embed_endpoint() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn ollama_provider_embeddings_falls_back_to_legacy_embeddings_endpoint() {
     let server = MockServer::start();
 

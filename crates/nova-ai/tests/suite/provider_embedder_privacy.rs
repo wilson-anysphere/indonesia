@@ -44,7 +44,7 @@ where
     (addr, handle)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_redacts_privacy_patterns_before_sending_to_http_backend() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.uri().path(), "/v1/embeddings");

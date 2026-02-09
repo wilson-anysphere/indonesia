@@ -93,7 +93,7 @@ fn provider_embeddings_loopback_url_is_allowed_in_local_only_mode() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_client_remote_url_falls_back_to_hash_in_local_only_mode() {
     let mut cfg = AiConfig::default();
     cfg.enabled = true;
@@ -118,7 +118,7 @@ async fn provider_embeddings_client_remote_url_falls_back_to_hash_in_local_only_
     assert_eq!(out[0].len(), 256, "expected hash embedder fallback");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_client_loopback_url_is_allowed_in_local_only_mode() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -256,7 +256,7 @@ fn provider_embeddings_redact_absolute_paths_in_cloud_mode_ollama() {
     redacted.assert_hits(2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_openai_compatible() {
     let server = MockServer::start();
 
@@ -313,7 +313,7 @@ async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_openai_
     assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_ollama() {
     let server = MockServer::start();
 

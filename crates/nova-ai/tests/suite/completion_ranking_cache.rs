@@ -23,7 +23,7 @@ fn http_config(url: Url, model: &str) -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn llm_completion_ranking_is_cached_for_identical_requests() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {

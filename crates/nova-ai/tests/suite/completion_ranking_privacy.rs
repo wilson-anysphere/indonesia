@@ -68,7 +68,7 @@ fn http_config(url: Url) -> AiConfig {
     cfg
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
     let captured_prompt: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let captured_prompt_for_handler = captured_prompt.clone();

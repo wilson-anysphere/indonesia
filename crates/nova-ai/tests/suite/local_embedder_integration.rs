@@ -84,7 +84,7 @@ fn local_embedder_can_embed_with_prepared_model_dir() {
 
 /// Like [`local_embedder_can_embed_with_prepared_model_dir`] but exercises the async
 /// `EmbeddingsClient` factory wiring (`ai.embeddings.backend = "local"`).
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn embeddings_client_from_config_local_backend_can_embed_with_prepared_model_dir() {
     let model_dir = match std::env::var("NOVA_TEST_EMBEDDINGS_MODEL_DIR") {
         Ok(value) => value,

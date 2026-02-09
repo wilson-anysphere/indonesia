@@ -8,7 +8,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_are_cached_on_disk() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {

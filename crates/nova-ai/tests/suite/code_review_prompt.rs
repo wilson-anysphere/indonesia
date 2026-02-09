@@ -65,7 +65,7 @@ fn openai_compatible_config(url: Url) -> AiConfig {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_prompt_requests_structured_markdown_output() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.uri().path(), "/v1/chat/completions");
