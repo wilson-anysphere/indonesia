@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { formatError } from './safeMode';
+import { formatError, isSafeModeError } from './safeMode';
 import type { NovaRequest } from './metricsCommands';
 
 const SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND = 'nova.showSemanticSearchIndexStatus';
@@ -25,6 +25,7 @@ export function registerNovaSemanticSearchCommands(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND, async () => {
+      let pickedWorkspace: vscode.WorkspaceFolder | undefined;
       try {
         const workspaces = vscode.workspace.workspaceFolders ?? [];
         if (workspaces.length === 0) {
@@ -32,10 +33,11 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        const pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
         if (!pickedWorkspace) {
           return;
         }
+        const workspace = pickedWorkspace;
 
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
@@ -46,7 +48,7 @@ export function registerNovaSemanticSearchCommands(
           async (_progress, token) => {
             return await request<unknown>(
               'nova/semanticSearch/indexStatus',
-              { projectRoot: pickedWorkspace.uri.fsPath },
+              { projectRoot: workspace.uri.fsPath },
               { token },
             );
           },
@@ -63,9 +65,7 @@ export function registerNovaSemanticSearchCommands(
 
         output.clear();
         output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/indexStatus`);
-        if (pickedWorkspace) {
-          output.appendLine(`Workspace: ${pickedWorkspace.name} (${pickedWorkspace.uri.fsPath})`);
-        }
+        output.appendLine(`Workspace: ${workspace.name} (${workspace.uri.fsPath})`);
         if (summary) {
           output.appendLine(summary);
         }
@@ -87,6 +87,14 @@ export function registerNovaSemanticSearchCommands(
           }
         }
       } catch (err) {
+        if (isSafeModeError(err)) {
+          await handleSemanticSearchSafeModeError(output, {
+            action: 'fetch semantic search index status',
+            workspace: pickedWorkspace,
+            err,
+          });
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: failed to fetch semantic search index status: ${message}`);
       }
@@ -95,6 +103,7 @@ export function registerNovaSemanticSearchCommands(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, async () => {
+      let pickedWorkspace: vscode.WorkspaceFolder | undefined;
       try {
         const workspaces = vscode.workspace.workspaceFolders ?? [];
         if (workspaces.length === 0) {
@@ -102,10 +111,11 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        const pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
         if (!pickedWorkspace) {
           return;
         }
+        const workspace = pickedWorkspace;
 
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
@@ -117,7 +127,7 @@ export function registerNovaSemanticSearchCommands(
             // Route all polling calls to the same workspace folder. Without an explicit routing
             // hint, `sendNovaRequest` will prompt on every poll in a multi-root workspace when there
             // is no active editor.
-            const routingParams = { projectRoot: pickedWorkspace.uri.fsPath };
+            const routingParams = { projectRoot: workspace.uri.fsPath };
 
             let lastMessage: string | undefined;
             while (!token.isCancellationRequested) {
@@ -237,11 +247,64 @@ export function registerNovaSemanticSearchCommands(
         const workspacePrefix = pickedWorkspace ? `${pickedWorkspace.name}: ` : '';
         void vscode.window.showInformationMessage(`Nova: Semantic search indexing complete (${workspacePrefix}${doneMessage}).`);
       } catch (err) {
+        if (isSafeModeError(err)) {
+          await handleSemanticSearchSafeModeError(output, {
+            action: 'wait for semantic search indexing',
+            workspace: pickedWorkspace,
+            err,
+          });
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: failed to wait for semantic search indexing: ${message}`);
       }
     }),
   );
+}
+
+async function handleSemanticSearchSafeModeError(
+  output: vscode.OutputChannel,
+  opts: { action: string; workspace?: vscode.WorkspaceFolder; err: unknown },
+): Promise<void> {
+  const message = formatError(opts.err);
+
+  output.clear();
+  output.appendLine(`[${new Date().toISOString()}] Nova: ${opts.action}`);
+  if (opts.workspace) {
+    output.appendLine(`Workspace: ${opts.workspace.name} (${opts.workspace.uri.fsPath})`);
+  }
+  output.appendLine('Nova is running in safe mode, so semantic search indexing status is temporarily unavailable.');
+  output.appendLine('');
+  output.appendLine(`Error: ${message}`);
+  output.show(true);
+
+  const choice = await vscode.window.showWarningMessage(
+    'Nova: Semantic search indexing status is unavailable while Nova is in safe mode. Wait for safe mode to clear, or restart the language server.',
+    'Generate Bug Report',
+    'Restart Language Server',
+    'Show Safe Mode',
+  );
+
+  if (choice === 'Generate Bug Report') {
+    try {
+      await vscode.commands.executeCommand('nova.bugReport', opts.workspace);
+    } catch {
+      // Best-effort: command might not exist in some VS Code contexts.
+    }
+  } else if (choice === 'Restart Language Server') {
+    try {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    } catch {
+      // Best-effort: command might not exist in some VS Code contexts.
+    }
+  } else if (choice === 'Show Safe Mode') {
+    try {
+      await vscode.commands.executeCommand('workbench.view.explorer');
+      await vscode.commands.executeCommand('novaFrameworks.focus');
+    } catch {
+      // Best-effort: ignore.
+    }
+  }
 }
 
 function readSemanticSearchIndexStatusFields(payload: unknown): SemanticSearchIndexStatusFields {
