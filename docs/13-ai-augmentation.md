@@ -295,14 +295,21 @@ impl CodeReviewer {
     
     async fn ai_review(&self, diff: &GitDiff) -> AiReviewResult {
         let prompt = format!(
-            "Review this Java code change:\n\n{}\n\n\
-             Consider:\n\
-             - Correctness\n\
-             - Performance implications\n\
-             - Security concerns\n\
-             - Code style and maintainability\n\
-             - Missing error handling\n\
-             - Test coverage",
+            "Review this Java code change.\n\
+             \n\
+             Note: the diff may be incomplete (some files/hunks can be omitted by excluded-path privacy filtering).\n\
+             \n\
+             ## Diff\n\
+             ```diff\n\
+             {}\n\
+             ```\n\
+             \n\
+             Return plain Markdown using:\n\
+             - `## Summary`\n\
+             - `## Issues & Suggestions` grouped by file (`### path/to/File.java`) when possible\n\
+               (or by category: Correctness/Performance/Security/Tests/Maintainability)\n\
+             - Severity labels (`BLOCKER`/`MAJOR`/`MINOR`) with concrete, code-referencing suggestions\n\
+             - `## Tests` with specific test cases to add",
             format_diff(diff),
         );
         
@@ -310,6 +317,22 @@ impl CodeReviewer {
         parse_review_response(&response)
     }
 }
+```
+
+Example output:
+
+```md
+## Summary
+- Adds input validation to `UserService#createUser` and updates error handling.
+
+## Issues & Suggestions
+### src/main/java/com/acme/UserService.java
+- **[MAJOR]** Possible NPE when `user.getEmail()` is null
+  - **Where:** `createUser(...)` around the new `email.trim()` call
+  - **Suggestion:** guard nulls (or enforce non-null at the type boundary) before trimming.
+
+## Tests
+- Add a test for `createUser` when `email` is null/blank (expect validation error).
 ```
 
 ---

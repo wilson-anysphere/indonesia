@@ -31,7 +31,44 @@ pub(crate) fn generate_tests_prompt(target: &str, context: &str) -> String {
 
 pub(crate) fn code_review_prompt(diff: &str) -> String {
     format!(
-        "Review this code change:\n\n{diff}\n\n\
-         Consider correctness, performance, security, maintainability, and tests.\n"
+        r#"Review the following code change.
+
+Notes:
+- The diff/context you receive may be incomplete because some files or hunks can be omitted by
+  `excluded_paths` privacy filtering. Do not assume missing context; call out limitations when
+  relevant.
+- Focus on actionable feedback with concrete, code-referencing suggestions.
+
+## Diff
+```diff
+{diff}
+```
+
+Return plain Markdown (no JSON) using this structure:
+
+## Summary
+- 1-3 bullets describing what changed and overall risk.
+
+## Issues & Suggestions
+- Prefer grouping by file when file paths are available in the diff. Use `### path/to/File.java`
+  headings.
+- If file names are not available, group by category using: `### Correctness`, `### Performance`,
+  `### Security`, `### Tests`, `### Maintainability`.
+
+For each issue/suggestion include:
+- **[SEVERITY]** short title (`BLOCKER`, `MAJOR`, or `MINOR`)
+- **Where:** file + function/method (or diff hunk) you are referring to
+- **Why it matters:** impact/risk
+- **Suggestion:** a concrete change (quote exact lines or show a small corrected snippet)
+
+## Tests
+- Missing tests or risky areas + specific test cases to add.
+
+(Optional) ## Positive Notes
+(Optional) ## Questions / Follow-ups
+
+If the diff is missing/omitted (e.g. it contains "[diff omitted due to excluded_paths]"), explicitly
+state that you cannot give file-specific feedback and provide only general review guidance.
+"#
     )
 }
