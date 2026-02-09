@@ -81,7 +81,8 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
     if config.embeddings.enabled {
         #[cfg(feature = "embeddings")]
         {
-            let max_memory_bytes = config.embeddings.max_memory_bytes;
+            let max_memory_bytes =
+                (config.embeddings.max_memory_bytes.0).min(usize::MAX as u64) as usize;
             match config.embeddings.backend {
                 nova_config::AiEmbeddingsBackend::Hash => {
                     return Box::new(
