@@ -116,6 +116,7 @@ fn code_generation_error(code: i32, err: nova_ai_codegen::CodeGenerationError) -
     E::InvalidInsertRange { .. } => {
       rpc_error_with_kind(-32602, err.to_string(), AI_ERROR_KIND_VALIDATION)
     },
+    E::EditRangeSafety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
     E::ValidationFailed { .. } => {
       rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_VALIDATION)
     }

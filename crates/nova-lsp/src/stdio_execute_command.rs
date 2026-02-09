@@ -36,7 +36,7 @@ pub(super) fn handle_execute_command(
         if let Some(feature) = crate::stdio_ai::ai_action_feature_for_command(params.command.as_str())
         {
             if !crate::stdio_ai::ai_action_feature_enabled(state, feature) {
-                return Err(crate::stdio_ai::ai_action_feature_disabled_error(feature));
+                return Err(crate::stdio_ai::ai_action_feature_disabled_rpc_error(feature));
             }
         }
     }
