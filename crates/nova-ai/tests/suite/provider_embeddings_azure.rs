@@ -127,7 +127,7 @@ async fn azure_openai_provider_embeddings_redacts_absolute_paths_in_cloud_mode()
     assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn azure_openai_provider_embeddings_respects_embeddings_model_override_as_deployment() {
     let server = MockServer::start();
 

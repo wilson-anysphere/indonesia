@@ -118,7 +118,7 @@ async fn ollama_provider_embeddings_falls_back_to_legacy_embeddings_endpoint() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn ollama_provider_embeddings_caches_embed_endpoint_probe_when_missing() {
     let server = MockServer::start();
 
