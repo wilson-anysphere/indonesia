@@ -393,10 +393,9 @@ fn ai_review_git_staged_flag_uses_git_diff_staged_output() {
     git(&["add", "README.md"]);
     git(&["commit", "-m", "init", "--no-gpg-sign"]);
 
-    // Modify and stage, then restore working tree so only staged diff remains.
+    // Modify and stage so `git diff --staged` is non-empty and `git diff` is empty.
     src.write_str("hello staged\n").unwrap();
     git(&["add", "README.md"]);
-    git(&["restore", "--worktree", "README.md"]);
 
     let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
         .current_dir(temp.path())
