@@ -1309,6 +1309,7 @@ No params are required; clients should send `{}` or omit params.
 
 ```json
 {
+  "enabled": true,
   "currentRunId": 1,
   "completedRunId": 1,
   "done": true,
@@ -1319,13 +1320,20 @@ No params are required; clients should send `{}` or omit params.
 
 Field semantics:
 
+- `enabled` (boolean): whether semantic search is enabled by configuration:
+  `ai.enabled && ai.features.semantic_search`.
 - `currentRunId` (number): the id of the most recent indexing run. `0` means no workspace indexing
-  run has been started (for example: semantic search disabled, missing workspace root, AI runtime
-  not available, or the server is in safe-mode).
+  run has been started.
 - `completedRunId` (number): the id of the most recently completed indexing run.
 - `done` (boolean): `true` when `currentRunId != 0` and `currentRunId == completedRunId`.
 - `indexedFiles` (number): number of files indexed so far in the current run.
 - `indexedBytes` (number): number of bytes indexed so far in the current run.
+- `reason` (string, optional): present when `enabled == false` **or** when workspace indexing cannot
+  start. Known values:
+  - `"disabled"` — semantic search is disabled by config.
+  - `"safe_mode"` — the server is/was in safe-mode (see `nova/safeModeStatus`).
+  - `"missing_workspace_root"` — `initialize.rootUri` / workspace root is missing or invalid.
+  - `"runtime_unavailable"` — the server could not initialize its AI runtime (AI misconfigured).
 
 Notes:
 

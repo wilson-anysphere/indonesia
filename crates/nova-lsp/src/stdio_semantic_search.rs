@@ -170,13 +170,41 @@ impl ServerState {
         let (current, completed, files, bytes) =
             self.semantic_search_workspace_index_status.snapshot();
         let done = current != 0 && current == completed;
-        json!({
+
+        let enabled = self.semantic_search_enabled();
+        let reason = if !enabled {
+            Some("disabled")
+        } else if current == 0 {
+            // Mirror the gating logic of `start_semantic_search_workspace_indexing` so callers can
+            // understand why workspace indexing has not started.
+            let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
+            if safe_mode {
+                Some("safe_mode")
+            } else if self.project_root.as_ref().is_none_or(|root| !root.is_dir()) {
+                Some("missing_workspace_root")
+            } else if self.runtime.is_none() {
+                Some("runtime_unavailable")
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut value = json!({
             "currentRunId": current,
             "completedRunId": completed,
             "done": done,
             "indexedFiles": files,
             "indexedBytes": bytes,
-        })
+            "enabled": enabled,
+        });
+
+        if let (Some(reason), serde_json::Value::Object(obj)) = (reason, &mut value) {
+            obj.insert("reason".to_string(), serde_json::Value::String(reason.to_string()));
+        }
+
+        value
     }
 
     pub(super) fn start_semantic_search_workspace_indexing(&mut self) {
@@ -376,4 +404,3 @@ impl ServerState {
         });
     }
 }
-
