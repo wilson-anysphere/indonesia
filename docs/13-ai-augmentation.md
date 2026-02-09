@@ -516,8 +516,9 @@ When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors a
 
 - `hash` — deterministic/offline hashing-trick embeddings (recommended for tests).
 - `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`).
-- `local` — in-process embedding model (only available if implemented by the build; otherwise Nova
-  falls back to `hash`).
+- `local` — in-process embedding model. Requires building `nova-ai` with `--features embeddings-local`
+  (otherwise Nova falls back to `hash`). Model selection and caching are configured via
+  `ai.embeddings.local_model` and `ai.embeddings.model_dir`.
 
 `ai.embeddings.model` optionally overrides the embedding model used by provider embeddings.
 When unset, Nova reuses `ai.provider.model`. It is ignored for `backend="hash"`.
@@ -582,7 +583,8 @@ model = "text-embedding-3-small"
 
 When `ai.privacy.local_only=true`, Nova validates that HTTP providers (including provider-backed
 embeddings) point to **localhost/loopback** (for example `http://localhost:11434`).
-Non-local endpoints are rejected by config validation.
+Non-local endpoints are rejected in local-only mode (and provider embeddings will fall back to
+`backend="hash"`).
 
 ### Server-side overrides (environment variables)
 
