@@ -45,7 +45,7 @@ pub use completion_filter::filter_duplicates_against_insert_text_set;
 pub use completion_provider::CloudMultiTokenCompletionProvider;
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
-    CompletionRanker,
+    CompletionRanker, LlmCompletionRanker,
 };
 pub use completion_validation::validate_multi_token_completion;
 pub use context::{
