@@ -1337,6 +1337,7 @@ pub(super) fn load_ai_config_from_env(
   }
   cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
   cfg.provider.concurrency = provider_concurrency;
+  cfg.privacy.include_file_paths = include_file_paths;
   cfg.privacy.anonymize_identifiers = Some(anonymize_identifiers);
   cfg.privacy.redact_sensitive_strings = redact_sensitive_strings;
   cfg.privacy.redact_numeric_literals = redact_numeric_literals;
@@ -2043,5 +2044,60 @@ mod tests {
     let built = nova_ai::ContextBuilder::new().build(req);
     assert!(built.text.contains("Project context"));
     assert!(built.text.contains("Symbol/type info"));
+  }
+
+  #[test]
+  fn build_context_request_includes_file_path_when_opted_in() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+    let file_path = src_dir.join("Main.java");
+    let text = r#"class Main { void run() { String s = "hi"; } }"#;
+    std::fs::write(&file_path, text).expect("write java file");
+
+    let uri: Uri = url::Url::from_file_path(&file_path)
+      .expect("file url")
+      .to_string()
+      .parse()
+      .expect("uri");
+
+    let mut privacy = nova_ai::PrivacyMode::default();
+    privacy.include_file_paths = true;
+    let mut state = ServerState::new(
+      nova_config::NovaConfig::default(),
+      Some(privacy),
+      MemoryBudgetOverrides::default(),
+    );
+    state.project_root = Some(root.to_path_buf());
+    state.analysis.open_document(uri.clone(), text.to_string(), 1);
+
+    let offset = text.find("s =").expect("variable occurrence");
+    let start = nova_lsp::text_pos::lsp_position(text, offset).expect("start pos");
+    let end = nova_lsp::text_pos::lsp_position(text, offset + 1).expect("end pos");
+    let range = nova_ide::LspRange {
+      start: nova_ide::LspPosition {
+        line: start.line,
+        character: start.character,
+      },
+      end: nova_ide::LspPosition {
+        line: end.line,
+        character: end.character,
+      },
+    };
+
+    let req = build_context_request_from_args(
+      &state,
+      Some(uri.as_str()),
+      Some(range),
+      String::new(),
+      None,
+      /*include_doc_comments=*/ false,
+    );
+
+    let built = nova_ai::ContextBuilder::new().build(req);
+    assert!(built.text.contains("## File"), "built context: {}", built.text);
+    assert!(built.text.contains("Main.java"), "built context: {}", built.text);
   }
 }

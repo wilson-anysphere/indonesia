@@ -1245,6 +1245,17 @@ pub struct AiPrivacyConfig {
     #[serde(default = "default_local_only")]
     pub local_only: bool,
 
+    /// Allow including file system paths (file names, workspace-relative paths, or absolute paths)
+    /// in prompts/context sent to the LLM.
+    ///
+    /// This is a **high-sensitivity** setting: file paths can leak user names, organization names,
+    /// internal directory structure, and other metadata. The safe default is `false`.
+    ///
+    /// Note: `ai.privacy.excluded_paths` is still enforced regardless of this flag. Excluded files
+    /// are omitted from prompts, and Nova avoids attaching file path metadata for excluded files.
+    #[serde(default)]
+    pub include_file_paths: bool,
+
     /// If unset, defaults to:
     /// - `false` when `local_only = true`
     /// - `true` when `local_only = false` (cloud mode)
@@ -1318,6 +1329,7 @@ impl Default for AiPrivacyConfig {
     fn default() -> Self {
         Self {
             local_only: default_local_only(),
+            include_file_paths: false,
             anonymize_identifiers: None,
             redact_sensitive_strings: None,
             redact_numeric_literals: None,

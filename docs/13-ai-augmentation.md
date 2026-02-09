@@ -543,6 +543,29 @@ Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never 
 
 ---
 
+### Including file paths in prompts (`ai.privacy.include_file_paths`)
+
+By default, Nova does **not** include filesystem paths in prompts/context sent to an LLM. Paths can
+leak sensitive metadata such as user names, organization names, and internal directory structure.
+
+To explicitly opt in:
+
+```toml
+[ai.privacy]
+include_file_paths = true
+```
+
+When enabled, Nova may include:
+
+- a `## File` section in built context bundles (focal file path)
+- path labels in `Related code:` / `Extra file:` section titles
+- full classpath entries under `Project context` (instead of only basenames)
+
+`ai.privacy.excluded_paths` is still enforced regardless of this flag: excluded files are omitted
+from prompts, and Nova avoids attaching file path metadata for excluded files.
+
+---
+
 ### Excluding files from AI (`ai.privacy.excluded_paths`)
 
 `ai.privacy.excluded_paths` is a list of glob patterns for files whose contents must **never** be

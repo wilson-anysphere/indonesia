@@ -38,8 +38,8 @@ impl PrivacyMode {
                 redact_comments: config.effective_strip_or_redact_comments(),
             },
             // Paths are excluded by default (see docs/13-ai-augmentation.md).
-            // Call sites that want to include paths must opt in explicitly.
-            include_file_paths: false,
+            // Call sites must opt in explicitly (via config or legacy env vars).
+            include_file_paths: config.include_file_paths,
         }
     }
 }
@@ -125,5 +125,15 @@ mod tests {
         let cfg = AiPrivacyConfig::default();
         let mode = PrivacyMode::from_ai_privacy_config(&cfg);
         assert!(!mode.include_file_paths);
+    }
+
+    #[test]
+    fn privacy_mode_from_config_includes_paths_when_opted_in() {
+        let cfg = AiPrivacyConfig {
+            include_file_paths: true,
+            ..AiPrivacyConfig::default()
+        };
+        let mode = PrivacyMode::from_ai_privacy_config(&cfg);
+        assert!(mode.include_file_paths);
     }
 }
