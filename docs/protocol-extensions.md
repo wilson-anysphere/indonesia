@@ -1197,6 +1197,13 @@ Note: the diff/context may be incomplete because some file sections can be omitt
 cases, the review may be more general and should call out the missing context. The model should not
 invent file paths, line numbers, or surrounding code that is not present in the diff.
 
+When truncation happens, Nova inserts a marker line containing:
+
+- `[diff truncated: omitted N chars]`
+
+The truncation size limit is controlled by `ai.features.code_review_max_diff_chars` (default:
+`50_000`).
+
 #### Side effects
 
 - When `workDoneToken` is present, the server emits `$/progress` notifications.
