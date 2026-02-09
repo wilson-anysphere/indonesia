@@ -1334,6 +1334,14 @@ fn stdio_server_generate_method_body_prompt_includes_semantic_search_related_cod
     let completion = serde_json::to_string(&patch).expect("patch json");
 
     let mock_server = MockServer::start();
+    // `ai.privacy.include_file_paths` is disabled by default; ensure we do not leak related file
+    // paths when injecting semantic-search context.
+    let unexpected_related_path = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Helper.java");
+        then.status(500).body("unexpected related file path in prompt");
+    });
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
@@ -1360,6 +1368,231 @@ model = "default"
 
 [ai.privacy]
 local_only = true
+"#,
+            mock_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Index the related file into the semantic search index.
+    for (uri, text) in [(related_uri, related_source.as_str()), (file_uri.clone(), source)] {
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "java",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        );
+    }
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int add(int a, int b)",
+                "context": null,
+                "uri": file_uri,
+                "range": selection_range
+            }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            apply_edit = Some(msg.clone());
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateMethodBody success, got: {resp:#?}"
+    );
+    assert_eq!(
+        resp.get("result"),
+        Some(&serde_json::Value::Null),
+        "expected nova/ai/generateMethodBody result to be JSON null"
+    );
+
+    let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
+    let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+    let uri = Uri::from_str(&uri_for_path(&file_path)).expect("uri");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let updated = apply_lsp_edits(source, edits);
+    assert!(
+        updated.contains("return a + b;"),
+        "expected generated return statement, got:\n{updated}"
+    );
+
+    mock.assert_hits(1);
+    unexpected_related_path.assert_hits(0);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_generate_method_body_semantic_search_includes_related_file_paths_when_enabled() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let marker = "NOVA_RELATED_MARKER_b0b5b52e";
+
+    let file_rel = "Alpha.java";
+    let file_path = root.join(file_rel);
+    let file_uri = uri_for_path(&file_path);
+    let source = concat!(
+        "class Alpha {\n",
+        "    int add(int a, int b) {}\n",
+        "}\n",
+    );
+    std::fs::write(&file_path, source).expect("write Alpha.java");
+
+    let related_path = root.join("Helper.java");
+    let related_uri = uri_for_path(&related_path);
+    let related_source = format!(
+        "// {marker}\nclass Helper {{ int add(int a, int b) {{ return a + b; }} }}\n"
+    );
+    std::fs::write(&related_path, &related_source).expect("write Helper.java");
+
+    let method_line = "    int add(int a, int b) {}";
+    let method_start_offset = source.find(method_line).expect("method start");
+    let open_brace_offset = source[method_start_offset..]
+        .find('{')
+        .map(|idx| method_start_offset + idx)
+        .expect("open brace");
+    let close_brace_offset = source[method_start_offset..]
+        .find('}')
+        .map(|idx| method_start_offset + idx)
+        .expect("close brace");
+
+    let pos = TextPos::new(source);
+    let insert_start = pos
+        .lsp_position(open_brace_offset + 1)
+        .expect("insert start");
+    let insert_end = pos.lsp_position(close_brace_offset).expect("insert end");
+    let selection_start = pos
+        .lsp_position(method_start_offset)
+        .expect("selection start");
+    let selection_end = pos
+        .lsp_position(close_brace_offset + 1)
+        .expect("selection end");
+    let selection_range = Range::new(selection_start, selection_end);
+
+    let patch = json!({
+        "edits": [{
+            "file": file_rel,
+            "range": {
+                "start": { "line": insert_start.line, "character": insert_start.character },
+                "end": { "line": insert_end.line, "character": insert_end.character }
+            },
+            "text": "\n        return a + b;\n    "
+        }]
+    });
+    let completion = serde_json::to_string(&patch).expect("patch json");
+
+    let mock_server = MockServer::start();
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Generate a Java method body")
+            .body_contains(marker)
+            .body_contains("Helper.java");
+        then.status(200).json_body(json!({ "completion": completion }));
+    });
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+include_file_paths = true
 "#,
             mock_server.base_url()
         ),
@@ -1769,6 +2002,14 @@ fn stdio_server_generate_tests_prompt_includes_semantic_search_related_code() {
     let completion = serde_json::to_string(&patch).expect("patch json");
 
     let mock_server = MockServer::start();
+    // `ai.privacy.include_file_paths` is disabled by default; ensure we do not leak related file
+    // paths when injecting semantic-search context.
+    let unexpected_related_path = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Helper.java");
+        then.status(500).body("unexpected related file path in prompt");
+    });
     let mock = mock_server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
@@ -1914,6 +2155,7 @@ local_only = true
     );
 
     mock.assert_hits(1);
+    unexpected_related_path.assert_hits(0);
 
     write_jsonrpc_message(
         &mut stdin,
