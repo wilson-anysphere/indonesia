@@ -1417,7 +1417,7 @@ local_only = true
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int add(int a, int b)",
+                "methodSignature": "int add(int a, int b)",
                 "context": null,
                 "uri": file_uri,
                 "range": selection_range
@@ -1650,7 +1650,7 @@ excluded_paths = ["secret/**"]
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int add(int a, int b)",
+                "methodSignature": "int add(int a, int b)",
                 "context": null,
                 "uri": file_uri,
                 "range": selection_range
@@ -4888,7 +4888,7 @@ local_only = false
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int answer()",
+                "methodSignature": "int answer()",
                 "context": null
             }
         }),
@@ -5046,7 +5046,7 @@ local_only = true
             "id": 2,
             "method": "nova/ai/explainError",
             "params": {
-                "diagnostic_message": "cannot find symbol",
+                "diagnosticMessage": "cannot find symbol",
                 "code": "unknown()"
             }
         }),

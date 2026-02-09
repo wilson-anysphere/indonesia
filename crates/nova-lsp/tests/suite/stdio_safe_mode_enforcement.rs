@@ -562,7 +562,7 @@ fn stdio_server_blocks_ai_workspace_execute_command_in_safe_mode() {
         (
             nova_ide::COMMAND_EXPLAIN_ERROR,
             json!({
-                "diagnostic_message": "cannot find symbol",
+                "diagnosticMessage": "cannot find symbol",
                 "code": "Main m = new Main(); m.add(1, 2);",
                 "uri": file_uri.clone(),
                 "range": method_range.clone(),
@@ -571,7 +571,7 @@ fn stdio_server_blocks_ai_workspace_execute_command_in_safe_mode() {
         (
             nova_ide::COMMAND_GENERATE_METHOD_BODY,
             json!({
-                "method_signature": "int add(int a, int b)",
+                "methodSignature": "int add(int a, int b)",
                 "context": null,
                 "uri": file_uri.clone(),
                 "range": method_range.clone(),
