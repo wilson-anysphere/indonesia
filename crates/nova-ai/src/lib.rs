@@ -19,6 +19,7 @@ mod completion_filter;
 mod completion_provider;
 mod completion_ranking;
 mod completion_validation;
+mod diff;
 mod error;
 mod features;
 mod llm_privacy;

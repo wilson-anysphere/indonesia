@@ -2,6 +2,7 @@ use crate::{
     actions,
     client::{AiClient, LlmClient},
     context::{BuiltContext, ContextBuilder, ContextRequest},
+    diff,
     types::{ChatMessage, ChatRequest, CodeSnippet},
     AiError,
 };
@@ -179,27 +180,41 @@ impl NovaAi {
         diff: &str,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let diff = self
-            .client
-            .sanitize_snippet(&CodeSnippet::ad_hoc(diff))
-            .unwrap_or_else(|| "[diff omitted due to excluded_paths]".to_string());
+        self.code_review_with_llm(self.client.as_ref(), diff, cancel)
+            .await
+    }
 
-        let review = self
-            .client
-            .chat(
-                ChatRequest {
-                    messages: vec![
-                        ChatMessage::system("You are a senior Java engineer doing code review."),
-                        ChatMessage::user(actions::code_review_prompt(&diff)),
-                    ],
-                    max_tokens: Some(self.max_output_tokens),
-                    temperature: None,
-                },
-                cancel,
-            )
-            .await?;
+    /// Like [`NovaAi::code_review`], but allows the caller (tests) to provide an alternate LLM
+    /// client implementation.
+    #[doc(hidden)]
+    pub async fn code_review_with_llm(
+        &self,
+        llm: &dyn LlmClient,
+        diff: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        let filtered = diff::filter_diff_for_excluded_paths(diff, |path| {
+            self.client.is_excluded_path(path)
+        });
 
-        Ok(review)
+        let sanitized = self
+            .client
+            .sanitize_snippet(&CodeSnippet::ad_hoc(filtered.text))
+            .unwrap_or_else(|| diff::DIFF_OMITTED_PLACEHOLDER.to_string());
+        let sanitized = diff::replace_omission_sentinels(&sanitized);
+
+        llm.chat(
+            ChatRequest {
+                messages: vec![
+                    ChatMessage::system("You are a senior Java engineer doing code review."),
+                    ChatMessage::user(actions::code_review_prompt(&sanitized)),
+                ],
+                max_tokens: Some(self.max_output_tokens),
+                temperature: None,
+            },
+            cancel,
+        )
+        .await
     }
 
     /// Access the underlying client (for model listing, custom prompts, etc).
