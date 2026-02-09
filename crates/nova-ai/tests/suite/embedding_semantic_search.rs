@@ -446,3 +446,42 @@ fn embedding_search_truncates_when_memory_budget_is_too_small() {
     );
     assert!(limited_results.iter().any(|r| r.snippet.contains("helloWorld")));
 }
+
+#[test]
+fn embedding_search_finalize_indexing_rebuilds_once() {
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    let hello = PathBuf::from("src/Hello.java");
+    let other = PathBuf::from("src/Other.java");
+
+    search.index_file(
+        hello.clone(),
+        "public class Hello { public String helloWorld() { return \"hello world\"; } }".to_string(),
+    );
+    search.index_file(
+        other,
+        "public class Other { public String goodbye() { return \"goodbye\"; } }".to_string(),
+    );
+    // Simulate incremental updates, leaving the index in a dirty state.
+    search.index_file(
+        hello.clone(),
+        "public class Hello { public String greetings() { return \"hello world\"; } }".to_string(),
+    );
+
+    assert!(search.__index_is_dirty_for_tests());
+    assert_eq!(search.__index_rebuild_count_for_tests(), 0);
+    search.finalize_indexing();
+
+    assert!(!search.__index_is_dirty_for_tests());
+    let rebuilds_after_finalize = search.__index_rebuild_count_for_tests();
+    assert_eq!(rebuilds_after_finalize, 1);
+
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, hello);
+
+    // The first search should not need to rebuild the HNSW index again.
+    assert_eq!(
+        search.__index_rebuild_count_for_tests(),
+        rebuilds_after_finalize
+    );
+}

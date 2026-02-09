@@ -64,16 +64,6 @@ mod references;
 #[cfg(debug_assertions)]
 #[path = "suite/salsa_cancellation.rs"]
 mod salsa_cancellation;
-#[path = "suite/semantic_search_index_status_stdio.rs"]
-mod semantic_search_index_status_stdio;
-#[path = "suite/semantic_search_search_stdio.rs"]
-mod semantic_search_search_stdio;
-#[cfg(feature = "ai")]
-#[path = "suite/semantic_search_workspace_indexing.rs"]
-mod semantic_search_workspace_indexing;
-#[cfg(feature = "ai")]
-#[path = "suite/semantic_search_reindex_stdio.rs"]
-mod semantic_search_reindex_stdio;
 #[path = "suite/stdio_call_hierarchy.rs"]
 mod stdio_call_hierarchy;
 #[path = "suite/stdio_did_save.rs"]
@@ -153,6 +143,16 @@ mod workspace_notifications;
 // `cargo test --test tests suite::stdio_codelens`). Keep those modules nested to
 // make the filter stable without changing the on-disk layout.
 mod suite {
+    #[path = "semantic_search_index_status_stdio.rs"]
+    mod semantic_search_index_status_stdio;
+    #[path = "semantic_search_search_stdio.rs"]
+    mod semantic_search_search_stdio;
+    #[cfg(feature = "ai")]
+    #[path = "semantic_search_reindex_stdio.rs"]
+    mod semantic_search_reindex_stdio;
+    #[cfg(feature = "ai")]
+    #[path = "semantic_search_workspace_indexing.rs"]
+    mod semantic_search_workspace_indexing;
     #[cfg(feature = "ai")]
     #[path = "stdio_ai_completion_more.rs"]
     mod stdio_ai_completion_more;

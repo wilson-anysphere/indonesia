@@ -96,5 +96,5 @@ path = "src/main.rs"
 test = false
 
 [[test]]
-name = "stdio_server"
+name = "tests"
 path = "tests/tests.rs"

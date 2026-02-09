@@ -39,6 +39,16 @@ pub trait SemanticSearch: Send + Sync {
     /// Remove a single file from the index.
     fn remove_file(&mut self, _path: &Path) {}
 
+    /// Finalize any pending indexing work after a bulk update.
+    ///
+    /// Some [`SemanticSearch`] implementations keep auxiliary data structures (for example, an
+    /// embedding-backed ANN index) in a "dirty" state while [`SemanticSearch::index_file`] is
+    /// called repeatedly, and rebuild lazily on the first [`SemanticSearch::search`]. Call this
+    /// method after a bulk indexing loop to make the first search fast.
+    ///
+    /// The default implementation is a no-op.
+    fn finalize_indexing(&self) {}
+
     /// Index an entire project database.
     ///
     /// The default implementation rebuilds the index by calling [`SemanticSearch::clear`]
@@ -1285,6 +1295,13 @@ mod embeddings {
                 let removed_bytes = Self::embedding_bytes_for_docs(&removed);
                 self.embedding_bytes_used = self.embedding_bytes_used.saturating_sub(removed_bytes);
                 self.invalidate_index();
+            }
+        }
+
+        fn finalize_indexing(&self) {
+            let mut index = self.lock_index();
+            if index.dirty {
+                self.rebuild_index_locked(&mut index);
             }
         }
 

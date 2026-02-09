@@ -403,6 +403,13 @@ impl ServerState {
             // Avoid races with reindexing: if a newer run has been started, do not overwrite the
             // `completedRunId` for the new run.
             if status.current_run_id.load(Ordering::SeqCst) == run_id {
+                if !cancel.is_cancelled() {
+                    let search = semantic_search
+                        .write()
+                        .unwrap_or_else(|err| err.into_inner());
+                    search.finalize_indexing();
+                }
+
                 status.completed_run_id.store(run_id, Ordering::SeqCst);
             }
         });
