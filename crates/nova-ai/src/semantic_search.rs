@@ -397,6 +397,7 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use crate::client::validate_local_only_url;
+    use crate::embeddings::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey, DISK_CACHE_NAMESPACE_V1};
     use crate::AiError;
     use nova_core::ProjectDatabase;
     use nova_fuzzy::{fuzzy_match, MatchKind};
@@ -405,11 +406,11 @@ mod embeddings {
     use serde::{Deserialize, Serialize};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
     use tracing::warn;
     use url::Url;
@@ -495,6 +496,10 @@ mod embeddings {
         model: String,
         api_key: Option<String>,
         client: BlockingClient,
+        backend_id: &'static str,
+        endpoint_id: String,
+        memory_cache: Arc<Mutex<HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>>>,
+        disk_cache: Option<Arc<DiskEmbeddingCache>>,
     }
 
     impl ProviderEmbedder {
@@ -504,15 +509,66 @@ mod embeddings {
             model: String,
             api_key: Option<String>,
             timeout: Duration,
+            disk_cache: Option<Arc<DiskEmbeddingCache>>,
         ) -> Result<Self, AiError> {
             let client = BlockingClient::builder().timeout(timeout).build()?;
+            let backend_id = match &provider_kind {
+                AiProviderKind::Ollama => "ollama",
+                AiProviderKind::OpenAiCompatible => "openai_compatible",
+                AiProviderKind::OpenAi => "openai",
+                AiProviderKind::Http => "http",
+                _ => "unknown",
+            };
+            let endpoint_id = match &provider_kind {
+                AiProviderKind::Ollama => {
+                    let base_str = base_url.as_str().trim_end_matches('/').to_string();
+                    Url::parse(&format!("{base_str}/"))
+                        .ok()
+                        .and_then(|base| base.join("api/embeddings").ok())
+                        .map(|url| url.to_string())
+                        .unwrap_or_else(|| base_url.to_string())
+                }
+                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
+                    openai_compatible_endpoint(&base_url, "/embeddings")
+                        .map(|url| url.to_string())
+                        .unwrap_or_else(|_| base_url.to_string())
+                }
+                _ => base_url.to_string(),
+            };
             Ok(Self {
                 provider_kind,
                 base_url,
                 model,
                 api_key,
                 client,
+                backend_id,
+                endpoint_id,
+                memory_cache: Arc::new(Mutex::new(HashMap::new())),
+                disk_cache,
             })
+        }
+
+        fn key_for(&self, input: &str) -> EmbeddingCacheKey {
+            EmbeddingCacheKey::new(
+                DISK_CACHE_NAMESPACE_V1,
+                self.backend_id,
+                &self.endpoint_id,
+                &self.model,
+                input.as_bytes(),
+            )
+        }
+
+        fn embed_uncached(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            match &self.provider_kind {
+                AiProviderKind::Ollama => self.embed_ollama(text),
+                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
+                    self.embed_openai_compatible(text)
+                }
+                _ => Err(AiError::InvalidConfig(format!(
+                    "provider-backed embeddings are not supported for ai.provider.kind={:?}",
+                    self.provider_kind
+                ))),
+            }
         }
 
         fn embed_openai_compatible(&self, text: &str) -> Result<Vec<f32>, AiError> {
@@ -554,16 +610,46 @@ mod embeddings {
 
     impl Embedder for ProviderEmbedder {
         fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
-            match &self.provider_kind {
-                AiProviderKind::Ollama => self.embed_ollama(text),
-                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
-                    self.embed_openai_compatible(text)
+            let key = self.key_for(text);
+
+            {
+                let cache = self
+                    .memory_cache
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                if let Some(hit) = cache.get(&key) {
+                    return Ok((**hit).clone());
                 }
-                _ => Err(AiError::InvalidConfig(format!(
-                    "provider-backed embeddings are not supported for ai.provider.kind={:?}",
-                    self.provider_kind
-                ))),
             }
+
+            if let Some(disk) = self.disk_cache.as_ref() {
+                if let Ok(Some(hit)) = disk.load(key) {
+                    let mut cache = self
+                        .memory_cache
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    cache.insert(key, Arc::new(hit.clone()));
+                    return Ok(hit);
+                }
+            }
+
+            let embedding = self.embed_uncached(text)?;
+
+            if !embedding.is_empty() {
+                {
+                    let mut cache = self
+                        .memory_cache
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner());
+                    cache.insert(key, Arc::new(embedding.clone()));
+                }
+
+                if let Some(disk) = self.disk_cache.as_ref() {
+                    let _ = disk.store(key, &embedding);
+                }
+            }
+
+            Ok(embedding)
         }
     }
 
@@ -617,6 +703,9 @@ mod embeddings {
             .unwrap_or_else(|| config.provider.timeout());
 
         let api_key = config.api_key.clone();
+        let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
+            .map(Arc::new)
+            .ok();
 
         match provider_kind {
             AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
@@ -626,6 +715,7 @@ mod embeddings {
                     model,
                     api_key,
                     timeout,
+                    disk_cache.clone(),
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
@@ -654,6 +744,7 @@ mod embeddings {
                     model,
                     Some(api_key),
                     timeout,
+                    disk_cache,
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {

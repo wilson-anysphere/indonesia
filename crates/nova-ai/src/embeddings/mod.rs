@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{AiError, Embedder as _};
 use nova_config::{AiConfig, AiEmbeddingsBackend};
 
-mod disk_cache;
+pub(crate) mod disk_cache;
 mod provider;
 
 /// An embeddings backend which can produce vector embeddings for batches of input strings.
@@ -47,4 +47,3 @@ impl EmbeddingsClient for LocalEmbeddingsClient {
         self.embedder.embed_batch(input)
     }
 }
-
