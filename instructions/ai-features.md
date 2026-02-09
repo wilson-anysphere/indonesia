@@ -90,26 +90,24 @@ pub enum Capability {
 
 ### Completion Ranking
 
-AI improves completion ordering:
+Completion ranking reorders the already-valid completion items by asking the configured LLM to
+return a preferred ordering.
 
-```rust
-pub fn rank_completions(
-    items: &mut [CompletionItem],
-    context: &CompletionContext,
-    model: &dyn AiModel,
-) {
-    // Get AI scores for candidates
-    let prompt = build_ranking_prompt(context, items);
-    let scores = model.rank(prompt).await?;
-    
-    // Combine with static analysis scores
-    for (item, ai_score) in items.iter_mut().zip(scores) {
-        item.score = item.static_score * 0.3 + ai_score * 0.7;
-    }
-    
-    items.sort_by(|a, b| b.score.cmp(&a.score));
-}
-```
+Implementation notes (current code):
+
+- Uses the configured `ai.provider` backend via `nova-ai::AiClient` (through the `nova_ai::LlmClient`
+  trait).
+- Guarded by `ai.timeouts.completion_ranking_ms` (see `nova_config::AiTimeoutsConfig`);
+  timeout/error falls back to the baseline ordering.
+- Prompts assign **numeric candidate IDs** (`0..N-1`) and require the model to return **only** a JSON
+  array of those IDs (best → worst), e.g. `[3,0,2,1]`.
+- Respects `ai.privacy.excluded_paths`: if the focal file is excluded, completion ranking is skipped
+  so code from excluded files is never sent to the provider.
+- In cloud mode with `ai.privacy.anonymize_identifiers=true`, identifier anonymization happens only
+  inside fenced code blocks; ranking prompts therefore keep identifier-bearing content inside code
+  fences and must not quote identifiers as JSON strings.
+- When `ai.cache_enabled=true`, `AiClient` uses an in-memory response cache (helps keep ranking
+  latency/cost down for repeated prompts).
 
 ### Code Generation
 
