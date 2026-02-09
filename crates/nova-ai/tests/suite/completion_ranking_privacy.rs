@@ -6,6 +6,7 @@ use nova_ai::{AiClient, CompletionRanker, LlmCompletionRanker};
 use nova_config::{AiConfig, AiProviderKind, AiPrivacyConfig};
 use serde_json::Value;
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use url::Url;
 
@@ -94,7 +95,10 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
     let (addr, handle) = spawn_server(handler);
     let cfg = http_config(Url::parse(&format!("http://{addr}/complete")).unwrap());
     let client = Arc::new(AiClient::from_config(&cfg).expect("AiClient builds"));
-    let ranker = LlmCompletionRanker::new(client);
+    // The default ranker timeout is tuned for interactive LSP requests. Increase it for this
+    // regression test so we reliably capture the outgoing prompt, even when the test binary is
+    // under load (e.g. when running with additional feature flags).
+    let ranker = LlmCompletionRanker::new(client).with_timeout(Duration::from_secs(2));
 
     let ctx = CompletionContext::new(
         "my",
