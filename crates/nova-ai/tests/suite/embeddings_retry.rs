@@ -77,3 +77,37 @@ async fn embeddings_retries_on_http_429() {
     assert_eq!(hits_429, 1);
     mock_ok.assert_hits(1);
 }
+
+#[tokio::test]
+async fn embeddings_retry_max_retries_zero_disables_retries() {
+    let server = MockServer::start();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
+    let mut cfg = openai_compatible_config(&server, model_dir);
+    cfg.provider.retry_max_retries = 0;
+    cfg.provider.retry_initial_backoff_ms = 1;
+    cfg.provider.retry_max_backoff_ms = 1;
+
+    let client = embeddings_client_from_config(&cfg).expect("client");
+
+    let mock_429 = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings");
+        then.status(429);
+    });
+
+    let err = client
+        .embed(
+            &["hello".to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("expected embeddings request to fail without retries");
+
+    assert!(
+        matches!(err, nova_ai::AiError::Http(_)),
+        "unexpected error: {err:?}"
+    );
+    mock_429.assert_hits(1);
+}

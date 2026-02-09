@@ -32,6 +32,14 @@ struct RetryConfig {
     max_backoff: Duration,
 }
 
+fn retry_config_from_provider_config(config: &AiConfig) -> RetryConfig {
+    RetryConfig {
+        max_retries: config.provider.retry_max_retries,
+        initial_backoff: Duration::from_millis(config.provider.retry_initial_backoff_ms),
+        max_backoff: Duration::from_millis(config.provider.retry_max_backoff_ms),
+    }
+}
+
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
@@ -180,6 +188,7 @@ pub(super) fn provider_embeddings_client_from_config(
         .clone()
         .unwrap_or_else(|| config.provider.model.clone());
     let batch_size = config.embeddings.batch_size.max(1);
+    let retry = retry_config_from_provider_config(config);
     let redact_paths = !config.privacy.local_only;
 
     let privacy = Arc::new(PrivacyFilter::new(&config.privacy)?);
@@ -243,6 +252,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 api_version,
                 timeout,
                 batch_size,
+                retry.clone(),
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -306,6 +316,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 Some(api_key),
                 timeout,
                 batch_size,
+                retry.clone(),
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -349,6 +360,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 config.api_key.clone(),
                 timeout,
                 batch_size,
+                retry.clone(),
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -392,6 +404,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 config.api_key.clone(),
                 timeout,
                 batch_size,
+                retry.clone(),
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -434,6 +447,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model.clone(),
                 timeout,
                 batch_size,
+                retry.clone(),
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -748,6 +762,7 @@ struct AzureOpenAiEmbeddingsClient {
     api_version: String,
     timeout: Duration,
     batch_size: usize,
+    retry: RetryConfig,
     client: reqwest::Client,
 }
 
@@ -759,6 +774,7 @@ impl AzureOpenAiEmbeddingsClient {
         api_version: String,
         timeout: Duration,
         batch_size: usize,
+        retry: RetryConfig,
     ) -> Result<Self, AiError> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -776,6 +792,7 @@ impl AzureOpenAiEmbeddingsClient {
             api_version,
             timeout,
             batch_size: batch_size.max(1),
+            retry,
             client,
         })
     }
@@ -835,7 +852,6 @@ impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-        let retry = RetryConfig::default();
         let operation_start = Instant::now();
         let batch_size = self.batch_size.max(1);
 
@@ -853,7 +869,7 @@ impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
             let embeddings = with_retry(
                 "azure_open_ai",
                 remaining,
-                &retry,
+                &self.retry,
                 &cancel,
                 |timeout| self.embed_once(chunk, timeout),
             )
@@ -873,6 +889,7 @@ struct OpenAiCompatibleEmbeddingsClient {
     timeout: Duration,
     api_key: Option<String>,
     batch_size: usize,
+    retry: RetryConfig,
     client: reqwest::Client,
 }
 
@@ -883,6 +900,7 @@ impl OpenAiCompatibleEmbeddingsClient {
         api_key: Option<String>,
         timeout: Duration,
         batch_size: usize,
+        retry: RetryConfig,
     ) -> Result<Self, AiError> {
         let mut headers = HeaderMap::new();
         if let Some(key) = api_key.as_deref() {
@@ -903,6 +921,7 @@ impl OpenAiCompatibleEmbeddingsClient {
             timeout,
             api_key,
             batch_size: batch_size.max(1),
+            retry,
             client,
         })
     }
@@ -960,7 +979,6 @@ impl EmbeddingsClient for OpenAiCompatibleEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-        let retry = RetryConfig::default();
         let operation_start = Instant::now();
         let batch_size = self.batch_size.max(1);
 
@@ -978,7 +996,7 @@ impl EmbeddingsClient for OpenAiCompatibleEmbeddingsClient {
             let embeddings = with_retry(
                 "openai_compatible",
                 remaining,
-                &retry,
+                &self.retry,
                 &cancel,
                 |timeout| self.embed_once(chunk, timeout),
             )
@@ -1043,19 +1061,27 @@ struct OllamaEmbeddingsClient {
     model: String,
     timeout: Duration,
     batch_size: usize,
+    retry: RetryConfig,
     // 0 = unknown, 1 = supported, 2 = unsupported
     embed_endpoint: Arc<AtomicU8>,
     client: reqwest::Client,
 }
 
 impl OllamaEmbeddingsClient {
-    fn new(base_url: Url, model: String, timeout: Duration, batch_size: usize) -> Result<Self, AiError> {
+    fn new(
+        base_url: Url,
+        model: String,
+        timeout: Duration,
+        batch_size: usize,
+        retry: RetryConfig,
+    ) -> Result<Self, AiError> {
         let client = reqwest::Client::builder().build()?;
         Ok(Self {
             base_url,
             model,
             timeout,
             batch_size: batch_size.max(1),
+            retry,
             embed_endpoint: Arc::new(AtomicU8::new(0)),
             client,
         })
@@ -1187,7 +1213,6 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-        let retry = RetryConfig::default();
         let operation_start = Instant::now();
 
         let batch_size = self.batch_size.max(1);
@@ -1209,7 +1234,7 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
             let first = with_retry(
                 "ollama",
                 remaining,
-                &retry,
+                &self.retry,
                 &cancel,
                 |timeout| self.embed_via_embed_endpoint(first_chunk, timeout),
             )
@@ -1245,7 +1270,7 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
                         let Some(embeddings) = with_retry(
                             "ollama",
                             remaining,
-                            &retry,
+                            &self.retry,
                             &cancel,
                             |timeout| self.embed_via_embed_endpoint(chunk, timeout),
                         )
@@ -1264,7 +1289,7 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
             }
         }
 
-        self.embed_via_legacy_endpoint(input, &cancel, operation_start, &retry)
+        self.embed_via_legacy_endpoint(input, &cancel, operation_start, &self.retry)
             .await
     }
 }
