@@ -175,7 +175,8 @@ pub(super) fn handle_execute_command(
         nova_ide::COMMAND_CODE_REVIEW => {
             let args: CodeReviewArgs = parse_first_arg(params.arguments)?;
             crate::stdio_ai::run_ai_code_review(
-                args,
+                args.diff,
+                args.uri,
                 params.work_done_token,
                 state,
                 client,

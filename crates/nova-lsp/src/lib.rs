@@ -141,7 +141,6 @@ pub const AI_MODELS_METHOD: &str = "nova/ai/models";
 pub const AI_STATUS_METHOD: &str = "nova/ai/status";
 pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
 pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
-pub const AI_CODE_REVIEW_METHOD: &str = "nova/ai/codeReview";
 pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 // Semantic search endpoints (handled by the `nova-lsp` binary).
 pub const SEMANTIC_SEARCH_INDEX_STATUS_METHOD: &str = "nova/semanticSearch/indexStatus";

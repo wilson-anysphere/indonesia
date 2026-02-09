@@ -72,13 +72,6 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
       )
     }
     nova_lsp::AI_CODE_REVIEW_METHOD => {
-      #[derive(Debug, Deserialize)]
-      struct CodeReviewArgs {
-        diff: String,
-        #[serde(default)]
-        uri: Option<String>,
-      }
-
       let params: AiRequestParams<CodeReviewArgs> =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
       run_ai_code_review(
@@ -117,17 +110,6 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
       let params: AiRequestParams<GenerateTestsArgs> =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
       run_ai_generate_tests_apply(
-        params.args,
-        params.work_done_token,
-        state,
-        rpc_out,
-        cancel.clone(),
-      )
-    }
-    nova_lsp::AI_CODE_REVIEW_METHOD => {
-      let params: AiRequestParams<CodeReviewArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-      run_ai_code_review(
         params.args,
         params.work_done_token,
         state,
@@ -350,49 +332,6 @@ pub(super) fn run_ai_explain_error(
     })?;
   send_log_message(rpc_out, "AI: explanation ready")?;
   send_ai_output(rpc_out, "AI explainError", &output)?;
-  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-  Ok(serde_json::Value::String(output))
-}
-
-pub(super) fn run_ai_code_review(
-  args: CodeReviewArgs,
-  work_done_token: Option<serde_json::Value>,
-  state: &mut ServerState,
-  rpc_out: &impl RpcOut,
-  cancel: CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
-  let ai = state
-    .ai
-    .as_ref()
-    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
-  let runtime = state
-    .runtime
-    .as_ref()
-    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
-
-  let uri_path = args.uri.as_deref().and_then(path_from_uri);
-  let excluded = uri_path
-    .as_deref()
-    .is_some_and(|path| is_ai_excluded_path(state, path));
-  let diff = if excluded {
-    "[diff omitted due to excluded_paths]".to_string()
-  } else {
-    args.diff
-  };
-
-  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Code review")?;
-  send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
-  send_log_message(rpc_out, "AI: reviewing code…")?;
-
-  let output = runtime
-    .block_on(ai.code_review(&diff, cancel.clone()))
-    .map_err(|e| {
-      let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
-      (-32603, e.to_string())
-    })?;
-
-  send_log_message(rpc_out, "AI: review ready")?;
-  send_ai_output(rpc_out, "AI codeReview", &output)?;
   send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
   Ok(serde_json::Value::String(output))
 }
