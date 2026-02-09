@@ -30,6 +30,7 @@ mod provider_embedder_sync;
 mod provider_embedder_privacy;
 mod provider_embeddings_privacy;
 mod retry_config;
+mod rayon_global_pool_regression;
 mod semantic_context_builder;
 mod semantic_search_factory;
 mod semantic_search_incremental;

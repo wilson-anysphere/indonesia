@@ -1531,13 +1531,18 @@ mod embeddings {
 
                 // A poisoned mutex indicates a panic while the index was mid-mutation.
                 // Drop potentially-inconsistent state and force a rebuild on the next search.
-                guard.hnsw = None;
+                let old_hnsw = guard.hnsw.take();
                 guard.dims = 0;
                 guard.id_to_doc.clear();
                 guard.max_elements = 0;
                 guard.dirty = true;
 
                 self.index.clear_poison();
+
+                // Dropping `hnsw_rs` structures can trigger Rayon parallel iterators. Ensure we run
+                // the destructor inside our dedicated pool so we don't accidentally initialize/use
+                // the process-global Rayon pool.
+                self.hnsw_pool.install(|| drop(old_hnsw));
             }
 
             guard
@@ -2099,11 +2104,15 @@ mod embeddings {
             let mut guard = self.lock_index();
 
             // Make the internal index state inconsistent so recovery has to do real work.
-            guard.hnsw = None;
+            let old_hnsw = guard.hnsw.take();
             guard.dims = 0;
             guard.id_to_doc.clear();
             guard.max_elements = 0;
             guard.dirty = false;
+
+            // Dropping `hnsw_rs` structures can trigger Rayon parallel iterators. Run the drop
+            // inside our dedicated pool to avoid touching the process-global pool.
+            self.hnsw_pool.install(|| drop(old_hnsw));
 
             panic!("poison EmbeddingSemanticSearch index mutex for test");
         }
