@@ -258,3 +258,114 @@ semantic_search = true
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_server_index_status_reports_runtime_unavailable_when_enabled_but_ai_runtime_fails_to_initialize(
+) {
+    let _lock = stdio_server_lock();
+
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let root_uri = crate::support::file_uri_string(temp.path());
+
+    // Enable semantic search, but deliberately misconfigure the AI provider so `NovaAi::new`
+    // fails and the server does not construct a Tokio runtime. Workspace indexing should not
+    // start, and indexStatus should report `runtime_unavailable`.
+    let config_path = temp.path().join("nova.config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = false
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "open_ai"
+url = "https://api.openai.com/v1"
+model = "gpt-4"
+timeout_ms = 2000
+max_tokens = 64
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Avoid inheriting legacy AI env config (NOVA_AI_*) that would override the file.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
+            "params": {}
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+
+    assert_eq!(
+        result.get("enabled").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected result.enabled=true; got {result:#}"
+    );
+    assert_eq!(
+        result.get("reason").and_then(|v| v.as_str()),
+        Some("runtime_unavailable"),
+        "expected result.reason=\"runtime_unavailable\"; got {result:#}"
+    );
+    assert_eq!(
+        result.get("currentRunId").and_then(|v| v.as_u64()),
+        Some(0),
+        "expected currentRunId to remain 0 when runtime is unavailable; got {result:#}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
