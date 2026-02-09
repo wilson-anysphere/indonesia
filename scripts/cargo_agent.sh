@@ -21,13 +21,11 @@ set -euo pipefail
 #   NOVA_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
 #   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow unscoped `cargo test` (not recommended)
-#   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1 Preserve `RUSTUP_TOOLCHAIN` env var (default: unset it so
-#                                     rust-toolchain.toml is respected)
-#   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Respect RUSTUP_TOOLCHAIN even if rust-toolchain.toml exists (rare)
+#   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Preserve `RUSTUP_TOOLCHAIN` (ignore rust-toolchain.toml) (rare)
 
 usage() {
   cat <<'EOF'
-usage: bash scripts/cargo_agent.sh <cargo-subcommand> [args...]
+usage: bash scripts/cargo_agent.sh [+<toolchain>] <cargo-subcommand> [args...]
 
 Examples:
   bash scripts/cargo_agent.sh check --locked -p nova-syntax --quiet
@@ -43,7 +41,7 @@ Environment:
   NOVA_CARGO_LOCK_DIR     Lock directory
   NOVA_RUST_TEST_THREADS  RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow running unscoped `cargo test` (not recommended)
-  NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Respect RUSTUP_TOOLCHAIN (ignore rust-toolchain.toml) (rare)
+  NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Preserve RUSTUP_TOOLCHAIN (ignore rust-toolchain.toml) (rare)
 
 Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
@@ -151,17 +149,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # `RUSTC_WRAPPER` in their environment, but default to no wrapper.
 export RUSTC_WRAPPER="${RUSTC_WRAPPER:-}"
 
-# Some environments set `RUSTUP_TOOLCHAIN` globally, which overrides this repository's pinned
-# `rust-toolchain.toml`. That can lead to confusing version-mismatch errors (e.g. "rustc X is not
-# supported") even though the correct toolchain is installed.
-#
-# Prefer the repo's toolchain pin by default. Callers that need a specific toolchain can either:
-# - pass `+<toolchain>` as the first argument (supported by this wrapper), or
-# - set `NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1` to preserve `RUSTUP_TOOLCHAIN`.
-if [[ -z "${NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN:-}" ]]; then
-  unset RUSTUP_TOOLCHAIN
-fi
-
 # Get CPU count
 nproc="${NOVA_CARGO_NPROC:-}"
 if [[ -z "${nproc}" ]]; then
@@ -267,7 +254,7 @@ run_cargo() {
   # Escape hatches:
   #   - Pass an explicit `+<toolchain>` arg (handled above)
   #   - Set NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1 to preserve the env var
-  if [[ -z "${toolchain_arg}" && -z "${NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN:-}" ]]; then
+  if [[ -z "${toolchain_arg}" && "${NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN:-}" != "1" ]]; then
     if [[ -n "${RUSTUP_TOOLCHAIN+x}" ]]; then
       echo "cargo_agent: ignoring RUSTUP_TOOLCHAIN in favor of rust-toolchain.toml" >&2
       unset RUSTUP_TOOLCHAIN

@@ -8,6 +8,9 @@ cargo_agent() {
   bash "${ROOT_DIR}/scripts/cargo_agent.sh" "$@"
 }
 
+# Ensure `scripts/cargo_agent.sh` toolchain behavior stays consistent across merges.
+bash "${ROOT_DIR}/scripts/check-cargo-agent-toolchain.sh"
+
 # Fast TOML parse check for all tracked Cargo manifests.
 #
 # This catches duplicate keys / invalid TOML early with a clear error message,
