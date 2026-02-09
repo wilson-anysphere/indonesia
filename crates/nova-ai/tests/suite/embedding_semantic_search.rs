@@ -188,9 +188,49 @@ fn embedding_search_boosts_exact_substring_matches() {
     search.index_project(&db);
 
     let results = search.search("HELLO WORLD");
-    assert_eq!(results.len(), 2);
-    assert!(results[0].snippet.contains("hello world"));
-    assert!(results[1].snippet.contains("hello  world"));
+    let methods = results
+        .iter()
+        .filter(|result| result.kind == "method")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods.len(),
+        2,
+        "expected two method results, got: {results:?}"
+    );
+    assert!(methods[0].snippet.contains("hello world"));
+    assert!(methods[1].snippet.contains("hello  world"));
+}
+
+#[test]
+fn embedding_search_can_return_type_and_field_kinds() {
+    let db = VirtualWorkspace::new([(
+        "src/Config.java".to_string(),
+        r#"
+            package com.example;
+
+            /** Stores configuration values. */
+            public class Config {
+                /** The default greeting. */
+                public static final String DEFAULT_GREETING = "hello";
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    search.index_project(&db);
+
+    let type_results = search.search("declaration class Config");
+    assert!(
+        type_results.iter().any(|r| r.kind == "type"),
+        "expected a type result for Config, got: {type_results:?}"
+    );
+
+    let field_results = search.search("field DEFAULT_GREETING");
+    assert!(
+        field_results.iter().any(|r| r.kind == "field"),
+        "expected a field result for DEFAULT_GREETING, got: {field_results:?}"
+    );
 }
 
 #[test]

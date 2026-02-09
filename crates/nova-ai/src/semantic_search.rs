@@ -641,7 +641,7 @@ mod embeddings {
             }
 
             let mut extracted = if is_java_file(path) {
-                extract_java_methods(path, text)
+                extract_java_symbols(path, text)
             } else {
                 extract_non_java_chunks(path, text)
             };
@@ -1038,40 +1038,313 @@ mod embeddings {
         out
     }
 
-    fn extract_java_methods(
+    const MAX_SNIPPET_CHARS: usize = 2_000;
+    const MAX_EMBED_TEXT_CHARS: usize = 2_000;
+
+    fn extract_java_symbols(
         path: &PathBuf,
         source: &str,
     ) -> Vec<(Range<usize>, String, String, String)> {
-        use nova_syntax::{parse_java, SyntaxKind};
+        use nova_syntax::{
+            parse_java, AnnotationTypeDeclaration, AstNode, ClassDeclaration, CompilationUnit,
+            EnumDeclaration, FieldDeclaration, InterfaceDeclaration, MethodDeclaration,
+            RecordDeclaration, SyntaxKind,
+        };
 
         let parse = parse_java(source);
         let root = parse.syntax();
+
+        let package = CompilationUnit::cast(root.clone())
+            .and_then(|unit| unit.package())
+            .and_then(|pkg| pkg.name())
+            .map(|name| name.text())
+            .unwrap_or_default();
+
         let mut out = Vec::new();
 
         for node in root.descendants() {
-            if node.kind() != SyntaxKind::MethodDeclaration {
-                continue;
+            match node.kind() {
+                SyntaxKind::MethodDeclaration => {
+                    let byte_range = node_byte_range(source, &node);
+                    let start = byte_range.start;
+                    let end = byte_range.end;
+
+                    let method_text = source[start..end].trim();
+                    if method_text.is_empty() {
+                        continue;
+                    }
+
+                    let doc = find_doc_comment_before_offset(source, start)
+                        .map(|doc| clean_doc_comment(&doc))
+                        .unwrap_or_default();
+
+                    let (method_name, method_signature) =
+                        if let Some(method) = MethodDeclaration::cast(node.clone()) {
+                            let name = method
+                                .name_token()
+                                .map(|tok| tok.text().to_string())
+                                .unwrap_or_default();
+                            let return_ty = method
+                                .return_type()
+                                .map(|ty| normalize_whitespace(&ty.syntax().text().to_string()))
+                                .unwrap_or_else(|| "void".to_string());
+
+                            let params = method
+                                .parameters()
+                                .map(|param| {
+                                    let ty = param
+                                        .ty()
+                                        .map(|ty| normalize_whitespace(&ty.syntax().text().to_string()))
+                                        .unwrap_or_default();
+                                    let name = param
+                                        .name_token()
+                                        .map(|tok| tok.text().to_string())
+                                        .unwrap_or_default();
+
+                                    match (ty.is_empty(), name.is_empty()) {
+                                        (false, false) => format!("{ty} {name}"),
+                                        (false, true) => ty,
+                                        (true, false) => name,
+                                        (true, true) => String::new(),
+                                    }
+                                })
+                                .filter(|param| !param.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+
+                            let signature = if name.is_empty() {
+                                normalize_whitespace(&extract_signature(method_text))
+                            } else {
+                                format!("{return_ty} {name}({params})").trim().to_string()
+                            };
+
+                            (name, signature)
+                        } else {
+                            (
+                                String::new(),
+                                normalize_whitespace(&extract_signature(method_text)),
+                            )
+                        };
+
+                    let enclosing_types = enclosing_type_names(&node);
+                    let enclosing = enclosing_types.join(".");
+
+                    let body = extract_body_preview(method_text);
+                    let snippet = preview(method_text, MAX_SNIPPET_CHARS);
+
+                    let mut embed_lines = Vec::new();
+                    embed_lines.push(format!("path: {}", path.to_string_lossy()));
+                    if !package.is_empty() {
+                        embed_lines.push(format!("package: {package}"));
+                    }
+                    if !enclosing.is_empty() {
+                        embed_lines.push(format!("enclosing: {enclosing}"));
+                    }
+                    embed_lines.push("kind: method".to_string());
+                    if !method_name.is_empty() {
+                        embed_lines.push(format!("name: {method_name}"));
+                    }
+                    if !method_signature.is_empty() {
+                        embed_lines.push(format!("signature: {method_signature}"));
+                    }
+                    if !doc.is_empty() {
+                        embed_lines.push("doc:".to_string());
+                        embed_lines.push(doc);
+                    }
+                    if !body.is_empty() {
+                        embed_lines.push("body:".to_string());
+                        embed_lines.push(body);
+                    }
+
+                    let embed_text = preview(&embed_lines.join("\n"), MAX_EMBED_TEXT_CHARS);
+
+                    out.push((start..end, "method".to_string(), snippet, embed_text));
+                }
+                SyntaxKind::FieldDeclaration => {
+                    let Some(field) = FieldDeclaration::cast(node.clone()) else {
+                        continue;
+                    };
+
+                    let field_decl_range = node_byte_range(source, &node);
+                    let field_decl_start = field_decl_range.start;
+                    let doc = find_doc_comment_before_offset(source, field_decl_start)
+                        .map(|doc| clean_doc_comment(&doc))
+                        .unwrap_or_default();
+
+                    let enclosing_types = enclosing_type_names(&node);
+                    let enclosing = enclosing_types.join(".");
+
+                    let field_ty = field
+                        .ty()
+                        .map(|ty| normalize_whitespace(&ty.syntax().text().to_string()))
+                        .unwrap_or_default();
+
+                    for declarator in field.declarators() {
+                        let Some(name_tok) = declarator.name_token() else {
+                            continue;
+                        };
+                        let field_name = name_tok.text().to_string();
+                        if field_name.is_empty() {
+                            continue;
+                        }
+
+                        let decl_range = node_byte_range(source, declarator.syntax());
+                        let signature = if field_ty.is_empty() {
+                            field_name.clone()
+                        } else {
+                            format!("{field_ty} {field_name}")
+                        };
+
+                        let snippet = preview(&signature, MAX_SNIPPET_CHARS);
+
+                        let mut embed_lines = Vec::new();
+                        embed_lines.push(format!("path: {}", path.to_string_lossy()));
+                        if !package.is_empty() {
+                            embed_lines.push(format!("package: {package}"));
+                        }
+                        if !enclosing.is_empty() {
+                            embed_lines.push(format!("enclosing: {enclosing}"));
+                        }
+                        embed_lines.push("kind: field".to_string());
+                        embed_lines.push(format!("name: {field_name}"));
+                        if !field_ty.is_empty() {
+                            embed_lines.push(format!("type: {field_ty}"));
+                        }
+                        embed_lines.push(format!("signature: {signature}"));
+                        if !doc.is_empty() {
+                            embed_lines.push("doc:".to_string());
+                            embed_lines.push(doc.clone());
+                        }
+
+                        let embed_text = preview(&embed_lines.join("\n"), MAX_EMBED_TEXT_CHARS);
+                        out.push((decl_range, "field".to_string(), snippet, embed_text));
+                    }
+                }
+                SyntaxKind::ClassDeclaration
+                | SyntaxKind::InterfaceDeclaration
+                | SyntaxKind::EnumDeclaration
+                | SyntaxKind::RecordDeclaration
+                | SyntaxKind::AnnotationTypeDeclaration => {
+                    let (type_name, type_kind) = match node.kind() {
+                        SyntaxKind::ClassDeclaration => ClassDeclaration::cast(node.clone())
+                            .and_then(|decl| decl.name_token())
+                            .map(|tok| (tok.text().to_string(), "class")),
+                        SyntaxKind::InterfaceDeclaration => InterfaceDeclaration::cast(node.clone())
+                            .and_then(|decl| decl.name_token())
+                            .map(|tok| (tok.text().to_string(), "interface")),
+                        SyntaxKind::EnumDeclaration => EnumDeclaration::cast(node.clone())
+                            .and_then(|decl| decl.name_token())
+                            .map(|tok| (tok.text().to_string(), "enum")),
+                        SyntaxKind::RecordDeclaration => RecordDeclaration::cast(node.clone())
+                            .and_then(|decl| decl.name_token())
+                            .map(|tok| (tok.text().to_string(), "record")),
+                        SyntaxKind::AnnotationTypeDeclaration => {
+                            AnnotationTypeDeclaration::cast(node.clone())
+                                .and_then(|decl| decl.name_token())
+                                .map(|tok| (tok.text().to_string(), "annotation"))
+                        }
+                        _ => None,
+                    }
+                    .unwrap_or_default();
+
+                    if type_name.is_empty() {
+                        continue;
+                    }
+
+                    let byte_range = node_byte_range(source, &node);
+                    let start = byte_range.start;
+                    let end = byte_range.end;
+
+                    let type_text = source[start..end].trim();
+                    if type_text.is_empty() {
+                        continue;
+                    }
+
+                    let doc = find_doc_comment_before_offset(source, start)
+                        .map(|doc| clean_doc_comment(&doc))
+                        .unwrap_or_default();
+                    let declaration = normalize_whitespace(&extract_signature(type_text));
+
+                    let mut qualified_parts = enclosing_type_names(&node);
+                    qualified_parts.push(type_name.clone());
+                    let qualified_name = qualified_parts.join(".");
+
+                    let snippet = preview(&declaration, MAX_SNIPPET_CHARS);
+
+                    let mut embed_lines = Vec::new();
+                    embed_lines.push(format!("path: {}", path.to_string_lossy()));
+                    if !package.is_empty() {
+                        embed_lines.push(format!("package: {package}"));
+                    }
+                    embed_lines.push("kind: type".to_string());
+                    embed_lines.push(format!("type: {qualified_name}"));
+                    if !type_kind.is_empty() {
+                        embed_lines.push(format!("type_kind: {type_kind}"));
+                    }
+                    if !declaration.is_empty() {
+                        embed_lines.push(format!("declaration: {declaration}"));
+                    }
+                    if !doc.is_empty() {
+                        embed_lines.push("doc:".to_string());
+                        embed_lines.push(doc);
+                    }
+
+                    let embed_text = preview(&embed_lines.join("\n"), MAX_EMBED_TEXT_CHARS);
+                    out.push((start..end, "type".to_string(), snippet, embed_text));
+                }
+                _ => continue,
             }
 
-            let range = node.text_range();
-            let start = u32::from(range.start()) as usize;
-            let end = u32::from(range.end()) as usize;
-            let start = start.min(source.len());
-            let end = end.min(source.len()).max(start);
-            let method_text = source[start..end].trim();
-            if method_text.is_empty() {
-                continue;
-            }
-
-            let doc = find_doc_comment_before_offset(source, start).unwrap_or_default();
-            let signature = extract_signature(method_text);
-            let body = extract_body_preview(method_text);
-            let snippet = preview(method_text, 2_000);
-            let embed_text = format!("{}\n{doc}\n{signature}\n{body}", path.to_string_lossy());
-
-            out.push((start..end, "method".to_string(), snippet, embed_text));
+            // Continue traversal
         }
 
+        out
+    }
+
+    fn node_byte_range(source: &str, node: &nova_syntax::SyntaxNode) -> Range<usize> {
+        let range = node.text_range();
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
+        let start = start.min(source.len());
+        let end = end.min(source.len()).max(start);
+        start..end
+    }
+
+    fn enclosing_type_names(node: &nova_syntax::SyntaxNode) -> Vec<String> {
+        use nova_syntax::{
+            AnnotationTypeDeclaration, AstNode, ClassDeclaration, EnumDeclaration,
+            InterfaceDeclaration, RecordDeclaration, SyntaxKind,
+        };
+
+        let mut out = Vec::new();
+        for ancestor in node.ancestors().skip(1) {
+            let name = match ancestor.kind() {
+                SyntaxKind::ClassDeclaration => ClassDeclaration::cast(ancestor.clone())
+                    .and_then(|decl| decl.name_token())
+                    .map(|tok| tok.text().to_string()),
+                SyntaxKind::InterfaceDeclaration => InterfaceDeclaration::cast(ancestor.clone())
+                    .and_then(|decl| decl.name_token())
+                    .map(|tok| tok.text().to_string()),
+                SyntaxKind::EnumDeclaration => EnumDeclaration::cast(ancestor.clone())
+                    .and_then(|decl| decl.name_token())
+                    .map(|tok| tok.text().to_string()),
+                SyntaxKind::RecordDeclaration => RecordDeclaration::cast(ancestor.clone())
+                    .and_then(|decl| decl.name_token())
+                    .map(|tok| tok.text().to_string()),
+                SyntaxKind::AnnotationTypeDeclaration => AnnotationTypeDeclaration::cast(ancestor)
+                    .and_then(|decl| decl.name_token())
+                    .map(|tok| tok.text().to_string()),
+                _ => None,
+            };
+
+            if let Some(name) = name {
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+        }
+
+        out.reverse();
         out
     }
 
@@ -1102,6 +1375,40 @@ mod embeddings {
             .or_else(|| snippet.find(';'))
             .unwrap_or(snippet.len());
         snippet[..end].trim().to_string()
+    }
+
+    fn normalize_whitespace(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut prev_space = true;
+        for ch in text.chars() {
+            if ch.is_whitespace() {
+                if !prev_space {
+                    out.push(' ');
+                    prev_space = true;
+                }
+            } else {
+                out.push(ch);
+                prev_space = false;
+            }
+        }
+        out.trim().to_string()
+    }
+
+    fn clean_doc_comment(doc: &str) -> String {
+        let doc = doc.trim();
+        let doc = doc.strip_prefix("/**").unwrap_or(doc);
+        let doc = doc.strip_suffix("*/").unwrap_or(doc);
+        let mut out_lines = Vec::new();
+        for line in doc.lines() {
+            let line = line.trim();
+            let line = line.strip_prefix('*').unwrap_or(line).trim_start();
+            let line = normalize_whitespace(line);
+            if !line.is_empty() {
+                out_lines.push(line);
+            }
+        }
+
+        out_lines.join("\n")
     }
 
     fn extract_body_preview(snippet: &str) -> String {
