@@ -44,7 +44,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-ai`
 - **Purpose:** model-agnostic AI helpers (privacy/anonymization, context building, completion ranking, semantic search, optional cloud LLM client).
-- **Key entry points:** `crates/nova-ai/src/lib.rs` (`AiService`, `CloudLlmClient`, `CloudLlmConfig`, `ContextBuilder`, `SemanticSearch`, `TrigramSemanticSearch`, `PrivacyMode`).
+- **Key entry points:** `crates/nova-ai/src/lib.rs` (`AiClient`, `NovaAi`, `CompletionRanker`/`LlmCompletionRanker`, `ContextBuilder`, `SemanticSearch`, `TrigramSemanticSearch`, `PrivacyMode`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - AI features are opt-in and mostly wired through the `nova-lsp` binary, not the incremental query engine.
