@@ -56,6 +56,127 @@ fn semantic_search_index_status(
 }
 
 #[test]
+fn stdio_workspace_folder_add_starts_semantic_search_workspace_indexing_after_initialize_without_root(
+) {
+    let _lock = stdio_server_lock();
+
+    let ai_server = TestAiServer::start(json!({ "completion": "ok" }));
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("ws1");
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create ws1/src");
+    std::fs::write(src_dir.join("Foo.java"), "class Foo {}").expect("write Foo.java");
+
+    let config_path = temp.path().join("nova.config.toml");
+    let config = format!(
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+timeout_ms = 2000
+max_tokens = 64
+"#,
+        endpoint = format!("{}/complete", ai_server.base_url())
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let root_uri = uri_for_path(&root);
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // Initialize without a root URI; semantic-search workspace indexing should remain idle until
+    // the client adds a workspace folder.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let status_before = semantic_search_index_status(&mut stdin, &mut stdout, 2);
+    assert_eq!(
+        status_before.get("currentRunId").and_then(|v| v.as_u64()),
+        Some(0),
+        "expected currentRunId=0 before workspace folder is set; got {status_before:#}"
+    );
+    assert_eq!(
+        status_before.get("reason").and_then(|v| v.as_str()),
+        Some("missing_workspace_root"),
+        "expected reason=missing_workspace_root before workspace folder is set; got {status_before:#}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWorkspaceFolders",
+            "params": {
+                "event": {
+                    "added": [{ "uri": root_uri, "name": "ws1" }],
+                    "removed": []
+                }
+            }
+        }),
+    );
+
+    let run_id = (0..50)
+        .find_map(|attempt| {
+            let id = 100 + attempt as i64;
+            let run_id = current_semantic_search_run_id(&mut stdin, &mut stdout, id);
+            (run_id != 0).then_some(run_id)
+        })
+        .expect("expected semantic-search workspace indexing to start after workspace folder add");
+    assert_ne!(run_id, 0);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_workspace_folder_change_restarts_semantic_search_workspace_indexing() {
     let _lock = stdio_server_lock();
 
