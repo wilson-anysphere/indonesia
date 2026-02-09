@@ -1222,6 +1222,8 @@ fn load_git_diff(staged: bool) -> Result<String> {
 
     let mut cmd = Command::new("git");
     cmd.arg("diff");
+    // Produce stable, machine-consumable output regardless of user git config.
+    cmd.arg("--no-color").arg("--no-ext-diff");
     if staged {
         cmd.arg("--staged");
     }

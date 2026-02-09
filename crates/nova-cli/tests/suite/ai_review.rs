@@ -158,3 +158,126 @@ fn ai_review_reads_diff_from_file() {
 
     mock.assert_hits(1);
 }
+
+#[test]
+fn ai_review_discovers_config_from_workspace_root() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nDiscovered config OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let _config = write_http_ai_config(&temp, &server);
+
+    let nested = temp.child("nested");
+    nested.create_dir_all().unwrap();
+
+    let diff = sample_diff();
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(nested.path())
+        .env_remove("NOVA_CONFIG_PATH")
+        .args(["ai", "review", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(diff.as_bytes())?;
+            drop(child.stdin.take());
+            child.wait_with_output()
+        })
+        .expect("run nova ai review (workspace discovery)");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Discovered config OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
+
+#[test]
+fn ai_review_git_flag_uses_git_diff_output() {
+    // Best-effort: `--git` is a convenience flag, so skip if git isn't available.
+    if ProcessCommand::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nGit diff OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    // Init a tiny git repo with one tracked file.
+    let src = temp.child("README.md");
+    src.write_str("hello\n").unwrap();
+
+    let git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    // Modify to ensure `git diff` is non-empty.
+    src.write_str("hello world\n").unwrap();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(temp.path())
+        .arg("--config")
+        .arg(config.path())
+        .args(["ai", "review", "--git", "--json"])
+        .output()
+        .expect("run nova ai review --git");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Git diff OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
