@@ -300,7 +300,8 @@ Privacy implications:
 #### `NOVA_AI_AUDIT_LOGGING` (logs prompts/results into normal logs)
 
 Separately from the dedicated `nova.ai.audit` file channel, Nova’s cloud-backed AI wiring (used by
-`nova-lsp` when configured via `NOVA_AI_PROVIDER=...`) supports:
+`nova-lsp` when configured via `NOVA_AI_PROVIDER=...`, optionally tuned via `NOVA_AI_MAX_TOKENS` /
+`NOVA_AI_CONCURRENCY`) supports:
 
 - `NOVA_AI_AUDIT_LOGGING=1|true`
 
