@@ -344,10 +344,11 @@ restarting the language server to take full effect.
   - hides Nova AI code actions (e.g. "Explain this error", "Generate tests with AI")
   - forces server-side AI off (equivalent to setting `NOVA_DISABLE_AI=1` for the `nova-lsp` process)
   - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
-- `nova.aiCompletions.enabled` (boolean): enable AI completion features, including completion ranking
-  and async multi-token completions (`nova/completion/more`). When disabled, the extension stops
-  polling `nova/completion/more` and disables AI completion features server-side (equivalent to
-  setting `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
+- `nova.aiCompletions.enabled` (boolean): enable AI completion features, including async multi-token
+  completions (`nova/completion/more`) and completion ranking (re-ordering of standard
+  `textDocument/completion` results). When disabled, the extension stops polling `nova/completion/more`
+  and disables AI completion features server-side (equivalent to setting `NOVA_DISABLE_AI_COMPLETIONS=1`
+  for the `nova-lsp` process).
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request (async
   multi-token completions).
   - The extension passes this to the server as `NOVA_AI_COMPLETIONS_MAX_ITEMS` (read at server

@@ -27,10 +27,12 @@ export interface NovaLspLaunchConfigOptions {
    */
   aiEnabled?: boolean;
   /**
-   * Toggle for multi-token completions only.
+   * Toggle for AI completion features.
    *
    * When false, the server is started with `NOVA_DISABLE_AI_COMPLETIONS=1` so
-   * `nova.toml` cannot re-enable completion provider traffic.
+   * `nova.toml` cannot re-enable AI completion behavior (including async
+   * multi-token completions via `nova/completion/more` and completion ranking
+   * that re-orders standard `textDocument/completion` results).
    */
   aiCompletionsEnabled?: boolean;
   /**
@@ -83,7 +85,7 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
   const baseEnv = options.baseEnv ?? process.env;
 
   const disableAi = !aiEnabled;
-  // If AI is disabled, multi-token completions are also disabled.
+  // If AI is disabled, AI completion features are also disabled.
   const disableAiCompletions = disableAi || !aiCompletionsEnabled;
   const aiCompletionsMaxItemsEnv =
     !disableAi && typeof aiCompletionsMaxItems === 'number' && Number.isFinite(aiCompletionsMaxItems)

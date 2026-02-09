@@ -71,7 +71,7 @@ test('buildNovaLspLaunchConfig strips NOVA_AI_* env vars and sets NOVA_DISABLE_A
   assert.equal(baseEnv.NOVA_AI_PROVIDER, 'http');
 });
 
-test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when aiCompletionsEnabled is false', () => {
+test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when AI completion features are disabled', () => {
   const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: false, baseEnv });
 
@@ -81,7 +81,7 @@ test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when aiCompletio
   assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, undefined);
 });
 
-test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI and NOVA_DISABLE_AI_COMPLETIONS when the corresponding settings are enabled', () => {
+test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI and NOVA_DISABLE_AI_COMPLETIONS when AI and AI completion features are enabled', () => {
   const baseEnv: NodeJS.ProcessEnv = { NOVA_DISABLE_AI: '1', NOVA_DISABLE_AI_COMPLETIONS: '1', OTHER: 'x' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: true, baseEnv });
 
