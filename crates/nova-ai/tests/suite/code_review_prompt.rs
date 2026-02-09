@@ -202,3 +202,65 @@ index 0000000..1111111 100644
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn code_review_prompt_escapes_triple_backticks_inside_diff() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        let user_prompt = json["messages"][1]["content"]
+            .as_str()
+            .expect("user prompt is string");
+
+        // Still only the diff fence open/close should be present.
+        assert_eq!(
+            user_prompt.match_indices("```").count(),
+            2,
+            "expected only the diff fence markers in the prompt; got:\n{user_prompt}"
+        );
+
+        let diff_part = extract_diff_block(user_prompt).expect("diff fenced block present");
+
+        // The original triple backticks inside the diff should be escaped so they don't terminate
+        // the surrounding ```diff fence.
+        assert!(
+            !diff_part.contains("```"),
+            "expected diff block to contain no raw triple-backtick sequences; got:\n{diff_part}"
+        );
+
+        let escaped_fence = "`\u{200B}`\u{200B}`java";
+        assert!(
+            diff_part.contains(escaped_fence),
+            "expected escaped fence marker {escaped_fence:?} in diff block; got:\n{diff_part}"
+        );
+
+        Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let ai = NovaAi::new(&openai_compatible_config(url)).unwrap();
+
+    let diff = "\
+diff --git a/README.md b/README.md
+index 0000000..1111111 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,3 @@
+-```java
++```java
+";
+
+    let out = ai
+        .code_review(diff, CancellationToken::new())
+        .await
+        .expect("code review request succeeds");
+    assert_eq!(out, "ok");
+
+    handle.abort();
+}

@@ -51,6 +51,11 @@ pub(crate) fn generate_tests_prompt(target: &str, context: &str) -> String {
 }
 
 pub(crate) fn code_review_prompt(diff: &str) -> String {
+    // The code review diff is wrapped in a Markdown fenced code block. If the diff itself contains
+    // triple-backtick sequences (common in Markdown files), it can prematurely terminate the fence
+    // and confuse both the model and Nova's prompt sanitizer. Break the sequence with zero-width
+    // spaces to keep it readable while preventing accidental fence termination.
+    let diff = diff.replace("```", "`\u{200B}`\u{200B}`");
     format!(
         r#"Review the following code change.
 
