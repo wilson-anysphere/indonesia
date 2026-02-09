@@ -55,6 +55,7 @@ pub(super) fn provider_embeddings_client_from_config(
         .model
         .clone()
         .unwrap_or_else(|| config.provider.model.clone());
+    let batch_size = config.embeddings.batch_size.max(1);
 
     let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
         .map(Arc::new)
@@ -88,6 +89,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 deployment,
                 api_version,
                 timeout,
+                batch_size,
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -146,6 +148,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model.clone(),
                 Some(api_key),
                 timeout,
+                batch_size,
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -184,6 +187,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model.clone(),
                 config.api_key.clone(),
                 timeout,
+                batch_size,
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -222,6 +226,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 model.clone(),
                 config.api_key.clone(),
                 timeout,
+                batch_size,
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -259,6 +264,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 config.provider.url.clone(),
                 model.clone(),
                 timeout,
+                batch_size,
             ) {
                 Ok(base) => base,
                 Err(err) => {
@@ -501,6 +507,7 @@ struct AzureOpenAiEmbeddingsClient {
     deployment: String,
     api_version: String,
     timeout: Duration,
+    batch_size: usize,
     client: reqwest::Client,
 }
 
@@ -511,6 +518,7 @@ impl AzureOpenAiEmbeddingsClient {
         deployment: String,
         api_version: String,
         timeout: Duration,
+        batch_size: usize,
     ) -> Result<Self, AiError> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -527,6 +535,7 @@ impl AzureOpenAiEmbeddingsClient {
             deployment,
             api_version,
             timeout,
+            batch_size: batch_size.max(1),
             client,
         })
     }
@@ -543,19 +552,8 @@ impl AzureOpenAiEmbeddingsClient {
             .append_pair("api-version", &self.api_version);
         Ok(url.to_string())
     }
-}
 
-#[async_trait]
-impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
-    async fn embed(
-        &self,
-        input: &[String],
-        cancel: CancellationToken,
-    ) -> Result<Vec<Vec<f32>>, AiError> {
-        if input.is_empty() {
-            return Ok(Vec::new());
-        }
-
+    async fn embed_once(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
         let mut url = self
             .endpoint
             .join(&format!(
@@ -570,17 +568,41 @@ impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
             "input": input,
         });
 
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await?
+            .error_for_status()?;
+        let parsed: OpenAiEmbeddingsResponse = response.json().await?;
+        parse_openai_embeddings(parsed, input.len())
+    }
+}
+
+#[async_trait]
+impl EmbeddingsClient for AzureOpenAiEmbeddingsClient {
+    async fn embed(
+        &self,
+        input: &[String],
+        cancel: CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, AiError> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let batch_size = self.batch_size.max(1);
         let fut = async {
-            let response = self
-                .client
-                .post(url)
-                .json(&body)
-                .timeout(self.timeout)
-                .send()
-                .await?
-                .error_for_status()?;
-            let parsed: OpenAiEmbeddingsResponse = response.json().await?;
-            parse_openai_embeddings(parsed, input.len())
+            if input.len() <= batch_size {
+                return self.embed_once(input).await;
+            }
+
+            let mut out = Vec::with_capacity(input.len());
+            for chunk in input.chunks(batch_size) {
+                out.extend(self.embed_once(chunk).await?);
+            }
+            Ok(out)
         };
 
         tokio::select! {
@@ -597,6 +619,7 @@ struct OpenAiCompatibleEmbeddingsClient {
     model: String,
     timeout: Duration,
     api_key: Option<String>,
+    batch_size: usize,
     client: reqwest::Client,
 }
 
@@ -606,6 +629,7 @@ impl OpenAiCompatibleEmbeddingsClient {
         model: String,
         api_key: Option<String>,
         timeout: Duration,
+        batch_size: usize,
     ) -> Result<Self, AiError> {
         let mut headers = HeaderMap::new();
         if let Some(key) = api_key.as_deref() {
@@ -625,6 +649,7 @@ impl OpenAiCompatibleEmbeddingsClient {
             model,
             timeout,
             api_key,
+            batch_size: batch_size.max(1),
             client,
         })
     }
@@ -648,6 +673,23 @@ impl OpenAiCompatibleEmbeddingsClient {
     fn embeddings_endpoint_id(&self) -> Result<String, AiError> {
         Ok(self.endpoint("/embeddings")?.to_string())
     }
+
+    async fn embed_once(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        let url = self.endpoint("/embeddings")?;
+        let body = json!({
+            "model": &self.model,
+            "input": input,
+        });
+
+        let mut request = self.client.post(url).json(&body).timeout(self.timeout);
+        if let Some(key) = self.api_key.as_deref() {
+            request = request.bearer_auth(key);
+        }
+
+        let response = request.send().await?.error_for_status()?;
+        let parsed: OpenAiEmbeddingsResponse = response.json().await?;
+        parse_openai_embeddings(parsed, input.len())
+    }
 }
 
 #[async_trait]
@@ -661,21 +703,17 @@ impl EmbeddingsClient for OpenAiCompatibleEmbeddingsClient {
             return Ok(Vec::new());
         }
 
-        let url = self.endpoint("/embeddings")?;
-        let body = json!({
-            "model": &self.model,
-            "input": input,
-        });
-
+        let batch_size = self.batch_size.max(1);
         let fut = async {
-            let mut request = self.client.post(url).json(&body).timeout(self.timeout);
-            if let Some(key) = self.api_key.as_deref() {
-                request = request.bearer_auth(key);
+            if input.len() <= batch_size {
+                return self.embed_once(input).await;
             }
 
-            let response = request.send().await?.error_for_status()?;
-            let parsed: OpenAiEmbeddingsResponse = response.json().await?;
-            parse_openai_embeddings(parsed, input.len())
+            let mut out = Vec::with_capacity(input.len());
+            for chunk in input.chunks(batch_size) {
+                out.extend(self.embed_once(chunk).await?);
+            }
+            Ok(out)
         };
 
         tokio::select! {
@@ -737,16 +775,18 @@ struct OllamaEmbeddingsClient {
     base_url: Url,
     model: String,
     timeout: Duration,
+    batch_size: usize,
     client: reqwest::Client,
 }
 
 impl OllamaEmbeddingsClient {
-    fn new(base_url: Url, model: String, timeout: Duration) -> Result<Self, AiError> {
+    fn new(base_url: Url, model: String, timeout: Duration, batch_size: usize) -> Result<Self, AiError> {
         let client = reqwest::Client::builder().build()?;
         Ok(Self {
             base_url,
             model,
             timeout,
+            batch_size: batch_size.max(1),
             client,
         })
     }
@@ -849,8 +889,26 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
         }
 
         let fut = async {
-            if let Some(embeddings) = self.embed_via_embed_endpoint(input).await? {
-                return Ok(embeddings);
+            let batch_size = self.batch_size.max(1);
+            let mut chunks = input.chunks(batch_size);
+            let Some(first_chunk) = chunks.next() else {
+                return Ok(Vec::new());
+            };
+
+            if let Some(embeddings) = self.embed_via_embed_endpoint(first_chunk).await? {
+                let mut out = Vec::with_capacity(input.len());
+                out.extend(embeddings);
+
+                for chunk in chunks {
+                    let Some(embeddings) = self.embed_via_embed_endpoint(chunk).await? else {
+                        return Err(AiError::UnexpectedResponse(
+                            "ollama /api/embed returned 404 after a successful request".into(),
+                        ));
+                    };
+                    out.extend(embeddings);
+                }
+
+                return Ok(out);
             }
             self.embed_via_legacy_endpoint(input).await
         };

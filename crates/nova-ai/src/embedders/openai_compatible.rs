@@ -16,6 +16,7 @@ pub struct OpenAiCompatibleEmbedder {
     model: String,
     timeout: Duration,
     api_key: Option<String>,
+    batch_size: usize,
     client: reqwest::blocking::Client,
 }
 
@@ -25,6 +26,7 @@ impl OpenAiCompatibleEmbedder {
         model: impl Into<String>,
         timeout: Duration,
         api_key: Option<String>,
+        batch_size: usize,
     ) -> Result<Self, AiError> {
         let mut headers = HeaderMap::new();
         if let Some(key) = api_key.as_deref() {
@@ -45,11 +47,15 @@ impl OpenAiCompatibleEmbedder {
             model: model.into(),
             timeout,
             api_key,
+            batch_size: batch_size.max(1),
             client,
         })
     }
 
-    fn authorize(&self, request: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    fn authorize(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
         match &self.api_key {
             Some(api_key) => request.bearer_auth(api_key),
             None => request,
@@ -68,7 +74,7 @@ impl OpenAiCompatibleEmbedder {
         if base_path.ends_with("/v1") {
             Ok(base.join(path.trim_start_matches('/'))?)
         } else {
-            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))?)
+            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))? )
         }
     }
 
@@ -131,7 +137,16 @@ impl Embedder for OpenAiCompatibleEmbedder {
     }
 
     fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
-        self.embed_batch_impl(inputs)
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let batch_size = self.batch_size.max(1);
+        let mut out = Vec::with_capacity(inputs.len());
+        for chunk in inputs.chunks(batch_size) {
+            out.extend(self.embed_batch_impl(chunk)?);
+        }
+        Ok(out)
     }
 }
 

@@ -30,6 +30,7 @@ fn provider_embedder_can_be_used_from_sync_context_without_tokio_runtime() {
         "test-embedding-model",
         Duration::from_secs(2),
         None,
+        /*batch_size=*/ 32,
     )
     .expect("embedder builds");
 
@@ -64,6 +65,7 @@ fn provider_embedder_batches_embedding_requests_when_indexing_multiple_docs() {
         "test-embedding-model",
         Duration::from_secs(2),
         None,
+        /*batch_size=*/ 32,
     )
     .expect("embedder builds");
 

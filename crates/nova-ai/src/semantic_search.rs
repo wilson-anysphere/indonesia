@@ -1326,7 +1326,6 @@ mod embeddings {
                 }
                 return;
             }
-
             // If we're already at (or extremely close to) our embedding memory budget, avoid doing
             // any embedding work for this file. This keeps workspace indexing usable when
             // provider-backed embeddings are enabled (network calls are expensive) and prevents
@@ -1346,7 +1345,6 @@ mod embeddings {
                     return;
                 }
             }
-
             let mut meta = Vec::with_capacity(extracted.len());
             let mut inputs = Vec::with_capacity(extracted.len());
             for (range, kind, snippet, embed_text) in extracted {
@@ -1406,12 +1404,12 @@ mod embeddings {
                     out
                 }
             };
+
             let mut docs = Vec::new();
             for ((range, kind, snippet), embedding) in meta.into_iter().zip(embeddings) {
                 let Some(mut embedding) = embedding else {
                     continue;
                 };
-
                 if embedding.is_empty() {
                     continue;
                 }

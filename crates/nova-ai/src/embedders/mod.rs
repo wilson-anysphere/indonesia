@@ -6,6 +6,9 @@
 //! embedders therefore must not rely on a caller-provided tokio runtime.
 
 mod openai_compatible;
+mod ollama;
+mod azure_openai;
 
+pub use azure_openai::AzureOpenAiEmbedder;
 pub use openai_compatible::OpenAiCompatibleEmbedder;
-
+pub use ollama::OllamaEmbedder;
