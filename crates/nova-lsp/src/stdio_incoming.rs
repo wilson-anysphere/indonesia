@@ -519,7 +519,10 @@ fn reload_ai_semantic_search_config(state: &mut ServerState) {
             .semantic_search
             .write()
             .unwrap_or_else(|err| err.into_inner());
-        *search = nova_ai::semantic_search_from_config(&state.ai_config);
+        *search = nova_ai::semantic_search_from_config(&state.ai_config).unwrap_or_else(|err| {
+            eprintln!("failed to configure semantic search: {err}");
+            Box::new(nova_ai::TrigramSemanticSearch::new())
+        });
     }
 
     // Clear + reindex currently open documents so overlays remain present in the semantic-search
