@@ -1,5 +1,6 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
+assertion_line: 4
 expression: schema
 ---
 {
@@ -698,6 +699,7 @@ expression: schema
           "kind": "ollama",
           "max_tokens": 1024,
           "model": "llama3",
+          "temperature": null,
           "timeout_ms": 60000,
           "url": "http://localhost:11434/"
         },
@@ -920,6 +922,7 @@ expression: schema
             "kind": "ollama",
             "max_tokens": 1024,
             "model": "llama3",
+            "temperature": null,
             "timeout_ms": 60000,
             "url": "http://localhost:11434/"
           },
@@ -1212,6 +1215,16 @@ expression: schema
           "default": "llama3",
           "type": "string",
           "minLength": 1
+        },
+        "temperature": {
+          "description": "Optional default sampling temperature applied to chat requests.\n\nWhen unset, Nova omits the `temperature` field entirely and the provider's default is used (often `1.0`).",
+          "default": null,
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "minimum": 0.0
         },
         "timeout_ms": {
           "description": "Per-request timeout.",
