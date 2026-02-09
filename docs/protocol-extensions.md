@@ -1922,8 +1922,8 @@ Notes:
     env var when starting `nova-lsp` and prompts for a server restart when it changes.
 - Other server-side env var overrides that can disable AI completion features entirely:
   - `NOVA_DISABLE_AI=1` disables all AI features.
-  - `NOVA_DISABLE_AI_COMPLETIONS=1` disables AI completion features (completion ranking and
-    multi-token completions).
+  - `NOVA_DISABLE_AI_COMPLETIONS=1` disables AI completion features (multi-token completions and
+    completion ranking).
 - Clients should gate polling on `CompletionList.isIncomplete = true`; when multi-token completions
   are disabled, the server returns `isIncomplete = false` and `nova/completion/more` will return an
   empty result.
