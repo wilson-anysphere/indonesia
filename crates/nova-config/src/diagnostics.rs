@@ -54,6 +54,12 @@ pub enum ConfigWarning {
         toml_path: String,
         message: String,
     },
+    AiCompletionRankingTimeoutLikelyToTimeout {
+        toml_path: String,
+        provider: crate::AiProviderKind,
+        timeout_ms: u64,
+        message: String,
+    },
     ExtensionsWasmPathMissing {
         toml_path: String,
         resolved: PathBuf,

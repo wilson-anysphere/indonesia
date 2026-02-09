@@ -917,6 +917,88 @@ multi_token_completion_ms = 0
 }
 
 #[test]
+fn warns_when_cloud_completion_ranking_timeout_is_likely_to_time_out() {
+    let text = r#"
+[ai]
+enabled = true
+api_key = "secret"
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "open_ai"
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 20
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::AiCompletionRankingTimeoutLikelyToTimeout {
+            toml_path: "ai.timeouts.completion_ranking_ms".to_string(),
+            provider: AiProviderKind::OpenAi,
+            timeout_ms: 20,
+            message: "LLM-backed completion ranking is best-effort; with ai.timeouts.completion_ranking_ms=20ms this will likely time out with cloud providers and Nova will silently fall back to static ranking. Consider increasing ai.timeouts.completion_ranking_ms (e.g. >= 100ms).".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn does_not_warn_about_completion_ranking_timeout_for_local_providers() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 20
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert!(diagnostics.warnings.is_empty());
+}
+
+#[test]
+fn does_not_warn_about_completion_ranking_timeout_when_above_threshold() {
+    let text = r#"
+[ai]
+enabled = true
+api_key = "secret"
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "open_ai"
+
+[ai.features]
+completion_ranking = true
+
+[ai.timeouts]
+completion_ranking_ms = 250
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert!(diagnostics.warnings.is_empty());
+}
+
+#[test]
 fn validates_ai_embeddings_limits_are_positive() {
     let text = r#"
 [ai]

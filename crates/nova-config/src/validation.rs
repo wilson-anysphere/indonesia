@@ -4,6 +4,7 @@ use crate::diagnostics::{ConfigValidationError, ConfigWarning, ValidationDiagnos
 use crate::{AiEmbeddingsBackend, AiProviderKind, LoggingConfig, NovaConfig};
 
 const MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS: usize = 8_192;
+const COMPLETION_RANKING_CLOUD_PROVIDER_TIMEOUT_WARN_THRESHOLD_MS: u64 = 100;
 
 /// Context for semantic config validation.
 ///
@@ -559,6 +560,31 @@ fn validate_ai(
             toml_path: "ai.timeouts.completion_ranking_ms".to_string(),
             message: "must be >= 1 when ai.features.completion_ranking is enabled".to_string(),
         });
+    }
+
+    if config.ai.features.completion_ranking
+        && !config.ai.privacy.local_only
+        && config.ai.timeouts.completion_ranking_ms > 0
+        && config.ai.timeouts.completion_ranking_ms
+            < COMPLETION_RANKING_CLOUD_PROVIDER_TIMEOUT_WARN_THRESHOLD_MS
+        && matches!(
+            config.ai.provider.kind,
+            AiProviderKind::OpenAi
+                | AiProviderKind::Anthropic
+                | AiProviderKind::Gemini
+                | AiProviderKind::AzureOpenAi
+        )
+    {
+        let timeout_ms = config.ai.timeouts.completion_ranking_ms;
+        out.warnings
+            .push(ConfigWarning::AiCompletionRankingTimeoutLikelyToTimeout {
+                toml_path: "ai.timeouts.completion_ranking_ms".to_string(),
+                provider: config.ai.provider.kind.clone(),
+                timeout_ms,
+                message: format!(
+                    "LLM-backed completion ranking is best-effort; with ai.timeouts.completion_ranking_ms={timeout_ms}ms this will likely time out with cloud providers and Nova will silently fall back to static ranking. Consider increasing ai.timeouts.completion_ranking_ms (e.g. >= {COMPLETION_RANKING_CLOUD_PROVIDER_TIMEOUT_WARN_THRESHOLD_MS}ms)."
+                ),
+            });
     }
 
     if config.ai.features.multi_token_completion
