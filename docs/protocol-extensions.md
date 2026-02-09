@@ -1142,6 +1142,22 @@ Notes:
 
 JSON string (the code review, typically markdown).
 
+Output format (model response):
+
+- **Plain Markdown** (not JSON).
+- Expected sections:
+  - `## Summary` — 1–3 bullets describing what changed and the overall risk.
+  - `## Issues & Suggestions` — findings grouped by file (`### path/to/File.java`) when file paths are
+    available in the diff; otherwise grouped by category (`### Correctness`, `### Performance`,
+    `### Security`, `### Tests`, `### Maintainability`).
+  - `## Tests` — missing tests / risky areas and specific test cases to add.
+- Each issue should include a severity label (`BLOCKER` / `MAJOR` / `MINOR`) and a concrete,
+  code-referencing suggestion when possible (file/function/hunk + rationale + proposed fix snippet).
+
+Note: the diff/context may be incomplete because some file sections can be omitted by
+`ai.privacy.excluded_paths`. In that case, the review may be more general and should call out the
+missing context.
+
 #### Side effects
 
 - When `workDoneToken` is present, the server emits `$/progress` notifications.
