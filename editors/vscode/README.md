@@ -398,6 +398,9 @@ environment variables read by the `nova-lsp` process, for example:
 - `NOVA_AI_MODEL` (optional; defaults to `"default"`)
 - `NOVA_AI_MAX_TOKENS` (optional; overrides `ai.provider.max_tokens`, clamped to >= 1)
 - `NOVA_AI_CONCURRENCY` (optional; overrides `ai.provider.concurrency`, clamped to >= 1)
+- `NOVA_AI_RETRY_MAX_RETRIES` (optional; overrides `ai.provider.retry_max_retries`)
+- `NOVA_AI_RETRY_INITIAL_BACKOFF_MS` (optional; overrides `ai.provider.retry_initial_backoff_ms`, clamped to >= 1)
+- `NOVA_AI_RETRY_MAX_BACKOFF_MS` (optional; overrides `ai.provider.retry_max_backoff_ms`, clamped to >= 1)
 
 These environment variables must be present in the VS Code environment (e.g. set them in your shell
 before launching VS Code, or configure them via your OS / remote environment) and require restarting

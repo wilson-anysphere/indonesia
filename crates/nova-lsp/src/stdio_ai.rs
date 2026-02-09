@@ -1499,6 +1499,49 @@ pub(super) fn load_ai_config_from_env(
       return Err("invalid NOVA_AI_CONCURRENCY: value is not valid unicode".to_string());
     }
   };
+  let provider_retry_max_retries = match std::env::var("NOVA_AI_RETRY_MAX_RETRIES") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<usize>().map_err(|_| {
+        format!("invalid NOVA_AI_RETRY_MAX_RETRIES: `{raw}` (expected an integer >= 0)")
+      })?;
+      Some(value)
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err("invalid NOVA_AI_RETRY_MAX_RETRIES: value is not valid unicode".to_string());
+    }
+  };
+  let provider_retry_initial_backoff_ms = match std::env::var("NOVA_AI_RETRY_INITIAL_BACKOFF_MS") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<u64>().map_err(|_| {
+        format!(
+          "invalid NOVA_AI_RETRY_INITIAL_BACKOFF_MS: `{raw}` (expected an integer >= 1)"
+        )
+      })?;
+      Some(value.max(1))
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err(
+        "invalid NOVA_AI_RETRY_INITIAL_BACKOFF_MS: value is not valid unicode".to_string(),
+      );
+    }
+  };
+  let provider_retry_max_backoff_ms = match std::env::var("NOVA_AI_RETRY_MAX_BACKOFF_MS") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<u64>().map_err(|_| {
+        format!("invalid NOVA_AI_RETRY_MAX_BACKOFF_MS: `{raw}` (expected an integer >= 1)")
+      })?;
+      Some(value.max(1))
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err("invalid NOVA_AI_RETRY_MAX_BACKOFF_MS: value is not valid unicode".to_string());
+    }
+  };
 
   let audit_logging = matches!(
     std::env::var("NOVA_AI_AUDIT_LOGGING").as_deref(),
@@ -1533,6 +1576,11 @@ pub(super) fn load_ai_config_from_env(
   // Supported env vars (legacy env-var based AI wiring):
   // - `NOVA_AI_MAX_TOKENS=<n>` overrides `ai.provider.max_tokens` (values are clamped to >= 1).
   // - `NOVA_AI_CONCURRENCY=<n>` overrides `ai.provider.concurrency` (values are clamped to >= 1).
+  // - `NOVA_AI_RETRY_MAX_RETRIES=<n>` overrides `ai.provider.retry_max_retries`.
+  // - `NOVA_AI_RETRY_INITIAL_BACKOFF_MS=<n>` overrides `ai.provider.retry_initial_backoff_ms`
+  //   (values are clamped to >= 1).
+  // - `NOVA_AI_RETRY_MAX_BACKOFF_MS=<n>` overrides `ai.provider.retry_max_backoff_ms`
+  //   (values are clamped to >= 1).
   // - `NOVA_AI_ANONYMIZE_IDENTIFIERS=0|false|FALSE` disables identifier anonymization.
   //   When unset, defaults depend on the resolved provider/local-only mode (see above).
   // - `NOVA_AI_INCLUDE_FILE_PATHS=1|true|TRUE` allows including paths in prompts
@@ -1595,6 +1643,15 @@ pub(super) fn load_ai_config_from_env(
   cfg.provider.model = model;
   if let Some(value) = provider_max_tokens {
     cfg.provider.max_tokens = value;
+  }
+  if let Some(value) = provider_retry_max_retries {
+    cfg.provider.retry_max_retries = value;
+  }
+  if let Some(value) = provider_retry_initial_backoff_ms {
+    cfg.provider.retry_initial_backoff_ms = value;
+  }
+  if let Some(value) = provider_retry_max_backoff_ms {
+    cfg.provider.retry_max_backoff_ms = value;
   }
   cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
   cfg.provider.concurrency = provider_concurrency;

@@ -181,6 +181,41 @@ fn spawn_stdio_server(config_path: &std::path::Path) -> std::process::Child {
         .expect("spawn nova-lsp")
 }
 
+fn spawn_stdio_server_with_legacy_env_retry_config(
+    config_path: &std::path::Path,
+    endpoint: &str,
+    max_retries: &str,
+) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(config_path)
+        // Ensure a developer's environment doesn't disable AI unexpectedly.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        // Reset any legacy AI config so only the values set below apply.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_AI_RETRY_MAX_RETRIES")
+        .env_remove("NOVA_AI_RETRY_INITIAL_BACKOFF_MS")
+        .env_remove("NOVA_AI_RETRY_MAX_BACKOFF_MS")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env("NOVA_AI_ENDPOINT", endpoint)
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_RETRY_MAX_RETRIES", max_retries)
+        // Keep the tests fast: avoid the default 200ms backoff.
+        .env("NOVA_AI_RETRY_INITIAL_BACKOFF_MS", "1")
+        .env("NOVA_AI_RETRY_MAX_BACKOFF_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp")
+}
+
 fn initialize(child: &mut std::process::Child) -> (std::process::ChildStdin, BufReader<std::process::ChildStdout>) {
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
@@ -552,6 +587,76 @@ local_only = true
     .expect("write config");
 
     let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/Main.java b/Main.java\n+class Main {}\n",
+            }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.as_str(), Some("mock review"));
+    assert_eq!(flaky_server.hits(), 2, "expected one retry after 500");
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_legacy_env_retry_max_retries_zero_disables_retries() {
+    let _lock = support::stdio_server_lock();
+
+    let flaky_server = FlakyAiServer::start(json!({ "completion": "mock review" }));
+    let endpoint = format!("{}/complete", flaky_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(&config_path, "[ai]\nenabled = false\n").expect("write config");
+
+    let mut child = spawn_stdio_server_with_legacy_env_retry_config(&config_path, &endpoint, "0");
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/Main.java b/Main.java\n+class Main {}\n",
+            }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_some(),
+        "expected error result when retries are disabled, got: {resp:?}"
+    );
+    assert_eq!(flaky_server.hits(), 1, "expected a single provider hit");
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_legacy_env_retry_max_retries_allows_retry_on_500() {
+    let _lock = support::stdio_server_lock();
+
+    let flaky_server = FlakyAiServer::start(json!({ "completion": "mock review" }));
+    let endpoint = format!("{}/complete", flaky_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(&config_path, "[ai]\nenabled = false\n").expect("write config");
+
+    let mut child = spawn_stdio_server_with_legacy_env_retry_config(&config_path, &endpoint, "1");
     let (mut stdin, mut stdout) = initialize(&mut child);
 
     support::write_jsonrpc_message(
