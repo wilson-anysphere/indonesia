@@ -667,7 +667,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile && node --test out/__tests__/aiCompletionMore.node.js out/__tests__/lspArgs.node-test.js out/__tests__/packageJsonCommands.node-test.js out/__tests__/noManualFileOperationsForwarding.node-test.js out/__tests__/novaCapabilities.node-test.js out/__tests__/safeMode.node-test.js out/__tests__/fileWatchers.node-test.js out/__tests__/aiCommands.node-test.js out/__tests__/configChange.node-test.js && vitest run",
+    "test": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile && node --test out/__tests__/aiCompletionMore.node.js out/__tests__/lspArgs.node-test.js out/__tests__/packageJsonCommands.node-test.js out/__tests__/noManualFileOperationsForwarding.node-test.js out/__tests__/novaCapabilities.node-test.js out/__tests__/safeMode.node-test.js out/__tests__/fileWatchers.node-test.js out/__tests__/aiCommands.node-test.js out/__tests__/configChange.node-test.js && vitest run --maxWorkers=1 --minWorkers=1",
     "vscode:prepublish": "npm run compile",
     "package": "npm run sync-version && npm run compile && node scripts/ensure-dist.mjs && vsce package --skip-license --out dist/nova.vsix"
   },
