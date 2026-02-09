@@ -734,8 +734,8 @@ For details (including `NOVA_AI_COMPLETIONS_MAX_ITEMS`) and how they affect the 
 Common overrides:
 
 - `NOVA_DISABLE_AI=1` — force-disable all AI features server-side.
-- `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable AI completion features server-side (multi-token
-  completions and completion ranking).
+- `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable **all AI completion features** server-side,
+  including multi-token completions and completion ranking.
 - `NOVA_DISABLE_AI_CODE_ACTIONS=1` — force-disable LLM-backed AI code actions server-side
   (explain error + code-editing actions).
 - `NOVA_DISABLE_AI_CODE_REVIEW=1` — force-disable LLM-backed AI code review server-side.

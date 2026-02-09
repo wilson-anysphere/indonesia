@@ -347,8 +347,8 @@ restarting the language server to take full effect.
 - `nova.aiCompletions.enabled` (boolean): enable AI completion features, including async multi-token
   completions (`nova/completion/more`) and completion ranking (re-ordering of standard
   `textDocument/completion` results). When disabled, the extension stops polling `nova/completion/more`
-  and disables AI completion features server-side (equivalent to setting `NOVA_DISABLE_AI_COMPLETIONS=1`
-  for the `nova-lsp` process).
+  and disables all AI completion provider traffic server-side (equivalent to setting
+  `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request (async
   multi-token completions).
   - The extension passes this to the server as `NOVA_AI_COMPLETIONS_MAX_ITEMS` (read at server

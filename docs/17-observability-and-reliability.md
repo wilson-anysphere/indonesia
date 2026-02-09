@@ -96,7 +96,7 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > - `NOVA_AI_RETRY_INITIAL_BACKOFF_MS=<n>` (overrides `ai.provider.retry_initial_backoff_ms`, clamped to >= 1)
 > - `NOVA_AI_RETRY_MAX_BACKOFF_MS=<n>` (overrides `ai.provider.retry_max_backoff_ms`, clamped to >= 1)
 > `NOVA_DISABLE_AI=1` overrides AI enablement (including `NOVA_AI_PROVIDER` and `nova.toml`) and
-> forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` disables **AI completion features**, including:
+> forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` disables **all AI completion features**, including:
 > - multi-token completions (`nova/completion/more`), and
 > - completion ranking (LLM-backed re-ordering of standard completion results), when enabled.
 > `NOVA_DISABLE_AI_CODE_ACTIONS=1` disables LLM-backed AI code actions server-side:

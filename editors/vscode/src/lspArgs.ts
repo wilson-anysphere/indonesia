@@ -27,7 +27,7 @@ export interface NovaLspLaunchConfigOptions {
    */
   aiEnabled?: boolean;
   /**
-   * Toggle for AI completion features.
+   * Toggle for AI completion features (multi-token completions + completion ranking).
    *
    * When false, the server is started with `NOVA_DISABLE_AI_COMPLETIONS=1` so
    * `nova.toml` cannot re-enable AI completion behavior (including async

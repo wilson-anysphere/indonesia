@@ -498,7 +498,7 @@
         "nova.aiCompletions.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Nova AI completion features, including async multi-token completions via nova/completion/more and completion ranking (re-ordering of standard textDocument/completion results) when enabled server-side. When disabled, the extension stops polling and disables AI completion features server-side (e.g. via NOVA_DISABLE_AI_COMPLETIONS=1)."
+          "description": "Enable Nova AI completion features, including async multi-token completions via nova/completion/more and completion ranking (re-ordering of standard textDocument/completion results). When disabled, the extension stops polling and disables all AI completion provider traffic server-side (e.g. via NOVA_DISABLE_AI_COMPLETIONS=1)."
         },
         "nova.aiCodeActions.enabled": {
           "type": "boolean",

@@ -439,22 +439,116 @@ fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {
 ///   `src/`.
 pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
     let start = start.as_ref();
-    let start_dir = if start.is_file() {
+    let start_is_file = start.is_file();
+    let start_dir = if start_is_file {
         start.parent()?
     } else {
         start
     };
 
+    fn has_top_level_java_file(dir: &Path) -> bool {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return false,
+        };
+
+        // Avoid scanning huge directories in this heuristic. We only need enough signal to decide
+        // whether `start_dir` looks like a self-contained Java workspace root.
+        const MAX_ENTRIES: usize = 256;
+        let mut inspected = 0usize;
+
+        for entry in entries {
+            if inspected >= MAX_ENTRIES {
+                break;
+            }
+            inspected += 1;
+
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) == Some("java") {
+                return true;
+            }
+        }
+
+        false
+    }
+
     // If the caller explicitly provided a directory that already looks like a self-contained
     // "simple project" root, prefer it over ancestor build markers. This prevents unrelated
     // files in shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
-    if start_dir.join("src").is_dir()
+    if !start_is_file
         && !start_dir.join("pom.xml").is_file()
         && !has_gradle_settings(start_dir)
         && !has_gradle_build(start_dir)
         && !is_bazel_workspace(start_dir)
     {
-        return Some(start_dir.to_path_buf());
+        if start_dir.join("src").is_dir() {
+            return Some(start_dir.to_path_buf());
+        }
+
+        if has_top_level_java_file(start_dir) {
+            // Avoid treating package/source directories (e.g. `src/main/java/com/example`) as the
+            // workspace root just because they contain `.java` files. When the caller passes a
+            // file's parent directory, we still want to discover the surrounding project root so
+            // generated sources (`target/generated-sources/...`) and sibling files are visible.
+            let nested_under_src_layout = simple_workspace_root(start_dir)
+                .and_then(|root| {
+                    let src_dir = root.join("src");
+                    let rel = start_dir.strip_prefix(&src_dir).ok()?;
+
+                    let mut comps = rel.components();
+                    let Some(first) = comps.next() else {
+                        // `start_dir == <root>/src`.
+                        return Some(true);
+                    };
+                    let first = first.as_os_str();
+                    let second = comps.next().map(|c| c.as_os_str());
+
+                    let is_source_set_layout = matches!(
+                        (first, second),
+                        (f, Some(s))
+                            if (f == std::ffi::OsStr::new("main") || f == std::ffi::OsStr::new("test"))
+                                && (s == std::ffi::OsStr::new("java") || s == std::ffi::OsStr::new("kotlin"))
+                    );
+                    if is_source_set_layout {
+                        return Some(true);
+                    }
+
+                    // Simple projects often keep Java sources under `src/com/example/...`. Treat
+                    // those package-root directories as nested so the workspace root remains the
+                    // directory *containing* `src/`.
+                    let is_package_layout = matches!(
+                        (first, second),
+                        (f, Some(_))
+                            if matches!(
+                                f.to_str(),
+                                Some(
+                                    "com"
+                                        | "org"
+                                        | "net"
+                                        | "io"
+                                        | "edu"
+                                        | "gov"
+                                        | "java"
+                                        | "javax"
+                                        | "jakarta"
+                                )
+                            )
+                    );
+                    Some(is_package_layout)
+                })
+                .unwrap_or(false);
+
+            if !nested_under_src_layout {
+                return Some(start_dir.to_path_buf());
+            }
+        }
     }
 
     let bazel_root = bazel_workspace_root(start_dir);
@@ -956,6 +1050,54 @@ mod tests {
                 Some(outer.to_path_buf())
             );
         }
+    }
+
+    #[test]
+    fn workspace_root_prefers_explicit_java_dir_over_ancestor_src_marker() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Simulate an unrelated `src/` marker in an ancestor directory (e.g. `/tmp/src`) that
+        // would otherwise "steal" simple workspace discovery.
+        std::fs::create_dir_all(root.join("src")).expect("mkdir root/src");
+
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).expect("mkdir project");
+        std::fs::write(project.join("Main.java"), "class Main {}").expect("write Main.java");
+
+        assert_eq!(workspace_root(&project), Some(project));
+    }
+
+    #[test]
+    fn workspace_root_does_not_treat_maven_source_dir_as_root() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let package_dir = root.join("src/main/java/com/example");
+        std::fs::create_dir_all(&package_dir).expect("mkdir package dir");
+        std::fs::write(
+            package_dir.join("Foo.java"),
+            "package com.example;\nclass Foo {}\n",
+        )
+        .expect("write Foo.java");
+
+        assert_eq!(workspace_root(&package_dir), Some(root.to_path_buf()));
+    }
+
+    #[test]
+    fn workspace_root_does_not_treat_simple_src_package_dir_as_root() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let package_dir = root.join("src/com/example");
+        std::fs::create_dir_all(&package_dir).expect("mkdir package dir");
+        std::fs::write(
+            package_dir.join("Foo.java"),
+            "package com.example;\nclass Foo {}\n",
+        )
+        .expect("write Foo.java");
+
+        assert_eq!(workspace_root(&package_dir), Some(root.to_path_buf()));
     }
 
     #[test]

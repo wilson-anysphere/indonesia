@@ -147,6 +147,7 @@ fn main() -> std::io::Result<()> {
     } else if disable_ai_completions {
         config.ai.features.completion_ranking = false;
         config.ai.features.multi_token_completion = false;
+        config.ai.features.completion_ranking = false;
     }
     if disable_ai_code_actions {
         config.ai.features.explain_errors = false;

@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use crate::support;
 
-fn run_completion_request_with_env(env_key: &str, env_value: &str) {
+fn run_completion_request_with_env(env_key: &str, env_value: &str, completion_ranking: bool) {
     let _lock = support::stdio_server_lock();
     let completion_payload = r#"
     {
@@ -31,6 +31,9 @@ fn run_completion_request_with_env(env_key: &str, env_value: &str) {
 
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
+    let completion_ranking_feature = completion_ranking
+        .then_some("completion_ranking = true\n")
+        .unwrap_or_default();
     fs::write(
         &config_path,
         format!(
@@ -40,6 +43,7 @@ enabled = true
 
 [ai.features]
 multi_token_completion = true
+{completion_ranking_feature}
 
 [ai.provider]
 kind = "http"
@@ -331,7 +335,11 @@ model = "default"
     ai_server.hits()
 }
 
-fn run_completion_request_with_audit_logging_and_env_override(env_key: &str, env_value: &str) {
+fn run_completion_request_with_audit_logging_and_env_override(
+    env_key: &str,
+    env_value: &str,
+    completion_ranking: bool,
+) {
     let _lock = support::stdio_server_lock();
     let completion_payload = r#"
     {
@@ -353,6 +361,9 @@ fn run_completion_request_with_audit_logging_and_env_override(env_key: &str, env
     // reason AI would be enabled.
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
+    let completion_ranking_feature = completion_ranking
+        .then_some("completion_ranking = true\n")
+        .unwrap_or_default();
     fs::write(
         &config_path,
         format!(
@@ -362,6 +373,7 @@ enabled = false
 
 [ai.features]
 multi_token_completion = true
+{completion_ranking_feature}
 
 [ai.provider]
 kind = "http"
@@ -941,12 +953,12 @@ model = "default"
 
 #[test]
 fn stdio_server_honors_nova_disable_ai_env_var() {
-    run_completion_request_with_env("NOVA_DISABLE_AI", "1");
+    run_completion_request_with_env("NOVA_DISABLE_AI", "1", true);
 }
 
 #[test]
 fn stdio_server_honors_nova_disable_ai_completions_env_var() {
-    run_completion_request_with_env("NOVA_DISABLE_AI_COMPLETIONS", "1");
+    run_completion_request_with_env("NOVA_DISABLE_AI_COMPLETIONS", "1", true);
 }
 
 #[test]
@@ -966,7 +978,7 @@ fn stdio_server_honors_nova_disable_ai_completions_env_var_for_completion_rankin
 
 #[test]
 fn stdio_server_honors_nova_ai_completions_max_items_env_var() {
-    run_completion_request_with_env("NOVA_AI_COMPLETIONS_MAX_ITEMS", "0");
+    run_completion_request_with_env("NOVA_AI_COMPLETIONS_MAX_ITEMS", "0", false);
 }
 
 #[test]
@@ -986,10 +998,14 @@ fn stdio_server_honors_nova_disable_ai_code_review_env_var() {
 
 #[test]
 fn stdio_server_nova_disable_ai_env_var_wins_over_audit_logging() {
-    run_completion_request_with_audit_logging_and_env_override("NOVA_DISABLE_AI", "1");
+    run_completion_request_with_audit_logging_and_env_override("NOVA_DISABLE_AI", "1", true);
 }
 
 #[test]
 fn stdio_server_nova_disable_ai_completions_env_var_wins_over_audit_logging() {
-    run_completion_request_with_audit_logging_and_env_override("NOVA_DISABLE_AI_COMPLETIONS", "1");
+    run_completion_request_with_audit_logging_and_env_override(
+        "NOVA_DISABLE_AI_COMPLETIONS",
+        "1",
+        true,
+    );
 }

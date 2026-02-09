@@ -801,13 +801,57 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     None
 }
 
+fn is_probable_slashy_string_start(bytes: &[u8], idx: usize) -> bool {
+    // Best-effort heuristic for Groovy "slashy" strings (`/.../`), which are commonly used for
+    // regex literals inside `build.gradle`.
+    //
+    // Slashy strings are ambiguous with division operators (`a / b`). We bias toward treating `/`
+    // as a string delimiter when it appears in a context that's unlikely to be division:
+    // - at the start of the file, or
+    // - preceded by a non-word, non-closer token (after skipping whitespace).
+    //
+    // This heuristic is intentionally conservative; it is only used to avoid interpreting
+    // keywords inside slashy strings as structural Gradle DSL constructs.
+    if bytes.get(idx) != Some(&b'/') {
+        return false;
+    }
+
+    // Exclude comment starters.
+    match bytes.get(idx + 1) {
+        Some(b'/') | Some(b'*') | None => return false,
+        _ => {}
+    }
+
+    let mut j = idx;
+    while j > 0 {
+        let prev = bytes[j - 1];
+        if prev.is_ascii_whitespace() {
+            j -= 1;
+            continue;
+        }
+
+        // If the previous token looks like it could end an expression (`foo/`, `) /`, etc),
+        // treat this `/` as division.
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b')' || prev == b']' || prev == b'}' {
+            return false;
+        }
+
+        // Otherwise, treat it as a string delimiter.
+        return true;
+    }
+
+    // Start of file.
+    true
+}
+
 fn strip_gradle_comments(contents: &str) -> String {
     // Best-effort comment stripping to avoid parsing commented-out `includeBuild` lines.
     //
     // This is intentionally conservative and only strips:
     // - `// ...` to end-of-line
     // - `/* ... */` block comments
-    // while preserving quoted strings (`'...'` / `"..."` / `'''...'''` / `"""..."""`).
+    // while preserving quoted strings (`'...'` / `"..."` / `'''...'''` / `"""..."""`) and Groovy
+    // slashy strings (`/.../` and `$/.../$`).
     let bytes = contents.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
 
@@ -816,6 +860,8 @@ fn strip_gradle_comments(contents: &str) -> String {
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
@@ -841,26 +887,69 @@ fn strip_gradle_comments(contents: &str) -> String {
             continue;
         }
 
-        if in_triple_single {
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                out.extend_from_slice(b"/$");
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            // Dollar slashy escape sequences:
+            // - `$$` -> `$`
+            // - `$/` -> `/`
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        out.push(b'$');
+                        out.push(*next);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
             out.push(b);
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            out.push(b);
+            if b == b'\\' {
+                if let Some(next) = bytes.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'/' {
+                in_slashy = false;
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
                 in_triple_single = false;
-                out.extend_from_slice(b"''");
+                out.extend_from_slice(b"'''");
                 i += 3;
                 continue;
             }
+            out.push(b);
             i += 1;
             continue;
         }
 
         if in_triple_double {
-            out.push(b);
             if bytes[i..].starts_with(b"\"\"\"") {
                 in_triple_double = false;
-                out.extend_from_slice(b"\"\"");
+                out.extend_from_slice(b"\"\"\"");
                 i += 3;
                 continue;
             }
+            out.push(b);
             i += 1;
             continue;
         }
@@ -904,6 +993,20 @@ fn strip_gradle_comments(contents: &str) -> String {
         if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
             in_block_comment = true;
             i += 2;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            out.extend_from_slice(b"$/");
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            out.push(b'/');
+            i += 1;
             continue;
         }
 
@@ -960,9 +1063,43 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'/' {
+                in_slashy = false;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
@@ -1017,6 +1154,18 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
         if bytes[i..].starts_with(b"\"\"\"") {
             in_triple_double = true;
             i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            i += 1;
             continue;
         }
 
@@ -1715,6 +1864,21 @@ mod tests {
         assert_eq!(
             parse_gradle_settings_included_builds(contents),
             vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_inside_slashy_strings() {
+        let contents = r#"
+            def ignored = /includeBuild("ignored")/
+            def ignored2 = $/includeBuild("ignored2")/$
+
+            includeBuild("build-logic")
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["build-logic".to_string()]
         );
     }
 
