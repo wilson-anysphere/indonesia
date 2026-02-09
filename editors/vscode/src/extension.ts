@@ -3131,14 +3131,42 @@ export async function activate(context: vscode.ExtensionContext) {
           },
         );
       } catch (err) {
+        const uriString = typeof context?.uri === 'string' ? context.uri : undefined;
+        const uri = uriString ? vscode.Uri.parse(uriString) : vscode.window.activeTextEditor?.document.uri;
+        const folder = uri ? vscode.workspace.getWorkspaceFolder(uri) : undefined;
+
         if (isSafeModeError(err)) {
-          const uriString = typeof context?.uri === 'string' ? context.uri : undefined;
-          const uri = uriString ? vscode.Uri.parse(uriString) : vscode.window.activeTextEditor?.document.uri;
-          const folder = uri ? vscode.workspace.getWorkspaceFolder(uri) : undefined;
           if (folder) {
             setWorkspaceSafeModeEnabled?.(folder.uri.toString(), true);
           }
+          // The safe-mode status bar + warning prompt provide next steps (bug report).
+          return;
         }
+
+        if (isUnknownExecuteCommandError(err)) {
+          const details = formatError(err);
+          const picked = await vscode.window.showErrorMessage(
+            'Nova: Safe delete is not supported by your nova-lsp version (unknown command: nova.safeDelete). Update the server.',
+            'Install/Update Server',
+            'Show Server Version',
+            'Copy Details',
+          );
+          if (picked === 'Install/Update Server') {
+            await vscode.commands.executeCommand('nova.installOrUpdateServer');
+          } else if (picked === 'Show Server Version') {
+            await vscode.commands.executeCommand('nova.showServerVersion', folder);
+          } else if (picked === 'Copy Details') {
+            try {
+              await vscode.env.clipboard.writeText(details);
+              void vscode.window.showInformationMessage('Nova: Copied to clipboard.');
+            } catch (err) {
+              const message = formatError(err);
+              void vscode.window.showErrorMessage(`Nova: failed to copy to clipboard: ${message}`);
+            }
+          }
+          return;
+        }
+
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: safe delete failed: ${message}`);
       }
