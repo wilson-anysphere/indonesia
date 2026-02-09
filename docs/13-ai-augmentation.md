@@ -334,8 +334,9 @@ impl CodeReviewer {
              - `## Summary`\n\
              - `## Issues & Suggestions` grouped by file (`### path/to/File.java`) when possible\n\
                (or by category: Correctness/Performance/Security/Tests/Maintainability)\n\
-             - Severity labels (`BLOCKER`/`MAJOR`/`MINOR`) with concrete, code-referencing suggestions\n\
-             - `## Tests` with specific test cases to add",
+             - For each issue: severity (`BLOCKER`/`MAJOR`/`MINOR`) + **Where** + **Why it matters** + **Suggestion**\n\
+             - `## Tests` with specific test cases to add\n\
+             - Do not invent file paths/line numbers not present in the diff; call out missing context",
             format_diff(diff),
         );
         
