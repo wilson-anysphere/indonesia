@@ -461,7 +461,7 @@ pub async fn completion_with_ai(
     position: lsp_types::Position,
     config: &nova_config::AiConfig,
 ) -> Vec<lsp_types::CompletionItem> {
-    nova_ide::completions_with_ai(db, file, position, config).await
+    nova_ide::completions_with_ai(db, file, position, config, None).await
 }
 
 /// Delegate hover requests to `nova-ide`.

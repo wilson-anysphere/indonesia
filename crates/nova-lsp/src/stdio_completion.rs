@@ -84,12 +84,21 @@ pub(super) fn handle_completion(
 
     #[cfg(feature = "ai")]
     let mut items = if state.ai_config.enabled && state.ai_config.features.completion_ranking {
-        if let Some(runtime) = state.runtime.as_ref() {
+        let ai_excluded = doc_path
+            .as_deref()
+            .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
+        if ai_excluded {
+            // Respect excluded_paths: never send even the current line/prefix to the model-backed
+            // ranker.
+            nova_lsp::completion(&db, file, position)
+        } else if let Some(runtime) = state.runtime.as_ref() {
+            let llm = state.ai.as_ref().map(|ai| ai.llm());
             runtime.block_on(nova_ide::completions_with_ai(
                 &db,
                 file,
                 position,
                 &state.ai_config,
+                llm,
             ))
         } else {
             nova_lsp::completion(&db, file, position)
@@ -200,4 +209,3 @@ fn completion_item_uri(item: &CompletionItem) -> Option<&str> {
         })
         .and_then(|uri| uri.as_str())
 }
-

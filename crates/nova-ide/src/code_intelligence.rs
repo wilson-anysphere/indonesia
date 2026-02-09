@@ -52,7 +52,7 @@ use crate::spring_di;
 use crate::text::TextIndex;
 
 #[cfg(feature = "ai")]
-use nova_ai::{maybe_rank_completions, BaselineCompletionRanker};
+use nova_ai::{BaselineCompletionRanker, CompletionRanker, LlmCompletionRanker, LlmClient};
 #[cfg(feature = "ai")]
 use nova_config::AiConfig;
 #[cfg(feature = "ai")]
@@ -8727,6 +8727,7 @@ pub async fn completions_with_ai(
     file: FileId,
     position: Position,
     config: &AiConfig,
+    llm: Option<Arc<dyn LlmClient>>,
 ) -> Vec<CompletionItem> {
     let baseline = completions(db, file, position);
     if !(config.enabled && config.features.completion_ranking) {
@@ -8742,7 +8743,19 @@ pub async fn completions_with_ai(
     let line_text = line_text_at_offset(text, offset);
 
     let ctx = AiCompletionContext::new(prefix, line_text);
-    let ranker = BaselineCompletionRanker;
+    rerank_lsp_completions_with_ai(config, &ctx, baseline, llm).await
+}
+
+#[cfg(feature = "ai")]
+async fn rerank_lsp_completions_with_ai(
+    config: &AiConfig,
+    ctx: &AiCompletionContext,
+    baseline: Vec<CompletionItem>,
+    llm: Option<Arc<dyn LlmClient>>,
+) -> Vec<CompletionItem> {
+    if !(config.enabled && config.features.completion_ranking) {
+        return baseline;
+    }
 
     // Keep a full fallback list in case we fail to map ranked items back to their
     // LSP representation (e.g., due to duplicate labels/kinds).
@@ -8764,7 +8777,14 @@ pub async fn completions_with_ai(
         bucket.reverse();
     }
 
-    let ranked = maybe_rank_completions(config, &ranker, &ctx, core_items).await;
+    let ranked = match llm {
+        Some(llm) => {
+            let ranker = LlmCompletionRanker::new(llm)
+                .with_timeout(config.timeouts.completion_ranking());
+            ranker.rank_completions(ctx, core_items).await
+        }
+        None => BaselineCompletionRanker.rank_completions(ctx, core_items).await,
+    };
 
     let mut out = Vec::with_capacity(ranked.len());
     for AiCompletionItem { label, kind } in ranked {
@@ -20197,5 +20217,157 @@ class A {}
             resolve_type_receiver(&resolver, &imports, package.as_ref(), "java.util.Map.Entry")
                 .expect("expected java.util.Map.Entry to resolve as a nested type");
         assert_eq!(fully_qualified.as_str(), "java.util.Map$Entry");
+    }
+
+    #[cfg(feature = "ai")]
+    mod completion_ranking_ai {
+        use super::*;
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use async_trait::async_trait;
+        use nova_ai::{AiError, AiStream, ChatRequest, LlmClient};
+        use tokio_util::sync::CancellationToken;
+
+        #[derive(Clone)]
+        struct MockLlm {
+            response: String,
+            calls: std::sync::Arc<AtomicUsize>,
+        }
+
+        impl MockLlm {
+            fn new(response: impl Into<String>) -> (Self, std::sync::Arc<AtomicUsize>) {
+                let calls = std::sync::Arc::new(AtomicUsize::new(0));
+                (
+                    Self {
+                        response: response.into(),
+                        calls: calls.clone(),
+                    },
+                    calls,
+                )
+            }
+        }
+
+        #[async_trait]
+        impl LlmClient for MockLlm {
+            async fn chat(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<String, AiError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(self.response.clone())
+            }
+
+            async fn chat_stream(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<AiStream, AiError> {
+                Err(AiError::UnexpectedResponse(
+                    "mock llm does not support streaming".to_string(),
+                ))
+            }
+
+            async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+                Ok(vec![])
+            }
+        }
+
+        fn ai_config_enabled_for_ranking() -> AiConfig {
+            let mut cfg = AiConfig::default();
+            cfg.enabled = true;
+            cfg.features.completion_ranking = true;
+            cfg.timeouts.completion_ranking_ms = 200;
+            cfg
+        }
+
+        fn sample_completion_items() -> Vec<CompletionItem> {
+            vec![
+                CompletionItem {
+                    label: "private".to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..CompletionItem::default()
+                },
+                CompletionItem {
+                    label: "print".to_string(),
+                    kind: Some(CompletionItemKind::METHOD),
+                    ..CompletionItem::default()
+                },
+                CompletionItem {
+                    label: "println".to_string(),
+                    kind: Some(CompletionItemKind::METHOD),
+                    ..CompletionItem::default()
+                },
+            ]
+        }
+
+        #[test]
+        fn llm_completion_ranking_changes_ordering_when_enabled() {
+            let cfg = ai_config_enabled_for_ranking();
+            let ctx = AiCompletionContext::new("pri", "pri");
+            let baseline = sample_completion_items();
+
+            // Prefer `print` then `println` then `private`.
+            let (mock, calls) = MockLlm::new("[1, 2, 0]");
+            let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::new(mock);
+
+            let ranked = futures::executor::block_on(rerank_lsp_completions_with_ai(
+                &cfg,
+                &ctx,
+                baseline,
+                Some(llm),
+            ));
+
+            let labels: Vec<&str> = ranked.iter().map(|item| item.label.as_str()).collect();
+            assert_eq!(labels, vec!["print", "println", "private"]);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn llm_completion_ranking_falls_back_to_baseline_on_invalid_response() {
+            let cfg = ai_config_enabled_for_ranking();
+            let ctx = AiCompletionContext::new("pri", "pri");
+            let baseline = sample_completion_items();
+
+            let expected =
+                futures::executor::block_on(rerank_lsp_completions_with_ai(&cfg, &ctx, baseline.clone(), None));
+
+            let (mock, calls) = MockLlm::new("not json");
+            let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::new(mock);
+
+            let ranked = futures::executor::block_on(rerank_lsp_completions_with_ai(
+                &cfg,
+                &ctx,
+                baseline,
+                Some(llm),
+            ));
+
+            assert_eq!(ranked, expected);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn llm_completion_ranking_is_skipped_when_disabled() {
+            let mut cfg = AiConfig::default();
+            cfg.enabled = false;
+            cfg.features.completion_ranking = true;
+
+            let ctx = AiCompletionContext::new("pri", "pri");
+            let baseline = sample_completion_items();
+
+            let (mock, calls) = MockLlm::new("[1, 2, 0]");
+            let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::new(mock);
+
+            let ranked = futures::executor::block_on(rerank_lsp_completions_with_ai(
+                &cfg,
+                &ctx,
+                baseline.clone(),
+                Some(llm),
+            ));
+
+            assert_eq!(ranked, baseline);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
     }
 }

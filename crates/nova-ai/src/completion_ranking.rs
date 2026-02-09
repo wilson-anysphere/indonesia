@@ -110,6 +110,7 @@ pub struct LlmCompletionRanker {
     max_prefix_chars: usize,
     max_line_chars: usize,
     max_output_tokens: u32,
+    timeout: Duration,
 }
 
 impl std::fmt::Debug for LlmCompletionRanker {
@@ -121,6 +122,7 @@ impl std::fmt::Debug for LlmCompletionRanker {
             .field("max_prefix_chars", &self.max_prefix_chars)
             .field("max_line_chars", &self.max_line_chars)
             .field("max_output_tokens", &self.max_output_tokens)
+            .field("timeout", &self.timeout)
             .finish()
     }
 }
@@ -135,6 +137,7 @@ impl LlmCompletionRanker {
             max_prefix_chars: 80,
             max_line_chars: 400,
             max_output_tokens: 96,
+            timeout: Duration::from_millis(20),
         }
     }
 
@@ -145,6 +148,15 @@ impl LlmCompletionRanker {
 
     pub fn with_max_output_tokens(mut self, max: u32) -> Self {
         self.max_output_tokens = max;
+        self
+    }
+
+    /// Override how long we're willing to wait for the model-backed ranking request.
+    ///
+    /// This is intended for latency-sensitive callers (e.g. LSP completion requests). On timeout,
+    /// the ranker will gracefully fall back to deterministic local ranking.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -216,9 +228,11 @@ impl CompletionRanker for LlmCompletionRanker {
             let prompt = match self.build_prompt(ctx, &to_rank) {
                 Some(prompt) => prompt,
                 None => {
-                    let mut out = to_rank;
-                    out.extend(rest);
-                    return out;
+                    // Prompt too large (or otherwise invalid): fall back to deterministic local
+                    // ranking rather than returning the input order unchanged.
+                    let mut all = to_rank;
+                    all.extend(rest);
+                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
                 }
             };
             let prompt = redact_file_paths(&prompt);
@@ -226,41 +240,56 @@ impl CompletionRanker for LlmCompletionRanker {
             let cancel = CancellationToken::new();
             let _guard = cancel.clone().drop_guard();
 
-            let response = match self
-                .llm
-                .chat(
-                    ChatRequest {
-                        messages: vec![
-                            ChatMessage::system("Return JSON only.".to_string()),
-                            ChatMessage::user(prompt),
-                        ],
-                        max_tokens: Some(self.max_output_tokens),
-                        temperature: Some(0.0),
-                    },
-                    cancel,
-                )
-                .await
-            {
-                Ok(text) => text,
-                Err(_) => {
+            let request = ChatRequest {
+                messages: vec![
+                    ChatMessage::system("Return JSON only.".to_string()),
+                    ChatMessage::user(prompt),
+                ],
+                max_tokens: Some(self.max_output_tokens),
+                temperature: Some(0.0),
+            };
+
+            let chat_future = self.llm.chat(request, cancel.clone());
+            let chat_future = std::panic::AssertUnwindSafe(chat_future).catch_unwind();
+
+            let response = match util::timeout(self.timeout, chat_future).await {
+                Ok(Ok(Ok(text))) => text,
+                Ok(Ok(Err(_err))) => {
                     let metrics = MetricsRegistry::global();
                     metrics.record_error(AI_COMPLETION_RANKING_METRIC);
                     metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
-                    let mut out = to_rank;
-                    out.extend(rest);
-                    return out;
+                    let mut all = to_rank;
+                    all.extend(rest);
+                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
+                }
+                Ok(Err(_panic)) => {
+                    let metrics = MetricsRegistry::global();
+                    metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
+                    let mut all = to_rank;
+                    all.extend(rest);
+                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
+                }
+                Err(_timeout) => {
+                    let metrics = MetricsRegistry::global();
+                    metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
+                    // Cancel eagerly so the in-flight request can abort while we compute the
+                    // baseline result.
+                    cancel.cancel();
+                    let mut all = to_rank;
+                    all.extend(rest);
+                    return BaselineCompletionRanker.rank_completions(ctx, all).await;
                 }
             };
 
             let Some(order) = parse_ranked_ids(&response, to_rank.len()) else {
                 // Parse failures are treated the same as provider errors: preserve the original
-                // ordering.
+                // ordering (via baseline heuristics).
                 let metrics = MetricsRegistry::global();
                 metrics.record_error(AI_COMPLETION_RANKING_METRIC);
                 metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
-                let mut out = to_rank;
-                out.extend(rest);
-                return out;
+                let mut all = to_rank;
+                all.extend(rest);
+                return BaselineCompletionRanker.rank_completions(ctx, all).await;
             };
 
             let mut ranked = apply_rank_order(to_rank, &order);
@@ -600,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_ranker_invalid_json_falls_back_to_input_order() {
+    async fn llm_ranker_invalid_json_falls_back_to_baseline_ranking() {
         let _guard = crate::test_support::metrics_lock()
             .lock()
             .expect("metrics lock poisoned");
@@ -626,8 +655,9 @@ mod tests {
             CompletionItem::new("print", CompletionItemKind::Method),
         ];
 
+        let expected = BaselineCompletionRanker.rank_completions(&ctx, items.clone()).await;
         let ranked = ranker.rank_completions(&ctx, items.clone()).await;
-        assert_eq!(ranked, items);
+        assert_eq!(ranked, expected);
 
         let after = metrics.snapshot();
         let after_main = after
@@ -775,8 +805,9 @@ mod tests {
             CompletionItem::new("print", CompletionItemKind::Method),
         ];
 
+        let expected = BaselineCompletionRanker.rank_completions(&ctx, items.clone()).await;
         let ranked = ranker.rank_completions(&ctx, items.clone()).await;
-        assert_eq!(ranked, items);
+        assert_eq!(ranked, expected);
 
         let after = metrics.snapshot();
         let after_main = after
