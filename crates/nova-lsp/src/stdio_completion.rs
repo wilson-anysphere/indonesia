@@ -40,6 +40,8 @@ pub(super) fn handle_completion(
         return Err(format!("missing document text for `{}`", uri.as_str()));
     };
 
+    let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
+
     let doc_path = path_from_uri(uri.as_str());
     let path = doc_path
         .clone()
@@ -53,7 +55,9 @@ pub(super) fn handle_completion(
         let ai_excluded = doc_path
             .as_deref()
             .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
-        let has_more = state.completion_service.completion_engine().supports_ai() && !ai_excluded;
+        let has_more = !safe_mode
+            && state.completion_service.completion_engine().supports_ai()
+            && !ai_excluded;
         let completion_context_id = if has_more {
             let document_uri = Some(uri.as_str().to_string());
             let ctx = multi_token_completion_context(&db, file, position);
@@ -83,7 +87,10 @@ pub(super) fn handle_completion(
     let (completion_context_id, has_more) = (None::<String>, false);
 
     #[cfg(feature = "ai")]
-    let mut items = if state.ai_config.enabled && state.ai_config.features.completion_ranking {
+    let mut items = if !safe_mode
+        && state.ai_config.enabled
+        && state.ai_config.features.completion_ranking
+    {
         let ai_excluded = doc_path
             .as_deref()
             .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
