@@ -7766,6 +7766,191 @@ local_only = true
 }
 
 #[test]
+fn stdio_server_execute_command_generate_method_body_accepts_legacy_snake_case_args() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("Main.java");
+    // Keep the file on a single line so we can compute offsets precisely.
+    let text = "class Main { int add(int a, int b) { } }\n";
+    std::fs::write(&file_path, text).expect("write Main.java");
+    let file_uri = uri_for_path(&file_path);
+
+    // Compute selection range for the method snippet.
+    let method_start = text.find("int add").expect("method start");
+    let open = text[method_start..].find('{').expect("method brace") + method_start;
+    let close = text[open..].find('}').expect("method close") + open;
+    let selection_start = TextPos::new(text)
+        .lsp_position(method_start)
+        .expect("selection start");
+    let selection_end = TextPos::new(text)
+        .lsp_position(close + 1)
+        .expect("selection end");
+
+    // Compute insert range between braces for the mock patch response.
+    let insert_start = TextPos::new(text)
+        .lsp_position(open + 1)
+        .expect("insert start");
+    let insert_end = TextPos::new(text).lsp_position(close).expect("insert end");
+
+    let patch = json!({
+        "edits": [{
+            "file": "src/Main.java",
+            "range": { "start": insert_start, "end": insert_end },
+            "text": " return a + b; "
+        }]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure env vars don't override the config file.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // Initialize with rootUri so file paths are workspace-relative.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Open document (in-memory overlay should be used for prompts + patch validation).
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // Invoke the command directly with legacy `snake_case` args.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
+                "arguments": [{
+                    "method_signature": "int add(int a, int b)",
+                    "context": null,
+                    "uri": file_uri,
+                    "range": { "start": selection_start, "end": selection_end }
+                }]
+            }
+        }),
+    );
+
+    let (notifications, exec_resp) = drain_notifications_until_id(&mut stdout, 2);
+
+    // Ensure we requested workspace edits.
+    let apply_edit = notifications
+        .iter()
+        .find(|msg| msg.get("method").and_then(|m| m.as_str()) == Some("workspace/applyEdit"))
+        .expect("expected workspace/applyEdit request");
+    let applied_edit = apply_edit
+        .get("params")
+        .and_then(|p| p.get("edit"))
+        .expect("applyEdit params.edit");
+    let new_text = applied_edit
+        .get("changes")
+        .and_then(|c| c.get(&file_uri))
+        .and_then(|v| v.as_array())
+        .and_then(|edits| edits.first())
+        .and_then(|e| e.get("newText"))
+        .and_then(|t| t.as_str())
+        .expect("workspace edit newText");
+    assert!(
+        new_text.contains("return a + b;"),
+        "expected generated method body in new text: {new_text}"
+    );
+
+    assert!(
+        exec_resp.get("error").is_none(),
+        "expected executeCommand success, got: {exec_resp:#?}"
+    );
+    assert!(
+        exec_resp.get("result").map_or(false, |v| v.is_null()),
+        "expected executeCommand result null, got: {exec_resp:#?}"
+    );
+
+    ai_server.assert_hits(1);
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_execute_command_ai_code_review_returns_string_and_progress() {
     let _lock = crate::support::stdio_server_lock();
 
@@ -7883,6 +8068,107 @@ local_only = true
 
     ai_server.assert_hits(1);
 
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_execute_command_explain_error_accepts_legacy_snake_case_args() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock explanation" }));
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure env vars don't override the config file.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": nova_ide::COMMAND_EXPLAIN_ERROR,
+                "arguments": [{
+                    "diagnostic_message": "cannot find symbol",
+                    "code": "class Test { void run() { unknown(); } }"
+                }]
+            }
+        }),
+    );
+
+    let exec_resp = read_response_with_id(&mut stdout, 2);
+    assert_eq!(exec_resp.get("result"), Some(&json!("mock explanation")));
+
+    ai_server.assert_hits(1);
+
+    // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
