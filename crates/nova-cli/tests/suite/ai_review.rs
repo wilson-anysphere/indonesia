@@ -695,7 +695,8 @@ fn ai_review_env_override_disables_code_review() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("ai.features.code_review"),
+        stderr.contains("NOVA_DISABLE_AI_CODE_REVIEW")
+            && stderr.contains("ai.features.code_review"),
         "expected feature-disabled message, got:\n{stderr}"
     );
 
@@ -733,7 +734,7 @@ fn ai_review_env_override_disables_ai() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("AI is disabled"),
+        stderr.contains("AI is disabled") && stderr.contains("NOVA_DISABLE_AI"),
         "expected disabled message, got:\n{stderr}"
     );
 

@@ -1264,7 +1264,22 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 Ok(0)
             }
             AiCommand::Review(args) => {
+                let env_truthy = |name: &str| {
+                    matches!(
+                        std::env::var(name).as_deref(),
+                        Ok("1") | Ok("true") | Ok("TRUE")
+                    )
+                };
+
                 if !config.ai.enabled {
+                    if env_truthy("NOVA_DISABLE_AI") {
+                        anyhow::bail!(
+                            "AI is disabled by NOVA_DISABLE_AI=1. Unset NOVA_DISABLE_AI (or set it to 0) \
+                             and enable it by setting `[ai].enabled = true` in nova.toml \
+                             (or pass `--config <path>` / set {config_env}).",
+                            config_env = NOVA_CONFIG_ENV_VAR
+                        );
+                    }
                     anyhow::bail!(
                         "AI is disabled. Enable it by setting `[ai].enabled = true` in nova.toml \
                          (or pass `--config <path>` / set {config_env}).",
@@ -1272,6 +1287,24 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     );
                 }
                 if !config.ai.features.code_review {
+                    if env_truthy("NOVA_DISABLE_AI") {
+                        anyhow::bail!(
+                            "AI code review is disabled because NOVA_DISABLE_AI=1 disables all AI features. \
+                             Unset NOVA_DISABLE_AI (or set it to 0) and enable code review via \
+                             `ai.features.code_review = true` in nova.toml \
+                             (or pass `--config <path>` / set {config_env}).",
+                            config_env = NOVA_CONFIG_ENV_VAR
+                        );
+                    }
+                    if env_truthy("NOVA_DISABLE_AI_CODE_REVIEW") {
+                        anyhow::bail!(
+                            "AI code review is disabled by NOVA_DISABLE_AI_CODE_REVIEW=1. Unset \
+                             NOVA_DISABLE_AI_CODE_REVIEW (or set it to 0) and enable it via \
+                             `ai.features.code_review = true` in nova.toml \
+                             (or pass `--config <path>` / set {config_env}).",
+                            config_env = NOVA_CONFIG_ENV_VAR
+                        );
+                    }
                     anyhow::bail!(
                         "AI code review is disabled (ai.features.code_review=false). Enable it by setting \
                          `ai.features.code_review = true` in nova.toml (or pass `--config <path>` / set {config_env}).",
