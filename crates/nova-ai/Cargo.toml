@@ -33,7 +33,7 @@ llama-cpp-2 = { version = "0.1.131", optional = true, features = ["sampler"] }
 [features]
 # Enables in-process local inference using GGUF models via llama.cpp.
 local-llm = ["dep:llama-cpp-2"]
-embeddings = ["dep:hnsw_rs", "dep:rayon"]
+embeddings = ["dep:hnsw_rs", "dep:rayon", "reqwest/blocking"]
 
 [dev-dependencies]
 httpmock = "0.7"

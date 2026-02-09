@@ -21,6 +21,8 @@ mod completion_ranking;
 mod completion_validation;
 mod diff;
 mod error;
+#[cfg(feature = "embeddings")]
+mod embedders;
 mod features;
 mod llm_privacy;
 mod project_database;
@@ -68,6 +70,8 @@ pub use semantic_search::{
 };
 #[cfg(feature = "embeddings")]
 pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
+#[cfg(feature = "embeddings")]
+pub use embedders::OpenAiCompatibleEmbedder;
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 
 pub use project_database::DbProjectDatabase;
