@@ -247,6 +247,14 @@ impl SemanticSearch {
 }
 ```
 
+Implementation note: Nova’s real semantic search lives in `crates/nova-ai` and can run in two modes:
+
+- **Trigram/fuzzy** (always available; no model/network required).
+- **Embedding-backed** (requires `ai.embeddings.enabled=true` and building with `nova-ai/embeddings`).
+
+See [Semantic search + embeddings configuration](#semantic-search--embeddings-configuration) below
+for the exact config keys and provider examples.
+
 ### 4. Intelligent Error Explanation
 
 ```rust
@@ -381,10 +389,11 @@ Example output:
 │  • In-memory cache when `ai.cache_enabled=true`                  │
 │                                                                  │
 │  EMBEDDING MODEL                                                 │
-│  • Sentence transformer variant                                 │
-│  • ~100MB model size                                            │
-│  • ~10ms per embedding                                          │
 │  • For semantic search                                          │
+│  • Backend options:                                             │
+│    - Hash embeddings (deterministic, no model)                  │
+│    - Local in-process model (e.g. fastembed)                    │
+│    - Provider embeddings (Ollama / OpenAI-compatible / etc.)    │
 │                                                                  │
 │  SIMPLE CODE MODEL                                               │
 │  • Small language model (1-3B params)                           │
