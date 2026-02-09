@@ -1744,8 +1744,7 @@ mod embeddings {
                 changed = true;
             }
 
-            let extracted = self.docs_for_file(&path, &text);
-            if extracted.is_empty() {
+            if text.is_empty() {
                 if changed {
                     self.invalidate_index();
                 }
@@ -1770,6 +1769,15 @@ mod embeddings {
                     return;
                 }
             }
+
+            let extracted = self.docs_for_file(&path, &text);
+            if extracted.is_empty() {
+                if changed {
+                    self.invalidate_index();
+                }
+                return;
+            }
+
             let mut meta = Vec::with_capacity(extracted.len());
             let mut inputs = Vec::with_capacity(extracted.len());
             for (range, kind, snippet, embed_text) in extracted {
