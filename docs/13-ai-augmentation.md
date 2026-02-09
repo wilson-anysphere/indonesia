@@ -575,6 +575,28 @@ enabled = true
 backend = "hash"
 ```
 
+#### Local embeddings (in-process)
+
+Requires building Nova with `nova-ai/embeddings-local` (see the Cargo feature section above).
+
+```toml
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.embeddings]
+enabled = true
+backend = "local"
+
+# Optional: override the default model (defaults to "all-MiniLM-L6-v2").
+local_model = "all-MiniLM-L6-v2"
+
+# Cache directory for downloaded model files.
+model_dir = ".nova/models/embeddings"
+```
+
 #### Provider embeddings (Ollama)
 
 ```toml
