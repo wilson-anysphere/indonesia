@@ -211,6 +211,14 @@ mod tests {
             CompletionItem::new("println", CompletionItemKind::Method),
         ];
 
+        let metrics = nova_metrics::MetricsRegistry::global();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get("ai/completion_ranking")
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
         let ranked = block_on(rank_completions_with_timeout(
             &ranker,
             &ctx,
@@ -219,6 +227,17 @@ mod tests {
         ));
 
         assert_eq!(ranked, items);
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get("ai/completion_ranking")
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected ai/completion_ranking timeout_count to increment"
+        );
     }
 
     #[test]
@@ -242,6 +261,14 @@ mod tests {
             CompletionItem::new("println", CompletionItemKind::Method),
         ];
 
+        let metrics = nova_metrics::MetricsRegistry::global();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get("ai/completion_ranking")
+            .map(|m| m.panic_count)
+            .unwrap_or(0);
+
         let ranked = block_on(rank_completions_with_timeout(
             &ranker,
             &ctx,
@@ -250,6 +277,17 @@ mod tests {
         ));
 
         assert_eq!(ranked, items);
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get("ai/completion_ranking")
+            .map(|m| m.panic_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected ai/completion_ranking panic_count to increment"
+        );
     }
 
     #[test]

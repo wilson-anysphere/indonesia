@@ -1,17 +1,23 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::{BoxFuture, FutureExt};
 
 use nova_config::AiConfig;
 use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 use nova_fuzzy::{FuzzyMatcher, MatchScore};
+use nova_metrics::MetricsRegistry;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::util;
 use crate::{ChatMessage, ChatRequest, LlmClient};
+
+pub(crate) const AI_COMPLETION_RANKING_METRIC: &str = "ai/completion_ranking";
+// Used by LLM-backed rankers when they fall back due to provider/parse errors.
+#[allow(dead_code)]
+pub(crate) const AI_COMPLETION_RANKING_ERROR_METRIC: &str = "ai/completion_ranking/error";
 
 /// Async-friendly interface for completion ranking.
 ///
@@ -235,6 +241,9 @@ impl CompletionRanker for LlmCompletionRanker {
             {
                 Ok(text) => text,
                 Err(_) => {
+                    let metrics = MetricsRegistry::global();
+                    metrics.record_error(AI_COMPLETION_RANKING_METRIC);
+                    metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
                     let mut out = to_rank;
                     out.extend(rest);
                     return out;
@@ -244,6 +253,9 @@ impl CompletionRanker for LlmCompletionRanker {
             let Some(order) = parse_ranked_ids(&response, to_rank.len()) else {
                 // Parse failures are treated the same as provider errors: preserve the original
                 // ordering.
+                let metrics = MetricsRegistry::global();
+                metrics.record_error(AI_COMPLETION_RANKING_METRIC);
+                metrics.record_error(AI_COMPLETION_RANKING_ERROR_METRIC);
                 let mut out = to_rank;
                 out.extend(rest);
                 return out;
@@ -390,16 +402,27 @@ pub async fn rank_completions_with_timeout<R: CompletionRanker>(
     items: Vec<CompletionItem>,
     timeout: Duration,
 ) -> Vec<CompletionItem> {
+    let metrics = MetricsRegistry::global();
+    let metrics_start = Instant::now();
     let fallback = items.clone();
 
     let ranked_future = ranker.rank_completions(ctx, items);
     let ranked_future = std::panic::AssertUnwindSafe(ranked_future).catch_unwind();
 
-    match util::timeout(timeout, ranked_future).await {
+    let out = match util::timeout(timeout, ranked_future).await {
         Ok(Ok(ranked)) => ranked,
-        Ok(Err(_panic)) => fallback,
-        Err(_timeout) => fallback,
-    }
+        Ok(Err(_panic)) => {
+            metrics.record_panic(AI_COMPLETION_RANKING_METRIC);
+            fallback
+        }
+        Err(_timeout) => {
+            metrics.record_timeout(AI_COMPLETION_RANKING_METRIC);
+            fallback
+        }
+    };
+
+    metrics.record_request(AI_COMPLETION_RANKING_METRIC, metrics_start.elapsed());
+    out
 }
 
 /// Convenience helper for integrating ranking behind feature flags.
