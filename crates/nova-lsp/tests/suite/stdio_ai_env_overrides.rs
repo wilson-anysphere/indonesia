@@ -420,7 +420,7 @@ fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
             "id": 2,
             "method": "nova/ai/explainError",
             "params": {
-                "diagnostic_message": "cannot find symbol",
+                "diagnosticMessage": "cannot find symbol",
                 "code": "unknown()"
             }
         }),

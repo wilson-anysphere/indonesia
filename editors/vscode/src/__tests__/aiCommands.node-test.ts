@@ -98,7 +98,7 @@ test('rewriteNovaAiCodeActionOrCommand maps explainError to the VS Code-side com
     command: {
       command: NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR,
       title: 'Explain this error',
-      arguments: [{ diagnostic_message: 'cannot find symbol' }],
+      arguments: [{ diagnosticMessage: 'cannot find symbol' }],
     },
   });
 
@@ -107,7 +107,7 @@ test('rewriteNovaAiCodeActionOrCommand maps explainError to the VS Code-side com
     args: [
       {
         lspCommand: NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR,
-        lspArguments: [{ diagnostic_message: 'cannot find symbol' }],
+        lspArguments: [{ diagnosticMessage: 'cannot find symbol' }],
         kind: 'nova.explain',
         title: 'Explain this error',
       },
@@ -122,7 +122,7 @@ test('rewriteNovaAiCodeActionOrCommand maps generateMethodBody to the VS Code-si
     command: {
       command: NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY,
       title: 'Generate method body with AI',
-      arguments: [{ method_signature: 'public int add(int a, int b)' }],
+      arguments: [{ methodSignature: 'public int add(int a, int b)' }],
     },
   });
 

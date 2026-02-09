@@ -1182,15 +1182,16 @@ See `crates/nova-lsp/src/stdio_ai.rs` (request-level enforcement) and `crates/no
 ```json
 {
   "workDoneToken": "optional",
-  "diagnostic_message": "cannot find symbol",
+  "diagnosticMessage": "cannot find symbol",
   "code": "optional snippet",
   "uri": "file:///…",
   "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
 }
 ```
 
-Note the field names inside args are currently **snake_case** (`diagnostic_message`) because the
-Rust type does not use `rename_all = "camelCase"`.
+Notes:
+
+- `diagnosticMessage` also accepts the legacy alias `diagnostic_message`.
 
 #### Response
 
@@ -1214,7 +1215,7 @@ JSON string (the explanation).
 ```json
 {
   "workDoneToken": "optional",
-  "method_signature": "public int add(int a, int b)",
+  "methodSignature": "public int add(int a, int b)",
   "context": "optional surrounding code",
   "uri": "file:///…",
   "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
@@ -1224,8 +1225,7 @@ JSON string (the explanation).
 Notes:
 
 - `uri` and `range` are required for patch-based edits.
-- Field names inside args are currently **snake_case** (`method_signature`) because the Rust type
-  does not use `rename_all = "camelCase"`.
+- `methodSignature` also accepts the legacy alias `method_signature`.
 - The server expects `range` to include both `{` and `}` of the target method, and the selected
   method body must be empty.
 
@@ -1269,8 +1269,6 @@ containing a standard LSP `WorkspaceEdit`.
 Notes:
 
 - `uri` and `range` are required for patch-based edits.
-- Field names inside args are currently **snake_case** because the Rust type does not use
-  `rename_all = "camelCase"`.
 - The server attempts (best-effort) to generate/update a test file under `src/test/java/` based on
   the selected source file’s package and class name. If that derivation fails, it falls back to
   inserting the generated tests into the current file at `range`.
@@ -2238,7 +2236,7 @@ The first (and only) entry in `arguments` is a `GenerateMethodBodyArgs` object:
   "command": "nova.ai.generateMethodBody",
   "arguments": [
     {
-      "method_signature": "public int add(int a, int b)",
+      "methodSignature": "public int add(int a, int b)",
       "context": "optional surrounding code",
       "uri": "file:///…",
       "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
@@ -2248,12 +2246,10 @@ The first (and only) entry in `arguments` is a `GenerateMethodBodyArgs` object:
 }
 ```
 
-Note: the argument object uses **snake_case** field names (e.g. `method_signature`) because the Rust
-type does not use `rename_all = "camelCase"`.
-
 `GenerateMethodBodyArgs` fields:
 
-- `method_signature` (string, required) — method signature including modifiers/return type/name.
+- `methodSignature` (string, required) — method signature including modifiers/return type/name.
+  - Legacy alias: `method_signature`.
 - `context` (string, optional) — best-effort surrounding context (class/members/etc).
 - `uri` (string, required) — document URI (typically a `file://` URI).
 - `range` (object, required) — best-effort range covering the selected snippet (0-based line and

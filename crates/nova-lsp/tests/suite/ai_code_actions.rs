@@ -544,7 +544,7 @@ local_only = true
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int add(int a, int b)",
+                "methodSignature": "int add(int a, int b)",
                 "context": null,
                 "uri": file_uri,
                 "range": range
@@ -982,7 +982,7 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
             "method": "nova/ai/generateMethodBody",
             "params": {
                 "workDoneToken": "t1",
-                "method_signature": "public int add(int a, int b)",
+                "methodSignature": "public int add(int a, int b)",
                 "context": null,
                 "uri": file_uri,
                 "range": Range::new(selection_start, selection_end)
@@ -2063,7 +2063,7 @@ excluded_paths = ["secret/**"]
     let range_end = pos.lsp_position(end_offset).expect("range end");
 
     let args = json!([{
-        "method_signature": "int add(int a, int b)",
+        "methodSignature": "int add(int a, int b)",
         "context": null,
         "uri": file_uri,
         "range": { "start": range_start, "end": range_end }
@@ -3153,7 +3153,7 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "public int answer()",
+                "methodSignature": "public int answer()",
                 "context": null,
                 "uri": file_uri,
                 "range": range
@@ -3303,7 +3303,7 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "public int answer()",
+                "methodSignature": "public int answer()",
                 "context": null,
                 "uri": file_uri,
                 "range": range
@@ -4294,7 +4294,7 @@ excluded_paths = ["src/secrets/**"]
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int answer()",
+                "methodSignature": "int answer()",
                 "context": null,
                 "uri": file_uri,
                 "range": range
@@ -4416,7 +4416,7 @@ fn stdio_server_ai_custom_requests_require_document_text() {
             "id": 2,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int answer()",
+                "methodSignature": "int answer()",
                 "context": null,
                 "uri": missing_uri,
                 "range": range
@@ -5160,17 +5160,17 @@ local_only = false
         &mut stdin,
         &json!({
            "jsonrpc": "2.0",
-           "id": 2,
-           "method": "workspace/executeCommand",
-           "params": {
-               "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                "arguments": [{
-                    "method_signature": "void run()",
-                    "context": null,
-                    "uri": file_uri,
-                    "range": range
-                }]
-            }
+               "id": 2,
+               "method": "workspace/executeCommand",
+               "params": {
+                   "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
+                    "arguments": [{
+                     "methodSignature": "void run()",
+                     "context": null,
+                     "uri": file_uri,
+                     "range": range
+                 }]
+             }
         }),
     );
 
@@ -5346,7 +5346,7 @@ local_only = true
             "params": {
                 "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
                 "arguments": [{
-                    "method_signature": "int add(int a, int b)",
+                    "methodSignature": "int add(int a, int b)",
                     "context": null,
                     "uri": file_uri,
                     "range": { "start": selection_start, "end": selection_end }
@@ -5682,7 +5682,7 @@ local_only = true
             "params": {
                 "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
                 "arguments": [{
-                    "method_signature": "int add(int a, int b)",
+                    "methodSignature": "int add(int a, int b)",
                     "context": null,
                     "uri": file_uri,
                     "range": { "start": selection_start, "end": selection_end }
@@ -5843,7 +5843,7 @@ excluded_paths = ["src/Main.java"]
             "params": {
                 "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
                 "arguments": [{
-                    "method_signature": "int add(int a, int b)",
+                    "methodSignature": "int add(int a, int b)",
                     "context": null,
                     "uri": file_uri,
                     "range": { "start": selection_start, "end": selection_end }

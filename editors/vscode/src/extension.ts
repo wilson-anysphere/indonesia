@@ -2351,7 +2351,7 @@ export async function activate(context: vscode.ExtensionContext) {
         lspCommand: 'nova.ai.explainError',
         lspArguments: [
           {
-            diagnostic_message: picked.message,
+            diagnosticMessage: picked.message,
             code: snippet,
             uri: doc.uri.toString(),
             range: toLspRange(picked.range),
@@ -2423,7 +2423,7 @@ export async function activate(context: vscode.ExtensionContext) {
         lspCommand: 'nova.ai.generateMethodBody',
         lspArguments: [
           {
-            method_signature: methodSignature,
+            methodSignature,
             context: contextSnippet(8),
             uri: doc.uri.toString(),
             range: toLspRange(defaultRange),

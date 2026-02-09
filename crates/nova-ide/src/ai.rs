@@ -44,7 +44,9 @@ pub struct LspRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExplainErrorArgs {
+    #[serde(alias = "diagnostic_message")]
     pub diagnostic_message: String,
 
     /// Optional source snippet around the diagnostic location.
@@ -60,8 +62,10 @@ pub struct ExplainErrorArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerateMethodBodyArgs {
     /// The method signature, including modifiers, return type and name.
+    #[serde(alias = "method_signature")]
     pub method_signature: String,
 
     /// Optional surrounding context (enclosing class, other members, etc).
@@ -77,6 +81,7 @@ pub struct GenerateMethodBodyArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerateTestsArgs {
     /// A description of the test target (method or class signature).
     pub target: String,
@@ -160,11 +165,75 @@ mod tests {
             }),
         });
 
+        let arg0 = action.command.arguments[0].as_object().expect("args object");
+        assert!(
+            arg0.contains_key("diagnosticMessage"),
+            "expected ExplainErrorArgs to serialize as camelCase"
+        );
+        assert!(
+            !arg0.contains_key("diagnostic_message"),
+            "expected ExplainErrorArgs not to serialize as snake_case"
+        );
         let args: ExplainErrorArgs =
             serde_json::from_value(action.command.arguments[0].clone()).unwrap();
         assert_eq!(args.diagnostic_message, "cannot find symbol");
         assert_eq!(args.code.as_deref(), Some("foo.bar()"));
         assert_eq!(args.uri.as_deref(), Some("file:///Test.java"));
         assert!(args.range.is_some());
+
+        let action = generate_method_body_action(GenerateMethodBodyArgs {
+            method_signature: "public int add(int a, int b)".to_string(),
+            context: Some("class Test {}".to_string()),
+            uri: Some("file:///Test.java".to_string()),
+            range: None,
+        });
+        let arg0 = action.command.arguments[0].as_object().expect("args object");
+        assert!(
+            arg0.contains_key("methodSignature"),
+            "expected GenerateMethodBodyArgs to serialize as camelCase"
+        );
+        assert!(
+            !arg0.contains_key("method_signature"),
+            "expected GenerateMethodBodyArgs not to serialize as snake_case"
+        );
+        let args: GenerateMethodBodyArgs =
+            serde_json::from_value(action.command.arguments[0].clone()).unwrap();
+        assert_eq!(args.method_signature, "public int add(int a, int b)");
+
+        let action = generate_tests_action(GenerateTestsArgs {
+            target: "add".to_string(),
+            context: None,
+            uri: Some("file:///Test.java".to_string()),
+            range: None,
+        });
+        let arg0 = action.command.arguments[0].as_object().expect("args object");
+        assert!(arg0.contains_key("target"));
+        let args: GenerateTestsArgs =
+            serde_json::from_value(action.command.arguments[0].clone()).unwrap();
+        assert_eq!(args.target, "add");
+    }
+
+    #[test]
+    fn ai_args_deserialize_legacy_snake_case_payloads() {
+        let args: ExplainErrorArgs = serde_json::from_value(serde_json::json!({
+            "diagnostic_message": "cannot find symbol",
+            "code": "foo.bar()",
+            "uri": "file:///Test.java",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 10 }
+            }
+        }))
+        .expect("ExplainErrorArgs should accept snake_case legacy payloads");
+        assert_eq!(args.diagnostic_message, "cannot find symbol");
+
+        let args: GenerateMethodBodyArgs = serde_json::from_value(serde_json::json!({
+            "method_signature": "public int add(int a, int b)",
+            "context": null,
+            "uri": "file:///Test.java",
+            "range": null
+        }))
+        .expect("GenerateMethodBodyArgs should accept snake_case legacy payloads");
+        assert_eq!(args.method_signature, "public int add(int a, int b)");
     }
 }
