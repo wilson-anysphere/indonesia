@@ -127,6 +127,7 @@ nova ai review --diff-file changes.diff
 nova ai review --git
 nova ai review --git --staged
 nova ai review --json < changes.diff
+nova ai review --path <workspace> --git
 
 # Launch the Nova language server (LSP) (defaults to `nova-lsp --stdio`)
 nova lsp

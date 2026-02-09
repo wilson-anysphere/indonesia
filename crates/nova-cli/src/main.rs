@@ -133,6 +133,8 @@ struct AiReviewArgs {
     path: PathBuf,
 
     /// Read a unified diff from this file instead of stdin.
+    ///
+    /// If the path is relative, it is resolved against `--path`.
     #[arg(long, conflicts_with = "git")]
     diff_file: Option<PathBuf>,
 
@@ -1267,14 +1269,20 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 fn load_ai_review_diff(args: &AiReviewArgs) -> Result<String> {
     use std::io::Read;
 
+    let workdir = resolve_path_workdir(&args.path);
+
     if args.git {
-        let workdir = resolve_path_workdir(&args.path);
         return load_git_diff(&workdir, args.staged);
     }
 
     if let Some(path) = args.diff_file.as_ref() {
-        return fs::read_to_string(path)
-            .with_context(|| format!("failed to read diff file {}", path.display()));
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            workdir.join(path)
+        };
+        return fs::read_to_string(&resolved)
+            .with_context(|| format!("failed to read diff file {}", resolved.display()));
     }
 
     let mut buf = String::new();
@@ -1319,10 +1327,13 @@ fn load_git_diff(workdir: &Path, staged: bool) -> Result<String> {
     }
     cmd.current_dir(workdir);
 
-    let output = cmd.output().context("failed to run `git diff`")?;
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to run `git diff` in {}", workdir.display()))?;
     if !output.status.success() {
         anyhow::bail!(
-            "`git diff` failed with exit code {:?}.\nstderr:\n{}",
+            "`git diff` failed in {} with exit code {:?}.\nstderr:\n{}",
+            workdir.display(),
             output.status.code(),
             String::from_utf8_lossy(&output.stderr)
         );

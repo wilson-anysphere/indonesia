@@ -229,6 +229,50 @@ fn ai_review_discovers_config_from_workspace_root() {
 }
 
 #[test]
+fn ai_review_diff_file_is_resolved_relative_to_path_flag() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "## Review\n\nRelative diff OK.\n" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let _config = write_http_ai_config(&temp, &server);
+    let diff_file = temp.child("changes.diff");
+    diff_file.write_str(sample_diff()).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .current_dir(outside.path())
+        .env_remove("NOVA_CONFIG_PATH")
+        .args(["ai", "review"])
+        .arg("--path")
+        .arg(temp.path())
+        .arg("--diff-file")
+        .arg("changes.diff")
+        .arg("--json")
+        .output()
+        .expect("run nova ai review --path ... --diff-file (relative)");
+
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["review"]
+            .as_str()
+            .is_some_and(|review| review.contains("Relative diff OK.")),
+        "unexpected JSON output: {value:#}"
+    );
+
+    mock.assert_hits(1);
+}
+
+#[test]
 fn ai_review_git_flag_uses_git_diff_output() {
     // Best-effort: `--git` is a convenience flag, so skip if git isn't available.
     if ProcessCommand::new("git")
