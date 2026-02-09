@@ -332,7 +332,7 @@ Changing these settings requires restarting the language server; the extension p
 ### AI
 
 Nova’s AI behavior is controlled by two settings:
-`nova.ai.enabled` (master toggle) and `nova.aiCompletions.enabled` (multi-token completions).
+`nova.ai.enabled` (master toggle) and `nova.aiCompletions.enabled` (AI completion features).
 
 These settings affect **both** client-side behavior (what the extension shows/polls) and
 **server-side** behavior (environment variables passed to `nova-lsp`). Changing them may require
@@ -344,13 +344,16 @@ restarting the language server to take full effect.
   - hides Nova AI code actions (e.g. "Explain this error", "Generate tests with AI")
   - forces server-side AI off (equivalent to setting `NOVA_DISABLE_AI=1` for the `nova-lsp` process)
   - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
-- `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests. When disabled, the
-  extension stops polling `nova/completion/more` and disables multi-token completions server-side
-  (equivalent to setting `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
-- `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
+- `nova.aiCompletions.enabled` (boolean): enable AI completion features, including completion ranking
+  and async multi-token completions (`nova/completion/more`). When disabled, the extension stops
+  polling `nova/completion/more` and disables AI completion features server-side (equivalent to
+  setting `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
+- `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request (async
+  multi-token completions).
   - The extension passes this to the server as `NOVA_AI_COMPLETIONS_MAX_ITEMS` (read at server
     startup; restart required).
   - `0` disables multi-token completions server-side.
+  - This setting does **not** disable completion ranking.
   - Values are clamped by the server to a reasonable maximum (currently 32); empty/invalid values
     are ignored.
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
