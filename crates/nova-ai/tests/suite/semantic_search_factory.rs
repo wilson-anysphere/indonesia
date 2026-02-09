@@ -74,7 +74,7 @@ fn semantic_search_from_config_respects_feature_flag() {
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
@@ -116,7 +116,7 @@ fn semantic_search_from_config_local_backend_without_feature_falls_back_to_hash_
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
@@ -129,7 +129,7 @@ fn semantic_search_from_config_local_backend_without_feature_falls_back_to_hash_
 #[test]
 fn semantic_search_from_config_disabled_returns_empty() {
     let cfg = AiConfig::default();
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&VirtualWorkspace::new([]));
     assert!(search.search("hello world").is_empty());
 }
@@ -149,7 +149,7 @@ fn semantic_search_from_config_supports_incremental_updates() {
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     let path = PathBuf::from("src/a.txt");
 
     search.index_file(path.clone(), "hello old".to_string());
@@ -207,7 +207,7 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
@@ -252,7 +252,7 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
@@ -278,7 +278,7 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
         ..AiConfig::default()
     };
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     let path = PathBuf::from("src/Hello.java");
 
     search.index_file(
@@ -343,11 +343,10 @@ fn semantic_search_from_config_provider_backend_with_unsupported_provider_falls_
         .finish();
 
     let results = tracing::subscriber::with_default(subscriber, || {
-        let mut search = semantic_search_from_config(&cfg);
+        let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
         search.index_project(&db);
         search.search("hello world")
     });
-
     assert!(!results.is_empty());
     assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
     let expected_kind = if cfg!(feature = "embeddings") {

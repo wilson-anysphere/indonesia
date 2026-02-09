@@ -33,7 +33,7 @@ fn provider_embeddings_remote_url_falls_back_to_hash_in_local_only_mode() {
 
     // Must not panic or attempt a remote request in local-only mode. The embedder should fall back
     // to the local hash embedder and still return embedding-backed results.
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());
@@ -79,7 +79,7 @@ fn provider_embeddings_loopback_url_is_allowed_in_local_only_mode() {
         Url::parse(&format!("http://localhost:{}/v1", server.port())).unwrap();
     cfg.provider.model = "test-embed-model".to_string();
 
-    let mut search = semantic_search_from_config(&cfg);
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
     search.index_project(&db);
     let results = search.search("hello world");
     assert!(!results.is_empty());

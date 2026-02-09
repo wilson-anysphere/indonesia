@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use crate::AiError;
 use nova_core::ProjectDatabase;
 use nova_fuzzy::{fuzzy_match, MatchKind};
 
@@ -91,45 +92,58 @@ pub trait SemanticSearch: Send + Sync {
 ///
 /// When embeddings are enabled in config but the crate is built without the
 /// `embeddings` feature, this falls back to [`TrigramSemanticSearch`].
-pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn SemanticSearch> {
+pub fn semantic_search_from_config(
+    config: &nova_config::AiConfig,
+) -> Result<Box<dyn SemanticSearch>, AiError> {
     if !(config.enabled && config.features.semantic_search) {
-        return Box::new(NoopSemanticSearch);
+        return Ok(Box::new(NoopSemanticSearch));
     }
 
     if config.embeddings.enabled {
         #[cfg(feature = "embeddings")]
         {
+            if config.embeddings.model_dir.as_os_str().is_empty() {
+                return Err(AiError::InvalidConfig(
+                    "ai.embeddings.model_dir must be non-empty when ai.embeddings.enabled=true"
+                        .to_string(),
+                ));
+            }
+
+            std::fs::create_dir_all(&config.embeddings.model_dir).map_err(|err| {
+                AiError::InvalidConfig(format!(
+                    "failed to create ai.embeddings.model_dir {}: {err}",
+                    config.embeddings.model_dir.display()
+                ))
+            })?;
+
             let max_memory_bytes =
                 (config.embeddings.max_memory_bytes.0).min(usize::MAX as u64) as usize;
-            match config.embeddings.backend {
-                nova_config::AiEmbeddingsBackend::Hash => {
-                    return Box::new(
-                        EmbeddingSemanticSearch::new(HashEmbedder::default())
-                            .with_max_memory_bytes(max_memory_bytes),
-                    );
-                }
+
+            let search = match config.embeddings.backend {
+                nova_config::AiEmbeddingsBackend::Hash => EmbeddingSemanticSearch::new(
+                    HashEmbedder::default(),
+                )
+                .with_max_memory_bytes(max_memory_bytes),
                 nova_config::AiEmbeddingsBackend::Provider => {
                     if let Some(embedder) = embeddings::provider_embedder_from_config(config) {
-                        return Box::new(
+                        return Ok(Box::new(
                             EmbeddingSemanticSearch::new(embedder)
                                 .with_max_memory_bytes(max_memory_bytes),
-                        );
+                        ));
                     }
 
-                    return Box::new(
-                        EmbeddingSemanticSearch::new(HashEmbedder::default())
-                            .with_max_memory_bytes(max_memory_bytes),
-                    );
+                    EmbeddingSemanticSearch::new(HashEmbedder::default())
+                        .with_max_memory_bytes(max_memory_bytes)
                 }
                 nova_config::AiEmbeddingsBackend::Local => {
                     #[cfg(feature = "embeddings-local")]
                     {
                         match LocalEmbedder::from_config(&config.embeddings) {
                             Ok(embedder) => {
-                                return Box::new(
+                                return Ok(Box::new(
                                     EmbeddingSemanticSearch::new(embedder)
                                         .with_max_memory_bytes(max_memory_bytes),
-                                );
+                                ));
                             }
                             Err(err) => {
                                 tracing::warn!(
@@ -149,12 +163,12 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
                         );
                     }
 
-                    return Box::new(
-                        EmbeddingSemanticSearch::new(HashEmbedder::default())
-                            .with_max_memory_bytes(max_memory_bytes),
-                    );
+                    EmbeddingSemanticSearch::new(HashEmbedder::default())
+                        .with_max_memory_bytes(max_memory_bytes)
                 }
-            }
+            };
+
+            return Ok(Box::new(search));
         }
 
         #[cfg(not(feature = "embeddings"))]
@@ -167,7 +181,7 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
         }
     }
 
-    Box::new(TrigramSemanticSearch::new())
+    Ok(Box::new(TrigramSemanticSearch::new()))
 }
 
 #[derive(Debug, Default)]

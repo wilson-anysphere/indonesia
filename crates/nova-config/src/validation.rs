@@ -576,6 +576,28 @@ fn validate_ai(
                 toml_path: "ai.embeddings.model_dir".to_string(),
                 message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
             });
+        } else {
+            // `ai.embeddings.model_dir` is used by local embedding backends (and any on-disk caches).
+            // When a base directory is available, resolve relative paths against it so config
+            // validation matches the documented "relative to the workspace root" behavior.
+            let base_dir = ctx.base_dir();
+            let resolved = if config.ai.embeddings.model_dir.is_absolute() {
+                Some(config.ai.embeddings.model_dir.clone())
+            } else {
+                base_dir.map(|base| base.join(&config.ai.embeddings.model_dir))
+            };
+
+            if let Some(resolved) = resolved {
+                if resolved.is_file() {
+                    out.errors.push(ConfigValidationError::InvalidValue {
+                        toml_path: "ai.embeddings.model_dir".to_string(),
+                        message: format!(
+                            "path is a file, expected a directory: {}",
+                            resolved.display()
+                        ),
+                    });
+                }
+            }
         }
 
         if matches!(config.ai.embeddings.backend, AiEmbeddingsBackend::Provider)

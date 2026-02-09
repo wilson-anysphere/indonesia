@@ -308,11 +308,11 @@ impl SemanticContextBuilder {
     ///
     /// The underlying search implementation is chosen by
     /// [`crate::semantic_search_from_config`].
-    pub fn new(config: &nova_config::AiConfig) -> Self {
-        Self {
+    pub fn new(config: &nova_config::AiConfig) -> Result<Self, crate::AiError> {
+        Ok(Self {
             builder: ContextBuilder::new(),
-            search: crate::semantic_search_from_config(config),
-        }
+            search: crate::semantic_search_from_config(config)?,
+        })
     }
 
     pub fn index_project(&mut self, db: &dyn ProjectDatabase) {

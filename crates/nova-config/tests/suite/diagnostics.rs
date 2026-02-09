@@ -1,7 +1,7 @@
 use nova_config::{
     AiEmbeddingsBackend, AiProviderKind, ConfigValidationError, ConfigWarning, NovaConfig,
 };
-use tempfile::tempdir;
+use tempfile::{tempdir, NamedTempFile};
 
 #[test]
 fn reports_unknown_keys_with_full_paths() {
@@ -470,6 +470,44 @@ max_memory_bytes = 1
             message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
         }]
     );
+}
+
+#[test]
+fn validates_ai_embeddings_model_dir_is_not_a_file() {
+    let tmp_file = NamedTempFile::new().expect("create temp file");
+    let path = tmp_file
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| tmp_file.path().to_path_buf());
+
+    let text = format!(
+        r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+model_dir = '{path}'
+batch_size = 1
+max_memory_bytes = 1
+"#,
+        path = path.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    match &diagnostics.errors[0] {
+        ConfigValidationError::InvalidValue { toml_path, message } => {
+            assert_eq!(toml_path, "ai.embeddings.model_dir");
+            assert!(
+                message.contains("expected a directory"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected InvalidValue error, got {other:?}"),
+    }
 }
 
 #[test]

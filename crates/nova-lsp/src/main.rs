@@ -471,9 +471,12 @@ impl ServerState {
             )
         };
 
-        let semantic_search = Arc::new(RwLock::new(nova_ai::semantic_search_from_config(
-            &ai_config,
-        )));
+        let semantic_search = Arc::new(RwLock::new(
+            nova_ai::semantic_search_from_config(&ai_config).unwrap_or_else(|err| {
+                eprintln!("failed to configure semantic search: {err}");
+                Box::new(nova_ai::TrigramSemanticSearch::new())
+            }),
+        ));
         let semantic_search_open_files = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
         let semantic_search_workspace_index_status =
             Arc::new(stdio_semantic_search::SemanticSearchWorkspaceIndexStatus::default());

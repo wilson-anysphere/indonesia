@@ -59,7 +59,7 @@ fn semantic_context_builder_adds_related_code_when_enabled() {
         ..AiConfig::default()
     };
 
-    let mut builder = SemanticContextBuilder::new(&cfg);
+    let mut builder = SemanticContextBuilder::new(&cfg).expect("semantic context builder");
     builder.index_project(&db);
 
     let ctx = builder.build(request(), 1);
@@ -72,7 +72,7 @@ fn semantic_context_builder_skips_related_code_when_disabled() {
     let db = test_db();
 
     let cfg = AiConfig::default();
-    let mut builder = SemanticContextBuilder::new(&cfg);
+    let mut builder = SemanticContextBuilder::new(&cfg).expect("semantic context builder");
     builder.index_project(&db);
 
     let ctx = builder.build(request(), 1);
@@ -96,7 +96,7 @@ fn semantic_context_builder_can_index_incrementally() {
         ..AiConfig::default()
     };
 
-    let mut builder = SemanticContextBuilder::new(&cfg);
+    let mut builder = SemanticContextBuilder::new(&cfg).expect("semantic context builder");
     builder.index_file(
         PathBuf::from("src/Hello.java"),
         "public class Hello { public String helloWorld() { return \"hello world\"; } }".to_string(),
@@ -137,7 +137,7 @@ fn semantic_context_builder_can_index_database() {
         "public class Main { public String hello() { return \"hello world\"; } }".to_string(),
     );
 
-    let mut builder = SemanticContextBuilder::new(&cfg);
+    let mut builder = SemanticContextBuilder::new(&cfg).expect("semantic context builder");
     builder.index_database(&store);
 
     let ctx = builder.build(request(), 1);
@@ -169,7 +169,7 @@ fn semantic_context_builder_can_index_source_database() {
     db.set_file_path(file_id, "src/Main.java");
     let snap = db.snapshot();
 
-    let mut builder = SemanticContextBuilder::new(&cfg);
+    let mut builder = SemanticContextBuilder::new(&cfg).expect("semantic context builder");
     builder.index_source_database(&snap);
 
     let ctx = builder.build(request(), 1);
