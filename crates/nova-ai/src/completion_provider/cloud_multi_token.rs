@@ -1,5 +1,5 @@
 use crate::client::LlmClient;
-use crate::privacy::{redact_suspicious_literals, PrivacyMode};
+use crate::privacy::{redact_file_paths, redact_suspicious_literals, PrivacyMode};
 use crate::provider::{AiProviderError, MultiTokenCompletionProvider, MultiTokenCompletionRequest};
 use crate::{
     AdditionalEdit, AiError, ChatMessage, ChatRequest, MultiTokenCompletion,
@@ -230,23 +230,6 @@ fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
     }
 
     out
-}
-
-fn redact_file_paths(text: &str) -> String {
-    // Absolute *nix paths.
-    static UNIX_PATH_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
-        regex::Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
-            .expect("valid unix path regex")
-    });
-    // Basic Windows drive paths.
-    static WINDOWS_PATH_RE: once_cell::sync::Lazy<regex::Regex> =
-        once_cell::sync::Lazy::new(|| {
-            regex::Regex::new(r"(?m)(?P<path>[A-Za-z]:\\\\[A-Za-z0-9._\\-\\\\]+)")
-                .expect("valid windows path regex")
-        });
-
-    let out = UNIX_PATH_RE.replace_all(text, "[PATH]").into_owned();
-    WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
 }
 
 fn json_instructions(max_items: usize) -> String {

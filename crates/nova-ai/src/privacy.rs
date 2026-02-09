@@ -1,5 +1,7 @@
 use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 use nova_config::AiPrivacyConfig;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 /// Privacy controls that apply when building prompts for cloud models.
 #[derive(Debug, Clone)]
@@ -71,6 +73,23 @@ pub fn redact_suspicious_literals(code: &str, cfg: &RedactionConfig) -> String {
     anonymizer.anonymize(code)
 }
 
+pub(crate) fn redact_file_paths(text: &str) -> String {
+    // Absolute *nix paths.
+    static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
+            .expect("valid unix path regex")
+    });
+    // Basic Windows drive paths (as they typically appear in string literals, with escaped
+    // backslashes).
+    static WINDOWS_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?m)(?P<path>[A-Za-z]:\\\\[A-Za-z0-9._\\-\\\\]+)")
+            .expect("valid windows path regex")
+    });
+
+    let out = UNIX_PATH_RE.replace_all(text, "[PATH]").into_owned();
+    WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +154,27 @@ mod tests {
         };
         let mode = PrivacyMode::from_ai_privacy_config(&cfg);
         assert!(mode.include_file_paths);
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unix_absolute_paths() {
+        let prompt = r#"String p = "/home/alice/project/secret.txt";"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(
+            !out.contains("/home/alice/project/secret.txt"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_absolute_paths() {
+        let prompt = r#"String p = "C:\\Users\\alice\\secret.txt";"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(
+            !out.contains(r"C:\\Users\\alice\\secret.txt"),
+            "{out}"
+        );
     }
 }

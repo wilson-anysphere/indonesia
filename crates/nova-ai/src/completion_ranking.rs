@@ -11,6 +11,7 @@ use nova_metrics::MetricsRegistry;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::privacy::redact_file_paths;
 use crate::util;
 use crate::{ChatMessage, ChatRequest, LlmClient};
 
@@ -220,6 +221,7 @@ impl CompletionRanker for LlmCompletionRanker {
                     return out;
                 }
             };
+            let prompt = redact_file_paths(&prompt);
 
             let cancel = CancellationToken::new();
             let _guard = cancel.clone().drop_guard();
@@ -686,6 +688,33 @@ mod tests {
                 .any(|m| m.content.contains(COMPLETION_RANKING_PROMPT_VERSION)),
             "expected prompt version marker in request"
         );
+    }
+
+    #[tokio::test]
+    async fn llm_ranker_redacts_absolute_paths_in_prompt() {
+        let mock = MockLlm::new("[0]");
+        let llm = Arc::new(mock.clone());
+        let ranker = LlmCompletionRanker::new(llm);
+
+        let line_text = r#"String a = "/home/alice/project/secret.txt"; String b = "C:\\Users\\alice\\secret.txt";"#;
+        let ctx = CompletionContext::new("p", line_text);
+        let items = vec![
+            CompletionItem::new("a", CompletionItemKind::Other),
+            CompletionItem::new("b", CompletionItemKind::Other),
+        ];
+
+        let _ = ranker.rank_completions(&ctx, items).await;
+        let req = mock.take_request().expect("request captured");
+        let prompt = req
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(prompt.contains("[PATH]"), "{prompt}");
+        assert!(!prompt.contains("/home/alice/project/secret.txt"), "{prompt}");
+        assert!(!prompt.contains(r"C:\\Users\\alice\\secret.txt"), "{prompt}");
     }
 
     #[derive(Clone, Default)]
