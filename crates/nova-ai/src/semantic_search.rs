@@ -1435,14 +1435,6 @@ mod embeddings {
                 .unwrap_or_else(|err| err.into_inner())
         }
 
-        #[doc(hidden)]
-        pub fn __poison_index_mutex_for_test(&self) {
-            // This is used by regression tests to ensure we recover from poisoning.
-            // Panicking while holding the lock will poison it.
-            let _guard = self.lock_index();
-            panic!("poison EmbeddingSemanticSearch index mutex for test");
-        }
-
         pub fn with_ef_search(mut self, ef_search: usize) -> Self {
             self.ef_search = ef_search.max(1);
             self
@@ -1951,6 +1943,14 @@ mod embeddings {
 
     #[cfg(any(test, debug_assertions))]
     impl<E: Embedder> EmbeddingSemanticSearch<E> {
+        #[doc(hidden)]
+        pub fn __poison_index_mutex_for_test(&self) {
+            // This is used by regression tests to ensure we recover from poisoning.
+            // Panicking while holding the lock will poison it.
+            let _guard = self.lock_index();
+            panic!("poison EmbeddingSemanticSearch index mutex for test");
+        }
+
         #[doc(hidden)]
         pub fn __index_is_dirty_for_tests(&self) -> bool {
             self.lock_index().dirty
