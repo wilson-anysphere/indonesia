@@ -871,7 +871,7 @@ impl LlmClient for AiClient {
     }
 }
 
-fn validate_local_only_url(url: &url::Url) -> Result<(), AiError> {
+pub(crate) fn validate_local_only_url(url: &url::Url) -> Result<(), AiError> {
     let is_loopback = match url.host() {
         Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(ip)) => ip.is_loopback(),

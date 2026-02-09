@@ -15,6 +15,7 @@ mod patch_safety;
 mod provider_embeddings_azure;
 mod project_database_adapters;
 mod provider_embedder_sync;
+mod provider_embeddings_privacy;
 mod semantic_context_builder;
 mod semantic_search_factory;
 mod semantic_search_incremental;

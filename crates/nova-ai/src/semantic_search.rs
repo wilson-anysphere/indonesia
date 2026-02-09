@@ -91,31 +91,10 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
                     );
                 }
                 nova_config::AiEmbeddingsBackend::Provider => {
-                    // Provider-backed embeddings are not guaranteed to be available for every
-                    // configured provider kind. For now we fall back to the deterministic hash
-                    // embedder so semantic search remains usable offline and in tests.
-                    let provider_kind = &config.provider.kind;
-                    let supports_provider_embeddings = matches!(
-                        provider_kind,
-                        nova_config::AiProviderKind::Ollama
-                            | nova_config::AiProviderKind::OpenAiCompatible
-                            | nova_config::AiProviderKind::OpenAi
-                            | nova_config::AiProviderKind::Gemini
-                            | nova_config::AiProviderKind::AzureOpenAi
-                            | nova_config::AiProviderKind::Http
-                    );
-
-                    if supports_provider_embeddings {
-                        tracing::warn!(
-                            target = "nova.ai",
-                            provider_kind = ?provider_kind,
-                            "ai.embeddings.backend=provider is not implemented; falling back to hash embeddings"
-                        );
-                    } else {
-                        tracing::warn!(
-                            target = "nova.ai",
-                            provider_kind = ?provider_kind,
-                            "ai.embeddings.backend=provider is not supported for this ai.provider.kind; falling back to hash embeddings"
+                    if let Some(embedder) = embeddings::provider_embedder_from_config(config) {
+                        return Box::new(
+                            EmbeddingSemanticSearch::new(embedder)
+                                .with_max_memory_bytes(max_memory_bytes),
                         );
                     }
 
@@ -362,9 +341,13 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 #[cfg(feature = "embeddings")]
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
+    use crate::client::validate_local_only_url;
     use crate::AiError;
     use nova_core::ProjectDatabase;
     use nova_fuzzy::{fuzzy_match, MatchKind};
+    use nova_config::{AiConfig, AiProviderKind};
+    use reqwest::blocking::Client as BlockingClient;
+    use serde::{Deserialize, Serialize};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
     use std::collections::BTreeMap;
@@ -372,6 +355,9 @@ mod embeddings {
     use std::ops::Range;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::Duration;
+    use tracing::warn;
+    use url::Url;
 
     use hnsw_rs::prelude::*;
 
@@ -446,6 +432,242 @@ mod embeddings {
             l2_normalize(&mut vec);
             Ok(vec)
         }
+    }
+
+    #[derive(Clone)]
+    pub(super) struct ProviderEmbedder {
+        provider_kind: AiProviderKind,
+        base_url: Url,
+        model: String,
+        api_key: Option<String>,
+        client: BlockingClient,
+    }
+
+    impl ProviderEmbedder {
+        fn try_new(
+            provider_kind: AiProviderKind,
+            base_url: Url,
+            model: String,
+            api_key: Option<String>,
+            timeout: Duration,
+        ) -> Result<Self, AiError> {
+            let client = BlockingClient::builder().timeout(timeout).build()?;
+            Ok(Self {
+                provider_kind,
+                base_url,
+                model,
+                api_key,
+                client,
+            })
+        }
+
+        fn embed_openai_compatible(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            let url = openai_compatible_endpoint(&self.base_url, "/embeddings")?;
+            let body = OpenAiEmbeddingRequest {
+                model: &self.model,
+                input: text,
+            };
+
+            let mut request = self.client.post(url).json(&body);
+            if let Some(key) = self.api_key.as_deref() {
+                request = request.bearer_auth(key);
+            }
+
+            let response = request.send()?.error_for_status()?;
+            let parsed: OpenAiEmbeddingResponse = response.json()?;
+            let first = parsed.data.into_iter().next().ok_or_else(|| {
+                AiError::UnexpectedResponse("missing embeddings data[0].embedding".into())
+            })?;
+            Ok(first.embedding)
+        }
+
+        fn embed_ollama(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            let mut base = self.base_url.clone();
+            let base_str = base.as_str().trim_end_matches('/').to_string();
+            base = Url::parse(&format!("{base_str}/"))?;
+            let url = base.join("api/embeddings")?;
+
+            let body = OllamaEmbeddingRequest {
+                model: &self.model,
+                prompt: text,
+            };
+
+            let response = self.client.post(url).json(&body).send()?.error_for_status()?;
+            let parsed: OllamaEmbeddingResponse = response.json()?;
+            Ok(parsed.embedding)
+        }
+    }
+
+    impl Embedder for ProviderEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            match &self.provider_kind {
+                AiProviderKind::Ollama => self.embed_ollama(text),
+                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
+                    self.embed_openai_compatible(text)
+                }
+                _ => Err(AiError::InvalidConfig(format!(
+                    "provider-backed embeddings are not supported for ai.provider.kind={:?}",
+                    self.provider_kind
+                ))),
+            }
+        }
+    }
+
+    pub(super) fn provider_embedder_from_config(config: &AiConfig) -> Option<ProviderEmbedder> {
+        let provider_kind = config.provider.kind.clone();
+
+        if config.privacy.local_only {
+            match &provider_kind {
+                AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                    if let Err(err) = validate_local_only_url(&config.provider.url) {
+                        warn!(
+                            target = "nova.ai",
+                            provider = ?provider_kind,
+                            url = %config.provider.url,
+                            "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls ({err}); falling back to hash embeddings"
+                        );
+                        return None;
+                    }
+                }
+                AiProviderKind::OpenAi
+                | AiProviderKind::Anthropic
+                | AiProviderKind::Gemini
+                | AiProviderKind::AzureOpenAi => {
+                    warn!(
+                        target = "nova.ai",
+                        provider = ?provider_kind,
+                        "ai.privacy.local_only=true forbids provider-backed embeddings for cloud providers; falling back to hash embeddings"
+                    );
+                    return None;
+                }
+                _ => {
+                    warn!(
+                        target = "nova.ai",
+                        provider = ?provider_kind,
+                        "ai.privacy.local_only=true forbids provider-backed embeddings for this provider; falling back to hash embeddings"
+                    );
+                    return None;
+                }
+            }
+        }
+
+        let model = config
+            .embeddings
+            .model
+            .clone()
+            .unwrap_or_else(|| config.provider.model.clone());
+        let timeout = config
+            .embeddings
+            .timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| config.provider.timeout());
+
+        let api_key = config.api_key.clone();
+
+        match provider_kind {
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                match ProviderEmbedder::try_new(
+                    provider_kind,
+                    config.provider.url.clone(),
+                    model,
+                    api_key,
+                    timeout,
+                ) {
+                    Ok(embedder) => Some(embedder),
+                    Err(err) => {
+                        warn!(
+                            target = "nova.ai",
+                            provider = ?config.provider.kind,
+                            ?err,
+                            "failed to build provider embedder; falling back to hash embeddings"
+                        );
+                        None
+                    }
+                }
+            }
+            AiProviderKind::OpenAi => {
+                let Some(api_key) = api_key else {
+                    warn!(
+                        target = "nova.ai",
+                        "ai.embeddings.backend=provider with ai.provider.kind=open_ai requires ai.api_key; falling back to hash embeddings"
+                    );
+                    return None;
+                };
+
+                match ProviderEmbedder::try_new(
+                    provider_kind,
+                    config.provider.url.clone(),
+                    model,
+                    Some(api_key),
+                    timeout,
+                ) {
+                    Ok(embedder) => Some(embedder),
+                    Err(err) => {
+                        warn!(
+                            target = "nova.ai",
+                            provider = ?config.provider.kind,
+                            ?err,
+                            "failed to build provider embedder; falling back to hash embeddings"
+                        );
+                        None
+                    }
+                }
+            }
+            other => {
+                warn!(
+                    target = "nova.ai",
+                    provider = ?other,
+                    "ai.embeddings.backend=provider is not supported for this ai.provider.kind; falling back to hash embeddings"
+                );
+                None
+            }
+        }
+    }
+
+    fn openai_compatible_endpoint(base_url: &Url, path: &str) -> Result<Url, AiError> {
+        // Accept both:
+        // - http://localhost:8000  (we will append /v1/...)
+        // - http://localhost:8000/v1  (we will append /...)
+        let mut base = base_url.clone();
+        let base_str = base.as_str().trim_end_matches('/').to_string();
+        base = Url::parse(&format!("{base_str}/"))?;
+
+        let base_path = base.path().trim_end_matches('/');
+        if base_path.ends_with("/v1") {
+            Ok(base.join(path.trim_start_matches('/'))?)
+        } else {
+            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))?)
+        }
+    }
+
+    #[derive(Serialize)]
+    struct OpenAiEmbeddingRequest<'a> {
+        model: &'a str,
+        input: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct OpenAiEmbeddingResponse {
+        #[serde(default)]
+        data: Vec<OpenAiEmbeddingData>,
+    }
+
+    #[derive(Deserialize)]
+    struct OpenAiEmbeddingData {
+        #[serde(default)]
+        embedding: Vec<f32>,
+    }
+
+    #[derive(Serialize)]
+    struct OllamaEmbeddingRequest<'a> {
+        model: &'a str,
+        prompt: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct OllamaEmbeddingResponse {
+        #[serde(default)]
+        embedding: Vec<f32>,
     }
 
     #[derive(Debug, Clone)]
