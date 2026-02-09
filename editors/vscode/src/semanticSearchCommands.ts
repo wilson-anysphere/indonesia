@@ -109,6 +109,10 @@ export function registerNovaSemanticSearchCommands(
                 progress.report({ message });
               }
 
+              if (fields.enabled === false) {
+                return status;
+              }
+
               // `currentRunId === 0` means indexing has not started (likely disabled / no workspace
               // root / AI runtime unavailable / safe mode). Stop early so we can show a helpful
               // message.
@@ -135,16 +139,21 @@ export function registerNovaSemanticSearchCommands(
         const summary = formatSemanticSearchIndexSummary(payload);
         const json = jsonStringifyBestEffort(payload);
 
-        if (fields.currentRunId === 0) {
+        if (fields.enabled === false || fields.currentRunId === 0) {
           output.clear();
           output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/indexStatus`);
           if (summary) {
             output.appendLine(summary);
           }
           output.appendLine('');
-          output.appendLine(
-            'Semantic search indexing has not started yet (`currentRunId === 0`). This can happen when:',
-          );
+          if (fields.enabled === false) {
+            output.appendLine('Semantic search is disabled (`enabled === false`). Workspace indexing will not start.');
+          } else {
+            output.appendLine('Semantic search indexing has not started yet (`currentRunId === 0`). This can happen when:');
+          }
+          if (fields.reason) {
+            output.appendLine(`Reported reason: ${fields.reason}`);
+          }
           output.appendLine('- Semantic search is disabled in your config (`ai.features.semantic_search=false`).');
           output.appendLine('- The server is missing a workspace root (open a folder/workspace).');
           output.appendLine('- The AI runtime is unavailable / not configured.');
@@ -158,8 +167,11 @@ export function registerNovaSemanticSearchCommands(
           output.appendLine(json);
           output.show(true);
 
+          const reasonSuffix = fields.reason ? ` (reason: ${fields.reason})` : '';
           const choice = await vscode.window.showWarningMessage(
-            'Nova: Semantic search indexing has not started (currentRunId=0). This can happen if semantic search is disabled, the workspace root is unavailable, the AI runtime is not available, or Nova is in safe mode.',
+            fields.enabled === false
+              ? `Nova: Semantic search is disabled${reasonSuffix}. Enable semantic search in your config and restart the language server.`
+              : `Nova: Semantic search indexing has not started (currentRunId=0)${reasonSuffix}. This can happen if semantic search is disabled, the workspace root is unavailable, the AI runtime is not available, or Nova is in safe mode.`,
             'Open Settings',
             'Restart Language Server',
           );
