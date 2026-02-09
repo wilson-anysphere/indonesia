@@ -180,9 +180,24 @@ pub(super) fn provider_embeddings_client_from_config(
     let batch_size = config.embeddings.batch_size.max(1);
 
     let privacy = Arc::new(PrivacyFilter::new(&config.privacy)?);
-    let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
-        .map(Arc::new)
-        .ok();
+
+    // `ai.embeddings.model_dir` is used for the on-disk embedding cache. Build it lazily so we
+    // don't fail in configurations that already fall back to hash embeddings (missing API keys,
+    // unsupported providers, etc.).
+    let disk_cache = || -> Result<Option<Arc<DiskEmbeddingCache>>, AiError> {
+        if config.embeddings.model_dir.as_os_str().is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(Arc::new(
+            DiskEmbeddingCache::new(config.embeddings.model_dir.clone()).map_err(|err| {
+                AiError::InvalidConfig(format!(
+                    "failed to create ai.embeddings.model_dir {}: {err}",
+                    config.embeddings.model_dir.display()
+                ))
+            })?,
+        )))
+    };
 
     match &config.provider.kind {
         AiProviderKind::AzureOpenAi => {
@@ -249,6 +264,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 }
             };
 
+            let disk_cache = disk_cache()?;
             Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "azure_open_ai",
@@ -298,6 +314,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 }
             };
 
+            let disk_cache = disk_cache()?;
             Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "openai",
@@ -339,6 +356,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 }
             };
 
+            let disk_cache = disk_cache()?;
             Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "openai_compatible",
@@ -380,6 +398,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 }
             };
 
+            let disk_cache = disk_cache()?;
             Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "http",
@@ -420,6 +439,7 @@ pub(super) fn provider_embeddings_client_from_config(
                 }
             };
 
+            let disk_cache = disk_cache()?;
             Ok(Box::new(CachedEmbeddingsClient::new(
                 Box::new(base),
                 "ollama",

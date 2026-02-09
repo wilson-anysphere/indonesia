@@ -2,7 +2,7 @@
 
 use httpmock::prelude::*;
 use nova_ai::embeddings::{embeddings_client_from_config, EmbeddingInputKind};
-use nova_ai::semantic_search_from_config;
+use nova_ai::{semantic_search_from_config, AiError};
 use nova_config::{AiConfig, AiEmbeddingsBackend, AiProviderKind, ByteSize};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -121,4 +121,37 @@ fn provider_semantic_search_query_embeddings_are_cached_on_disk() {
     assert!(search.search("hello world").is_empty());
     // Second embed should hit the disk cache (no additional HTTP calls).
     mock.assert_hits(1);
+}
+
+#[test]
+fn provider_embeddings_disk_cache_requires_model_dir_to_be_a_directory() {
+    let tmp_file = tempfile::NamedTempFile::new().expect("temp file");
+    let model_dir = tmp_file
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| tmp_file.path().to_path_buf());
+
+    let mut config = AiConfig::default();
+    config.enabled = true;
+    config.embeddings.enabled = true;
+    config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = model_dir.clone();
+    config.provider.kind = AiProviderKind::OpenAiCompatible;
+    config.provider.url = Url::parse("http://localhost:1234/v1").expect("url");
+    config.provider.model = "test-embedder".to_string();
+    config.provider.timeout_ms = 2_000;
+
+    let err = match embeddings_client_from_config(&config) {
+        Ok(_) => panic!("expected invalid config for model_dir {}", model_dir.display()),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(&err, AiError::InvalidConfig(_)),
+        "expected InvalidConfig, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ai.embeddings.model_dir"),
+        "unexpected error message: {msg}"
+    );
 }
