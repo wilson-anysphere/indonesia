@@ -1395,15 +1395,17 @@ Field semantics:
   start. Known values:
   - `"disabled"` — semantic search is disabled by config.
   - `"safe_mode"` — the server is/was in safe-mode (see `nova/safeModeStatus`).
-  - `"missing_workspace_root"` — `initialize.rootUri` / workspace root is missing or invalid.
+  - `"missing_workspace_root"` — the server does not have a usable workspace root from initialize
+    params (`initialize.rootUri`, the first entry in `initialize.workspaceFolders`, or legacy
+    `initialize.rootPath`).
   - `"runtime_unavailable"` — the server could not initialize its AI runtime (AI misconfigured).
 
 Notes:
 
 - Workspace semantic-search indexing is best-effort and is only started when semantic search is
   enabled in the Nova config (e.g. `ai.enabled=true`, `ai.features.semantic_search=true`), the
-  server has a valid workspace root (`initialize.rootUri`), the AI runtime is available, and the
-  server is not in safe-mode.
+  server has a valid workspace root (`initialize.rootUri`, `initialize.workspaceFolders[0].uri`, or
+  legacy `initialize.rootPath`), the AI runtime is available, and the server is not in safe-mode.
 
 #### Safe-mode
 
@@ -1489,7 +1491,8 @@ Field semantics:
 - `results` (array): list of matches sorted by descending `score` (ties are broken deterministically).
 - `path` (string): best-effort filesystem path for the match:
   - workspace-relative (with forward slashes) when the server has a workspace root
-    (`initialize.rootUri` / legacy `initialize.rootPath`) and the result file is under it.
+    (`initialize.rootUri`, `initialize.workspaceFolders[0].uri`, or legacy `initialize.rootPath`)
+    and the result file is under it.
   - otherwise an absolute path string (may contain platform path separators like `\` on Windows).
 - `kind` (string): what the match represents (backend-dependent; treat as a display hint). Current
   values include:
