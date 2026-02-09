@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::diagnostics::{ConfigValidationError, ConfigWarning, ValidationDiagnostics};
-use crate::{AiProviderKind, LoggingConfig, NovaConfig};
+use crate::{AiEmbeddingsBackend, AiProviderKind, LoggingConfig, NovaConfig};
 
 const MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS: usize = 8_192;
 
@@ -555,6 +555,41 @@ fn validate_ai(
             });
         }
 
+        if matches!(config.ai.embeddings.backend, AiEmbeddingsBackend::Provider)
+            && !matches!(
+                config.ai.provider.kind,
+                AiProviderKind::Ollama
+                    | AiProviderKind::OpenAiCompatible
+                    | AiProviderKind::OpenAi
+                    | AiProviderKind::AzureOpenAi
+            )
+        {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.kind".to_string(),
+                message: format!(
+                    "embeddings are not supported for provider kind {}; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai",
+                    ai_provider_kind_name(&config.ai.provider.kind)
+                ),
+            });
+        }
+
+        if matches!(
+            config.ai.embeddings.model.as_deref(),
+            Some(value) if value.trim().is_empty()
+        ) {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.model".to_string(),
+                message: "must be non-empty when set".to_string(),
+            });
+        }
+
+        if matches!(config.ai.embeddings.timeout_ms, Some(0)) {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.timeout_ms".to_string(),
+                message: "must be >= 1 when set".to_string(),
+            });
+        }
+
         if config.ai.embeddings.batch_size == 0 {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.embeddings.batch_size".to_string(),
@@ -666,5 +701,18 @@ fn url_is_loopback(url: &url::Url) -> bool {
         Some(Host::Ipv4(ip)) => ip.is_loopback(),
         Some(Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
+    }
+}
+
+fn ai_provider_kind_name(kind: &AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::Ollama => "ollama",
+        AiProviderKind::OpenAiCompatible => "open_ai_compatible",
+        AiProviderKind::InProcessLlama => "in_process_llama",
+        AiProviderKind::OpenAi => "open_ai",
+        AiProviderKind::Anthropic => "anthropic",
+        AiProviderKind::Gemini => "gemini",
+        AiProviderKind::AzureOpenAi => "azure_open_ai",
+        AiProviderKind::Http => "http",
     }
 }

@@ -1,4 +1,6 @@
-use nova_config::{AiProviderKind, ConfigValidationError, ConfigWarning, NovaConfig};
+use nova_config::{
+    AiEmbeddingsBackend, AiProviderKind, ConfigValidationError, ConfigWarning, NovaConfig,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -466,6 +468,95 @@ max_memory_bytes = 1
         vec![ConfigValidationError::InvalidValue {
             toml_path: "ai.embeddings.model_dir".to_string(),
             message: "must be non-empty when ai.embeddings.enabled is true".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn ai_embeddings_backend_defaults_to_hash_for_backwards_compatible_configs() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+"#;
+
+    let (config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(config.ai.embeddings.backend, AiEmbeddingsBackend::Hash);
+}
+
+#[test]
+fn validates_ai_embeddings_provider_backend_requires_supported_provider() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+
+[ai.embeddings]
+enabled = true
+backend = "provider"
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.kind".to_string(),
+            message: "embeddings are not supported for provider kind http; supported kinds: ollama, open_ai_compatible, open_ai, azure_open_ai".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_ai_embeddings_model_override_is_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+model = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.embeddings.model".to_string(),
+            message: "must be non-empty when set".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_ai_embeddings_timeout_override_is_positive() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+timeout_ms = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.embeddings.timeout_ms".to_string(),
+            message: "must be >= 1 when set".to_string(),
         }]
     );
 }

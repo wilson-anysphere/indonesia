@@ -752,7 +752,7 @@ pub struct AiConfig {
     #[serde(default)]
     pub privacy: AiPrivacyConfig,
 
-    /// Local embedding model configuration used for offline semantic search.
+    /// Embeddings configuration used for semantic search and context building.
     #[serde(default)]
     pub embeddings: AiEmbeddingsConfig,
 
@@ -839,12 +839,49 @@ fn default_ai_cache_ttl_secs() -> u64 {
     300
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AiEmbeddingsBackend {
+    /// Deterministic, fully-local embeddings based on the hashing trick.
+    ///
+    /// This is the default to keep offline tests stable and to avoid requiring
+    /// network access or model downloads.
+    Hash,
+    /// Provider-backed embeddings via the configured AI provider (`ai.provider.*`).
+    Provider,
+    /// Future local in-process embedding models (placeholder).
+    Local,
+}
+
+impl Default for AiEmbeddingsBackend {
+    fn default() -> Self {
+        Self::Hash
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AiEmbeddingsConfig {
-    /// Enable local embeddings for semantic search and context building.
+    /// Enable embeddings for semantic search and context building.
     #[serde(default)]
     pub enabled: bool,
+
+    /// Which embeddings backend to use.
+    #[serde(default)]
+    pub backend: AiEmbeddingsBackend,
+
+    /// Optional embedding model override when using provider-backed embeddings.
+    ///
+    /// When unset, Nova reuses `ai.provider.model`.
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// Optional timeout override (in milliseconds) when using provider-backed embeddings.
+    ///
+    /// When unset, Nova reuses `ai.provider.timeout_ms`.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: Option<u64>,
 
     /// Directory containing embedding model files / cache.
     #[serde(default = "default_embeddings_model_dir")]
@@ -878,6 +915,9 @@ impl Default for AiEmbeddingsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            backend: AiEmbeddingsBackend::default(),
+            model: None,
+            timeout_ms: None,
             model_dir: default_embeddings_model_dir(),
             batch_size: default_embeddings_batch_size(),
             max_memory_bytes: default_embeddings_max_memory_bytes(),

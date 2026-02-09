@@ -665,10 +665,13 @@ expression: schema
         "cache_max_entries": 256,
         "cache_ttl_secs": 300,
         "embeddings": {
+          "backend": "hash",
           "batch_size": 32,
           "enabled": false,
           "max_memory_bytes": 536870912,
-          "model_dir": ".nova/models/embeddings"
+          "model": null,
+          "model_dir": ".nova/models/embeddings",
+          "timeout_ms": null
         },
         "enabled": false,
         "features": {
@@ -854,12 +857,15 @@ expression: schema
           "minimum": 1.0
         },
         "embeddings": {
-          "description": "Local embedding model configuration used for offline semantic search.",
+          "description": "Embeddings configuration used for semantic search and context building.",
           "default": {
+            "backend": "hash",
             "batch_size": 32,
             "enabled": false,
             "max_memory_bytes": 536870912,
-            "model_dir": ".nova/models/embeddings"
+            "model": null,
+            "model_dir": ".nova/models/embeddings",
+            "timeout_ms": null
           },
           "allOf": [
             {
@@ -938,9 +944,43 @@ expression: schema
       },
       "additionalProperties": false
     },
+    "AiEmbeddingsBackend": {
+      "oneOf": [
+        {
+          "description": "Deterministic, fully-local embeddings based on the hashing trick.\n\nThis is the default to keep offline tests stable and to avoid requiring network access or model downloads.",
+          "type": "string",
+          "enum": [
+            "hash"
+          ]
+        },
+        {
+          "description": "Provider-backed embeddings via the configured AI provider (`ai.provider.*`).",
+          "type": "string",
+          "enum": [
+            "provider"
+          ]
+        },
+        {
+          "description": "Future local in-process embedding models (placeholder).",
+          "type": "string",
+          "enum": [
+            "local"
+          ]
+        }
+      ]
+    },
     "AiEmbeddingsConfig": {
       "type": "object",
       "properties": {
+        "backend": {
+          "description": "Which embeddings backend to use.",
+          "default": "hash",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiEmbeddingsBackend"
+            }
+          ]
+        },
         "batch_size": {
           "description": "Maximum batch size for embedding requests.",
           "default": 32,
@@ -949,7 +989,7 @@ expression: schema
           "minimum": 1.0
         },
         "enabled": {
-          "description": "Enable local embeddings for semantic search and context building.",
+          "description": "Enable embeddings for semantic search and context building.",
           "default": false,
           "type": "boolean"
         },
@@ -960,11 +1000,30 @@ expression: schema
           "format": "uint",
           "minimum": 1.0
         },
+        "model": {
+          "description": "Optional embedding model override when using provider-backed embeddings.\n\nWhen unset, Nova reuses `ai.provider.model`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
         "model_dir": {
           "description": "Directory containing embedding model files / cache.",
           "default": ".nova/models/embeddings",
           "type": "string",
           "minLength": 1
+        },
+        "timeout_ms": {
+          "description": "Optional timeout override (in milliseconds) when using provider-backed embeddings.\n\nWhen unset, Nova reuses `ai.provider.timeout_ms`.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
         }
       },
       "additionalProperties": false
