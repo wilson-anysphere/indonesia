@@ -17,7 +17,7 @@ nova-syntax = { path = "../nova-syntax" }
 nova-db = { path = "../nova-db" }
 nova-metrics = { path = "../nova-metrics" }
 globset = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

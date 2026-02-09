@@ -403,6 +403,7 @@ mod embeddings {
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use nova_config::{AiConfig, AiProviderKind};
     use reqwest::blocking::Client as BlockingClient;
+    use reqwest::StatusCode;
     use serde::{Deserialize, Serialize};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
@@ -410,6 +411,7 @@ mod embeddings {
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
     use tracing::warn;
@@ -514,6 +516,11 @@ mod embeddings {
             Ok(vec)
         }
     }
+
+    const OLLAMA_EMBED_ENDPOINT_UNKNOWN: u8 = 0;
+    const OLLAMA_EMBED_ENDPOINT_SUPPORTED: u8 = 1;
+    const OLLAMA_EMBED_ENDPOINT_UNSUPPORTED: u8 = 2;
+
     #[derive(Clone)]
     pub(super) struct ProviderEmbedder {
         provider_kind: AiProviderKind,
@@ -522,6 +529,8 @@ mod embeddings {
         api_key: Option<String>,
         azure_deployment: Option<String>,
         azure_api_version: Option<String>,
+        batch_size: usize,
+        ollama_embed_endpoint: Arc<AtomicU8>,
         client: BlockingClient,
         backend_id: &'static str,
         endpoint_id: String,
@@ -537,6 +546,7 @@ mod embeddings {
             api_key: Option<String>,
             timeout: Duration,
             disk_cache: Option<Arc<DiskEmbeddingCache>>,
+            batch_size: usize,
         ) -> Result<Self, AiError> {
             let client = BlockingClient::builder().timeout(timeout).build()?;
             let backend_id = match &provider_kind {
@@ -552,7 +562,7 @@ mod embeddings {
                     let base_str = base_url.as_str().trim_end_matches('/').to_string();
                     Url::parse(&format!("{base_str}/"))
                         .ok()
-                        .and_then(|base| base.join("api/embeddings").ok())
+                        .and_then(|base| base.join("api/embed").ok())
                         .map(|url| url.to_string())
                         .unwrap_or_else(|| base_url.to_string())
                 }
@@ -570,6 +580,8 @@ mod embeddings {
                 api_key,
                 azure_deployment: None,
                 azure_api_version: None,
+                batch_size: batch_size.max(1),
+                ollama_embed_endpoint: Arc::new(AtomicU8::new(OLLAMA_EMBED_ENDPOINT_UNKNOWN)),
                 client,
                 backend_id,
                 endpoint_id,
@@ -684,19 +696,134 @@ mod embeddings {
         }
 
         fn embed_ollama(&self, text: &str) -> Result<Vec<f32>, AiError> {
-            let mut base = self.base_url.clone();
-            let base_str = base.as_str().trim_end_matches('/').to_string();
-            base = Url::parse(&format!("{base_str}/"))?;
-            let url = base.join("api/embeddings")?;
+            let input = text.to_string();
+            self.embed_ollama_batch(std::slice::from_ref(&input))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    AiError::UnexpectedResponse(
+                        "missing embedding output from Ollama provider embedder".into(),
+                    )
+                })
+        }
 
-            let body = OllamaEmbeddingRequest {
+        fn ollama_endpoint(&self, path: &str) -> Result<Url, AiError> {
+            let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+            let base = Url::parse(&format!("{base_str}/"))?;
+            Ok(base.join(path.trim_start_matches('/'))?)
+        }
+
+        fn embed_ollama_via_embed_endpoint(
+            &self,
+            input: &[String],
+        ) -> Result<Option<Vec<Vec<f32>>>, AiError> {
+            let url = self.ollama_endpoint("/api/embed")?;
+            let body = OllamaEmbedRequest {
                 model: &self.model,
-                prompt: text,
+                input,
             };
 
-            let response = self.client.post(url).json(&body).send()?.error_for_status()?;
-            let parsed: OllamaEmbeddingResponse = response.json()?;
-            Ok(parsed.embedding)
+            let response = self.client.post(url).json(&body).send()?;
+            if response.status() == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+
+            let response = response.error_for_status()?;
+            let parsed: OllamaEmbedResponse = response.json()?;
+            let embeddings = parsed.into_embeddings().ok_or_else(|| {
+                AiError::UnexpectedResponse(
+                    "missing `embeddings` in Ollama /api/embed response".into(),
+                )
+            })?;
+
+            if embeddings.len() != input.len() {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "Ollama /api/embed returned {} embeddings for {} inputs",
+                    embeddings.len(),
+                    input.len()
+                )));
+            }
+            if embeddings.iter().any(|embedding| embedding.is_empty()) {
+                return Err(AiError::UnexpectedResponse(
+                    "Ollama /api/embed returned empty embedding vector".into(),
+                ));
+            }
+
+            Ok(Some(embeddings))
+        }
+
+        fn embed_ollama_via_legacy_endpoint(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if input.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let url = self.ollama_endpoint("/api/embeddings")?;
+            let mut out = Vec::with_capacity(input.len());
+
+            for prompt in input {
+                let body = OllamaEmbeddingRequest {
+                    model: &self.model,
+                    prompt,
+                };
+
+                let response = self
+                    .client
+                    .post(url.clone())
+                    .json(&body)
+                    .send()?
+                    .error_for_status()?;
+                let parsed: OllamaEmbeddingResponse = response.json()?;
+
+                if parsed.embedding.is_empty() {
+                    return Err(AiError::UnexpectedResponse(
+                        "missing `embedding` in Ollama /api/embeddings response".into(),
+                    ));
+                }
+                out.push(parsed.embedding);
+            }
+
+            Ok(out)
+        }
+
+        fn embed_ollama_batch(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if input.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut out = Vec::with_capacity(input.len());
+
+            for chunk in input.chunks(self.batch_size) {
+                let mode = self.ollama_embed_endpoint.load(AtomicOrdering::Acquire);
+                if mode != OLLAMA_EMBED_ENDPOINT_UNSUPPORTED {
+                    match self.embed_ollama_via_embed_endpoint(chunk) {
+                        Ok(Some(embeddings)) => {
+                            self.ollama_embed_endpoint.store(
+                                OLLAMA_EMBED_ENDPOINT_SUPPORTED,
+                                AtomicOrdering::Release,
+                            );
+                            out.extend(embeddings);
+                            continue;
+                        }
+                        Ok(None) => {
+                            self.ollama_embed_endpoint.store(
+                                OLLAMA_EMBED_ENDPOINT_UNSUPPORTED,
+                                AtomicOrdering::Release,
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                target = "nova.ai",
+                                ?err,
+                                "Ollama /api/embed failed; falling back to /api/embeddings"
+                            );
+                        }
+                    }
+                }
+
+                out.extend(self.embed_ollama_via_legacy_endpoint(chunk)?);
+            }
+
+            Ok(out)
         }
     }
 
@@ -737,7 +864,7 @@ mod embeddings {
 
         fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
             match &self.provider_kind {
-                AiProviderKind::Ollama => inputs.iter().map(|input| self.embed_ollama(input)).collect(),
+                AiProviderKind::Ollama => self.embed_ollama_batch(inputs),
                 AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
                     self.embed_openai_compatible_batch(inputs)
                 }
@@ -804,6 +931,7 @@ mod embeddings {
             .model
             .clone()
             .unwrap_or_else(|| config.provider.model.clone());
+        let batch_size = config.embeddings.batch_size;
         let timeout = config
             .embeddings
             .timeout_ms
@@ -824,6 +952,7 @@ mod embeddings {
                     api_key,
                     timeout,
                     disk_cache.clone(),
+                    batch_size,
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
@@ -870,6 +999,7 @@ mod embeddings {
                     Some(api_key),
                     timeout,
                     disk_cache.clone(),
+                    batch_size,
                 ) {
                     Ok(mut embedder) => {
                         embedder.azure_deployment = Some(deployment);
@@ -910,6 +1040,7 @@ mod embeddings {
                     Some(api_key),
                     timeout,
                     disk_cache,
+                    batch_size,
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
@@ -1040,6 +1171,32 @@ mod embeddings {
     struct OllamaEmbeddingResponse {
         #[serde(default)]
         embedding: Vec<f32>,
+    }
+
+    #[derive(Serialize)]
+    struct OllamaEmbedRequest<'a> {
+        model: &'a str,
+        input: &'a [String],
+    }
+
+    #[derive(Deserialize)]
+    struct OllamaEmbedResponse {
+        #[serde(default)]
+        embeddings: Vec<Vec<f32>>,
+        #[serde(default)]
+        embedding: Vec<f32>,
+    }
+
+    impl OllamaEmbedResponse {
+        fn into_embeddings(self) -> Option<Vec<Vec<f32>>> {
+            if !self.embeddings.is_empty() {
+                Some(self.embeddings)
+            } else if !self.embedding.is_empty() {
+                Some(vec![self.embedding])
+            } else {
+                None
+            }
+        }
     }
 
     #[cfg(feature = "embeddings-local")]
