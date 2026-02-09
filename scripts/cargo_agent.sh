@@ -344,6 +344,7 @@ run_cargo() {
     local _args=("$@")
     local _has_nova_lsp=""
     local _wants_stdio_type_hierarchy=""
+    local _wants_stdio_server=""
     local _i
 
     for ((_i = 0; _i < ${#_args[@]}; _i++)); do
@@ -360,9 +361,17 @@ run_cargo() {
           if [[ "${_args[$((_i + 1))]:-}" == "stdio_type_hierarchy" ]]; then
             _wants_stdio_type_hierarchy=1
           fi
+          if [[ "${_args[$((_i + 1))]:-}" == "stdio_server" ]]; then
+            _wants_stdio_server=1
+          fi
           ;;
-        --test=stdio_type_hierarchy)
-          _wants_stdio_type_hierarchy=1
+        --test=*)
+          if [[ "${_args[${_i}]#--test=}" == "stdio_type_hierarchy" ]]; then
+            _wants_stdio_type_hierarchy=1
+          fi
+          if [[ "${_args[${_i}]#--test=}" == "stdio_server" ]]; then
+            _wants_stdio_server=1
+          fi
           ;;
       esac
     done
@@ -398,6 +407,28 @@ run_cargo() {
         _out=( "${_out[@]:0:${_sep}}" "stdio_type_hierarchy" "${_out[@]:${_sep}}" )
       fi
 
+      set -- "${_out[@]}"
+    fi
+
+    # `nova-lsp` renamed its consolidated integration test harness from `stdio_server` to `tests`.
+    # Remap the legacy harness name to keep older command lines working.
+    if [[ -n "${_has_nova_lsp}" && -n "${_wants_stdio_server}" ]]; then
+      echo "cargo_agent: remapping nova-lsp stdio_server harness to tests" >&2
+      local _out=()
+      for ((_i = 0; _i < ${#_args[@]}; _i++)); do
+        if [[ "${_args[${_i}]}" == "--test" && "${_args[$((_i + 1))]:-}" == "stdio_server" ]]; then
+          _out+=("--test" "tests")
+          _i=$((_i + 1))
+          continue
+        fi
+        if [[ "${_args[${_i}]}" == --test=* ]]; then
+          if [[ "${_args[${_i}]#--test=}" == "stdio_server" ]]; then
+            _out+=("--test=tests")
+            continue
+          fi
+        fi
+        _out+=("${_args[${_i}]}")
+      done
       set -- "${_out[@]}"
     fi
   fi
