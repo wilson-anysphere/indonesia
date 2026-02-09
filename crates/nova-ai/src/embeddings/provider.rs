@@ -4,6 +4,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 use std::future::Future;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -988,6 +989,8 @@ struct OllamaEmbeddingsClient {
     model: String,
     timeout: Duration,
     batch_size: usize,
+    // 0 = unknown, 1 = supported, 2 = unsupported
+    embed_endpoint: Arc<AtomicU8>,
     client: reqwest::Client,
 }
 
@@ -999,6 +1002,7 @@ impl OllamaEmbeddingsClient {
             model,
             timeout,
             batch_size: batch_size.max(1),
+            embed_endpoint: Arc::new(AtomicU8::new(0)),
             client,
         })
     }
@@ -1147,46 +1151,63 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
             return Err(AiError::Timeout);
         }
 
-        let first = with_retry(
-            "ollama",
-            remaining,
-            &retry,
-            &cancel,
-            |timeout| self.embed_via_embed_endpoint(first_chunk, timeout),
-        )
-        .await?;
+        if self.embed_endpoint.load(Ordering::Acquire) != 2 {
+            let first = with_retry(
+                "ollama",
+                remaining,
+                &retry,
+                &cancel,
+                |timeout| self.embed_via_embed_endpoint(first_chunk, timeout),
+            )
+            .await?;
 
-        if let Some(embeddings) = first {
-            let mut out = Vec::with_capacity(input.len());
-            out.extend(embeddings);
-
-            for chunk in chunks {
-                if cancel.is_cancelled() {
-                    return Err(AiError::Cancelled);
+            match (self.embed_endpoint.load(Ordering::Acquire), first) {
+                // Still unknown and Ollama returned 404: cache "unsupported" and fall back.
+                (0, None) => {
+                    self.embed_endpoint.store(2, Ordering::Release);
                 }
-
-                let remaining = self.timeout.saturating_sub(operation_start.elapsed());
-                if remaining == Duration::ZERO {
-                    return Err(AiError::Timeout);
-                }
-
-                let Some(embeddings) = with_retry(
-                    "ollama",
-                    remaining,
-                    &retry,
-                    &cancel,
-                    |timeout| self.embed_via_embed_endpoint(chunk, timeout),
-                )
-                .await?
-                else {
+                // We previously saw `/api/embed` succeed, so 404 should be treated as an error.
+                (1, None) => {
                     return Err(AiError::UnexpectedResponse(
                         "ollama /api/embed returned 404 after a successful request".into(),
                     ));
-                };
-                out.extend(embeddings);
-            }
+                }
+                (_, Some(embeddings)) => {
+                    self.embed_endpoint.store(1, Ordering::Release);
 
-            return Ok(out);
+                    let mut out = Vec::with_capacity(input.len());
+                    out.extend(embeddings);
+
+                    for chunk in chunks {
+                        if cancel.is_cancelled() {
+                            return Err(AiError::Cancelled);
+                        }
+
+                        let remaining = self.timeout.saturating_sub(operation_start.elapsed());
+                        if remaining == Duration::ZERO {
+                            return Err(AiError::Timeout);
+                        }
+
+                        let Some(embeddings) = with_retry(
+                            "ollama",
+                            remaining,
+                            &retry,
+                            &cancel,
+                            |timeout| self.embed_via_embed_endpoint(chunk, timeout),
+                        )
+                        .await?
+                        else {
+                            return Err(AiError::UnexpectedResponse(
+                                "ollama /api/embed returned 404 after a successful request".into(),
+                            ));
+                        };
+                        out.extend(embeddings);
+                    }
+
+                    return Ok(out);
+                }
+                _ => {}
+            }
         }
 
         self.embed_via_legacy_endpoint(input, &cancel, operation_start, &retry)
