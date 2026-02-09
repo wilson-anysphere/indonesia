@@ -7,19 +7,46 @@ use crate::{
     AiError,
 };
 use nova_config::AiConfig;
-use std::{path::Path, sync::Arc};
+use nova_metrics::MetricsRegistry;
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio_util::sync::CancellationToken;
+
+const AI_ACTION_EXPLAIN_ERROR_METRIC: &str = "ai/action/explain_error";
+const AI_ACTION_GENERATE_METHOD_BODY_METRIC: &str = "ai/action/generate_method_body";
+const AI_ACTION_GENERATE_TESTS_METRIC: &str = "ai/action/generate_tests";
+const AI_ACTION_CODE_REVIEW_METRIC: &str = "ai/action/code_review";
+
+fn record_action_metrics<T>(metric: &str, duration: Duration, result: &Result<T, AiError>) {
+    let registry = MetricsRegistry::global();
+    registry.record_request(metric, duration);
+
+    if let Err(err) = result {
+        registry.record_error(metric);
+        if matches!(err, AiError::Timeout) {
+            registry.record_timeout(metric);
+        }
+    }
+}
 
 pub struct NovaAi {
     client: Arc<AiClient>,
+    llm: Arc<dyn LlmClient>,
     context_builder: ContextBuilder,
     max_output_tokens: u32,
 }
 
 impl NovaAi {
     pub fn new(config: &AiConfig) -> Result<Self, AiError> {
+        let client = Arc::new(AiClient::from_config(config)?);
+        let llm: Arc<dyn LlmClient> = client.clone();
+
         Ok(Self {
-            client: Arc::new(AiClient::from_config(config)?),
+            client,
+            llm,
             context_builder: ContextBuilder::new(),
             max_output_tokens: config.provider.max_tokens,
         })
@@ -109,9 +136,17 @@ impl NovaAi {
         ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        self.client
+        let started_at = Instant::now();
+        let result = self
+            .llm
             .chat(self.explain_error_request(diagnostic_message, ctx), cancel)
-            .await
+            .await;
+        record_action_metrics(
+            AI_ACTION_EXPLAIN_ERROR_METRIC,
+            started_at.elapsed(),
+            &result,
+        );
+        result
     }
 
     fn generate_method_body_request(
@@ -140,12 +175,20 @@ impl NovaAi {
         ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        self.client
+        let started_at = Instant::now();
+        let result = self
+            .llm
             .chat(
                 self.generate_method_body_request(method_signature, ctx),
                 cancel,
             )
-            .await
+            .await;
+        record_action_metrics(
+            AI_ACTION_GENERATE_METHOD_BODY_METRIC,
+            started_at.elapsed(),
+            &result,
+        );
+        result
     }
 
     fn generate_tests_request(&self, target: &str, ctx: ContextRequest) -> ChatRequest {
@@ -170,9 +213,17 @@ impl NovaAi {
         ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        self.client
+        let started_at = Instant::now();
+        let result = self
+            .llm
             .chat(self.generate_tests_request(target, ctx), cancel)
-            .await
+            .await;
+        record_action_metrics(
+            AI_ACTION_GENERATE_TESTS_METRIC,
+            started_at.elapsed(),
+            &result,
+        );
+        result
     }
 
     pub async fn code_review(
@@ -180,8 +231,7 @@ impl NovaAi {
         diff: &str,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        self.code_review_with_llm(self.client.as_ref(), diff, cancel)
-            .await
+        self.code_review_with_llm(self.llm.as_ref(), diff, cancel).await
     }
 
     /// Like [`NovaAi::code_review`], but allows the caller (tests) to provide an alternate LLM
@@ -193,6 +243,7 @@ impl NovaAi {
         diff: &str,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
+        let started_at = Instant::now();
         let filtered = diff::filter_diff_for_excluded_paths(diff, |path| {
             self.client.is_excluded_path(path)
         });
@@ -203,23 +254,30 @@ impl NovaAi {
             .unwrap_or_else(|| diff::DIFF_OMITTED_PLACEHOLDER.to_string());
         let sanitized = diff::replace_omission_sentinels(&sanitized);
 
-        llm.chat(
-            ChatRequest {
-                messages: vec![
-                    ChatMessage::system("You are a senior Java engineer doing code review."),
-                    ChatMessage::user(actions::code_review_prompt(&sanitized)),
-                ],
-                max_tokens: Some(self.max_output_tokens),
-                temperature: None,
-            },
-            cancel,
-        )
-        .await
+        let result = llm
+            .chat(
+                ChatRequest {
+                    messages: vec![
+                        ChatMessage::system("You are a senior Java engineer doing code review."),
+                        ChatMessage::user(actions::code_review_prompt(&sanitized)),
+                    ],
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: None,
+                },
+                cancel,
+            )
+            .await;
+        record_action_metrics(
+            AI_ACTION_CODE_REVIEW_METRIC,
+            started_at.elapsed(),
+            &result,
+        );
+        result
     }
 
     /// Access the underlying client (for model listing, custom prompts, etc).
     pub fn llm(&self) -> Arc<dyn LlmClient> {
-        self.client.clone()
+        self.llm.clone()
     }
 }
 
@@ -230,7 +288,9 @@ mod tests {
         context::RelatedCode,
         privacy::{PrivacyMode, RedactionConfig},
     };
+    use async_trait::async_trait;
     use nova_config::AiPrivacyConfig;
+    use nova_metrics::MetricsRegistry;
     use std::path::PathBuf;
 
     fn minimal_ctx() -> ContextRequest {
@@ -353,5 +413,81 @@ mod tests {
             prompt.contains(&allowed_code),
             "expected allowed code to remain in prompt; got: {prompt}"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explain_error_records_action_metrics_on_error() {
+        #[derive(Debug, Clone)]
+        struct MockLlm;
+
+        #[async_trait]
+        impl LlmClient for MockLlm {
+            async fn chat(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<String, AiError> {
+                Err(AiError::UnexpectedResponse("boom".to_string()))
+            }
+
+            async fn chat_stream(
+                &self,
+                _request: ChatRequest,
+                _cancel: CancellationToken,
+            ) -> Result<crate::types::AiStream, AiError> {
+                Err(AiError::UnexpectedResponse("boom".to_string()))
+            }
+
+            async fn list_models(
+                &self,
+                _cancel: CancellationToken,
+            ) -> Result<Vec<String>, AiError> {
+                Ok(Vec::new())
+            }
+        }
+
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+
+        let metrics = MetricsRegistry::global();
+        metrics.reset();
+
+        let config = AiConfig::default();
+        let mut ai = NovaAi::new(&config).expect("NovaAi should build with dummy config");
+        ai.llm = Arc::new(MockLlm);
+
+        let ctx = ContextRequest {
+            file_path: None,
+            focal_code: "class Main {}".to_string(),
+            enclosing_context: None,
+            project_context: None,
+            semantic_context: None,
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: Vec::new(),
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 10_000,
+            privacy: PrivacyMode::default(),
+        };
+
+        let err = ai
+            .explain_error("diagnostic", ctx, CancellationToken::new())
+            .await
+            .expect_err("expected mock error");
+        assert!(matches!(err, AiError::UnexpectedResponse(_)));
+
+        let snap = metrics.snapshot();
+        let method = snap
+            .methods
+            .get(AI_ACTION_EXPLAIN_ERROR_METRIC)
+            .expect("action metric present");
+        assert_eq!(method.request_count, 1);
+        assert_eq!(method.error_count, 1);
+
+        metrics.reset();
     }
 }

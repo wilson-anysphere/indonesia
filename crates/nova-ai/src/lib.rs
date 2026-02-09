@@ -84,6 +84,16 @@ pub use safety::{PatchSafetyConfig, SafetyError};
 pub use workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    pub(crate) fn metrics_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::Duration;

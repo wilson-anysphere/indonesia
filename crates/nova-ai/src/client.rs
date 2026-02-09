@@ -1453,6 +1453,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn cache_hit_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = nova_metrics::MetricsRegistry::global();
         let before = metrics
             .snapshot()
@@ -1554,6 +1557,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn timeout_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = nova_metrics::MetricsRegistry::global();
         let before = metrics
             .snapshot()
