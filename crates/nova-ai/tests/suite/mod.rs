@@ -18,6 +18,7 @@ mod in_process_llama_smoke;
 mod local_embedder_integration;
 mod llm_cache;
 mod local_backends;
+mod ollama_embedder;
 mod ollama_provider_embeddings;
 mod patch_engine;
 mod patch_safety;

@@ -1,10 +1,21 @@
 use crate::semantic_search::Embedder;
 use crate::AiError;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-/// Provider-backed embedder for the Ollama `/api/embed` endpoint.
+const OLLAMA_EMBED_ENDPOINT_UNKNOWN: u8 = 0;
+const OLLAMA_EMBED_ENDPOINT_SUPPORTED: u8 = 1;
+const OLLAMA_EMBED_ENDPOINT_UNSUPPORTED: u8 = 2;
+
+/// Provider-backed embedder for Ollama embeddings.
+///
+/// Supports both:
+/// - `/api/embed` (preferred, batch)
+/// - `/api/embeddings` (legacy, one input per request)
 ///
 /// This is synchronous (uses `reqwest::blocking`) so it can be used from
 /// [`crate::EmbeddingSemanticSearch`].
@@ -14,6 +25,7 @@ pub struct OllamaEmbedder {
     model: String,
     timeout: Duration,
     batch_size: usize,
+    embed_endpoint: Arc<AtomicU8>,
     client: reqwest::blocking::Client,
 }
 
@@ -32,6 +44,7 @@ impl OllamaEmbedder {
             model: model.into(),
             timeout,
             batch_size: batch_size.max(1),
+            embed_endpoint: Arc::new(AtomicU8::new(OLLAMA_EMBED_ENDPOINT_UNKNOWN)),
             client,
         })
     }
@@ -42,9 +55,9 @@ impl OllamaEmbedder {
         Ok(base.join(path.trim_start_matches('/'))?)
     }
 
-    fn embed_chunk(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+    fn embed_via_embed_endpoint(&self, input: &[String]) -> Result<Option<Vec<Vec<f32>>>, AiError> {
         if input.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
 
         let url = self.endpoint("/api/embed")?;
@@ -58,8 +71,12 @@ impl OllamaEmbedder {
             .post(url)
             .json(&body)
             .timeout(self.timeout)
-            .send()?
-            .error_for_status()?;
+            .send()?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let response = response.error_for_status()?;
 
         let parsed: OllamaEmbedResponse = response.json()?;
         if let Some(embeddings) = parsed.embeddings {
@@ -70,7 +87,12 @@ impl OllamaEmbedder {
                     embeddings.len()
                 )));
             }
-            return Ok(embeddings);
+            if embeddings.iter().any(|embedding| embedding.is_empty()) {
+                return Err(AiError::UnexpectedResponse(
+                    "ollama returned empty embedding vector".into(),
+                ));
+            }
+            return Ok(Some(embeddings));
         }
 
         if let Some(embedding) = parsed.embedding {
@@ -79,12 +101,51 @@ impl OllamaEmbedder {
                     "ollama returned single embedding for batch request".into(),
                 ));
             }
-            return Ok(vec![embedding]);
+            if embedding.is_empty() {
+                return Err(AiError::UnexpectedResponse(
+                    "ollama returned empty embedding vector".into(),
+                ));
+            }
+            return Ok(Some(vec![embedding]));
         }
 
         Err(AiError::UnexpectedResponse(
             "missing embeddings in response".into(),
         ))
+    }
+
+    fn embed_via_legacy_endpoint(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = self.endpoint("/api/embeddings")?;
+        let mut out = Vec::with_capacity(input.len());
+
+        for prompt in input {
+            let body = OllamaLegacyEmbedRequest {
+                model: &self.model,
+                prompt,
+            };
+
+            let response = self
+                .client
+                .post(url.clone())
+                .json(&body)
+                .timeout(self.timeout)
+                .send()?
+                .error_for_status()?;
+
+            let parsed: OllamaLegacyEmbedResponse = response.json()?;
+            if parsed.embedding.is_empty() {
+                return Err(AiError::UnexpectedResponse(
+                    "missing `embedding` in Ollama /api/embeddings response".into(),
+                ));
+            }
+            out.push(parsed.embedding);
+        }
+
+        Ok(out)
     }
 }
 
@@ -102,8 +163,25 @@ impl Embedder for OllamaEmbedder {
 
         let batch_size = self.batch_size.max(1);
         let mut out = Vec::with_capacity(inputs.len());
+
         for chunk in inputs.chunks(batch_size) {
-            out.extend(self.embed_chunk(chunk)?);
+            let mode = self.embed_endpoint.load(Ordering::Acquire);
+            if mode != OLLAMA_EMBED_ENDPOINT_UNSUPPORTED {
+                match self.embed_via_embed_endpoint(chunk)? {
+                    Some(embeddings) => {
+                        self.embed_endpoint
+                            .store(OLLAMA_EMBED_ENDPOINT_SUPPORTED, Ordering::Release);
+                        out.extend(embeddings);
+                        continue;
+                    }
+                    None => {
+                        self.embed_endpoint
+                            .store(OLLAMA_EMBED_ENDPOINT_UNSUPPORTED, Ordering::Release);
+                    }
+                }
+            }
+
+            out.extend(self.embed_via_legacy_endpoint(chunk)?);
         }
         Ok(out)
     }
@@ -123,3 +201,14 @@ struct OllamaEmbedResponse {
     embedding: Option<Vec<f32>>,
 }
 
+#[derive(Debug, Serialize)]
+struct OllamaLegacyEmbedRequest<'a> {
+    model: &'a str,
+    prompt: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaLegacyEmbedResponse {
+    #[serde(default)]
+    embedding: Vec<f32>,
+}
