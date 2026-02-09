@@ -215,6 +215,9 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
         .to_string(),
     )]);
 
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
     let cfg = AiConfig {
         enabled: true,
         provider: nova_config::AiProviderConfig {
@@ -227,6 +230,7 @@ fn semantic_search_from_config_provider_backend_supports_ollama_embeddings() {
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
             model: Some("nomic-embed-text".to_string()),
+            model_dir,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
@@ -288,6 +292,9 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
         .to_string(),
     )]);
 
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
     let cfg = AiConfig {
         enabled: true,
         provider: nova_config::AiProviderConfig {
@@ -300,6 +307,7 @@ fn semantic_search_from_config_provider_backend_supports_openai_compatible_embed
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
             model: Some("text-embedding-3-small".to_string()),
+            model_dir,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
@@ -368,6 +376,9 @@ fn semantic_search_from_config_provider_backend_batches_openai_compatible_reques
         .to_string(),
     )]);
 
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
     let cfg = AiConfig {
         enabled: true,
         provider: nova_config::AiProviderConfig {
@@ -379,6 +390,7 @@ fn semantic_search_from_config_provider_backend_batches_openai_compatible_reques
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
             model: Some("text-embedding-3-small".to_string()),
+            model_dir,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
@@ -418,6 +430,9 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
         "hello world".to_string(),
     )]);
 
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
     let cfg = AiConfig {
         enabled: true,
         api_key: Some("test-key".to_string()),
@@ -437,6 +452,7 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
             enabled: true,
             backend: AiEmbeddingsBackend::Provider,
             model: Some("embed-deployment".to_string()),
+            model_dir,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
