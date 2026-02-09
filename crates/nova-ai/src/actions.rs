@@ -1,4 +1,4 @@
-pub(crate) fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
+pub fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
     format!(
         "Explain the following Java compiler error in plain language.\n\n\
          Error:\n```text\n{diagnostic_message}\n```\n\n\

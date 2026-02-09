@@ -62,6 +62,7 @@ pub use context::{
 pub use error::AiError;
 pub use features::NovaAi;
 pub use llm_privacy::ExcludedPathMatcher;
+pub use actions::explain_error_prompt;
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use provider::{MultiTokenCompletionProvider, MultiTokenCompletionRequest};
 pub use semantic_search::{
