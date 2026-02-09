@@ -583,34 +583,74 @@ fn main() {
 }
 
 fn load_config_from_cli(cli: &Cli) -> NovaConfig {
-    if let Some(path) = cli.config.as_ref() {
+    let mut config = if let Some(path) = cli.config.as_ref() {
         let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
         env::set_var(NOVA_CONFIG_ENV_VAR, &resolved);
         match NovaConfig::load_from_path(&resolved)
             .with_context(|| format!("load config from {}", resolved.display()))
         {
-            Ok(config) => return config,
+            Ok(config) => config,
             Err(err) => {
                 eprintln!("{:#}", err);
                 std::process::exit(2);
             }
         }
+    } else {
+        let workspace_root = workspace_root_for_config_discovery(cli);
+        match nova_config::load_for_workspace(&workspace_root)
+            .with_context(|| format!("load config for workspace {}", workspace_root.display()))
+        {
+            Ok((config, path)) => {
+                if let Some(path) = path {
+                    env::set_var(NOVA_CONFIG_ENV_VAR, &path);
+                }
+                config
+            }
+            Err(err) => {
+                eprintln!("{:#}", err);
+                std::process::exit(2);
+            }
+        }
+    };
+
+    apply_ai_env_overrides(&mut config);
+    config
+}
+
+fn apply_ai_env_overrides(config: &mut NovaConfig) {
+    fn env_truthy(name: &str) -> bool {
+        matches!(
+            std::env::var(name).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
     }
 
-    let workspace_root = workspace_root_for_config_discovery(cli);
-    match nova_config::load_for_workspace(&workspace_root)
-        .with_context(|| format!("load config for workspace {}", workspace_root.display()))
-    {
-        Ok((config, path)) => {
-            if let Some(path) = path {
-                env::set_var(NOVA_CONFIG_ENV_VAR, &path);
-            }
-            config
-        }
-        Err(err) => {
-            eprintln!("{:#}", err);
-            std::process::exit(2);
-        }
+    // Keep in sync with `nova-lsp` server-side AI overrides.
+    let disable_ai = env_truthy("NOVA_DISABLE_AI");
+    let disable_ai_completions = env_truthy("NOVA_DISABLE_AI_COMPLETIONS");
+    let disable_ai_code_actions = env_truthy("NOVA_DISABLE_AI_CODE_ACTIONS");
+    let disable_ai_code_review = env_truthy("NOVA_DISABLE_AI_CODE_REVIEW");
+
+    if disable_ai {
+        config.ai.enabled = false;
+        config.ai.features.completion_ranking = false;
+        config.ai.features.semantic_search = false;
+        config.ai.features.multi_token_completion = false;
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+        config.ai.features.code_review = false;
+    } else if disable_ai_completions {
+        config.ai.features.completion_ranking = false;
+        config.ai.features.multi_token_completion = false;
+    }
+
+    if disable_ai_code_actions {
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+    }
+
+    if disable_ai_code_review {
+        config.ai.features.code_review = false;
     }
 }
 

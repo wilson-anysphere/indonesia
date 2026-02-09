@@ -665,6 +665,82 @@ model = "test-model"
 }
 
 #[test]
+fn ai_review_env_override_disables_code_review() {
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .env("NOVA_DISABLE_AI_CODE_REVIEW", "1")
+        .args(["ai", "review"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review (NOVA_DISABLE_AI_CODE_REVIEW=1)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ai.features.code_review"),
+        "expected feature-disabled message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
+
+#[test]
+fn ai_review_env_override_disables_ai() {
+    let server = MockServer::start();
+    // Should never hit the network.
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "should not be used" }));
+    });
+
+    let temp = TempDir::new().unwrap();
+    let config = write_http_ai_config(&temp, &server);
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .env("NOVA_DISABLE_AI", "1")
+        .args(["ai", "review"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run nova ai review (NOVA_DISABLE_AI=1)");
+
+    assert!(
+        !output.status.success(),
+        "expected failure, got success:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("AI is disabled"),
+        "expected disabled message, got:\n{stderr}"
+    );
+
+    mock.assert_hits(0);
+}
+
+#[test]
 fn ai_review_errors_when_diff_is_empty() {
     let server = MockServer::start();
     // Should never hit the network.
