@@ -374,6 +374,35 @@ async fn ollama_request_formatting() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn ollama_request_formatting_supports_base_url_with_api_suffix() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.method(), hyper::Method::POST);
+        assert_eq!(req.uri().path(), "/api/chat");
+
+        Response::new(Body::from(r#"{"message":{"content":"hello"},"done":true}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}/api")).unwrap();
+    let client = AiClient::from_config(&ollama_config(url)).unwrap();
+
+    let content = client
+        .chat(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(11),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(content, "hello");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_streaming_parsing() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 

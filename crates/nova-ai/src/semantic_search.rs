@@ -601,7 +601,15 @@ mod embeddings {
                     let base_str = base_url.as_str().trim_end_matches('/').to_string();
                     Url::parse(&format!("{base_str}/"))
                         .ok()
-                        .and_then(|base| base.join("api/embed").ok())
+                        .and_then(|base| {
+                            let base_path = base.path().trim_end_matches('/');
+                            let join_path = if base_path.ends_with("/api") {
+                                "embed"
+                            } else {
+                                "api/embed"
+                            };
+                            base.join(join_path).ok()
+                        })
                         .map(|url| url.to_string())
                         .unwrap_or_else(|| base_url.to_string())
                 }
@@ -748,7 +756,12 @@ mod embeddings {
         fn ollama_endpoint(&self, path: &str) -> Result<Url, AiError> {
             let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
             let base = Url::parse(&format!("{base_str}/"))?;
-            Ok(base.join(path.trim_start_matches('/'))?)
+            let base_path = base.path().trim_end_matches('/');
+            let mut relative = path.trim_start_matches('/');
+            if base_path.ends_with("/api") && relative.starts_with("api/") {
+                relative = relative.trim_start_matches("api/");
+            }
+            Ok(base.join(relative)?)
         }
 
         fn embed_ollama_via_embed_endpoint(

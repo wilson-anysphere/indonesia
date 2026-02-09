@@ -37,7 +37,12 @@ impl OllamaProvider {
     fn endpoint(&self, path: &str) -> Result<Url, AiError> {
         let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
         let base = Url::parse(&format!("{base_str}/"))?;
-        Ok(base.join(path.trim_start_matches('/'))?)
+        let base_path = base.path().trim_end_matches('/');
+        let mut relative = path.trim_start_matches('/');
+        if base_path.ends_with("/api") && relative.starts_with("api/") {
+            relative = relative.trim_start_matches("api/");
+        }
+        Ok(base.join(relative)?)
     }
 }
 
