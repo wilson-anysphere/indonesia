@@ -427,6 +427,27 @@ mod embeddings {
         });
     }
 
+    fn warn_poisoned_embedding_cache_mutex_once() {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                target = "nova.ai",
+                "semantic search embedding cache mutex was poisoned by a previous panic; attempting best-effort recovery"
+            );
+        });
+    }
+
+    #[cfg(feature = "embeddings-local")]
+    fn warn_poisoned_local_embedder_mutex_once() {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                target = "nova.ai",
+                "semantic search local embedder mutex was poisoned by a previous panic; attempting best-effort recovery"
+            );
+        });
+    }
+
     fn ensure_rayon_global_pool() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -684,10 +705,7 @@ mod embeddings {
             let key = self.key_for(text);
 
             {
-                let cache = self
-                    .memory_cache
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner());
+                let cache = self.lock_memory_cache();
                 if let Some(hit) = cache.get(&key) {
                     return Ok((**hit).clone());
                 }
@@ -695,10 +713,7 @@ mod embeddings {
 
             if let Some(disk) = self.disk_cache.as_ref() {
                 if let Ok(Some(hit)) = disk.load(key) {
-                    let mut cache = self
-                        .memory_cache
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner());
+                    let mut cache = self.lock_memory_cache();
                     cache.insert(key, Arc::new(hit.clone()));
                     return Ok(hit);
                 }
@@ -708,10 +723,7 @@ mod embeddings {
 
             if !embedding.is_empty() {
                 {
-                    let mut cache = self
-                        .memory_cache
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner());
+                    let mut cache = self.lock_memory_cache();
                     cache.insert(key, Arc::new(embedding.clone()));
                 }
 
@@ -735,6 +747,17 @@ mod embeddings {
                     self.provider_kind
                 ))),
             }
+        }
+    }
+
+    impl ProviderEmbedder {
+        fn lock_memory_cache(
+            &self,
+        ) -> MutexGuard<'_, HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>> {
+            self.memory_cache.lock().unwrap_or_else(|err| {
+                warn_poisoned_embedding_cache_mutex_once();
+                err.into_inner()
+            })
         }
     }
 
@@ -1129,7 +1152,10 @@ mod embeddings {
             }
 
             let mut out = Vec::with_capacity(inputs.len());
-            let mut embedder = self.embedder.lock().unwrap_or_else(|err| err.into_inner());
+            let mut embedder = self.embedder.lock().unwrap_or_else(|err| {
+                warn_poisoned_local_embedder_mutex_once();
+                err.into_inner()
+            });
 
             for chunk in inputs.chunks(self.batch_size.max(1)) {
                 let embeddings = embedder
