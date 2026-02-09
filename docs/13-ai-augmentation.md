@@ -516,7 +516,8 @@ Embedding-backed semantic search is compiled behind the `nova-ai` Cargo feature 
 When `ai.embeddings.enabled=true`, `ai.embeddings.backend` selects how vectors are produced:
 
 - `hash` — deterministic/offline hashing-trick embeddings (recommended for tests).
-- `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`).
+- `provider` — fetch embeddings from the configured HTTP provider (`ai.provider.*`). Supported
+  provider kinds: `ollama`, `open_ai_compatible`, `open_ai`, `azure_open_ai`.
 - `local` — in-process embedding model. Requires building `nova-ai` with `--features embeddings-local`
   (otherwise Nova falls back to `hash`). Model selection and caching are configured via
   `ai.embeddings.local_model` and `ai.embeddings.model_dir`.
@@ -587,6 +588,11 @@ enabled = true
 backend = "provider"
 model = "text-embedding-3-small"
 ```
+
+Note: When using cloud providers for embeddings:
+
+- `ai.provider.kind="open_ai"` requires `ai.api_key`.
+- `ai.provider.kind="azure_open_ai"` requires `ai.api_key` and `ai.provider.azure_deployment`.
 
 #### Privacy note: `ai.privacy.local_only=true` + provider embeddings
 
