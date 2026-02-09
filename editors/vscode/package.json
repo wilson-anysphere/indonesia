@@ -518,6 +518,11 @@
           "minimum": 1,
           "description": "Base polling interval (ms) for nova/completion/more. Nova uses a short exponential backoff derived from this value."
         },
+        "nova.aiCompletions.autoRefreshSuggestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "When async Nova AI completions arrive, automatically re-trigger the suggest widget (editor.action.triggerSuggest) to surface results. Disable to avoid extra completion requests; Nova will instead show a brief status bar hint."
+        },
         "nova.debug.adapterPath": {
           "type": [
             "string",

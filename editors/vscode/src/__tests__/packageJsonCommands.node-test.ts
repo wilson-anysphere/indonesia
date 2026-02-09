@@ -772,3 +772,30 @@ test('package.json contributes nova.tests.buildTool setting', async () => {
   assert.ok(typeof typed.description === 'string');
   assert.ok(typed.description.includes('workspace folder'));
 });
+
+test('package.json contributes nova.aiCompletions.autoRefreshSuggestions setting', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { configuration?: { properties?: unknown } };
+  };
+
+  const properties = pkg.contributes?.configuration?.properties;
+  assert.ok(properties && typeof properties === 'object');
+
+  const setting = (properties as Record<string, unknown>)['nova.aiCompletions.autoRefreshSuggestions'];
+  assert.ok(setting && typeof setting === 'object');
+
+  const typed = setting as { type?: unknown; default?: unknown; description?: unknown };
+  assert.equal(typed.type, 'boolean');
+  assert.equal(typed.default, true);
+
+  assert.ok(typeof typed.description === 'string');
+  const description = typed.description.toLowerCase();
+  assert.ok(
+    description.includes('auto') &&
+      (description.includes('re-trigger') || description.includes('retrigger') || description.includes('triggersuggest')) &&
+      description.includes('suggest'),
+    'description should mention auto-refresh / re-triggering suggestions',
+  );
+});

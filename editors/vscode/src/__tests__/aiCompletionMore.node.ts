@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { requestMoreCompletions, type CancellationTokenLike, type MoreCompletionsClient } from '../aiCompletionMore';
+import { decorateNovaAiCompletionItems } from '../aiCompletionPresentation';
 
 function createCancellationTokenSource(): { token: CancellationTokenLike; cancel: () => void } {
   let isCancelled = false;
@@ -161,3 +162,36 @@ test('requestMoreCompletions stops polling on cancellation', async () => {
   assert.deepEqual(delays, [25]);
 });
 
+test('decorateNovaAiCompletionItems decorates AI items without mutating the label string', () => {
+  const items: Array<{ label: unknown; data: unknown; detail?: string }> = [
+    {
+      label: 'println',
+      detail: 'AI • confidence 0.87',
+      data: { nova: { source: 'ai', confidence: 0.87321 } },
+    },
+    {
+      label: 'print',
+      detail: 'standard completion',
+      data: { nova: { source: 'standard', confidence: 0.5 } },
+    },
+  ];
+
+  decorateNovaAiCompletionItems(items);
+
+  assert.deepEqual(items[0].label, { label: 'println', detail: 'AI', description: '0.87' });
+  assert.equal(items[0].detail, 'AI • confidence 0.87');
+  assert.equal(items[1].label, 'print');
+});
+
+test('decorateNovaAiCompletionItems preserves label details when the label is already structured', () => {
+  const items: Array<{ label: unknown; data: unknown }> = [
+    {
+      label: { label: 'map', detail: '(T) => U' },
+      data: { nova: { source: 'ai', confidence: 0.1 } },
+    },
+  ];
+
+  decorateNovaAiCompletionItems(items);
+
+  assert.deepEqual(items[0].label, { label: 'map', detail: '(T) => U', description: 'AI 0.10' });
+});

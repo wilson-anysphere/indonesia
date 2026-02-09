@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { ExecuteCommandRequest, WorkDoneProgress, type TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
+import { decorateNovaAiCompletionItems } from './aiCompletionPresentation';
 import { registerNovaBuildFileWatchers } from './buildFileWatch';
 import { registerNovaBuildIntegration } from './buildIntegration';
 import { registerNovaDebugAdapter } from './debugAdapter';
@@ -707,6 +708,13 @@ export async function activate(context: vscode.ExtensionContext) {
           lastCompletionContextKey = contextKey;
           lastCompletionDocumentUri = document.uri.toString();
 
+          // Only poll `nova/completion/more` when the base completion list indicates more results
+          // may arrive. When multi-token completions are disabled (server-side or by privacy
+          // policy), Nova returns `isIncomplete = false`.
+          if (!Array.isArray(result) && typeof result?.isIncomplete === 'boolean' && result.isIncomplete === false) {
+            return result;
+          }
+
           if (aiItemsByContextKey.has(contextKey) || aiRequestsInFlight.has(contextKey)) {
             return result;
           }
@@ -752,6 +760,10 @@ export async function activate(context: vscode.ExtensionContext) {
                 ensureNovaCompletionItemUri(item, document.uri.toString());
               }
 
+              // Decorate AI completion items without mutating the underlying `label` string used
+              // for `completionItem/resolve`.
+              decorateNovaAiCompletionItems(more);
+
               // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
               if (aiItemsByContextKey.has(contextKey)) {
                 aiItemsByContextKey.delete(contextKey);
@@ -766,11 +778,18 @@ export async function activate(context: vscode.ExtensionContext) {
               }
 
               // Re-trigger suggestions once to surface async results.
-              aiRefreshInProgress = true;
-              try {
-                await vscode.commands.executeCommand('editor.action.triggerSuggest');
-              } finally {
-                aiRefreshInProgress = false;
+              const autoRefresh = vscode.workspace
+                .getConfiguration('nova', document.uri)
+                .get<boolean>('aiCompletions.autoRefreshSuggestions', true);
+              if (autoRefresh) {
+                aiRefreshInProgress = true;
+                try {
+                  await vscode.commands.executeCommand('editor.action.triggerSuggest');
+                } finally {
+                  aiRefreshInProgress = false;
+                }
+              } else {
+                vscode.window.setStatusBarMessage('Nova AI completions ready', 2000);
               }
             } catch {
               // Best-effort: ignore errors from background AI completion polling.
