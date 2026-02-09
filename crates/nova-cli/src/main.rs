@@ -1241,9 +1241,22 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 
                 let diff = load_ai_review_diff(&args)?;
                 if diff.trim().is_empty() {
+                    if args.git {
+                        let which = if args.staged {
+                            "git diff --staged"
+                        } else {
+                            "git diff"
+                        };
+                        anyhow::bail!("No diff content provided: `{which}` returned an empty diff.");
+                    }
+                    if let Some(path) = args.diff_file.as_ref() {
+                        anyhow::bail!(
+                            "No diff content provided: diff file {} was empty.",
+                            path.display()
+                        );
+                    }
                     anyhow::bail!(
-                        "No diff content provided. Pass `--diff-file <path>`, pipe a diff on stdin, \
-                         or use `--git`."
+                        "No diff content provided: stdin was empty. Pass `--diff-file <path>` or use `--git`."
                     );
                 }
 
