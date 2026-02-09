@@ -83,9 +83,19 @@ export function registerNovaSemanticSearchCommands(
             cancellable: true,
           },
           async (progress, token) => {
+            const workspaceFolder = await pickWorkspaceFolderForSemanticSearchCommand(token);
+            if (!workspaceFolder) {
+              return undefined;
+            }
+
+            // Route all polling calls to the same workspace folder. Without an explicit routing
+            // hint, `sendNovaRequest` will prompt on every poll in a multi-root workspace when there
+            // is no active editor.
+            const routingParams = { projectRoot: workspaceFolder.uri.fsPath };
+
             let lastMessage: string | undefined;
             while (!token.isCancellationRequested) {
-              const status = await request<unknown>('nova/semanticSearch/indexStatus', {}, { token });
+              const status = await request<unknown>('nova/semanticSearch/indexStatus', routingParams, { token });
               if (typeof status === 'undefined') {
                 return undefined;
               }
@@ -284,3 +294,33 @@ function jsonStringifyBestEffort(value: unknown): string {
   }
 }
 
+async function pickWorkspaceFolderForSemanticSearchCommand(
+  token?: vscode.CancellationToken,
+): Promise<vscode.WorkspaceFolder | undefined> {
+  const workspaces = vscode.workspace.workspaceFolders ?? [];
+  if (workspaces.length === 0) {
+    return undefined;
+  }
+
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const activeWorkspace = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+  if (activeWorkspace) {
+    return activeWorkspace;
+  }
+
+  if (workspaces.length === 1) {
+    return workspaces[0];
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    workspaces.map((workspace) => ({
+      label: workspace.name,
+      description: workspace.uri.fsPath,
+      workspace,
+    })),
+    { placeHolder: 'Select workspace folder for semantic search indexing' },
+    token,
+  );
+
+  return picked?.workspace;
+}
