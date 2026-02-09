@@ -1,5 +1,7 @@
 #[cfg(feature = "ai")]
 mod ai_completion_context;
+#[cfg(feature = "ai")]
+mod ai_completion_ranking_excluded_paths;
 mod analysis;
 mod cancelable_diagnostics;
 mod code_actions;

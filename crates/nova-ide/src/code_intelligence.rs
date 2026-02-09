@@ -52,7 +52,9 @@ use crate::spring_di;
 use crate::text::TextIndex;
 
 #[cfg(feature = "ai")]
-use nova_ai::{BaselineCompletionRanker, CompletionRanker, LlmCompletionRanker, LlmClient};
+use nova_ai::{
+    BaselineCompletionRanker, CompletionRanker, ExcludedPathMatcher, LlmClient, LlmCompletionRanker,
+};
 #[cfg(feature = "ai")]
 use nova_config::AiConfig;
 #[cfg(feature = "ai")]
@@ -8732,6 +8734,17 @@ pub async fn completions_with_ai(
     let baseline = completions(db, file, position);
     if !(config.enabled && config.features.completion_ranking) {
         return baseline;
+    }
+
+    if let Some(path) = db.file_path(file) {
+        let is_excluded = match ExcludedPathMatcher::from_config(&config.privacy) {
+            Ok(matcher) => matcher.is_match(path),
+            // Fail closed: invalid glob patterns mean we should skip ranking entirely.
+            Err(_) => true,
+        };
+        if is_excluded {
+            return baseline;
+        }
     }
 
     let text = db.file_content(file);
