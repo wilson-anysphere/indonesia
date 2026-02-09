@@ -203,7 +203,7 @@ index 0000000..1111111 100644
     handle.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_prompt_escapes_triple_backticks_inside_diff() {
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.uri().path(), "/v1/chat/completions");
