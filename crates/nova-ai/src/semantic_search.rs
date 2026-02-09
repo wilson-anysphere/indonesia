@@ -449,6 +449,7 @@ mod embeddings {
         hnsw: Option<Hnsw<'static, f32, DistCosine>>,
         dims: usize,
         id_to_doc: Vec<(PathBuf, usize)>,
+        max_elements: usize,
         dirty: bool,
         #[cfg(any(test, debug_assertions))]
         rebuild_count: usize,
@@ -460,6 +461,7 @@ mod embeddings {
                 hnsw: None,
                 dims: 0,
                 id_to_doc: Vec::new(),
+                max_elements: 0,
                 dirty: false,
                 #[cfg(any(test, debug_assertions))]
                 rebuild_count: 0,
@@ -566,6 +568,7 @@ mod embeddings {
             index.hnsw = None;
             index.dims = 0;
             index.id_to_doc.clear();
+            index.max_elements = 0;
             index.dirty = true;
         }
 
@@ -578,55 +581,66 @@ mod embeddings {
             index.hnsw = None;
             index.dims = 0;
             index.id_to_doc.clear();
+            index.max_elements = 0;
 
-            let max_elements = self
-                .docs_by_path
-                .values()
-                .map(|docs| docs.len())
-                .sum::<usize>();
-            if max_elements == 0 {
+            // Pre-pass: determine target dimensionality (first non-empty embedding) and count how
+            // many documents will actually be inserted. HNSW pre-allocates internal buffers based
+            // on `max_elements`, so using the raw extracted-doc count can over-allocate when some
+            // embeddings are empty or dimension-mismatched.
+            let mut dims = 0usize;
+            let mut insert_count = 0usize;
+            for docs in self.docs_by_path.values() {
+                for doc in docs {
+                    if doc.embedding.is_empty() {
+                        continue;
+                    }
+                    if dims == 0 {
+                        dims = doc.embedding.len();
+                    }
+                    if doc.embedding.len() == dims {
+                        insert_count += 1;
+                    }
+                }
+            }
+
+            if dims == 0 || insert_count == 0 {
                 index.dirty = false;
                 return;
             }
 
-            let mut dims = 0usize;
-            let mut hnsw: Option<Hnsw<'static, f32, DistCosine>> = None;
+            index.max_elements = insert_count;
+            let mut hnsw = Hnsw::new(
+                /*max_nb_connection=*/ 16,
+                /*max_elements=*/ insert_count,
+                /*nb_layer=*/ 16,
+                /*ef_construction=*/ 200,
+                DistCosine {},
+            );
 
             let mut next_id = 0usize;
+            index.id_to_doc.reserve(insert_count);
             for (path, docs) in &self.docs_by_path {
                 for (local_idx, doc) in docs.iter().enumerate() {
                     if doc.embedding.is_empty() {
                         continue;
                     }
 
-                    if dims == 0 {
-                        dims = doc.embedding.len();
-                        hnsw = Some(Hnsw::new(
-                            /*max_nb_connection=*/ 16,
-                            /*max_elements=*/ max_elements,
-                            /*nb_layer=*/ 16,
-                            /*ef_construction=*/ 200,
-                            DistCosine {},
-                        ));
-                    }
-
                     if doc.embedding.len() != dims || dims == 0 {
                         continue;
                     }
 
-                    if let Some(ref mut hnsw) = hnsw {
-                        hnsw.insert((&doc.embedding, next_id));
-                    }
+                    hnsw.insert((&doc.embedding, next_id));
                     index.id_to_doc.push((path.clone(), local_idx));
                     next_id += 1;
                 }
             }
 
-            if let Some(ref mut hnsw) = hnsw {
-                hnsw.set_searching_mode(true);
-            }
+            debug_assert_eq!(next_id, insert_count);
+            debug_assert_eq!(index.id_to_doc.len(), insert_count);
 
-            index.hnsw = hnsw;
+            hnsw.set_searching_mode(true);
+
+            index.hnsw = Some(hnsw);
             index.dims = dims;
             index.dirty = false;
         }
@@ -1496,6 +1510,68 @@ mod embeddings {
             dot += a[i] * b[i];
         }
         dot
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[derive(Debug, Clone, Copy)]
+        struct VariableDimsEmbedder;
+
+        impl Embedder for VariableDimsEmbedder {
+            fn embed(&self, text: &str) -> Vec<f32> {
+                if text.contains("EMPTY") {
+                    return Vec::new();
+                }
+
+                // Return different dimensionalities based on content so rebuild_index_locked must
+                // skip some docs and size the HNSW index based on the remaining inserted vectors.
+                if text.contains("DIM3") {
+                    vec![1.0, 0.0, 0.0]
+                } else {
+                    vec![1.0, 0.0]
+                }
+            }
+        }
+
+        #[test]
+        fn rebuild_index_counts_only_inserted_docs() {
+            let mut search = EmbeddingSemanticSearch::new(VariableDimsEmbedder);
+
+            search.index_file(PathBuf::from("a.txt"), "DIM3 hello".to_string());
+            search.index_file(PathBuf::from("b.txt"), "DIM2 skip-me".to_string());
+            search.index_file(PathBuf::from("c.txt"), "DIM3 hello again".to_string());
+
+            // Empty embeddings are skipped during indexing.
+            search.index_file(PathBuf::from("d.txt"), "EMPTY".to_string());
+
+            let results = search.search("DIM3 hello");
+            assert!(!results.is_empty());
+            assert_eq!(results[0].path, PathBuf::from("a.txt"));
+
+            // The mismatched-dimension doc should not be returned.
+            assert!(!results.iter().any(|r| r.path == PathBuf::from("b.txt")));
+
+            let index = search.index.lock().expect("semantic search mutex poisoned");
+            assert_eq!(
+                index.id_to_doc.len(),
+                2,
+                "only docs with matching embedding dimensions should be inserted"
+            );
+            assert_eq!(index.max_elements, index.id_to_doc.len());
+
+            let total_docs = search
+                .docs_by_path
+                .values()
+                .map(|docs| docs.len())
+                .sum::<usize>();
+            assert_eq!(total_docs, 3);
+            assert!(
+                index.max_elements < total_docs,
+                "HNSW max_elements should be based on inserted docs, not raw extracted docs"
+            );
+        }
     }
 }
 
