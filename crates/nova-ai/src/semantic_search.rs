@@ -881,10 +881,10 @@ mod embeddings {
         fn lock_memory_cache(
             &self,
         ) -> MutexGuard<'_, HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>> {
-            self.memory_cache.lock().unwrap_or_else(|err| {
-                warn_poisoned_embedding_cache_mutex_once();
-                err.into_inner()
-            })
+            self.memory_cache
+                .lock()
+                .inspect_err(|_| warn_poisoned_embedding_cache_mutex_once())
+                .unwrap_or_else(|err| err.into_inner())
         }
     }
 
@@ -1317,10 +1317,11 @@ mod embeddings {
             }
 
             let mut out = Vec::with_capacity(inputs.len());
-            let mut embedder = self.embedder.lock().unwrap_or_else(|err| {
-                warn_poisoned_local_embedder_mutex_once();
-                err.into_inner()
-            });
+            let mut embedder = self
+                .embedder
+                .lock()
+                .inspect_err(|_| warn_poisoned_local_embedder_mutex_once())
+                .unwrap_or_else(|err| err.into_inner());
 
             for chunk in inputs.chunks(self.batch_size.max(1)) {
                 let embeddings = embedder
@@ -1413,10 +1414,10 @@ mod embeddings {
         }
 
         fn lock_index(&self) -> MutexGuard<'_, EmbeddedIndex> {
-            self.index.lock().unwrap_or_else(|err| {
-                warn_poisoned_mutex_once();
-                err.into_inner()
-            })
+            self.index
+                .lock()
+                .inspect_err(|_| warn_poisoned_mutex_once())
+                .unwrap_or_else(|err| err.into_inner())
         }
 
         #[doc(hidden)]

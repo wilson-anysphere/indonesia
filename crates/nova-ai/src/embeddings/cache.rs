@@ -139,10 +139,10 @@ impl EmbeddingVectorCache {
     }
 
     fn lock_inner(&self) -> MutexGuard<'_, CacheInner> {
-        self.inner.lock().unwrap_or_else(|err| {
-            warn_poisoned_embedding_cache_mutex_once();
-            err.into_inner()
-        })
+        self.inner
+            .lock()
+            .inspect_err(|_| warn_poisoned_embedding_cache_mutex_once())
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     /// Look up an embedding vector and update its LRU position on a hit.
@@ -326,10 +326,10 @@ static CACHE_REGISTRY: OnceLock<Mutex<HashMap<EmbeddingCacheSettings, Weak<Embed
 /// Create or reuse a shared embedding cache for the given settings.
 pub fn shared_embedding_cache(settings: EmbeddingCacheSettings) -> Arc<EmbeddingVectorCache> {
     let registry = CACHE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().unwrap_or_else(|err| {
-        warn_poisoned_embedding_cache_registry_mutex_once();
-        err.into_inner()
-    });
+    let mut registry = registry
+        .lock()
+        .inspect_err(|_| warn_poisoned_embedding_cache_registry_mutex_once())
+        .unwrap_or_else(|err| err.into_inner());
 
     if let Some(existing) = registry.get(&settings).and_then(|weak| weak.upgrade()) {
         return existing;
