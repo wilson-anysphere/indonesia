@@ -284,7 +284,8 @@ pub(super) fn handle_code_action(
         .as_deref()
         .is_some_and(|path| crate::stdio_ai::is_ai_excluded_path(state, path));
 
-    if ai_enabled {
+    let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
+    if ai_enabled && !safe_mode {
         let allow_code_edit_actions =
             nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
 
@@ -456,4 +457,3 @@ fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
         }
     })
 }
-

@@ -1,7 +1,9 @@
 use crate::support;
+use lsp_types::Range;
 use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
+use tempfile::TempDir;
 
 #[test]
 fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
@@ -247,6 +249,168 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
         &json!({ "jsonrpc": "2.0", "id": 13, "method": "shutdown" }),
     );
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 13);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_hides_ai_code_actions_in_safe_mode() {
+    let _guard = support::stdio_server_lock();
+
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock" }));
+    let temp = TempDir::new().expect("tempdir");
+
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let file_path = temp.path().join("Main.java");
+    let file_uri = support::file_uri_string(&file_path);
+    let text = "class Test { Foo foo() { } }";
+    std::fs::write(&file_path, text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Test hook (debug builds only): force safe-mode without relying on a real
+        // watchdog timeout/panic.
+        .env("NOVA_LSP_TEST_FORCE_SAFE_MODE", "1")
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // Request code actions on an empty method body selection (would normally offer AI code edits).
+    let selection = "Foo foo() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = nova_lsp::text_pos::TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("start"),
+        end: pos.lsp_position(end_offset).expect("end"),
+    };
+
+    let foo_end = start_offset + "Foo".len();
+    let foo_range = Range {
+        start: pos.lsp_position(start_offset).expect("foo start"),
+        end: pos.lsp_position(foo_end).expect("foo end"),
+    };
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": support::file_uri_string(&file_path) },
+                "range": range,
+                "context": {
+                    "diagnostics": [{
+                        "range": foo_range,
+                        "code": "unresolved-type",
+                        "message": "unresolved type `Foo`"
+                    }]
+                }
+            }
+        }),
+    );
+
+    let code_actions_resp = support::read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    // Non-AI code actions should remain available in safe-mode.
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Create class 'Foo'")),
+        "expected unresolved-type quick fix to remain available, got: {actions:?}"
+    );
+
+    // AI code actions should be hidden in safe-mode because `nova/ai/*` endpoints are disabled.
+    for kind in [nova_ide::CODE_ACTION_KIND_EXPLAIN, nova_ide::CODE_ACTION_KIND_AI_GENERATE, nova_ide::CODE_ACTION_KIND_AI_TESTS] {
+        assert!(
+            !actions
+                .iter()
+                .any(|a| a.get("kind").and_then(|k| k.as_str()) == Some(kind)),
+            "expected no AI code actions of kind {kind} in safe-mode, got: {actions:?}"
+        );
+    }
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
     support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
