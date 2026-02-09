@@ -2182,6 +2182,48 @@ JSON string (the explanation).
   request but omits file-backed code context from the prompt (it will ignore any client-supplied
   `code` snippet).
 
+#### `nova.ai.codeReview`
+
+- **Kind:** `workspace/executeCommand` command
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`CodeReviewArgs`)
+
+##### ExecuteCommand params
+
+The first (and only) entry in `arguments` is a `CodeReviewArgs` object:
+
+```json
+{
+  "command": "nova.ai.codeReview",
+  "arguments": [
+    { "diff": "diff --git ...", "uri": "file:///…" }
+  ],
+  "workDoneToken": "optional"
+}
+```
+
+Notes:
+
+- `uri` is optional and is only used for server-side privacy enforcement (`ai.privacy.excluded_paths`).
+- If `uri` is provided and matches an excluded path, Nova omits the diff content before calling the
+  model (it sends a placeholder string instead). This mirrors `nova.ai.explainError` excluded-path
+  behavior (prompt-time omission rather than a hard error).
+
+##### Response
+
+JSON string (the code review, typically markdown).
+
+##### Errors
+
+- `-32600` if AI is not configured.
+- `-32603` for model/provider failures.
+- `-32800` if the request is cancelled.
+
+##### Notes
+
+- This is an explain-only action; it does not apply edits.
+- When `workDoneToken` is present, the server emits `$/progress` notifications and streams chunked
+  output via `window/logMessage`.
+
 #### `nova.ai.generateMethodBody`
 
 - **Kind:** `workspace/executeCommand` command
