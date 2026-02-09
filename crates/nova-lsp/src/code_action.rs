@@ -131,8 +131,11 @@ impl<'a> AiCodeActionExecutor<'a> {
     ) -> Result<CodeActionOutcome, CodeActionError> {
         match action {
             AiCodeAction::ExplainError { diagnostic } => {
+                // NOTE: `nova-ai` privacy anonymization is primarily applied to fenced code blocks
+                // (e.g. ```text ... ```). Keep the raw diagnostic inside a fence so cloud-mode
+                // sanitization can safely redact identifiers.
                 let prompt = format!(
-                    "Explain this compiler diagnostic:\n\n{:?}\n\nRespond in plain English.",
+                    "Explain this compiler diagnostic:\n\n```text\n{:?}\n```\n\nRespond in plain English.",
                     diagnostic
                 );
                 let explanation = self.provider.complete(&prompt, cancel).await?;
@@ -795,6 +798,41 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CapturePromptProvider {
+        prompt: Mutex<Option<String>>,
+        response: String,
+    }
+
+    impl CapturePromptProvider {
+        fn new(response: impl Into<String>) -> Self {
+            Self {
+                prompt: Mutex::new(None),
+                response: response.into(),
+            }
+        }
+
+        fn captured_prompt(&self) -> String {
+            self.prompt
+                .lock()
+                .expect("lock prompt")
+                .clone()
+                .expect("prompt should be captured")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PromptCompletionProvider for CapturePromptProvider {
+        async fn complete(
+            &self,
+            prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            *self.prompt.lock().expect("lock prompt") = Some(prompt.to_string());
+            Ok(self.response.clone())
+        }
+    }
+
     struct BlockingProvider {
         started_tx: Mutex<Option<oneshot::Sender<()>>>,
         resume_rx: Mutex<Option<oneshot::Receiver<()>>>,
@@ -821,6 +859,73 @@ mod tests {
             }
             Ok(r#"{"edits":[]}"#.to_string())
         }
+    }
+
+    #[tokio::test]
+    async fn explain_error_prompt_wraps_diagnostic_in_fenced_block() {
+        let provider = CapturePromptProvider::new("ok");
+        let executor = AiCodeActionExecutor::new(
+            &provider,
+            CodeGenerationConfig::default(),
+            AiPrivacyConfig::default(),
+        );
+
+        let diagnostic = Diagnostic {
+            kind: nova_ide::diagnostics::DiagnosticKind::Type,
+            severity: nova_ide::diagnostics::BuildDiagnosticSeverity::Error,
+            message: "cannot find symbol: SecretService".to_string(),
+            range: nova_core::TextRange::new(
+                nova_core::TextSize::from(0),
+                nova_core::TextSize::from(0),
+            ),
+        };
+
+        let workspace = VirtualWorkspace::default();
+        let cancel = CancellationToken::new();
+
+        let outcome = executor
+            .execute(
+                AiCodeAction::ExplainError { diagnostic },
+                &workspace,
+                &root_uri(),
+                &cancel,
+                None,
+            )
+            .await
+            .expect("explain error should succeed");
+
+        let CodeActionOutcome::Explanation(_) = outcome else {
+            panic!("expected explanation outcome");
+        };
+
+        let prompt = provider.captured_prompt();
+
+        let open_marker = "```text\n";
+        let close_marker = "\n```";
+        let open = prompt
+            .find(open_marker)
+            .expect("expected diagnostic to be wrapped in a fenced block");
+        let content_start = open + open_marker.len();
+        let close = prompt[content_start..]
+            .find(close_marker)
+            .map(|idx| idx + content_start)
+            .expect("expected closing fence after diagnostic");
+
+        let fenced = &prompt[content_start..close];
+        assert!(
+            fenced.contains("SecretService"),
+            "expected sentinel identifier inside fenced block, prompt was:\n{prompt}"
+        );
+
+        let outside = format!(
+            "{}{}",
+            &prompt[..open],
+            &prompt[close + close_marker.len()..]
+        );
+        assert!(
+            !outside.contains("SecretService"),
+            "expected sentinel identifier to appear only inside fenced block, prompt was:\n{prompt}"
+        );
     }
 
     #[test]
