@@ -442,7 +442,7 @@ completion_ranking = true
 semantic_search = true
 multi_token_completion = true
 # Limits the diff text sent for `nova/ai/codeReview` prompts. Diffs longer than
-# this are truncated (head+tail) with a `[diff truncated: omitted N chars]`
+# this are truncated (head+tail) with a `"[diff truncated: omitted N chars]"`
 # marker. Default: 50000.
 code_review_max_diff_chars = 50000
 
