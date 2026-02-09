@@ -3452,6 +3452,18 @@ excluded_paths = ["secret/**"]
         resp.get("error").is_some(),
         "expected executeCommand error, got: {resp:#?}"
     );
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("executeCommand error object");
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("excludedPath"),
+        "expected executeCommand excluded_paths failure to include error.data.kind=\"excludedPath\", got: {resp:#?}"
+    );
     assert_eq!(
         ai_server.hits(),
         0,
@@ -3624,6 +3636,18 @@ excluded_paths = ["secret/**"]
     assert!(
         resp.get("error").is_some(),
         "expected executeCommand error, got: {resp:#?}"
+    );
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("executeCommand error object");
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("excludedPath"),
+        "expected executeCommand excluded_paths failure to include error.data.kind=\"excludedPath\", got: {resp:#?}"
     );
     assert_eq!(
         ai_server.hits(),
@@ -7448,11 +7472,31 @@ local_only = false
     );
 
     let exec_resp = read_response_with_id(&mut stdout, 2);
+    let error = exec_resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected executeCommand to return an error");
     let err_msg = exec_resp
         .get("error")
         .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
-        .expect("expected executeCommand to return an error");
+        .expect("executeCommand error message");
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("policy"),
+        "expected policy error kind, got: {exec_resp:#?}"
+    );
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("policy"))
+            .and_then(|v| v.as_str()),
+        Some("cloudEditsWithAnonymizationEnabled"),
+        "expected policy variant for anonymized cloud mode, got: {exec_resp:#?}"
+    );
     assert!(
         err_msg.contains(
             "AI code edits are disabled when identifier anonymization is enabled in cloud mode"
@@ -8135,6 +8179,18 @@ excluded_paths = ["src/Main.java"]
     assert!(
         resp.get("error").is_some(),
         "expected executeCommand to fail for excluded paths, got: {resp:#?}"
+    );
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("executeCommand error object");
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("excludedPath"),
+        "expected error.data.kind == \"excludedPath\", got: {resp:#?}"
     );
     assert_eq!(
         ai_server.hits(),

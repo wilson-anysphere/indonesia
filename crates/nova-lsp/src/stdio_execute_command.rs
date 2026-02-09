@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+type RpcError = (i32, String, Option<serde_json::Value>);
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecuteCommandParams {
@@ -26,9 +28,9 @@ pub(super) fn handle_execute_command(
     state: &mut ServerState,
     client: &LspClient,
     cancel: &CancellationToken,
-) -> Result<serde_json::Value, (i32, String)> {
+) -> Result<serde_json::Value, RpcError> {
     let params: ExecuteCommandParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
 
     if state.ai.is_some() {
         if let Some(feature) = crate::stdio_ai::ai_action_feature_for_command(params.command.as_str())
@@ -51,6 +53,7 @@ pub(super) fn handle_execute_command(
                 (
                     -32602,
                     "missing project root (initialize.rootUri)".to_string(),
+                    None,
                 )
             })?;
 
@@ -78,6 +81,7 @@ pub(super) fn handle_execute_command(
                 (
                     -32602,
                     "missing project root (initialize.rootUri)".to_string(),
+                    None,
                 )
             })?;
             let payload = json!({
@@ -104,6 +108,7 @@ pub(super) fn handle_execute_command(
                 (
                     -32602,
                     "missing project root (initialize.rootUri)".to_string(),
+                    None,
                 )
             })?;
             let payload = json!({
@@ -116,13 +121,14 @@ pub(super) fn handle_execute_command(
             )
             .map_err(map_nova_lsp_error)?;
             let configs: Vec<nova_ide::DebugConfiguration> =
-                serde_json::from_value(configs_value).map_err(|e| (-32603, e.to_string()))?;
+                serde_json::from_value(configs_value).map_err(|e| (-32603, e.to_string(), None))?;
 
             let config =
                 select_debug_configuration_for_main(&configs, &args.main_class).ok_or_else(|| {
                     (
                         -32602,
                         format!("no debug configuration found for {}", args.main_class),
+                        None,
                     )
                 })?;
 
@@ -146,10 +152,12 @@ pub(super) fn handle_execute_command(
                 (
                     -32603,
                     format!("missing document text for `{}`", uri.as_str()),
+                    None,
                 )
             })?;
-            let edit = nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e))?;
-            serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
+            let edit =
+                nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e, None))?;
+            serde_json::to_value(edit).map_err(|e| (-32603, e.to_string(), None))
         }
         nova_ide::COMMAND_EXPLAIN_ERROR => {
             nova_lsp::hardening::record_request();
@@ -167,7 +175,6 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
-            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_GENERATE_METHOD_BODY => {
             nova_lsp::hardening::record_request();
@@ -185,7 +192,6 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
-            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_GENERATE_TESTS => {
             nova_lsp::hardening::record_request();
@@ -203,7 +209,6 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
-            .map_err(|(code, message, _data)| (code, message))
         }
         nova_ide::COMMAND_CODE_REVIEW => {
             nova_lsp::hardening::record_request();
@@ -222,7 +227,6 @@ pub(super) fn handle_execute_command(
                 client,
                 cancel.clone(),
             )
-            .map_err(|(code, message, _data)| (code, message))
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -231,7 +235,7 @@ pub(super) fn handle_execute_command(
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
                     nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
                 };
-                return Err((code, message));
+                return Err((code, message, None));
             }
 
             let args: nova_lsp::SafeDeleteParams = parse_first_arg(params.arguments)?;
@@ -241,7 +245,7 @@ pub(super) fn handle_execute_command(
                 Ok(result) => {
                     if let nova_lsp::SafeDeleteResult::WorkspaceEdit(edit) = &result {
                         let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-                            .map_err(|e| (-32603, e.to_string()))?;
+                            .map_err(|e| (-32603, e.to_string(), None))?;
                         client
                             .send_request(
                                 id,
@@ -251,27 +255,27 @@ pub(super) fn handle_execute_command(
                                     "edit": edit,
                                 }),
                             )
-                            .map_err(|e| (-32603, e.to_string()))?;
+                            .map_err(|e| (-32603, e.to_string(), None))?;
                     }
-                    serde_json::to_value(result).map_err(|e| (-32603, e.to_string()))
+                    serde_json::to_value(result).map_err(|e| (-32603, e.to_string(), None))
                 }
                 Err(err) => {
                     let (code, message) = match err {
                         nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
                         nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
                     };
-                    Err((code, message))
+                    Err((code, message, None))
                 }
             }
         }
-        _ => Err((-32602, format!("unknown command: {}", params.command))),
+        _ => Err((-32602, format!("unknown command: {}", params.command), None)),
     }
 }
 
-fn map_nova_lsp_error(err: nova_lsp::NovaLspError) -> (i32, String) {
+fn map_nova_lsp_error(err: nova_lsp::NovaLspError) -> RpcError {
     match err {
-        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg, None),
+        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg, None),
     }
 }
 
@@ -289,10 +293,10 @@ fn select_debug_configuration_for_main(
 
 fn parse_first_arg<T: serde::de::DeserializeOwned>(
     mut args: Vec<serde_json::Value>,
-) -> Result<T, (i32, String)> {
+) -> Result<T, RpcError> {
     if args.is_empty() {
-        return Err((-32602, "missing command arguments".to_string()));
+        return Err((-32602, "missing command arguments".to_string(), None));
     }
     let first = args.remove(0);
-    serde_json::from_value(first).map_err(|e| (-32602, e.to_string()))
+    serde_json::from_value(first).map_err(|e| (-32602, e.to_string(), None))
 }

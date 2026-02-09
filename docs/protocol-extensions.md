@@ -2333,8 +2333,9 @@ JSON string (the explanation).
 
 ##### Errors
 
-- `-32600` if AI is not configured.
-- `-32603` for model/provider failures.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available).
+- `-32603` for model/provider failures (`error.data.kind = "provider"` when available).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 ##### Notes
 
@@ -2375,9 +2376,9 @@ JSON string (the code review, typically markdown).
 
 ##### Errors
 
-- `-32600` if AI is not configured.
-- `-32603` for model/provider failures.
-- `-32800` if the request is cancelled.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available).
+- `-32603` for model/provider failures (`error.data.kind = "provider"` when available).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 ##### Notes
 
@@ -2437,11 +2438,15 @@ standard LSP `WorkspaceEdit`.
 
 ##### Errors
 
-- `-32600` if AI is not configured, or if the target file is blocked by `ai.privacy.excluded_paths`.
+- `-32600` if AI is not configured (`error.data.kind = "notConfigured"` when available) or if the
+  target file is blocked by `ai.privacy.excluded_paths` (`error.data.kind = "excludedPath"` when
+  available).
 - `-32602` for invalid params (e.g. missing `uri`/`range`).
 - `-32603` for internal failures (model/provider errors, patch parsing/validation failures) **or**
-  when blocked by privacy policy (cloud code-edit policy enforcement).
-- `-32800` if the request is cancelled.
+  when blocked by privacy policy (cloud code-edit policy enforcement). When available,
+  `error.data.kind` further categorizes these failures (`provider` / `policy` / `patchParse` /
+  `patchSafety` / `patchApply` / `validation`).
+- `-32800` if the request is cancelled (`error.data.kind = "cancelled"` when available).
 
 ##### Privacy gating (code edits)
 
