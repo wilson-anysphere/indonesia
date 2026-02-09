@@ -323,7 +323,7 @@ impl CodeReviewer {
         let prompt = format!(
             "Review this Java code change.\n\
              \n\
-             Note: the diff may be incomplete (some files/hunks can be omitted by excluded-path privacy filtering).\n\
+             Note: the diff may be incomplete (some files/hunks can be omitted by excluded-path privacy filtering) or truncated to fit context limits.\n\
              \n\
              ## Diff\n\
              ```diff\n\
@@ -355,6 +355,7 @@ Example output:
 ### src/main/java/com/acme/UserService.java
 - **[MAJOR]** Possible NPE when `user.getEmail()` is null
   - **Where:** `createUser(...)` around the new `email.trim()` call
+  - **Why it matters:** this can throw at runtime and break user signup flows.
   - **Suggestion:** guard nulls (or enforce non-null at the type boundary) before trimming.
 
 ## Tests
