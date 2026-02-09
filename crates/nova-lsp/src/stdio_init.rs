@@ -48,7 +48,7 @@ pub(super) fn apply_initialize_params(params: serde_json::Value, state: &mut Ser
 }
 
 pub(super) fn initialize_result_json() -> serde_json::Value {
-    let mut nova_requests = vec![
+    let nova_requests = vec![
         // Testing
         nova_lsp::TEST_DISCOVER_METHOD,
         nova_lsp::TEST_RUN_METHOD,
@@ -101,12 +101,9 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
         // Extensions
         nova_lsp::EXTENSIONS_STATUS_METHOD,
         nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
+        #[cfg(feature = "ai")]
+        nova_lsp::NOVA_COMPLETION_MORE_METHOD,
     ];
-
-    #[cfg(feature = "ai")]
-    {
-        nova_requests.push(nova_lsp::NOVA_COMPLETION_MORE_METHOD);
-    }
 
     let experimental = json!({
         "nova": {
