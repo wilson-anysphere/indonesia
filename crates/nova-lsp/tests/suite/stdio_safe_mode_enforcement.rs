@@ -658,7 +658,7 @@ fn stdio_server_blocks_ai_workspace_execute_command_in_safe_mode() {
         ),
     ];
 
-    for (idx, (command, arg)) in commands.into_iter().enumerate() {
+    for (idx, (command, arg)) in commands.iter().enumerate() {
         let request_id = 3 + idx as i64;
         support::write_jsonrpc_message(
             &mut stdin,
@@ -666,7 +666,66 @@ fn stdio_server_blocks_ai_workspace_execute_command_in_safe_mode() {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "workspace/executeCommand",
-                "params": { "command": command, "arguments": [arg] }
+                "params": { "command": command, "arguments": [arg.clone()] }
+            }),
+        );
+
+        let mut saw_apply_edit = false;
+        let response = loop {
+            let msg = support::read_jsonrpc_message(&mut stdout);
+            if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+                saw_apply_edit = true;
+                let id = msg.get("id").cloned().expect("applyEdit id");
+                support::write_jsonrpc_message(
+                    &mut stdin,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "applied": true }
+                    }),
+                );
+                continue;
+            }
+            if msg.get("method").is_none()
+                && msg.get("id").and_then(|v| v.as_i64()) == Some(request_id)
+            {
+                break msg;
+            }
+        };
+
+        assert!(
+            !saw_apply_edit,
+            "expected no workspace/applyEdit request in safe-mode, but saw one: {response:?}"
+        );
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|v| v.get("code"))
+                .and_then(|v| v.as_i64()),
+            Some(-32603),
+            "expected safe-mode error, got: {response:?}"
+        );
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str()),
+            Some(SAFE_MODE_MESSAGE),
+            "expected safe-mode error message, got: {response:?}"
+        );
+    }
+
+    // Safe-mode should be enforced before argument parsing (matching `nova/ai/*` custom requests),
+    // so even missing/invalid args must return the safe-mode error instead of `-32602`.
+    for (idx, (command, _)) in commands.iter().enumerate() {
+        let request_id = 20 + idx as i64;
+        support::write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "workspace/executeCommand",
+                "params": { "command": command, "arguments": [] }
             }),
         );
 
