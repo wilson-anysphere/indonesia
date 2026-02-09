@@ -366,9 +366,15 @@ fn test_code_generation() {
 ```toml
 # nova.toml
 [ai]
-provider = "ollama"
-model = "codellama:7b"
-endpoint = "http://localhost:11434"
+enabled = true
+
+[ai.provider]
+kind = "ollama"
+url = "http://localhost:11434"
+model = "llama3"
+
+[ai.privacy]
+local_only = true
 ```
 
 ### Cloud Models (OpenAI)
@@ -376,9 +382,16 @@ endpoint = "http://localhost:11434"
 ```toml
 # nova.toml
 [ai]
-provider = "openai"
-model = "gpt-4"
-# API key from environment: OPENAI_API_KEY
+enabled = true
+api_key = "..." # required for OpenAI/Anthropic/Gemini/Azure OpenAI providers
+
+[ai.provider]
+kind = "open_ai"
+url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[ai.privacy]
+local_only = false
 ```
 
 ---
