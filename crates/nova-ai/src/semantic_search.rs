@@ -81,13 +81,56 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
     if config.embeddings.enabled {
         #[cfg(feature = "embeddings")]
         {
-            return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+            match config.embeddings.backend {
+                nova_config::AiEmbeddingsBackend::Hash => {
+                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                }
+                nova_config::AiEmbeddingsBackend::Provider => {
+                    // Provider-backed embeddings are not guaranteed to be available for every
+                    // configured provider kind. For now we fall back to the deterministic hash
+                    // embedder so semantic search remains usable offline and in tests.
+                    let provider_kind = &config.provider.kind;
+                    let supports_provider_embeddings = matches!(
+                        provider_kind,
+                        nova_config::AiProviderKind::Ollama
+                            | nova_config::AiProviderKind::OpenAiCompatible
+                            | nova_config::AiProviderKind::OpenAi
+                            | nova_config::AiProviderKind::Gemini
+                            | nova_config::AiProviderKind::AzureOpenAi
+                            | nova_config::AiProviderKind::Http
+                    );
+
+                    if supports_provider_embeddings {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            provider_kind = ?provider_kind,
+                            "ai.embeddings.backend=provider is not implemented; falling back to hash embeddings"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            provider_kind = ?provider_kind,
+                            "ai.embeddings.backend=provider is not supported for this ai.provider.kind; falling back to hash embeddings"
+                        );
+                    }
+
+                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                }
+                nova_config::AiEmbeddingsBackend::Local => {
+                    tracing::warn!(
+                        target = "nova.ai",
+                        "ai.embeddings.backend=local is not implemented; falling back to hash embeddings"
+                    );
+                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                }
+            }
         }
 
         #[cfg(not(feature = "embeddings"))]
         {
             tracing::warn!(
                 target = "nova.ai",
+                backend = ?config.embeddings.backend,
                 "ai.embeddings.enabled is true but nova-ai was built without the `embeddings` feature; falling back to trigram search"
             );
         }

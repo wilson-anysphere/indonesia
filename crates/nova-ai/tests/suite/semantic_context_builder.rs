@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use nova_ai::{ContextRequest, PrivacyMode, SemanticContextBuilder, VirtualWorkspace};
-use nova_config::{AiConfig, AiEmbeddingsConfig, AiFeaturesConfig};
+use nova_config::{AiConfig, AiEmbeddingsBackend, AiEmbeddingsConfig, AiFeaturesConfig};
 use nova_db::{InMemoryFileStore, SalsaDatabase};
 
 fn test_db() -> VirtualWorkspace {
@@ -49,6 +49,7 @@ fn semantic_context_builder_adds_related_code_when_enabled() {
         enabled: true,
         embeddings: AiEmbeddingsConfig {
             enabled: true,
+            backend: AiEmbeddingsBackend::Hash,
             ..AiEmbeddingsConfig::default()
         },
         features: AiFeaturesConfig {
@@ -85,6 +86,7 @@ fn semantic_context_builder_can_index_incrementally() {
         enabled: true,
         embeddings: AiEmbeddingsConfig {
             enabled: true,
+            backend: AiEmbeddingsBackend::Hash,
             ..AiEmbeddingsConfig::default()
         },
         features: AiFeaturesConfig {

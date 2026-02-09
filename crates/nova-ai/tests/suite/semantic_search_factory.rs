@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use nova_ai::{semantic_search_from_config, VirtualWorkspace};
-use nova_config::{AiConfig, AiEmbeddingsConfig};
+use nova_config::{AiConfig, AiEmbeddingsBackend, AiEmbeddingsConfig};
 
 #[test]
 fn semantic_search_from_config_respects_feature_flag() {
@@ -21,6 +21,7 @@ fn semantic_search_from_config_respects_feature_flag() {
         enabled: true,
         embeddings: AiEmbeddingsConfig {
             enabled: true,
+            backend: AiEmbeddingsBackend::Hash,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
@@ -97,6 +98,7 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
         enabled: true,
         embeddings: AiEmbeddingsConfig {
             enabled: true,
+            backend: AiEmbeddingsBackend::Hash,
             ..AiEmbeddingsConfig::default()
         },
         features: nova_config::AiFeaturesConfig {
@@ -128,4 +130,42 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
 
     search.remove_file(path.as_path());
     assert!(search.search("hello world").is_empty());
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
+fn semantic_search_from_config_provider_backend_falls_back_when_provider_kind_unsupported() {
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let mut cfg = AiConfig {
+        enabled: true,
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+    cfg.provider.kind = nova_config::AiProviderKind::Anthropic;
+
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/Hello.java"));
+    assert_eq!(results[0].kind, "method");
 }
