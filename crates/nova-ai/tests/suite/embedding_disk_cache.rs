@@ -211,7 +211,6 @@ fn provider_semantic_search_index_embeddings_are_cached_on_disk() {
 
     let mut search = semantic_search_from_config(&config).expect("semantic search should build");
     search.index_project(&db);
-
     let first_hits = mock.hits();
     assert_eq!(
         first_hits, 1,

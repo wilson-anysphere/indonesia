@@ -397,7 +397,12 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use crate::client::validate_local_only_url;
-    use crate::embeddings::disk_cache::{DiskEmbeddingCache, EmbeddingCacheKey, DISK_CACHE_NAMESPACE_V1};
+    use crate::embeddings::cache::{
+        EmbeddingCacheKey as MemoryCacheKey, EmbeddingCacheKeyBuilder, EmbeddingVectorCache,
+    };
+    use crate::embeddings::disk_cache::{
+        DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1,
+    };
     use crate::llm_privacy::{PrivacyFilter, SanitizationSession};
     use crate::privacy::redact_file_paths;
     use crate::AiError;
@@ -409,7 +414,7 @@ mod embeddings {
     use serde::{Deserialize, Serialize};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
@@ -427,16 +432,6 @@ mod embeddings {
             tracing::warn!(
                 target = "nova.ai",
                 "EmbeddingSemanticSearch index mutex was poisoned by a previous panic; attempting best-effort recovery"
-            );
-        });
-    }
-
-    fn warn_poisoned_embedding_cache_mutex_once() {
-        static WARNED: OnceLock<()> = OnceLock::new();
-        WARNED.get_or_init(|| {
-            tracing::warn!(
-                target = "nova.ai",
-                "semantic search embedding cache mutex was poisoned by a previous panic; attempting best-effort recovery"
             );
         });
     }
@@ -569,7 +564,7 @@ mod embeddings {
         client: BlockingClient,
         backend_id: &'static str,
         endpoint_id: String,
-        memory_cache: Arc<Mutex<HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>>>,
+        memory_cache: Arc<EmbeddingVectorCache>,
         disk_cache: Option<Arc<DiskEmbeddingCache>>,
         privacy: Arc<PrivacyFilter>,
         redact_paths: bool,
@@ -582,6 +577,7 @@ mod embeddings {
             model: String,
             api_key: Option<String>,
             timeout: Duration,
+            max_memory_bytes: usize,
             disk_cache: Option<Arc<DiskEmbeddingCache>>,
             batch_size: usize,
             privacy: Arc<PrivacyFilter>,
@@ -632,21 +628,32 @@ mod embeddings {
                 client,
                 backend_id,
                 endpoint_id,
-                memory_cache: Arc::new(Mutex::new(HashMap::new())),
+                memory_cache: Arc::new(EmbeddingVectorCache::new(max_memory_bytes)),
                 disk_cache,
                 privacy,
                 redact_paths,
             })
         }
 
-        fn key_for(&self, input: &str) -> EmbeddingCacheKey {
-            EmbeddingCacheKey::new(
+        fn disk_key_for(&self, input: &str) -> DiskCacheKey {
+            DiskCacheKey::new(
                 DISK_CACHE_NAMESPACE_V1,
                 self.backend_id,
                 &self.endpoint_id,
                 &self.model,
                 input.as_bytes(),
             )
+        }
+
+        fn memory_key_for(&self, input: &str) -> MemoryCacheKey {
+            let mut builder = EmbeddingCacheKeyBuilder::new(
+                "nova-ai-semantic-search-provider-embeddings-memory-cache-v1",
+            );
+            builder.push_str(self.backend_id);
+            builder.push_str(&self.endpoint_id);
+            builder.push_str(&self.model);
+            builder.push_str(input);
+            builder.finish()
         }
 
         fn sanitize_text(&self, session: &mut SanitizationSession, text: &str) -> String {
@@ -889,35 +896,28 @@ mod embeddings {
 
     impl Embedder for ProviderEmbedder {
         fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
-            let key = self.key_for(text);
+            let mut session = self.privacy.new_session();
+            let sanitized = self.sanitize_query_text(&mut session, text);
 
-            {
-                let cache = self.lock_memory_cache();
-                if let Some(hit) = cache.get(&key) {
-                    return Ok((**hit).clone());
-                }
+            let memory_key = self.memory_key_for(&sanitized);
+            if let Some(hit) = self.memory_cache.get(memory_key) {
+                return Ok(hit);
             }
 
+            let disk_key = self.disk_key_for(&sanitized);
             if let Some(disk) = self.disk_cache.as_ref() {
-                if let Ok(Some(hit)) = disk.load(key) {
-                    let mut cache = self.lock_memory_cache();
-                    cache.insert(key, Arc::new(hit.clone()));
+                if let Ok(Some(hit)) = disk.load(disk_key) {
+                    self.memory_cache.insert(memory_key, hit.clone());
                     return Ok(hit);
                 }
             }
 
-            let mut session = self.privacy.new_session();
-            let sanitized = self.sanitize_query_text(&mut session, text);
             let embedding = self.embed_uncached(&sanitized)?;
 
             if !embedding.is_empty() {
-                {
-                    let mut cache = self.lock_memory_cache();
-                    cache.insert(key, Arc::new(embedding.clone()));
-                }
-
+                self.memory_cache.insert(memory_key, embedding.clone());
                 if let Some(disk) = self.disk_cache.as_ref() {
-                    let _ = disk.store(key, &embedding);
+                    let _ = disk.store(disk_key, &embedding);
                 }
             }
 
@@ -939,65 +939,56 @@ mod embeddings {
 
             let mut out = vec![None::<Vec<f32>>; inputs.len()];
             let mut miss_indices = Vec::new();
-            let mut miss_keys = Vec::new();
+            let mut miss_memory_keys = Vec::new();
+            let mut miss_disk_keys = Vec::new();
             let mut miss_inputs = Vec::new();
 
-            {
-                let cache = self.lock_memory_cache();
-                for (idx, text) in inputs.iter().enumerate() {
-                    let key = self.key_for(text);
-                    if let Some(hit) = cache.get(&key) {
-                        out[idx] = Some((**hit).clone());
-                    } else {
-                        miss_indices.push(idx);
-                        miss_keys.push(key);
-                        miss_inputs.push(sanitized[idx].clone());
-                    }
+            for (idx, text) in sanitized.iter().enumerate() {
+                let memory_key = self.memory_key_for(text);
+                if let Some(hit) = self.memory_cache.get(memory_key) {
+                    out[idx] = Some(hit);
+                } else {
+                    miss_indices.push(idx);
+                    miss_memory_keys.push(memory_key);
+                    miss_disk_keys.push(self.disk_key_for(text));
+                    miss_inputs.push(text.clone());
                 }
             }
 
-            // Disk cache lookups.
             if let Some(disk) = self.disk_cache.as_ref() {
                 let mut still_indices = Vec::new();
-                let mut still_keys = Vec::new();
+                let mut still_memory_keys = Vec::new();
+                let mut still_disk_keys = Vec::new();
                 let mut still_inputs = Vec::new();
-                let mut memory_inserts = Vec::new();
 
-                for ((idx, key), text) in miss_indices
+                for (((orig_idx, memory_key), disk_key), text) in miss_indices
                     .into_iter()
-                    .zip(miss_keys.into_iter())
+                    .zip(miss_memory_keys.into_iter())
+                    .zip(miss_disk_keys.into_iter())
                     .zip(miss_inputs.into_iter())
                 {
-                    if let Ok(Some(hit)) = disk.load(key) {
-                        out[idx] = Some(hit.clone());
-                        memory_inserts.push((key, hit));
+                    if let Ok(Some(hit)) = disk.load(disk_key) {
+                        out[orig_idx] = Some(hit.clone());
+                        self.memory_cache.insert(memory_key, hit);
                     } else {
-                        still_indices.push(idx);
-                        still_keys.push(key);
+                        still_indices.push(orig_idx);
+                        still_memory_keys.push(memory_key);
+                        still_disk_keys.push(disk_key);
                         still_inputs.push(text);
                     }
                 }
 
-                if !memory_inserts.is_empty() {
-                    let mut cache = self.lock_memory_cache();
-                    for (key, vec) in memory_inserts {
-                        cache.insert(key, Arc::new(vec));
-                    }
-                }
-
                 miss_indices = still_indices;
-                miss_keys = still_keys;
+                miss_memory_keys = still_memory_keys;
+                miss_disk_keys = still_disk_keys;
                 miss_inputs = still_inputs;
             }
 
-            // Network for cache misses.
             if !miss_inputs.is_empty() {
+                let batch_size = self.batch_size.max(1);
                 let embeddings = match &self.provider_kind {
                     AiProviderKind::Ollama => self.embed_ollama_batch(&miss_inputs)?,
-                    AiProviderKind::OpenAiCompatible
-                    | AiProviderKind::OpenAi
-                    | AiProviderKind::Http => {
-                        let batch_size = self.batch_size.max(1);
+                    AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
                         let mut out = Vec::with_capacity(miss_inputs.len());
                         for chunk in miss_inputs.chunks(batch_size) {
                             out.extend(self.embed_openai_compatible_batch(chunk)?);
@@ -1005,7 +996,6 @@ mod embeddings {
                         out
                     }
                     AiProviderKind::AzureOpenAi => {
-                        let batch_size = self.batch_size.max(1);
                         let mut out = Vec::with_capacity(miss_inputs.len());
                         for chunk in miss_inputs.chunks(batch_size) {
                             out.extend(self.embed_azure_openai_batch(chunk)?);
@@ -1028,27 +1018,19 @@ mod embeddings {
                     )));
                 }
 
-                let mut memory_inserts = Vec::with_capacity(embeddings.len());
-
-                for ((orig_idx, key), embedding) in miss_indices
+                for (((orig_idx, memory_key), disk_key), embedding) in miss_indices
                     .into_iter()
-                    .zip(miss_keys.into_iter())
+                    .zip(miss_memory_keys.into_iter())
+                    .zip(miss_disk_keys.into_iter())
                     .zip(embeddings.into_iter())
                 {
                     out[orig_idx] = Some(embedding.clone());
+
                     if !embedding.is_empty() {
-                        memory_inserts.push((key, embedding.clone()));
-
+                        self.memory_cache.insert(memory_key, embedding.clone());
                         if let Some(disk) = self.disk_cache.as_ref() {
-                            let _ = disk.store(key, &embedding);
+                            let _ = disk.store(disk_key, &embedding);
                         }
-                    }
-                }
-
-                if !memory_inserts.is_empty() {
-                    let mut cache = self.lock_memory_cache();
-                    for (key, vec) in memory_inserts {
-                        cache.insert(key, Arc::new(vec));
                     }
                 }
             }
@@ -1057,31 +1039,10 @@ mod embeddings {
                 .enumerate()
                 .map(|(idx, item)| {
                     item.ok_or_else(|| {
-                        AiError::UnexpectedResponse(format!(
-                            "missing embedding output for index {idx}"
-                        ))
+                        AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
                     })
                 })
                 .collect()
-        }
-    }
-
-    impl ProviderEmbedder {
-        fn lock_memory_cache(
-            &self,
-        ) -> MutexGuard<'_, HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>> {
-            let mut guard = self
-                .memory_cache
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
-
-            if self.memory_cache.is_poisoned() {
-                warn_poisoned_embedding_cache_mutex_once();
-                guard.clear();
-                self.memory_cache.clear_poison();
-            }
-
-            guard
         }
     }
 
@@ -1134,6 +1095,7 @@ mod embeddings {
             .timeout_ms
             .map(Duration::from_millis)
             .unwrap_or_else(|| config.provider.timeout());
+        let max_memory_bytes = (config.embeddings.max_memory_bytes.0).min(usize::MAX as u64) as usize;
 
         let api_key = config
             .api_key
@@ -1164,6 +1126,7 @@ mod embeddings {
                     model,
                     api_key,
                     timeout,
+                    max_memory_bytes,
                     disk_cache.clone(),
                     batch_size,
                     privacy.clone(),
@@ -1225,6 +1188,7 @@ mod embeddings {
                     deployment.clone(),
                     Some(api_key),
                     timeout,
+                    max_memory_bytes,
                     disk_cache.clone(),
                     batch_size,
                     privacy.clone(),
@@ -1268,6 +1232,7 @@ mod embeddings {
                     model,
                     Some(api_key),
                     timeout,
+                    max_memory_bytes,
                     disk_cache,
                     batch_size,
                     privacy.clone(),
@@ -1443,6 +1408,7 @@ mod embeddings {
     pub struct LocalEmbedder {
         batch_size: usize,
         embedder: Mutex<fastembed::TextEmbedding>,
+        cache: EmbeddingVectorCache,
         model_id: String,
         model_dir: PathBuf,
     }
@@ -1485,6 +1451,8 @@ mod embeddings {
                 ))
             })?;
 
+            let max_memory_bytes = (config.max_memory_bytes.0).min(usize::MAX as u64) as usize;
+
             let model = fastembed_model_from_id(model_id).map_err(|err| {
                 AiError::InvalidConfig(format!(
                     "unsupported ai.embeddings.local_model={model_id:?}: {err}"
@@ -1505,6 +1473,7 @@ mod embeddings {
             Ok(Self {
                 batch_size: config.batch_size.max(1),
                 embedder: Mutex::new(embedder),
+                cache: EmbeddingVectorCache::new(max_memory_bytes),
                 model_id: model_id.to_string(),
                 model_dir,
             })
@@ -1548,49 +1517,82 @@ mod embeddings {
                 return Ok(Vec::new());
             }
 
-            let mut out = Vec::with_capacity(inputs.len());
-            let mut embedder = self
-                .embedder
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut out = vec![None::<Vec<f32>>; inputs.len()];
+            let mut miss_indices = Vec::new();
+            let mut miss_keys = Vec::new();
+            let mut miss_inputs = Vec::new();
 
-            if self.embedder.is_poisoned() {
-                warn_poisoned_local_embedder_mutex_once();
-                self.embedder.clear_poison();
+            for (idx, text) in inputs.iter().enumerate() {
+                let key = MemoryCacheKey::new("fastembed", &self.model_id, text);
+                if let Some(hit) = self.cache.get(key) {
+                    out[idx] = Some(hit);
+                } else {
+                    miss_indices.push(idx);
+                    miss_keys.push(key);
+                    miss_inputs.push(text.clone());
+                }
             }
 
-            for chunk in inputs.chunks(self.batch_size.max(1)) {
-                let embeddings = embedder
-                    .embed(chunk.to_vec(), Some(self.batch_size))
-                    .map_err(|err| {
-                        AiError::UnexpectedResponse(format!(
-                            "fastembed embedding failed for model {}: {err}",
-                            self.model_id
-                        ))
-                    })?;
+            if !miss_inputs.is_empty() {
+                let mut embedded = Vec::with_capacity(miss_inputs.len());
+                let mut embedder = self.embedder.lock().unwrap_or_else(|err| err.into_inner());
 
-                if embeddings.len() != chunk.len() {
+                if self.embedder.is_poisoned() {
+                    warn_poisoned_local_embedder_mutex_once();
+                    self.embedder.clear_poison();
+                }
+
+                for chunk in miss_inputs.chunks(self.batch_size.max(1)) {
+                    let embeddings = embedder
+                        .embed(chunk.to_vec(), Some(self.batch_size))
+                        .map_err(|err| {
+                            AiError::UnexpectedResponse(format!(
+                                "fastembed embedding failed for model {}: {err}",
+                                self.model_id
+                            ))
+                        })?;
+
+                    if embeddings.len() != chunk.len() {
+                        return Err(AiError::UnexpectedResponse(format!(
+                            "fastembed returned {} embeddings for {} inputs (model {})",
+                            embeddings.len(),
+                            chunk.len(),
+                            self.model_id
+                        )));
+                    }
+
+                    embedded.extend(embeddings);
+                }
+
+                if embedded.len() != miss_inputs.len() {
                     return Err(AiError::UnexpectedResponse(format!(
                         "fastembed returned {} embeddings for {} inputs (model {})",
-                        embeddings.len(),
-                        chunk.len(),
+                        embedded.len(),
+                        miss_inputs.len(),
                         self.model_id
                     )));
                 }
 
-                out.extend(embeddings);
+                for ((orig_idx, key), embedding) in miss_indices
+                    .into_iter()
+                    .zip(miss_keys.into_iter())
+                    .zip(embedded.into_iter())
+                {
+                    out[orig_idx] = Some(embedding.clone());
+                    if !embedding.is_empty() {
+                        self.cache.insert(key, embedding);
+                    }
+                }
             }
 
-            if out.len() != inputs.len() {
-                return Err(AiError::UnexpectedResponse(format!(
-                    "fastembed returned {} embeddings for {} inputs (model {})",
-                    out.len(),
-                    inputs.len(),
-                    self.model_id
-                )));
-            }
-
-            Ok(out)
+            out.into_iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    item.ok_or_else(|| {
+                        AiError::UnexpectedResponse(format!("missing embedding output for index {idx}"))
+                    })
+                })
+                .collect()
         }
     }
     #[derive(Debug, Clone)]
