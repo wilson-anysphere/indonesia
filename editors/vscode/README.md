@@ -417,6 +417,11 @@ To debug whether semantic search context is available (or to wait for it), use:
 
 If indexing does not start (`enabled === false` or `currentRunId === 0`), check the `reason` field in the `nova/semanticSearch/indexStatus` payload and verify that semantic search is enabled in your Nova config (for example `ai.enabled=true` and `ai.features.semantic_search=true` in `nova.toml`). Restart the language server after changing configuration.
 
+By default, semantic search uses a lightweight trigram/fuzzy matcher. To enable **embedding-backed**
+semantic search (better relevance, more compute/memory), set `ai.embeddings.enabled=true` and ensure
+Nova is built with the `nova-ai/embeddings` Cargo feature. See `docs/13-ai-augmentation.md`
+(“Semantic search + embeddings configuration”) for the available backends and provider examples.
+
 ### Debugging
 
 - `nova.dap.path` (string | null): override the `nova-dap` binary path for a workspace folder. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
