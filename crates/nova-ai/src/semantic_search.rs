@@ -938,7 +938,10 @@ mod embeddings {
             .map(Duration::from_millis)
             .unwrap_or_else(|| config.provider.timeout());
 
-        let api_key = config.api_key.clone();
+        let api_key = config
+            .api_key
+            .clone()
+            .filter(|key| !key.trim().is_empty());
         let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
             .map(Arc::new)
             .ok();
@@ -975,7 +978,12 @@ mod embeddings {
                     return None;
                 };
 
-                let Some(deployment) = config.provider.azure_deployment.clone() else {
+                let Some(deployment) = config
+                    .provider
+                    .azure_deployment
+                    .clone()
+                    .filter(|deployment| !deployment.trim().is_empty())
+                else {
                     warn!(
                         target = "nova.ai",
                         "ai.embeddings.backend=provider with ai.provider.kind=azure_open_ai requires ai.provider.azure_deployment; falling back to hash embeddings"
