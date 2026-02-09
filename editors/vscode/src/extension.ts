@@ -2999,6 +2999,14 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiUnsupportedUri();
           return;
         }
+        if (isSafeModeError(err)) {
+          await handleAiSafeModeExecuteCommandError(err, label || 'Command');
+          return;
+        }
+        if (isUnknownExecuteCommandError(err)) {
+          await handleAiUnknownExecuteCommandError(err, label || 'Command', args.lspCommand);
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: command failed: ${message}`);
       }
