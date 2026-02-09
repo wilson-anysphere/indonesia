@@ -746,9 +746,9 @@ model = "default"
         &json!({
             "jsonrpc": "2.0",
             "id": 3,
-            "method": "nova/ai/generateMethodBody",
+            "method": "nova/ai/explainError",
             "params": {
-                "methodSignature": "void foo()",
+                "diagnosticMessage": "cannot find symbol",
                 "uri": file_uri,
                 "range": { "start": { "line": range.start.line, "character": range.start.character }, "end": { "line": range.end.line, "character": range.end.character } }
             }
@@ -773,15 +773,51 @@ model = "default"
             .get("data")
             .and_then(|v| v.get("feature"))
             .and_then(|v| v.as_str()),
+        Some("ai.features.explain_errors"),
+        "expected disabled error feature, got: {resp:#?}"
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "void foo()",
+                "uri": file_uri,
+                "range": { "start": { "line": range.start.line, "character": range.start.character }, "end": { "line": range.end.line, "character": range.end.character } }
+            }
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 4);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("disabled"),
+        "expected disabled error kind, got: {resp:#?}"
+    );
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("feature"))
+            .and_then(|v| v.as_str()),
         Some("ai.features.code_actions"),
         "expected disabled error feature, got: {resp:#?}"
     );
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
     );
-    let _shutdown_resp = support::read_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 5);
     support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
