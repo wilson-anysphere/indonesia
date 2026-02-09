@@ -3660,6 +3660,7 @@ dependencies = [
  "nova-db",
  "nova-format",
  "nova-ide",
+ "nova-jdk",
  "nova-syntax",
  "nova-types",
  "thiserror 1.0.69",

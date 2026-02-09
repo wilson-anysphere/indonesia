@@ -22,7 +22,7 @@ use nova_ide::{
 use nova_lsp::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 use serde::Deserialize;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
@@ -113,10 +113,10 @@ fn code_generation_error(code: i32, err: nova_ai_codegen::CodeGenerationError) -
     E::PatchParse(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_PARSE),
     E::Safety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
     E::Apply(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_APPLY),
+    E::EditRangeSafety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
     E::InvalidInsertRange { .. } => {
       rpc_error_with_kind(-32602, err.to_string(), AI_ERROR_KIND_VALIDATION)
     },
-    E::EditRangeSafety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
     E::ValidationFailed { .. } => {
       rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_VALIDATION)
     }
@@ -127,6 +127,94 @@ fn code_action_error(code: i32, err: CodeActionError) -> AiRpcError {
   match err {
     CodeActionError::Provider(provider) => prompt_completion_error(code, provider),
     CodeActionError::Codegen(codegen) => code_generation_error(code, codegen),
+  }
+}
+
+const VALIDATION_OPEN_DOCUMENT_MAX_FILES: usize = 20;
+const VALIDATION_OPEN_DOCUMENT_MAX_BYTES: usize = 256 * 1024;
+
+fn path_to_forward_slash_rel(path: &Path) -> Option<String> {
+  let mut parts: Vec<String> = Vec::new();
+  for component in path.components() {
+    match component {
+      Component::Normal(seg) => parts.push(seg.to_string_lossy().to_string()),
+      // Skip `.` segments.
+      Component::CurDir => {}
+      // Reject any other component kinds (`..`, prefixes, root dirs).
+      _ => return None,
+    }
+  }
+
+  if parts.is_empty() {
+    return None;
+  }
+
+  Some(parts.join("/"))
+}
+
+fn insert_open_documents_for_validation(
+  state: &ServerState,
+  ai: &nova_ai::NovaAi,
+  root_uri: &LspUri,
+  prompt_file_rel: &str,
+  workspace: &mut nova_ai::workspace::VirtualWorkspace,
+) {
+  let Some(root_path) = path_from_uri(root_uri.as_str()) else {
+    return;
+  };
+
+  let mut candidates: Vec<(String, nova_core::FileId)> = Vec::new();
+  for file_id in state.analysis.vfs.open_documents().snapshot() {
+    let Some(path) = state.analysis.vfs.path_for_id(file_id) else {
+      continue;
+    };
+    let Some(abs_path) = path.as_local_path() else {
+      continue;
+    };
+    if ai.is_excluded_path(abs_path) {
+      continue;
+    }
+    let Some(ext) = abs_path.extension().and_then(|ext| ext.to_str()) else {
+      continue;
+    };
+    if !ext.eq_ignore_ascii_case("java") {
+      continue;
+    }
+    let Ok(rel) = abs_path.strip_prefix(&root_path) else {
+      continue;
+    };
+    let Some(file_rel) = path_to_forward_slash_rel(rel) else {
+      continue;
+    };
+
+    // Prompt injection is handled elsewhere; this workspace augmentation is for validation only.
+    // Avoid introducing new prompt context by skipping the prompt file unless it was already
+    // explicitly inserted into the workspace snapshot.
+    if file_rel == prompt_file_rel {
+      continue;
+    }
+    if workspace.get(&file_rel).is_some() {
+      continue;
+    }
+
+    let Some(text) = state.analysis.file_contents.get(&file_id) else {
+      continue;
+    };
+    if text.len() > VALIDATION_OPEN_DOCUMENT_MAX_BYTES {
+      continue;
+    }
+
+    candidates.push((file_rel, file_id));
+  }
+
+  candidates.sort_by(|a, b| a.0.cmp(&b.0));
+  candidates.truncate(VALIDATION_OPEN_DOCUMENT_MAX_FILES);
+
+  for (file_rel, file_id) in candidates {
+    let Some(text) = state.analysis.file_contents.get(&file_id) else {
+      continue;
+    };
+    workspace.insert(file_rel, text.as_str().to_owned());
   }
 }
 
@@ -657,7 +745,8 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     None
   };
 
-  let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
+  let mut workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
+  insert_open_documents_for_validation(state, ai, &root_uri, &file_rel, &mut workspace);
 
   let llm = ai.llm();
   let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
@@ -799,7 +888,7 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
   let mut config = CodeGenerationConfig::default();
   config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
 
-  let (action_file, insert_range, workspace) =
+  let (action_file, insert_range, mut workspace) =
     if let Some(test_file) = derive_test_file_path(&source, Path::new(&file_rel)) {
       // `derive_test_file_path` returns a workspace-relative path (e.g.
       // `src/test/java/...` or `moduleA/src/test/java/...` for multi-module builds).
@@ -828,7 +917,8 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         config.safety.allowed_path_prefixes = vec![test_file.clone()];
         config.safety.allow_new_files = true;
 
-        let mut workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
+        let mut workspace =
+          nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
         let root_path = state
           .project_root
           .as_deref()
@@ -858,6 +948,8 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]),
       )
     };
+
+  insert_open_documents_for_validation(state, ai, &root_uri, &action_file, &mut workspace);
 
   let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 

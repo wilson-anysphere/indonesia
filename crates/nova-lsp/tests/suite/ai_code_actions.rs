@@ -434,6 +434,233 @@ local_only = true
 }
 
 #[test]
+fn stdio_ai_generate_method_body_validation_includes_open_documents() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root_uri = uri_for_path(&canonical_root);
+
+    let main_path = canonical_root.join("Main.java");
+    let helper_path = canonical_root.join("Helper.java");
+    let main_uri = uri_for_path(&main_path);
+    let helper_uri = uri_for_path(&helper_path);
+
+    let main_source = "class Main {\n    int answer() {\n    }\n}\n";
+    let helper_source = "class Helper {\n    static int answer() {\n        return 42;\n    }\n}\n";
+    std::fs::write(&main_path, main_source).expect("write Main.java");
+    std::fs::write(&helper_path, helper_source).expect("write Helper.java");
+
+    // The patch inserts a return statement referencing the other open file (Helper.java). Without
+    // adding open documents to the validation workspace snapshot, the type checker reports an
+    // unresolved reference and codegen fails validation.
+    let method_line = "    int answer() {";
+    let open_brace_offset = main_source
+        .find(method_line)
+        .expect("method line")
+        .saturating_add(method_line.len().saturating_sub(1));
+    let close_brace_offset = main_source
+        .find("\n    }\n")
+        .expect("method close")
+        .saturating_add("\n    ".len());
+
+    let pos = TextPos::new(main_source);
+    let insert_start = pos
+        .lsp_position(open_brace_offset + 1)
+        .expect("insert start pos");
+    let insert_end = pos
+        .lsp_position(close_brace_offset)
+        .expect("insert end pos");
+
+    let patch = json!({
+        "edits": [{
+            "file": "Main.java",
+            "range": {
+                "start": { "line": insert_start.line, "character": insert_start.character },
+                "end": { "line": insert_end.line, "character": insert_end.character }
+            },
+            "text": "\n        return Helper.answer();\n    "
+        }]
+    });
+    let completion = serde_json::to_string(&patch).expect("patch json");
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+
+    let config_path = canonical_root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure env vars don't override the config file.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Open both documents (the focal file plus an additional helper dependency).
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": main_uri.clone(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": main_source
+                }
+            }
+        }),
+    );
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": helper_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": helper_source
+                }
+            }
+        }),
+    );
+
+    // Select the method snippet including `{}`.
+    let method_start = main_source
+        .find(method_line)
+        .expect("method start offset");
+    let selection_start = pos.lsp_position(method_start).expect("selection start");
+    let selection_end = pos
+        .lsp_position(close_brace_offset + 1)
+        .expect("selection end");
+    let range = Range::new(selection_start, selection_end);
+
+    // Request the patch-based method body generator via the custom endpoint.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "method_signature": "int answer()",
+                "context": null,
+                "uri": main_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let response = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            apply_edit = Some(msg.clone());
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+
+        if msg.get("method").is_none() && msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    assert!(
+        response.get("error").is_none(),
+        "expected request success, got: {response:#?}"
+    );
+    assert!(
+        apply_edit.is_some(),
+        "expected workspace/applyEdit request, got: {response:#?}"
+    );
+
+    let apply_edit = apply_edit.expect("workspace/applyEdit request");
+    let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+    let uri: Uri = Uri::from_str(&uri_for_path(&main_path)).expect("main uri");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let updated = apply_lsp_edits(main_source, edits);
+    assert!(
+        updated.contains("Helper.answer()"),
+        "expected Helper reference to survive validation, got:\n{updated}"
+    );
+
+    ai_server.assert_hits(1);
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_ai_generate_method_body_custom_request_rejects_non_empty_method_body() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));

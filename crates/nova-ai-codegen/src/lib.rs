@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
@@ -11,8 +13,9 @@ use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError, ExcludedPathMatcher
 use nova_config::AiPrivacyConfig;
 use nova_core::{LineIndex, Position as CorePosition, TextRange, TextSize};
 use nova_db::Database;
-use nova_db::InMemoryFileStore;
+use nova_db::{FileId, ProjectId, SalsaDatabase, SalsaDbView};
 use nova_format::FormatConfig;
+use nova_jdk::JdkIndex;
 use nova_types::{Diagnostic as NovaDiagnostic, Severity as NovaSeverity};
 use thiserror::Error;
 
@@ -937,17 +940,66 @@ fn diagnostic_position_and_range(
     (position, range)
 }
 
-fn diagnostics_db_from_workspace(workspace: &VirtualWorkspace) -> InMemoryFileStore {
-    let mut db = InMemoryFileStore::new();
-    for (path, text) in workspace.files() {
-        let file_id = db.file_id_for_path(path);
-        db.set_file_text(file_id, text.to_string());
-    }
-    db
+fn diagnostics_db_from_workspace(workspace: &VirtualWorkspace) -> WorkspaceDiagnosticsDb {
+    WorkspaceDiagnosticsDb::from_workspace(workspace)
 }
 
-fn diagnostics_for_path(db: &InMemoryFileStore, path: &str) -> Vec<NovaDiagnostic> {
-    let Some(file_id) = db.file_id(std::path::Path::new(path)) else {
+#[derive(Clone)]
+struct WorkspaceDiagnosticsDb {
+    salsa: SalsaDatabase,
+    view: SalsaDbView,
+}
+
+impl WorkspaceDiagnosticsDb {
+    fn from_workspace(workspace: &VirtualWorkspace) -> Self {
+        let project = ProjectId::from_raw(0);
+        let salsa = SalsaDatabase::new();
+
+        // Seed a minimal JDK + classpath configuration so semantic queries don't panic.
+        // This intentionally uses an empty index to keep validation deterministic and fast.
+        salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
+
+        let mut project_files: Vec<FileId> = Vec::new();
+        for (idx, (path, text)) in workspace.files().enumerate() {
+            let file_id = FileId::from_raw(idx as u32);
+            // Set `file_rel_path` before `set_file_text` so Salsa doesn't synthesize a default path.
+            salsa.set_file_rel_path(file_id, Arc::new(path.to_string()));
+            salsa.set_file_text(file_id, text.to_string());
+            project_files.push(file_id);
+        }
+        salsa.set_project_files(project, Arc::new(project_files));
+
+        let snapshot = salsa.snapshot();
+        let view = SalsaDbView::new(snapshot);
+        Self { salsa, view }
+    }
+}
+
+impl Database for WorkspaceDiagnosticsDb {
+    fn file_content(&self, file_id: FileId) -> &str {
+        self.view.file_content(file_id)
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<&Path> {
+        self.view.file_path(file_id)
+    }
+
+    fn all_file_ids(&self) -> Vec<FileId> {
+        self.view.all_file_ids()
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.view.file_id(path)
+    }
+
+    fn salsa_db(&self) -> Option<SalsaDatabase> {
+        Some(self.salsa.clone())
+    }
+}
+
+fn diagnostics_for_path(db: &WorkspaceDiagnosticsDb, path: &str) -> Vec<NovaDiagnostic> {
+    let Some(file_id) = db.file_id(Path::new(path)) else {
         return Vec::new();
     };
     nova_ide::code_intelligence::file_diagnostics(db, file_id)
@@ -1026,8 +1078,8 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
     let to = (start_line + context_lines + 1).min(lines.len());
 
     let mut out = String::new();
-    for idx in from..to {
-        out.push_str(&format!("{:>4} | {}\n", idx + 1, lines[idx]));
+    for (idx, line) in lines.iter().enumerate().take(to).skip(from) {
+        out.push_str(&format!("{:>4} | {}\n", idx + 1, line));
         if idx == start_line {
             let mut caret = String::new();
             caret.push_str("     | ");
