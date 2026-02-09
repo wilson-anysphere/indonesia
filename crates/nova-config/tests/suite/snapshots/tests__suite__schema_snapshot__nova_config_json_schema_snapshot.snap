@@ -1,6 +1,5 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
-assertion_line: 4
 expression: schema
 ---
 {
