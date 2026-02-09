@@ -1215,6 +1215,32 @@ pub(super) fn load_ai_config_from_env(
 
   let model = std::env::var("NOVA_AI_MODEL").unwrap_or_else(|_| "default".to_string());
   let api_key = std::env::var("NOVA_AI_API_KEY").ok();
+  let provider_max_tokens = match std::env::var("NOVA_AI_MAX_TOKENS") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<u32>().map_err(|_| {
+        format!("invalid NOVA_AI_MAX_TOKENS: `{raw}` (expected an integer >= 1)")
+      })?;
+      Some(value.max(1))
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err("invalid NOVA_AI_MAX_TOKENS: value is not valid unicode".to_string());
+    }
+  };
+  let provider_concurrency = match std::env::var("NOVA_AI_CONCURRENCY") {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      let value = trimmed.parse::<usize>().map_err(|_| {
+        format!("invalid NOVA_AI_CONCURRENCY: `{raw}` (expected an integer >= 1)")
+      })?;
+      Some(value.max(1))
+    }
+    Err(std::env::VarError::NotPresent) => None,
+    Err(std::env::VarError::NotUnicode(_)) => {
+      return Err("invalid NOVA_AI_CONCURRENCY: value is not valid unicode".to_string());
+    }
+  };
 
   let audit_logging = matches!(
     std::env::var("NOVA_AI_AUDIT_LOGGING").as_deref(),
@@ -1243,6 +1269,8 @@ pub(super) fn load_ai_config_from_env(
   // Privacy defaults: safer by default (no paths, anonymize identifiers).
   //
   // Supported env vars (legacy env-var based AI wiring):
+  // - `NOVA_AI_MAX_TOKENS=<n>` overrides `ai.provider.max_tokens` (values are clamped to >= 1).
+  // - `NOVA_AI_CONCURRENCY=<n>` overrides `ai.provider.concurrency` (values are clamped to >= 1).
   // - `NOVA_AI_ANONYMIZE_IDENTIFIERS=0|false|FALSE` disables identifier anonymization
   //   (default: enabled, even in local-only mode).
   // - `NOVA_AI_INCLUDE_FILE_PATHS=1|true|TRUE` allows including paths in prompts
@@ -1304,7 +1332,11 @@ pub(super) fn load_ai_config_from_env(
   cfg.cache_max_entries = cache_max_entries;
   cfg.cache_ttl_secs = cache_ttl.as_secs().max(1);
   cfg.provider.model = model;
+  if let Some(value) = provider_max_tokens {
+    cfg.provider.max_tokens = value;
+  }
   cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
+  cfg.provider.concurrency = provider_concurrency;
   cfg.privacy.anonymize_identifiers = Some(anonymize_identifiers);
   cfg.privacy.redact_sensitive_strings = redact_sensitive_strings;
   cfg.privacy.redact_numeric_literals = redact_numeric_literals;
@@ -1537,6 +1569,36 @@ mod tests {
         .expect("config should be present");
       assert_eq!(cfg.privacy.local_only, true);
     }
+  }
+
+  #[test]
+  fn load_ai_config_from_env_reads_provider_max_tokens() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
+    let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
+    let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+    let _max_tokens = EnvVarGuard::set("NOVA_AI_MAX_TOKENS", "2048");
+
+    let (cfg, _privacy) = load_ai_config_from_env()
+      .expect("load_ai_config_from_env")
+      .expect("config should be present");
+    assert_eq!(cfg.provider.max_tokens, 2048);
+  }
+
+  #[test]
+  fn load_ai_config_from_env_reads_provider_concurrency() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
+    let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
+    let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+    let _concurrency = EnvVarGuard::set("NOVA_AI_CONCURRENCY", "3");
+
+    let (cfg, _privacy) = load_ai_config_from_env()
+      .expect("load_ai_config_from_env")
+      .expect("config should be present");
+    assert_eq!(cfg.provider.concurrency, Some(3));
   }
 
   #[test]

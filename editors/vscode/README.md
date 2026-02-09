@@ -391,6 +391,8 @@ environment variables read by the `nova-lsp` process, for example:
 - `NOVA_AI_PROVIDER`
 - `NOVA_AI_API_KEY`
 - `NOVA_AI_MODEL` (optional; defaults to `"default"`)
+- `NOVA_AI_MAX_TOKENS` (optional; overrides `ai.provider.max_tokens`, clamped to >= 1)
+- `NOVA_AI_CONCURRENCY` (optional; overrides `ai.provider.concurrency`, clamped to >= 1)
 
 These environment variables must be present in the VS Code environment (e.g. set them in your shell
 before launching VS Code, or configure them via your OS / remote environment) and require restarting

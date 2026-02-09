@@ -87,6 +87,9 @@ Entry points:
 In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 
 > Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
+> In that mode, provider tuning env vars are supported:
+> `NOVA_AI_MAX_TOKENS=<n>` (overrides `ai.provider.max_tokens`, clamped to >= 1) and
+> `NOVA_AI_CONCURRENCY=<n>` (overrides `ai.provider.concurrency`, clamped to >= 1).
 > `NOVA_DISABLE_AI=1` overrides AI enablement (including `NOVA_AI_PROVIDER` and `nova.toml`) and
 > forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` similarly disables background/multi-token
 > completions. `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s multi-token completion
