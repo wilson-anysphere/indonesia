@@ -26,6 +26,13 @@ export function registerNovaSemanticSearchCommands(
   context.subscriptions.push(
     vscode.commands.registerCommand(SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND, async () => {
       try {
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        if (workspaces.length === 0) {
+          void vscode.window.showErrorMessage('Nova: Open a workspace folder to use Nova.');
+          return;
+        }
+
+        let pickedWorkspace: vscode.WorkspaceFolder | undefined;
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
             location: vscode.ProgressLocation.Notification,
@@ -33,7 +40,15 @@ export function registerNovaSemanticSearchCommands(
             cancellable: true,
           },
           async (_progress, token) => {
-            return await request<unknown>('nova/semanticSearch/indexStatus', {}, { token });
+            pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(token);
+            if (!pickedWorkspace) {
+              return undefined;
+            }
+            return await request<unknown>(
+              'nova/semanticSearch/indexStatus',
+              { projectRoot: pickedWorkspace.uri.fsPath },
+              { token },
+            );
           },
         );
 
@@ -48,6 +63,9 @@ export function registerNovaSemanticSearchCommands(
 
         output.clear();
         output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/indexStatus`);
+        if (pickedWorkspace) {
+          output.appendLine(`Workspace: ${pickedWorkspace.name} (${pickedWorkspace.uri.fsPath})`);
+        }
         if (summary) {
           output.appendLine(summary);
         }
@@ -78,6 +96,13 @@ export function registerNovaSemanticSearchCommands(
   context.subscriptions.push(
     vscode.commands.registerCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, async () => {
       try {
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        if (workspaces.length === 0) {
+          void vscode.window.showErrorMessage('Nova: Open a workspace folder to use Nova.');
+          return;
+        }
+
+        let pickedWorkspace: vscode.WorkspaceFolder | undefined;
         const payload = await vscode.window.withProgress<unknown | undefined>(
           {
             location: vscode.ProgressLocation.Notification,
@@ -85,15 +110,15 @@ export function registerNovaSemanticSearchCommands(
             cancellable: true,
           },
           async (progress, token) => {
-            const workspaceFolder = await pickWorkspaceFolderForSemanticSearchCommand(token);
-            if (!workspaceFolder) {
+            pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(token);
+            if (!pickedWorkspace) {
               return undefined;
             }
 
             // Route all polling calls to the same workspace folder. Without an explicit routing
             // hint, `sendNovaRequest` will prompt on every poll in a multi-root workspace when there
             // is no active editor.
-            const routingParams = { projectRoot: workspaceFolder.uri.fsPath };
+            const routingParams = { projectRoot: pickedWorkspace.uri.fsPath };
 
             let lastMessage: string | undefined;
             while (!token.isCancellationRequested) {
@@ -144,6 +169,9 @@ export function registerNovaSemanticSearchCommands(
 
           output.clear();
           output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/indexStatus`);
+          if (pickedWorkspace) {
+            output.appendLine(`Workspace: ${pickedWorkspace.name} (${pickedWorkspace.uri.fsPath})`);
+          }
           if (summary) {
             output.appendLine(summary);
           }
@@ -207,7 +235,8 @@ export function registerNovaSemanticSearchCommands(
         const bytesSuffix = formattedBytes ? ` (${formattedBytes})` : '';
         const filesSuffix = typeof indexedFiles === 'number' ? `${indexedFiles.toLocaleString()} files` : 'files';
         const doneMessage = typeof indexedBytes === 'number' ? `${filesSuffix}, ${indexedBytes.toLocaleString()} bytes${bytesSuffix}` : filesSuffix;
-        void vscode.window.showInformationMessage(`Nova: Semantic search indexing complete (${doneMessage}).`);
+        const workspacePrefix = pickedWorkspace ? `${pickedWorkspace.name}: ` : '';
+        void vscode.window.showInformationMessage(`Nova: Semantic search indexing complete (${workspacePrefix}${doneMessage}).`);
       } catch (err) {
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: failed to wait for semantic search indexing: ${message}`);
