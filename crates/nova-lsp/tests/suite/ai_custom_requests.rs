@@ -1,10 +1,162 @@
 use httpmock::prelude::*;
 use serde_json::json;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 use tempfile::TempDir;
 
 use crate::support;
+
+struct FlakyAiServer {
+    base_url: String,
+    hits: Arc<AtomicUsize>,
+    stop_tx: Option<mpsc::Sender<()>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl FlakyAiServer {
+    fn start(success_response: serde_json::Value) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        listener.set_nonblocking(true).expect("set_nonblocking");
+
+        let addr = listener.local_addr().expect("local_addr");
+        let base_url = format!("http://{addr}");
+
+        let body_bytes = serde_json::to_vec(&success_response).expect("serialize response");
+        let body_bytes = Arc::new(body_bytes);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_thread = hits.clone();
+
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+
+        let handle = thread::spawn(move || loop {
+            match stop_rx.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
+            };
+
+            let mut reader = std::io::BufReader::new(&mut stream);
+            let mut request_line = String::new();
+            if reader
+                .read_line(&mut request_line)
+                .ok()
+                .filter(|n| *n > 0)
+                .is_none()
+            {
+                continue;
+            }
+
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or_default();
+            let path = parts.next().unwrap_or_default();
+
+            let mut content_length: usize = 0;
+            loop {
+                let mut line = String::new();
+                if reader
+                    .read_line(&mut line)
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .is_none()
+                {
+                    break;
+                }
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("Content-Length") {
+                        content_length = value.trim().parse::<usize>().unwrap_or(0);
+                    }
+                }
+            }
+
+            if content_length > 0 {
+                let mut buf = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut buf);
+            } else {
+                let mut drain = [0u8; 1024];
+                let _ = reader.read(&mut drain);
+            }
+
+            drop(reader);
+
+            if method == "POST" && path == "/complete" {
+                let call = hits_thread.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    let body = b"boom";
+                    let header = format!(
+                        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(body);
+                    let _ = stream.flush();
+                } else {
+                    let response_body = body_bytes.as_slice();
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response_body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(response_body);
+                    let _ = stream.flush();
+                }
+            } else {
+                let body = b"not found";
+                let header = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+            }
+        });
+
+        Self {
+            base_url,
+            hits,
+            stop_tx: Some(stop_tx),
+            handle: Some(handle),
+        }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for FlakyAiServer {
+    fn drop(&mut self) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 fn spawn_stdio_server(config_path: &std::path::Path) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -308,6 +460,116 @@ local_only = true
     assert_eq!(models, vec!["alpha", "beta"]);
 
     mock.assert_hits(1);
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_retry_max_retries_zero_disables_retries() {
+    let _lock = support::stdio_server_lock();
+
+    let flaky_server = FlakyAiServer::start(json!({ "completion": "mock review" }));
+    let endpoint = format!("{}/complete", flaky_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+retry_max_retries = 0
+retry_initial_backoff_ms = 1
+retry_max_backoff_ms = 1
+
+[ai.privacy]
+local_only = true
+"#
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/Main.java b/Main.java\n+class Main {}\n",
+            }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_some(),
+        "expected error result when retries are disabled, got: {resp:?}"
+    );
+    assert_eq!(flaky_server.hits(), 1, "expected a single provider hit");
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_retry_max_retries_allows_retry_on_500() {
+    let _lock = support::stdio_server_lock();
+
+    let flaky_server = FlakyAiServer::start(json!({ "completion": "mock review" }));
+    let endpoint = format!("{}/complete", flaky_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+retry_max_retries = 1
+retry_initial_backoff_ms = 1
+retry_max_backoff_ms = 1
+
+[ai.privacy]
+local_only = true
+"#
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "diff": "diff --git a/Main.java b/Main.java\n+class Main {}\n",
+            }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.as_str(), Some("mock review"));
+    assert_eq!(flaky_server.hits(), 2, "expected one retry after 500");
 
     shutdown(child, stdin, stdout);
 }
