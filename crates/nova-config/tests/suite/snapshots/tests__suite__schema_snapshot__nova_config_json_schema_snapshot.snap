@@ -669,6 +669,7 @@ expression: schema
           "backend": "hash",
           "batch_size": 32,
           "enabled": false,
+          "local_model": "all-MiniLM-L6-v2",
           "max_memory_bytes": 536870912,
           "model": null,
           "model_dir": ".nova/models/embeddings",
@@ -866,6 +867,7 @@ expression: schema
             "backend": "hash",
             "batch_size": 32,
             "enabled": false,
+            "local_model": "all-MiniLM-L6-v2",
             "max_memory_bytes": 536870912,
             "model": null,
             "model_dir": ".nova/models/embeddings",
@@ -999,6 +1001,12 @@ expression: schema
           "description": "Enable embeddings for semantic search and context building.",
           "default": false,
           "type": "boolean"
+        },
+        "local_model": {
+          "description": "Local embedding model identifier used when `backend = \"local\"`.\n\nThe set of supported values depends on the selected `nova-ai` local embedding implementation. When using `fastembed`, this corresponds to the built-in model IDs (e.g. `\"all-MiniLM-L6-v2\"` or `\"bge-small-en-v1.5\"`).",
+          "default": "all-MiniLM-L6-v2",
+          "type": "string",
+          "minLength": 1
         },
         "max_memory_bytes": {
           "description": "Soft memory budget (in bytes) for embedding models / caches.\n\nAccepts either: - an integer byte count (e.g. `536870912`) - a human-friendly string (e.g. `\"512MiB\"`, `\"2G\"`)",

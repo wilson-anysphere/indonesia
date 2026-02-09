@@ -72,6 +72,8 @@ pub use semantic_search::{
 pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
 #[cfg(feature = "embeddings")]
 pub use embedders::OpenAiCompatibleEmbedder;
+#[cfg(all(feature = "embeddings", feature = "embeddings-local"))]
+pub use semantic_search::LocalEmbedder;
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 
 pub use project_database::DbProjectDatabase;

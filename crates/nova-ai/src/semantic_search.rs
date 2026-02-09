@@ -18,10 +18,17 @@ pub struct SearchResult {
 
 /// Semantic search interface.
 ///
-/// When built with the `embeddings` Cargo feature, `nova-ai` includes a local
-/// embedding-backed implementation. Without it, the crate falls back to a
-/// lightweight trigram/fuzzy matcher so semantic search remains available
-/// without any model dependencies.
+/// When built with the `embeddings` Cargo feature, `nova-ai` includes an
+/// embedding-backed implementation. By default this uses the hashing trick
+/// (`HashEmbedder`) so semantic search remains fully offline and deterministic.
+///
+/// When additionally built with the `embeddings-local` Cargo feature, callers
+/// can opt into true in-process neural embeddings via
+/// `ai.embeddings.backend = "local"`.
+///
+/// Without the `embeddings` feature, the crate falls back to a lightweight
+/// trigram/fuzzy matcher so semantic search remains available without any model
+/// dependencies.
 pub trait SemanticSearch: Send + Sync {
     /// Clear any indexed state.
     fn clear(&mut self) {}
@@ -69,7 +76,7 @@ pub trait SemanticSearch: Send + Sync {
 ///
 /// If `ai.embeddings.enabled = true` and the crate is compiled with the
 /// `embeddings` Cargo feature, this returns an [`EmbeddingSemanticSearch`]
-/// instance backed by a lightweight local embedder.
+/// instance backed by the configured embedder backend.
 ///
 /// When embeddings are enabled in config but the crate is built without the
 /// `embeddings` feature, this falls back to [`TrigramSemanticSearch`].
@@ -104,10 +111,33 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
                     );
                 }
                 nova_config::AiEmbeddingsBackend::Local => {
-                    tracing::warn!(
-                        target = "nova.ai",
-                        "ai.embeddings.backend=local is not implemented; falling back to hash embeddings"
-                    );
+                    #[cfg(feature = "embeddings-local")]
+                    {
+                        match LocalEmbedder::from_config(&config.embeddings) {
+                            Ok(embedder) => {
+                                return Box::new(
+                                    EmbeddingSemanticSearch::new(embedder)
+                                        .with_max_memory_bytes(max_memory_bytes),
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    target = "nova.ai",
+                                    ?err,
+                                    "failed to initialize local embeddings; falling back to hash embeddings"
+                                );
+                            }
+                        }
+                    }
+
+                    #[cfg(not(feature = "embeddings-local"))]
+                    {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            "ai.embeddings.backend=local but nova-ai was built without the `embeddings-local` feature; falling back to hash embeddings"
+                        );
+                    }
+
                     return Box::new(
                         EmbeddingSemanticSearch::new(HashEmbedder::default())
                             .with_max_memory_bytes(max_memory_bytes),
@@ -433,7 +463,6 @@ mod embeddings {
             Ok(vec)
         }
     }
-
     #[derive(Clone)]
     pub(super) struct ProviderEmbedder {
         provider_kind: AiProviderKind,
@@ -670,6 +699,152 @@ mod embeddings {
         embedding: Vec<f32>,
     }
 
+    #[cfg(feature = "embeddings-local")]
+    pub struct LocalEmbedder {
+        batch_size: usize,
+        embedder: Mutex<fastembed::TextEmbedding>,
+        model_id: String,
+        model_dir: PathBuf,
+    }
+
+    #[cfg(feature = "embeddings-local")]
+    impl std::fmt::Debug for LocalEmbedder {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("LocalEmbedder")
+                .field("model_id", &self.model_id)
+                .field("model_dir", &self.model_dir)
+                .field("batch_size", &self.batch_size)
+                .finish()
+        }
+    }
+
+    #[cfg(feature = "embeddings-local")]
+    impl LocalEmbedder {
+        pub fn from_config(config: &nova_config::AiEmbeddingsConfig) -> Result<Self, crate::AiError> {
+            use crate::AiError;
+
+            let model_id = config.local_model.trim();
+            if model_id.is_empty() {
+                return Err(AiError::InvalidConfig(
+                    "ai.embeddings.local_model must be non-empty when backend=\"local\"".to_string(),
+                ));
+            }
+
+            if config.model_dir.as_os_str().is_empty() {
+                return Err(AiError::InvalidConfig(
+                    "ai.embeddings.model_dir must be non-empty when embeddings are enabled"
+                        .to_string(),
+                ));
+            }
+
+            let model_dir = config.model_dir.clone();
+            std::fs::create_dir_all(&model_dir).map_err(|source| {
+                AiError::InvalidConfig(format!(
+                    "failed to create ai.embeddings.model_dir {}: {source}",
+                    model_dir.display()
+                ))
+            })?;
+
+            let model = fastembed_model_from_id(model_id).map_err(|err| {
+                AiError::InvalidConfig(format!(
+                    "unsupported ai.embeddings.local_model={model_id:?}: {err}"
+                ))
+            })?;
+
+            let options = fastembed::InitOptions::new(model)
+                .with_cache_dir(model_dir.clone())
+                .with_show_download_progress(false);
+
+            let embedder = fastembed::TextEmbedding::try_new(options).map_err(|source| {
+                AiError::InvalidConfig(format!(
+                    "failed to initialize local embedding model {model_id:?} (cache dir {}): {source}",
+                    model_dir.display()
+                ))
+            })?;
+
+            Ok(Self {
+                batch_size: config.batch_size.max(1),
+                embedder: Mutex::new(embedder),
+                model_id: model_id.to_string(),
+                model_dir,
+            })
+        }
+    }
+
+    #[cfg(feature = "embeddings-local")]
+    fn fastembed_model_from_id(id: &str) -> Result<fastembed::EmbeddingModel, String> {
+        // `fastembed` supports a fixed set of model IDs; map a few common aliases and
+        // delegate the rest to its parser (when available).
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err("model id is empty".to_string());
+        }
+
+        // Fast-path common aliases so users can copy/paste from HuggingFace model
+        // cards without needing exact casing.
+        let normalized = trimmed.to_ascii_lowercase();
+        let normalized = normalized.as_str();
+
+        let canonical = match normalized {
+            "all-minilm-l6-v2" | "all_minilm_l6_v2" | "allminilm-l6-v2" => "all-MiniLM-L6-v2",
+            "bge-small-en-v1.5" | "bge_small_en_v1.5" | "bge-small-en" => "bge-small-en-v1.5",
+            _ => trimmed,
+        };
+
+        canonical
+            .parse::<fastembed::EmbeddingModel>()
+            .map_err(|err| err.to_string())
+    }
+
+    #[cfg(feature = "embeddings-local")]
+    impl Embedder for LocalEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
+            let mut batch = self.embed_batch(&[text.to_string()])?;
+            Ok(batch.pop().unwrap_or_default())
+        }
+
+        fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            if inputs.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut out = Vec::with_capacity(inputs.len());
+            let mut embedder = self.embedder.lock().unwrap_or_else(|err| err.into_inner());
+
+            for chunk in inputs.chunks(self.batch_size.max(1)) {
+                let embeddings = embedder
+                    .embed(chunk.to_vec(), Some(self.batch_size))
+                    .map_err(|err| {
+                        AiError::UnexpectedResponse(format!(
+                            "fastembed embedding failed for model {}: {err}",
+                            self.model_id
+                        ))
+                    })?;
+
+                if embeddings.len() != chunk.len() {
+                    return Err(AiError::UnexpectedResponse(format!(
+                        "fastembed returned {} embeddings for {} inputs (model {})",
+                        embeddings.len(),
+                        chunk.len(),
+                        self.model_id
+                    )));
+                }
+
+                out.extend(embeddings);
+            }
+
+            if out.len() != inputs.len() {
+                return Err(AiError::UnexpectedResponse(format!(
+                    "fastembed returned {} embeddings for {} inputs (model {})",
+                    out.len(),
+                    inputs.len(),
+                    self.model_id
+                )));
+            }
+
+            Ok(out)
+        }
+    }
     #[derive(Debug, Clone)]
     struct EmbeddedDoc {
         range: Range<usize>,
@@ -1819,3 +1994,6 @@ mod embeddings {
 
 #[cfg(feature = "embeddings")]
 pub use embeddings::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
+
+#[cfg(all(feature = "embeddings", feature = "embeddings-local"))]
+pub use embeddings::LocalEmbedder;

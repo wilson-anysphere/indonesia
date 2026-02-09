@@ -547,6 +547,7 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     set_min_length(schema, "AuditLogConfig", "path", 1);
     set_min_length(schema, "AiEmbeddingsConfig", "model", 1);
     set_min_length(schema, "AiEmbeddingsConfig", "model_dir", 1);
+    set_min_length(schema, "AiEmbeddingsConfig", "local_model", 1);
     set_min_length(schema, "InProcessLlamaConfig", "model_path", 1);
     set_array_item_min_length(schema, "AiPrivacyConfig", "excluded_paths", 1);
     set_array_item_min_length(schema, "AiPrivacyConfig", "redact_patterns", 1);

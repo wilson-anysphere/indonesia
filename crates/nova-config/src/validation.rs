@@ -599,6 +599,15 @@ fn validate_ai(
             });
         }
 
+        if matches!(config.ai.embeddings.backend, AiEmbeddingsBackend::Local)
+            && config.ai.embeddings.local_model.trim().is_empty()
+        {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.local_model".to_string(),
+                message: "must be non-empty when ai.embeddings.backend = \"local\"".to_string(),
+            });
+        }
+
         if config.ai.embeddings.batch_size == 0 {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: "ai.embeddings.batch_size".to_string(),

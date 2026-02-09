@@ -44,6 +44,45 @@ fn semantic_search_from_config_respects_feature_flag() {
     assert_eq!(results[0].kind, expected_kind);
 }
 
+#[cfg(all(feature = "embeddings", not(feature = "embeddings-local")))]
+#[test]
+fn semantic_search_from_config_local_backend_without_feature_falls_back_to_hash_embedder() {
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let cfg = AiConfig {
+        enabled: true,
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: nova_config::AiEmbeddingsBackend::Local,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(
+        results[0].kind, "method",
+        "expected embedding-backed semantic search to fall back to HashEmbedder when `embeddings-local` is disabled"
+    );
+}
+
 #[test]
 fn semantic_search_from_config_disabled_returns_empty() {
     let cfg = AiConfig::default();

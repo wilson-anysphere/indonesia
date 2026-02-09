@@ -10,6 +10,7 @@ futures = "0.3"
 futures-timer = "3"
 hnsw_rs = { version = "0.3", optional = true }
 rayon = { version = "1", optional = true }
+fastembed = { version = "5.8.1", optional = true, default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-syntax = { path = "../nova-syntax" }
@@ -34,6 +35,7 @@ llama-cpp-2 = { version = "0.1.131", optional = true, features = ["sampler"] }
 # Enables in-process local inference using GGUF models via llama.cpp.
 local-llm = ["dep:llama-cpp-2"]
 embeddings = ["dep:hnsw_rs", "dep:rayon", "reqwest/blocking"]
+embeddings-local = ["embeddings", "dep:fastembed"]
 
 [dev-dependencies]
 httpmock = "0.7"

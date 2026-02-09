@@ -896,6 +896,14 @@ pub struct AiEmbeddingsConfig {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub timeout_ms: Option<u64>,
+    /// Local embedding model identifier used when `backend = "local"`.
+    ///
+    /// The set of supported values depends on the selected `nova-ai` local embedding
+    /// implementation. When using `fastembed`, this corresponds to the built-in model IDs (e.g.
+    /// `"all-MiniLM-L6-v2"` or `"bge-small-en-v1.5"`).
+    #[serde(default = "default_embeddings_local_model")]
+    pub local_model: String,
+
     /// Directory containing embedding model files / cache.
     #[serde(default = "default_embeddings_model_dir")]
     #[schemars(with = "String")]
@@ -920,6 +928,10 @@ fn default_embeddings_model_dir() -> PathBuf {
     PathBuf::from(".nova/models/embeddings")
 }
 
+fn default_embeddings_local_model() -> String {
+    "all-MiniLM-L6-v2".to_string()
+}
+
 fn default_embeddings_batch_size() -> usize {
     32
 }
@@ -935,6 +947,7 @@ impl Default for AiEmbeddingsConfig {
             backend: AiEmbeddingsBackend::default(),
             model: None,
             timeout_ms: None,
+            local_model: default_embeddings_local_model(),
             model_dir: default_embeddings_model_dir(),
             batch_size: default_embeddings_batch_size(),
             max_memory_bytes: default_embeddings_max_memory_bytes(),
