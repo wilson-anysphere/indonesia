@@ -559,6 +559,14 @@ completion text.
 - `ai/chat/cache_miss` — cache misses (`requestCount`, only when caching is enabled)
 - `ai/chat/retry` — retry attempts started (`requestCount`)
 
+In addition to low-level provider traffic metrics (`ai/chat*`), `nova-ai::NovaAi` records a set of
+high-level **action** metrics so consumers can attribute LLM traffic to specific Nova features:
+
+- `ai/action/explain_error`
+- `ai/action/generate_method_body`
+- `ai/action/generate_tests`
+- `ai/action/code_review`
+
 Error kind breakdown (counts are recorded under `errorCount` unless otherwise noted):
 
 - `ai/chat/error/timeout` (`timeoutCount`)
