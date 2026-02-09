@@ -1,4 +1,20 @@
+use std::borrow::Cow;
+
+fn escape_triple_backticks(text: &str) -> Cow<'_, str> {
+    if text.contains("```") {
+        // `nova-ai` privacy sanitization relies on fenced code blocks. Ensure user-provided
+        // content cannot terminate the fence early by breaking up triple backtick sequences.
+        //
+        // Note: we intentionally use a zero-width space so the text is still readable to humans
+        // and LLMs, but no longer matches the literal "```" fence delimiter.
+        Cow::Owned(text.replace("```", "``\u{200B}`"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 pub fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
+    let diagnostic_message = escape_triple_backticks(diagnostic_message);
     format!(
         "Explain the following Java compiler error in plain language.\n\n\
          Error:\n```text\n{diagnostic_message}\n```\n\n\
@@ -6,26 +22,31 @@ pub fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
          Provide:\n\
          1) What the error means\n\
          2) Why it happened\n\
-         3) How to fix it\n"
+         3) How to fix it\n",
+        diagnostic_message = diagnostic_message.as_ref()
     )
 }
 
 pub(crate) fn generate_method_body_prompt(method_signature: &str, context: &str) -> String {
+    let method_signature = escape_triple_backticks(method_signature);
     format!(
         "Implement the following Java method.\n\n\
          Method signature:\n```java\n{method_signature}\n```\n\n\
          Context:\n{context}\n\n\
-         Return ONLY the method body contents (no surrounding braces, no markdown).\n"
+         Return ONLY the method body contents (no surrounding braces, no markdown).\n",
+        method_signature = method_signature.as_ref()
     )
 }
 
 pub(crate) fn generate_tests_prompt(target: &str, context: &str) -> String {
+    let target = escape_triple_backticks(target);
     format!(
         "Generate unit tests (JUnit 5) for the following target.\n\n\
          Target:\n```text\n{target}\n```\n\n\
          Context:\n{context}\n\n\
          Include tests for normal cases, edge cases, and error conditions.\n\
-         Return ONLY Java code (no markdown).\n"
+         Return ONLY Java code (no markdown).\n",
+        target = target.as_ref()
     )
 }
 

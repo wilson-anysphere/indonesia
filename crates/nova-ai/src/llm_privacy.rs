@@ -433,6 +433,31 @@ class Foo {
     }
 
     #[test]
+    fn explain_error_prompt_escapes_fence_markers_to_keep_sanitization_intact() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let diagnostic_message = format!("cannot find symbol: ```{secret}```");
+        let prompt = crate::actions::explain_error_prompt(&diagnostic_message, "");
+        assert!(
+            prompt.contains(secret),
+            "prompt should include raw input (identifier) before sanitization"
+        );
+
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+        assert!(
+            !out.contains(secret),
+            "sanitized prompt should not leak identifiers even when input contains fence markers: {out}"
+        );
+    }
+
+    #[test]
     fn excluded_paths_relative_patterns_match_absolute_paths() {
         let cfg = AiPrivacyConfig {
             excluded_paths: vec!["secret/**".into()],
