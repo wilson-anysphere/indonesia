@@ -1010,15 +1010,143 @@ Notes:
 ## AI augmentation endpoints
 
 These endpoints are currently implemented in the `nova-lsp` **binary**
-(`crates/nova-lsp/src/main.rs`) and require AI to be configured (see env vars in `main.rs` like
-`NOVA_AI_PROVIDER`).
+(`crates/nova-lsp/src/main.rs`).
 
-`nova/ai/explainError` is an explain-only operation that returns text. `nova/ai/generateMethodBody`
-and `nova/ai/generateTests` are **patch-based code-editing operations** that apply a `WorkspaceEdit`
-via `workspace/applyEdit` and return `null` (on success).
+Most AI endpoints require a configured AI provider (`ai.enabled=true` in `nova.toml` or via the
+legacy `NOVA_AI_*` env vars). `nova/ai/status` is always available and returns a non-sensitive
+snapshot of the server’s effective AI state.
 
-All AI requests accept an optional `workDoneToken` (standard LSP work-done progress token). When
-present, the server emits `$/progress` notifications for user-visible progress.
+Read-only AI endpoints (`nova/ai/explainError`, `nova/ai/codeReview`, `nova/ai/models`) return a
+result payload without applying edits. Patch-based endpoints (`nova/ai/generateMethodBody`,
+`nova/ai/generateTests`) are **code-editing operations** that apply a `WorkspaceEdit` via
+`workspace/applyEdit` and return `null` (on success).
+
+Some AI requests accept an optional `workDoneToken` (standard LSP work-done progress token). When
+present, the server emits `$/progress` notifications for user-visible progress. Today, this is
+implemented for:
+
+- `nova/ai/explainError`
+- `nova/ai/codeReview`
+- `nova/ai/generateMethodBody`
+- `nova/ai/generateTests`
+
+All AI requests are guarded by `nova_lsp::hardening::guard_method()` and fail with `-32603` while
+the server is in safe-mode.
+
+### `nova/ai/status`
+
+- **Kind:** request
+- **Stability:** experimental
+
+This endpoint is intended for clients to understand whether AI is enabled, configured, and what
+privacy settings are in effect.
+
+#### Request params
+
+No params are required; clients should send `{}` or `null`.
+
+#### Response
+
+```json
+{
+  "enabled": true,
+  "configured": true,
+  "providerKind": "http",
+  "model": "default",
+  "privacy": {
+    "localOnly": true,
+    "anonymizeIdentifiers": false,
+    "includeFilePaths": false,
+    "excludedPathsCount": 0
+  },
+  "features": {
+    "completion_ranking": false,
+    "semantic_search": false,
+    "multi_token_completion": false
+  },
+  "cacheEnabled": false,
+  "auditLogEnabled": false,
+  "envOverrides": { "disableAi": false, "disableAiCompletions": false }
+}
+```
+
+Notes:
+
+- `providerKind` values are `snake_case` (it is a direct `serde` encoding of `nova_config::AiProviderKind`).
+- This payload **must not include API keys**.
+
+---
+
+### `nova/ai/models`
+
+- **Kind:** request
+- **Stability:** experimental
+
+List known model identifiers for the configured provider.
+
+#### Request params
+
+No params are required; clients should send `{}` or `null`.
+
+#### Response
+
+```json
+{ "models": ["gpt-4.1", "gpt-4o-mini"] }
+```
+
+Notes:
+
+- Model listing is best-effort; if the provider does not support discovery, Nova returns an empty
+  list rather than failing the request.
+
+#### Errors
+
+- `-32600` if AI is not configured.
+- `-32800` if the request is cancelled.
+
+---
+
+### `nova/ai/codeReview`
+
+- **Kind:** request
+- **Stability:** experimental
+
+Perform a read-only code review of a diff/patch string.
+
+This endpoint is **not** a code-editing operation and does not enforce the server’s code-edit policy
+gating (unlike patch-based endpoints).
+
+#### Request params
+
+```json
+{
+  "workDoneToken": "optional",
+  "diff": "diff --git ...",
+  "uri": "file:///absolute/path/to/Foo.java"
+}
+```
+
+Notes:
+
+- `uri` is optional and is only used for server-side privacy enforcement (`ai.privacy.excluded_paths`).
+- If `uri` is provided and matches an excluded path, Nova omits the diff content before calling the
+  model (it sends a placeholder string instead). This mirrors `nova/ai/explainError` excluded-path
+  behavior (prompt-time omission rather than a hard error).
+
+#### Response
+
+JSON string (the code review, typically markdown).
+
+#### Side effects
+
+- When `workDoneToken` is present, the server emits `$/progress` notifications.
+- The server also emits chunked output via `window/logMessage` (intended for client-side streaming).
+
+#### Errors
+
+- `-32600` if AI is not configured.
+- `-32603` for model/provider failures.
+- `-32800` if the request is cancelled.
 
 #### Privacy: `ai.privacy.excluded_paths`
 

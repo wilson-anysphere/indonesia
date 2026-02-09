@@ -6,6 +6,9 @@ mod support;
 #[path = "suite/ai_code_actions.rs"]
 mod ai_code_actions;
 #[cfg(feature = "ai")]
+#[path = "suite/ai_custom_requests.rs"]
+mod ai_custom_requests;
+#[cfg(feature = "ai")]
 #[path = "suite/ai_completion_more.rs"]
 mod ai_completion_more;
 #[cfg(feature = "ai")]

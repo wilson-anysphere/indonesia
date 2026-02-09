@@ -90,6 +90,9 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
         nova_lsp::MOVE_STATIC_MEMBER_METHOD,
         // AI endpoints
         nova_lsp::AI_EXPLAIN_ERROR_METHOD,
+        nova_lsp::AI_CODE_REVIEW_METHOD,
+        nova_lsp::AI_MODELS_METHOD,
+        nova_lsp::AI_STATUS_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
         nova_lsp::AI_CODE_REVIEW_METHOD,

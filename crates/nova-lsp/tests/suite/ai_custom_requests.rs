@@ -1,0 +1,382 @@
+use httpmock::prelude::*;
+use serde_json::json;
+use std::io::BufReader;
+use std::process::{Command, Stdio};
+use tempfile::TempDir;
+
+use crate::support;
+
+fn spawn_stdio_server(config_path: &std::path::Path) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure a developer's environment doesn't disable AI unexpectedly (tests that *do* want
+        // these overrides set them explicitly).
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp")
+}
+
+fn initialize(child: &mut std::process::Child) -> (std::process::ChildStdin, BufReader<std::process::ChildStdout>) {
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    (stdin, stdout)
+}
+
+fn shutdown(mut child: std::process::Child, mut stdin: std::process::ChildStdin, mut stdout: BufReader<std::process::ChildStdout>) {
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 99, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 99);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_ai_code_review_custom_request_returns_string_and_emits_progress() {
+    let _lock = support::stdio_server_lock();
+
+    let server = MockServer::start();
+    let long = "Nova AI output ".repeat(20_000 / 14 + 32);
+    let completion = long.clone();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200).json_body(json!({ "completion": completion }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            endpoint = format!("{}/complete", server.base_url())
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    // Send the custom request with a work-done token so we can observe `$/progress`.
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": {
+                "workDoneToken": "token",
+                "diff": "diff --git a/Main.java b/Main.java\n+class Main {}\n",
+            }
+        }),
+    );
+
+    let (notifications, resp) = support::drain_notifications_until_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let output = result.as_str().expect("string result").to_string();
+    assert_eq!(output, long);
+
+    assert!(
+        notifications.iter().any(|msg| {
+            msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                && msg
+                    .pointer("/params/value/kind")
+                    .and_then(|k| k.as_str())
+                    == Some("begin")
+        }),
+        "expected work-done progress begin notification"
+    );
+    assert!(
+        notifications.iter().any(|msg| {
+            msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                && msg
+                    .pointer("/params/value/kind")
+                    .and_then(|k| k.as_str())
+                    == Some("end")
+        }),
+        "expected work-done progress end notification"
+    );
+
+    let mut chunks = Vec::<String>::new();
+    for msg in &notifications {
+        if msg.get("method").and_then(|m| m.as_str()) != Some("window/logMessage") {
+            continue;
+        }
+        let Some(text) = msg.pointer("/params/message").and_then(|m| m.as_str()) else {
+            continue;
+        };
+        if !text.starts_with("AI codeReview") {
+            continue;
+        }
+        let (_, chunk) = text
+            .split_once(": ")
+            .expect("chunk messages should contain ': ' delimiter");
+        chunks.push(chunk.to_string());
+    }
+    assert!(
+        chunks.len() > 1,
+        "expected AI output to be chunked into multiple window/logMessage notifications"
+    );
+    assert_eq!(chunks.join(""), output);
+
+    mock.assert();
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_models_custom_request_returns_models_payload() {
+    let _lock = support::stdio_server_lock();
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/models");
+        then.status(200).json_body(json!({
+            "data": [
+                { "id": "alpha" },
+                { "id": "beta" }
+            ]
+        }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "open_ai_compatible"
+url = "{endpoint}"
+model = "alpha"
+
+[ai.privacy]
+local_only = true
+"#,
+            endpoint = server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/models",
+            "params": {}
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let models = result.get("models").and_then(|v| v.as_array()).expect("models array");
+    let models = models
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(models, vec!["alpha", "beta"]);
+
+    mock.assert_hits(1);
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_status_custom_request_reflects_env_override_disable_ai() {
+    let _lock = support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+api_key = "supersecret"
+
+[ai.provider]
+kind = "http"
+url = "http://127.0.0.1:1234/complete"
+model = "default"
+
+[ai.features]
+multi_token_completion = true
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env("NOVA_DISABLE_AI", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/status",
+            "params": {}
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.get("enabled").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(result.get("configured").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        result.pointer("/envOverrides/disableAi").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // Must not leak API keys.
+    assert!(
+        !result.to_string().contains("supersecret"),
+        "expected status payload to omit API keys; got: {result:#?}"
+    );
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_status_custom_request_reflects_env_override_disable_ai_completions() {
+    let _lock = support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+api_key = "supersecret"
+
+[ai.provider]
+kind = "http"
+url = "http://127.0.0.1:1234/complete"
+model = "default"
+
+[ai.features]
+multi_token_completion = true
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env("NOVA_DISABLE_AI_COMPLETIONS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/status",
+            "params": {}
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.get("enabled").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(result.get("configured").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        result
+            .pointer("/envOverrides/disableAiCompletions")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/multi_token_completion")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Must not leak API keys.
+    assert!(
+        !result.to_string().contains("supersecret"),
+        "expected status payload to omit API keys; got: {result:#?}"
+    );
+
+    shutdown(child, stdin, stdout);
+}

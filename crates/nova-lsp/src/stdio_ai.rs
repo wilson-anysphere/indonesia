@@ -71,6 +71,37 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
         cancel.clone(),
       )
     }
+    nova_lsp::AI_CODE_REVIEW_METHOD => {
+      #[derive(Debug, Deserialize)]
+      struct CodeReviewArgs {
+        diff: String,
+        #[serde(default)]
+        uri: Option<String>,
+      }
+
+      let params: AiRequestParams<CodeReviewArgs> =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+      run_ai_code_review(
+        params.args.diff,
+        params.args.uri,
+        params.work_done_token,
+        state,
+        rpc_out,
+        cancel.clone(),
+      )
+    }
+    nova_lsp::AI_MODELS_METHOD => {
+      // Allow `params` to be `{}` or `null`.
+      let _: Option<serde_json::Value> =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+      run_ai_models(state, cancel.clone())
+    }
+    nova_lsp::AI_STATUS_METHOD => {
+      // Allow `params` to be `{}` or `null`.
+      let _: Option<serde_json::Value> =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+      Ok(ai_status_payload(state))
+    }
     nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
       let params: AiRequestParams<GenerateMethodBodyArgs> =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
@@ -106,6 +137,117 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     }
     _ => Err((-32601, format!("Method not found: {method}"))),
   }
+}
+
+pub(super) fn run_ai_code_review(
+  diff: String,
+  uri: Option<String>,
+  work_done_token: Option<serde_json::Value>,
+  state: &mut ServerState,
+  rpc_out: &impl RpcOut,
+  cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+  let ai = state
+    .ai
+    .as_ref()
+    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+  let runtime = state
+    .runtime
+    .as_ref()
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+  let uri_path = uri.as_deref().and_then(path_from_uri);
+  let excluded = uri_path
+    .as_deref()
+    .is_some_and(|path| is_ai_excluded_path(state, path));
+
+  // Mirror `explainError` excluded-path behavior: if the client provides a URI that is blocked by
+  // `ai.privacy.excluded_paths`, omit the diff content before sending anything to the model.
+  let diff = if excluded {
+    "[diff omitted due to excluded_paths]".to_string()
+  } else {
+    diff
+  };
+
+  send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Code review")?;
+  send_progress_report(
+    rpc_out,
+    work_done_token.as_ref(),
+    "Calling model…",
+    None,
+  )?;
+  send_log_message(rpc_out, "AI: reviewing diff…")?;
+
+  let output = runtime
+    .block_on(ai.code_review(&diff, cancel.clone()))
+    .map_err(|e| {
+      let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+      (-32603, e.to_string())
+    })?;
+
+  send_log_message(rpc_out, "AI: review ready")?;
+  send_ai_output(rpc_out, "AI codeReview", &output)?;
+  send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
+  Ok(serde_json::Value::String(output))
+}
+
+pub(super) fn run_ai_models(
+  state: &mut ServerState,
+  cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+  let ai = state
+    .ai
+    .as_ref()
+    .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+  let runtime = state
+    .runtime
+    .as_ref()
+    .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+  let llm = ai.llm();
+  let models = runtime
+    .block_on(llm.list_models(cancel))
+    // Best-effort: provider model listing is optional and may not be implemented (or may return
+    // a 404/unsupported response). Return an empty list rather than failing the request.
+    .unwrap_or_default();
+
+  Ok(json!({ "models": models }))
+}
+
+fn env_truthy(key: &str) -> bool {
+  matches!(
+    std::env::var(key).as_deref(),
+    Ok("1") | Ok("true") | Ok("TRUE")
+  )
+}
+
+fn ai_status_payload(state: &ServerState) -> serde_json::Value {
+  let disable_ai = env_truthy("NOVA_DISABLE_AI");
+  let disable_ai_completions = env_truthy("NOVA_DISABLE_AI_COMPLETIONS");
+
+  json!({
+    "enabled": state.ai_config.enabled,
+    "configured": state.ai.is_some(),
+    "providerKind": &state.ai_config.provider.kind,
+    "model": &state.ai_config.provider.model,
+    "privacy": {
+      "localOnly": state.ai_config.privacy.local_only,
+      "anonymizeIdentifiers": state.privacy.anonymize_identifiers,
+      "includeFilePaths": state.privacy.include_file_paths,
+      "excludedPathsCount": state.ai_config.privacy.excluded_paths.len(),
+    },
+    "features": {
+      "completion_ranking": state.ai_config.features.completion_ranking,
+      "semantic_search": state.ai_config.features.semantic_search,
+      "multi_token_completion": state.ai_config.features.multi_token_completion,
+    },
+    "cacheEnabled": state.ai_config.cache_enabled,
+    "auditLogEnabled": state.ai_config.audit_log.enabled,
+    "envOverrides": {
+      "disableAi": disable_ai,
+      "disableAiCompletions": disable_ai_completions,
+    }
+  })
 }
 
 struct LlmPromptCompletionProvider<'a> {
