@@ -28,6 +28,26 @@ fn sample_diff() -> &'static str {
 }
 
 #[test]
+fn ai_review_help_mentions_diff_sources_and_path_flag() {
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .args(["ai", "review", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for flag in ["--path", "--diff-file", "--git", "--staged", "--json"] {
+        assert!(
+            stdout.contains(flag),
+            "expected help to mention {flag}, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn ai_review_reads_diff_from_stdin_and_prints_review() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
