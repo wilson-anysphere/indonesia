@@ -173,6 +173,7 @@ impl EmbeddingsClient for LocalNeuralEmbeddingsClient {
     async fn embed(
         &self,
         input: &[String],
+        _kind: EmbeddingInputKind,
         cancel: CancellationToken,
     ) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
