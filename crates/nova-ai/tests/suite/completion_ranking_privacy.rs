@@ -2,13 +2,14 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
-use nova_ai::{AiClient, ChatMessage, ChatRequest};
+use nova_ai::{AiClient, CompletionRanker, LlmCompletionRanker};
 use nova_config::{AiConfig, AiProviderKind, AiPrivacyConfig};
 use serde_json::Value;
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use url::Url;
+
+use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 
 fn spawn_server<F, Fut>(handler: F) -> (SocketAddr, JoinHandle<()>)
 where
@@ -54,6 +55,12 @@ fn http_config(url: Url) -> AiConfig {
     cfg.privacy = AiPrivacyConfig {
         local_only: false,
         anonymize_identifiers: Some(true),
+        // Regression coverage: identifier anonymization should be sufficient to prevent leaks.
+        // If completion candidates ever get serialized as JSON strings (inside fences) or moved
+        // outside fenced blocks, disabling string-literal redaction would leak raw identifiers.
+        redact_sensitive_strings: Some(false),
+        redact_numeric_literals: Some(false),
+        strip_or_redact_comments: Some(false),
         ..AiPrivacyConfig::default()
     };
     cfg.cache_enabled = false;
@@ -86,43 +93,21 @@ async fn completion_ranking_prompt_does_not_leak_identifiers_when_anonymized() {
 
     let (addr, handle) = spawn_server(handler);
     let cfg = http_config(Url::parse(&format!("http://{addr}/complete")).unwrap());
-    let client = AiClient::from_config(&cfg).expect("AiClient builds");
+    let client = Arc::new(AiClient::from_config(&cfg).expect("AiClient builds"));
+    let ranker = LlmCompletionRanker::new(client);
 
-    // A completion-ranking prompt that includes obviously sensitive identifiers *inside fenced
-    // blocks* so AiClient's privacy filter can anonymize them. Candidate labels are deliberately
-    // unquoted: if they were JSON strings in a fenced block, the anonymizer would treat them as
-    // string literals and leak raw identifiers.
-    let ranking_prompt = r#"You are Nova, a Java completion ranking engine.
+    let ctx = CompletionContext::new(
+        "my",
+        "SecretService svc = new SecretService();\nsvc.",
+    );
+    let candidates = vec![
+        CompletionItem::new("mySecretMethod", CompletionItemKind::Method),
+        CompletionItem::new("mySecretField", CompletionItemKind::Field),
+    ];
 
-Code context:
-```java
-class SecretService {
-  void run() {
-    mySecretMethod();
-  }
-}
-```
-
-Candidates (candidate_id label):
-```text
-101 mySecretMethod
-102 mySecretField
-```
-
-Return JSON only: {"best_candidate_id": 0}
-"#;
-
-    client
-        .chat(
-            ChatRequest {
-                messages: vec![ChatMessage::user(ranking_prompt)],
-                max_tokens: Some(16),
-                temperature: Some(0.0),
-            },
-            CancellationToken::new(),
-        )
-        .await
-        .expect("chat succeeds");
+    // We don't care about the returned ordering for this regression test, only that the request is
+    // sent with a sanitized prompt.
+    let _ = ranker.rank_completions(&ctx, candidates).await;
 
     let prompt = captured_prompt
         .lock()
@@ -139,7 +124,7 @@ Return JSON only: {"best_candidate_id": 0}
     }
 
     // Numeric candidate IDs must remain intact so the local caller can map the model's output.
-    for id in ["101", "102"] {
+    for id in ["0:", "1:"] {
         assert!(
             prompt.contains(id),
             "expected provider prompt to contain numeric candidate id {id:?}\n{prompt}"
@@ -154,4 +139,3 @@ Return JSON only: {"best_candidate_id": 0}
 
     handle.abort();
 }
-
