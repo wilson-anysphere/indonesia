@@ -882,6 +882,28 @@ retry_max_backoff_ms = 0
 }
 
 #[test]
+fn validates_ai_provider_temperature_is_non_negative() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+temperature = -1
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.temperature".to_string(),
+            message: "must be >= 0".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_feature_timeouts_are_positive() {
     let text = r#"
 [ai]
