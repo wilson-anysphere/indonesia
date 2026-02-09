@@ -2832,9 +2832,11 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     const folder = workspaceKey ? workspaceFolderForKey(workspaceKey) : undefined;
+    const reason = workspaceKey ? safeModeByWorkspaceKey.get(workspaceKey)?.reason : undefined;
+    const reasonSuffix = reason ? ` (${formatSafeModeReason(reason)})` : '';
     const workspaceSuffix = workspaceKey ? ` in ${workspaceNameForKey(workspaceKey)}` : '';
     const picked = await vscode.window.showWarningMessage(
-      `Nova AI: ${featureLabel} is unavailable because nova-lsp is running in safe mode${workspaceSuffix}. Generate a bug report to help diagnose the issue.`,
+      `Nova AI: ${featureLabel} is unavailable because nova-lsp is running in safe mode${workspaceSuffix}${reasonSuffix}. Generate a bug report to help diagnose the issue.`,
       'Generate Bug Report',
       'Show Safe Mode',
     );
