@@ -1013,8 +1013,9 @@ These endpoints are currently implemented in the `nova-lsp` **binary**
 (`crates/nova-lsp/src/main.rs`).
 
 Most AI endpoints require a configured AI provider (`ai.enabled=true` in `nova.toml` or via the
-legacy `NOVA_AI_*` env vars). `nova/ai/status` is always available and returns a non-sensitive
-snapshot of the server’s effective AI state.
+legacy `NOVA_AI_*` env vars). When configuring AI via env vars, `NOVA_AI_EXCLUDED_PATHS` can be used
+to set `ai.privacy.excluded_paths` (comma/newline separated glob list). `nova/ai/status` is always
+available and returns a non-sensitive snapshot of the server’s effective AI state.
 
 Read-only AI endpoints (`nova/ai/explainError`, `nova/ai/codeReview`, `nova/ai/models`) return a
 result payload without applying edits. Patch-based endpoints (`nova/ai/generateMethodBody`,

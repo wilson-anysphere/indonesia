@@ -503,6 +503,12 @@ Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never 
 `ai.privacy.excluded_paths` is a list of glob patterns for files whose contents must **never** be
 sent to an LLM provider (local or cloud).
 
+When using the legacy env-var AI configuration mode (`NOVA_AI_PROVIDER=...`), this list can be set
+server-side via:
+
+- `NOVA_AI_EXCLUDED_PATHS` — a comma- or newline-separated list of glob patterns (whitespace trimmed;
+  empty entries ignored).
+
 **Path matching semantics:**
 
 - Patterns are intended to be **workspace-relative**. Prefer `src/**`-style globs (or more specific

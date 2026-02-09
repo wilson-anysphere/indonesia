@@ -1192,6 +1192,20 @@ pub(super) fn detect_empty_method_signature(selected: &str) -> Option<String> {
   Some(trimmed[..open].trim().to_string())
 }
 
+fn parse_excluded_paths_env_var(value: &str) -> Vec<String> {
+  // `NOVA_AI_EXCLUDED_PATHS` parsing rules:
+  // - Split on commas and newlines (both act as separators).
+  // - Trim whitespace around each entry.
+  // - Ignore empty entries.
+  // - Preserve the remaining pattern verbatim (do not normalize path separators).
+  value
+    .split(|c| c == ',' || c == '\n')
+    .map(|part| part.trim())
+    .filter(|part| !part.is_empty())
+    .map(|part| part.to_string())
+    .collect()
+}
+
 pub(super) fn load_ai_config_from_env(
 ) -> Result<Option<(nova_config::AiConfig, nova_ai::PrivacyMode)>, String> {
   let provider = match std::env::var("NOVA_AI_PROVIDER") {
@@ -1233,6 +1247,9 @@ pub(super) fn load_ai_config_from_env(
   //   (default: enabled, even in local-only mode).
   // - `NOVA_AI_INCLUDE_FILE_PATHS=1|true|TRUE` allows including paths in prompts
   //   (default: disabled).
+  // - `NOVA_AI_EXCLUDED_PATHS` configures `ai.privacy.excluded_paths` as a list of glob patterns.
+  //   Parsing: comma- or newline-separated; whitespace trimmed; empty entries ignored; patterns are
+  //   preserved verbatim (no path separator normalization).
   //
   // Code-editing (patch/workspace-edit) opt-ins:
   // - `NOVA_AI_LOCAL_ONLY=1|true|TRUE` forces `ai.privacy.local_only=true` regardless of
@@ -1274,6 +1291,10 @@ pub(super) fn load_ai_config_from_env(
   let redact_sensitive_strings = optional_bool("NOVA_AI_REDACT_SENSITIVE_STRINGS");
   let redact_numeric_literals = optional_bool("NOVA_AI_REDACT_NUMERIC_LITERALS");
   let strip_or_redact_comments = optional_bool("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
+  let excluded_paths = std::env::var("NOVA_AI_EXCLUDED_PATHS")
+    .ok()
+    .map(|value| parse_excluded_paths_env_var(&value))
+    .unwrap_or_default();
 
   let mut cfg = nova_config::AiConfig::default();
   cfg.enabled = true;
@@ -1288,6 +1309,7 @@ pub(super) fn load_ai_config_from_env(
   cfg.privacy.redact_sensitive_strings = redact_sensitive_strings;
   cfg.privacy.redact_numeric_literals = redact_numeric_literals;
   cfg.privacy.strip_or_redact_comments = strip_or_redact_comments;
+  cfg.privacy.excluded_paths = excluded_paths;
   cfg.privacy.allow_cloud_code_edits = allow_cloud_code_edits;
   cfg.privacy.allow_code_edits_without_anonymization = allow_code_edits_without_anonymization;
 
@@ -1422,6 +1444,7 @@ mod tests {
       EnvVarGuard::remove("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION");
     let _anonymize = EnvVarGuard::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
     let _include_file_paths = EnvVarGuard::remove("NOVA_AI_INCLUDE_FILE_PATHS");
+    let _excluded_paths = EnvVarGuard::remove("NOVA_AI_EXCLUDED_PATHS");
 
     let _redact_sensitive_strings = EnvVarGuard::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
     let _redact_numeric_literals = EnvVarGuard::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
@@ -1437,7 +1460,41 @@ mod tests {
     assert_eq!(cfg.privacy.redact_sensitive_strings, None);
     assert_eq!(cfg.privacy.redact_numeric_literals, None);
     assert_eq!(cfg.privacy.strip_or_redact_comments, None);
+    assert!(cfg.privacy.excluded_paths.is_empty());
     assert!(!privacy.include_file_paths);
+
+    // `NOVA_AI_EXCLUDED_PATHS` supports comma-separated values.
+    {
+      let _excluded_paths = EnvVarGuard::set("NOVA_AI_EXCLUDED_PATHS", "src/secrets/**,gen/**");
+      let (cfg, _privacy) = load_ai_config_from_env()
+        .expect("load_ai_config_from_env")
+        .expect("config should be present");
+      assert_eq!(
+        cfg.privacy.excluded_paths,
+        vec!["src/secrets/**".to_string(), "gen/**".to_string()]
+      );
+    }
+
+    // `NOVA_AI_EXCLUDED_PATHS` supports newline-separated values.
+    {
+      let _excluded_paths = EnvVarGuard::set("NOVA_AI_EXCLUDED_PATHS", "src/secrets/**\ngen/**");
+      let (cfg, _privacy) = load_ai_config_from_env()
+        .expect("load_ai_config_from_env")
+        .expect("config should be present");
+      assert_eq!(
+        cfg.privacy.excluded_paths,
+        vec!["src/secrets/**".to_string(), "gen/**".to_string()]
+      );
+    }
+
+    // Empty/whitespace-only inputs yield an empty list.
+    {
+      let _excluded_paths = EnvVarGuard::set("NOVA_AI_EXCLUDED_PATHS", "  \n\n,  ,\n");
+      let (cfg, _privacy) = load_ai_config_from_env()
+        .expect("load_ai_config_from_env")
+        .expect("config should be present");
+      assert!(cfg.privacy.excluded_paths.is_empty());
+    }
 
     // Explicit opt-in for patch-based code edits (cloud-mode gating).
     {

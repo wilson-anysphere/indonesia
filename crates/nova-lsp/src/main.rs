@@ -569,6 +569,7 @@ mod tests {
     use super::*;
     use crate::test_support::{EnvVarGuard, ENV_LOCK};
     use lsp_types::TextDocumentPositionParams;
+    use nova_db::Database;
     use nova_db::SourceDatabase;
     use tempfile::TempDir;
 
