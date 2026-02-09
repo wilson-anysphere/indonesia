@@ -21,6 +21,7 @@ set -euo pipefail
 #   NOVA_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
 #   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow unscoped `cargo test` (not recommended)
+#   NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Respect RUSTUP_TOOLCHAIN even if rust-toolchain.toml exists (rare)
 
 usage() {
   cat <<'EOF'
@@ -40,10 +41,13 @@ Environment:
   NOVA_CARGO_LOCK_DIR     Lock directory
   NOVA_RUST_TEST_THREADS  RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow running unscoped `cargo test` (not recommended)
+  NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1  Respect RUSTUP_TOOLCHAIN (ignore rust-toolchain.toml) (rare)
 
 Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
+  - This wrapper ignores RUSTUP_TOOLCHAIN by default so rustup honors rust-toolchain.toml.
+    To override: pass +<toolchain> or set NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1.
   - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
     To override (rare): set `NOVA_CARGO_ALLOW_UNSCOPED_TEST=1` and re-run.
   - For faster iteration, further scope tests with --lib, --bin <name>, or --test=<name>.
@@ -240,6 +244,20 @@ run_cargo() {
     if [[ $# -lt 1 ]]; then
       echo "missing cargo subcommand after toolchain spec" >&2
       return 2
+    fi
+  fi
+
+  # Prefer the repo's pinned toolchain (`rust-toolchain.toml`) over a global
+  # `RUSTUP_TOOLCHAIN` setting. This avoids surprising build failures when the
+  # caller's environment forces an older toolchain.
+  #
+  # Escape hatches:
+  #   - Pass an explicit `+<toolchain>` arg (handled above)
+  #   - Set NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN=1 to preserve the env var
+  if [[ -z "${toolchain_arg}" && -z "${NOVA_CARGO_KEEP_RUSTUP_TOOLCHAIN:-}" ]]; then
+    if [[ -n "${RUSTUP_TOOLCHAIN+x}" ]]; then
+      echo "cargo_agent: ignoring RUSTUP_TOOLCHAIN in favor of rust-toolchain.toml" >&2
+      unset RUSTUP_TOOLCHAIN
     fi
   fi
 
