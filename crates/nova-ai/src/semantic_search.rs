@@ -452,18 +452,51 @@ mod embeddings {
         });
     }
 
-    fn ensure_rayon_global_pool() {
-        static INIT: OnceLock<()> = OnceLock::new();
-        INIT.get_or_init(|| {
-            // `hnsw_rs` uses rayon internally. Rayon's default global pool size is based on the
-            // host CPU count, which can exceed thread and memory budgets in constrained
-            // environments (CI sandboxes, editor/LSP test harnesses, etc.). Initialize the
-            // global pool with a conservative thread count so embedding-backed semantic search
-            // remains usable everywhere.
-            let _ = rayon::ThreadPoolBuilder::new()
+    enum HnswRayonPool {
+        /// A dedicated pool used for `hnsw_rs` rebuild/search.
+        ///
+        /// `hnsw_rs` uses Rayon internally; running it inside our own pool keeps parallelism
+        /// bounded in resource-constrained environments (CI sandboxes, editor/LSP test harnesses)
+        /// and avoids mutating Rayon's process-global pool (a surprising library side effect that
+        /// can interfere with unrelated Rayon users in the host process).
+        Rayon(rayon::ThreadPool),
+        /// Fallback when thread creation fails.
+        ///
+        /// In this mode we execute the closure directly, meaning `hnsw_rs` will use Rayon's global
+        /// pool. This preserves functional correctness at the cost of unbounded parallelism.
+        Inline,
+    }
+
+    impl HnswRayonPool {
+        fn new() -> Self {
+            match rayon::ThreadPoolBuilder::new()
+                // Keep CI/editor sandboxes safe by default.
                 .num_threads(1)
-                .build_global();
-        });
+                .thread_name(|idx| format!("nova-ai-embeddings-{idx}"))
+                .build()
+            {
+                Ok(pool) => Self::Rayon(pool),
+                Err(err) => {
+                    warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "failed to create dedicated Rayon pool for embedding semantic search; falling back to Rayon's global pool"
+                    );
+                    Self::Inline
+                }
+            }
+        }
+
+        fn install<OP, R>(&self, op: OP) -> R
+        where
+            OP: FnOnce() -> R + Send,
+            R: Send,
+        {
+            match self {
+                Self::Rayon(pool) => pool.install(op),
+                Self::Inline => op(),
+            }
+        }
     }
 
     pub trait Embedder: Send + Sync {
@@ -1453,6 +1486,7 @@ mod embeddings {
         embedder: E,
         docs_by_path: BTreeMap<PathBuf, Vec<EmbeddedDoc>>,
         index: Mutex<EmbeddedIndex>,
+        hnsw_pool: HnswRayonPool,
         ef_search: usize,
         max_memory_bytes: Option<usize>,
         embedding_bytes_used: usize,
@@ -1461,11 +1495,11 @@ mod embeddings {
 
     impl<E: Embedder> EmbeddingSemanticSearch<E> {
         pub fn new(embedder: E) -> Self {
-            ensure_rayon_global_pool();
             Self {
                 embedder,
                 docs_by_path: BTreeMap::new(),
                 index: Mutex::new(EmbeddedIndex::empty()),
+                hnsw_pool: HnswRayonPool::new(),
                 ef_search: 64,
                 max_memory_bytes: None,
                 embedding_bytes_used: 0,
@@ -1551,85 +1585,96 @@ mod embeddings {
         }
 
         fn invalidate_index(&self) {
-            let mut index = self.lock_index();
-            index.hnsw = None;
-            index.dims = 0;
-            index.id_to_doc.clear();
-            index.max_elements = 0;
-            index.dirty = true;
+            // Dropping `hnsw_rs` structures can trigger Rayon parallel iterators. Ensure we run the
+            // destructor inside our dedicated pool so we don't accidentally initialize/use the
+            // process-global Rayon pool (which may try to spawn many threads and fail in
+            // constrained environments).
+            let old_hnsw = {
+                let mut index = self.lock_index();
+                let old_hnsw = index.hnsw.take();
+                index.dims = 0;
+                index.id_to_doc.clear();
+                index.max_elements = 0;
+                index.dirty = true;
+                old_hnsw
+            };
+            self.hnsw_pool.install(|| drop(old_hnsw));
         }
 
         fn rebuild_index_locked(&self, index: &mut EmbeddedIndex) {
-            #[cfg(any(test, debug_assertions))]
-            {
-                index.rebuild_count = index.rebuild_count.saturating_add(1);
-            }
+            let index: &mut EmbeddedIndex = index;
+            self.hnsw_pool.install(|| {
+                #[cfg(any(test, debug_assertions))]
+                {
+                    index.rebuild_count = index.rebuild_count.saturating_add(1);
+                }
 
-            index.hnsw = None;
-            index.dims = 0;
-            index.id_to_doc.clear();
-            index.max_elements = 0;
+                index.hnsw = None;
+                index.dims = 0;
+                index.id_to_doc.clear();
+                index.max_elements = 0;
 
-            // Pre-pass: determine target dimensionality (first non-empty embedding) and count how
-            // many documents will actually be inserted. HNSW pre-allocates internal buffers based
-            // on `max_elements`, so using the raw extracted-doc count can over-allocate when some
-            // embeddings are empty or dimension-mismatched.
-            let mut dims = 0usize;
-            let mut insert_count = 0usize;
-            for docs in self.docs_by_path.values() {
-                for doc in docs {
-                    if doc.embedding.is_empty() {
-                        continue;
-                    }
-                    if dims == 0 {
-                        dims = doc.embedding.len();
-                    }
-                    if doc.embedding.len() == dims {
-                        insert_count += 1;
+                // Pre-pass: determine target dimensionality (first non-empty embedding) and count how
+                // many documents will actually be inserted. HNSW pre-allocates internal buffers based
+                // on `max_elements`, so using the raw extracted-doc count can over-allocate when some
+                // embeddings are empty or dimension-mismatched.
+                let mut dims = 0usize;
+                let mut insert_count = 0usize;
+                for docs in self.docs_by_path.values() {
+                    for doc in docs {
+                        if doc.embedding.is_empty() {
+                            continue;
+                        }
+                        if dims == 0 {
+                            dims = doc.embedding.len();
+                        }
+                        if doc.embedding.len() == dims {
+                            insert_count += 1;
+                        }
                     }
                 }
-            }
 
-            if dims == 0 || insert_count == 0 {
+                if dims == 0 || insert_count == 0 {
+                    index.dirty = false;
+                    return;
+                }
+
+                index.max_elements = insert_count;
+                let mut hnsw = Hnsw::new(
+                    /*max_nb_connection=*/ 16,
+                    /*max_elements=*/ insert_count,
+                    /*nb_layer=*/ 16,
+                    /*ef_construction=*/ 200,
+                    DistCosine {},
+                );
+
+                let mut next_id = 0usize;
+                index.id_to_doc.reserve(insert_count);
+                for (path, docs) in &self.docs_by_path {
+                    for (local_idx, doc) in docs.iter().enumerate() {
+                        if doc.embedding.is_empty() {
+                            continue;
+                        }
+
+                        if doc.embedding.len() != dims || dims == 0 {
+                            continue;
+                        }
+
+                        hnsw.insert((&doc.embedding, next_id));
+                        index.id_to_doc.push((path.clone(), local_idx));
+                        next_id += 1;
+                    }
+                }
+
+                debug_assert_eq!(next_id, insert_count);
+                debug_assert_eq!(index.id_to_doc.len(), insert_count);
+
+                hnsw.set_searching_mode(true);
+
+                index.hnsw = Some(hnsw);
+                index.dims = dims;
                 index.dirty = false;
-                return;
-            }
-
-            index.max_elements = insert_count;
-            let mut hnsw = Hnsw::new(
-                /*max_nb_connection=*/ 16,
-                /*max_elements=*/ insert_count,
-                /*nb_layer=*/ 16,
-                /*ef_construction=*/ 200,
-                DistCosine {},
-            );
-
-            let mut next_id = 0usize;
-            index.id_to_doc.reserve(insert_count);
-            for (path, docs) in &self.docs_by_path {
-                for (local_idx, doc) in docs.iter().enumerate() {
-                    if doc.embedding.is_empty() {
-                        continue;
-                    }
-
-                    if doc.embedding.len() != dims || dims == 0 {
-                        continue;
-                    }
-
-                    hnsw.insert((&doc.embedding, next_id));
-                    index.id_to_doc.push((path.clone(), local_idx));
-                    next_id += 1;
-                }
-            }
-
-            debug_assert_eq!(next_id, insert_count);
-            debug_assert_eq!(index.id_to_doc.len(), insert_count);
-
-            hnsw.set_searching_mode(true);
-
-            index.hnsw = Some(hnsw);
-            index.dims = dims;
-            index.dirty = false;
+            });
         }
 
         fn docs_for_file(
@@ -1665,8 +1710,14 @@ mod embeddings {
         fn clear(&mut self) {
             self.docs_by_path.clear();
             self.embedding_bytes_used = 0;
-            let mut index = self.lock_index();
-            *index = EmbeddedIndex::empty();
+            // See `invalidate_index` for why we drop the old HNSW index inside our dedicated pool.
+            let old_hnsw = {
+                let mut index = self.lock_index();
+                let old_hnsw = index.hnsw.take();
+                *index = EmbeddedIndex::empty();
+                old_hnsw
+            };
+            self.hnsw_pool.install(|| drop(old_hnsw));
         }
 
         fn index_project(&mut self, db: &dyn ProjectDatabase) {
@@ -1911,7 +1962,9 @@ mod embeddings {
 
             let mut results = Vec::new();
 
-            let neighbours = hnsw.search(&query_embedding, 50, self.ef_search);
+            let neighbours = self
+                .hnsw_pool
+                .install(|| hnsw.search(&query_embedding, 50, self.ef_search));
             for n in neighbours {
                 let Some((path, local_idx)) = index.id_to_doc.get(n.d_id) else {
                     continue;
@@ -1979,6 +2032,20 @@ mod embeddings {
             });
             results.truncate(50);
             results
+        }
+    }
+
+    impl<E: Embedder> Drop for EmbeddingSemanticSearch<E> {
+        fn drop(&mut self) {
+            // `hnsw_rs` uses Rayon internally, including in some destructors. Make sure any
+            // remaining HNSW state is dropped inside our dedicated pool so we don't accidentally
+            // initialize or depend on the process-global Rayon pool.
+            let old_hnsw = {
+                let mut index = self.lock_index();
+                index.hnsw.take()
+            };
+
+            self.hnsw_pool.install(|| drop(old_hnsw));
         }
     }
 
