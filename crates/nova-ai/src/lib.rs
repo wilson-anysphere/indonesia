@@ -205,6 +205,9 @@ mod tests {
 
     #[test]
     fn ranking_times_out_returns_fallback() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         struct SlowRanker;
 
         impl CompletionRanker for SlowRanker {
@@ -278,6 +281,9 @@ mod tests {
 
     #[test]
     fn ranking_panics_return_fallback() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         struct PanicRanker;
 
         impl CompletionRanker for PanicRanker {
