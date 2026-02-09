@@ -38,6 +38,11 @@ pub enum AiCodeAction {
         ///
         /// This comes from `GenerateMethodBodyArgs.context`.
         context: Option<String>,
+        /// Optional pre-built prompt context (e.g. enriched with semantic-search related code).
+        ///
+        /// When provided, this replaces the default context extracted from the destination file
+        /// and `insert_range`.
+        prompt_context: Option<ContextRequest>,
     },
     GenerateTest {
         file: String,
@@ -54,6 +59,12 @@ pub enum AiCodeAction {
         source_snippet: Option<String>,
         /// Optional surrounding context (best-effort, e.g. enclosing class).
         context: Option<String>,
+        /// Optional pre-built prompt context (e.g. extracted from the source-under-test selection,
+        /// enriched with semantic-search related code).
+        ///
+        /// When provided, this replaces the default context extracted from the destination file
+        /// and `insert_range`.
+        prompt_context: Option<ContextRequest>,
     },
 }
 
@@ -132,6 +143,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                 insert_range,
                 method_signature,
                 context,
+                prompt_context,
             } => {
                 if let Some(progress) = progress {
                     progress.report(CodegenProgressEvent {
@@ -148,6 +160,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     &self.privacy,
                     &method_signature,
                     context.as_deref(),
+                    prompt_context,
                 );
 
                 let mut config = self.config.clone();
@@ -181,6 +194,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                 source_file,
                 source_snippet,
                 context,
+                prompt_context,
             } => {
                 if let Some(progress) = progress {
                     progress.report(CodegenProgressEvent {
@@ -199,6 +213,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     /*source_file=*/ source_file.as_deref(),
                     /*source_snippet=*/ source_snippet.as_deref(),
                     /*context=*/ context.as_deref(),
+                    prompt_context,
                 );
 
                 let mut config = self.config.clone();
@@ -243,6 +258,7 @@ fn build_generate_method_body_prompt(
     privacy: &AiPrivacyConfig,
     method_signature: &str,
     context: Option<&str>,
+    prompt_context: Option<ContextRequest>,
 ) -> String {
     let mut preamble = String::new();
 
@@ -265,6 +281,7 @@ fn build_generate_method_body_prompt(
         workspace,
         root_uri,
         privacy,
+        prompt_context,
     );
 
     if preamble.trim().is_empty() {
@@ -284,6 +301,7 @@ fn build_generate_tests_prompt(
     source_file: Option<&str>,
     source_snippet: Option<&str>,
     context: Option<&str>,
+    prompt_context: Option<ContextRequest>,
 ) -> String {
     let mut preamble = String::new();
     if let Some(target) = target.filter(|t| !t.trim().is_empty()) {
@@ -314,6 +332,7 @@ fn build_generate_tests_prompt(
         workspace,
         root_uri,
         privacy,
+        prompt_context,
     );
 
     if preamble.trim().is_empty() {
@@ -440,10 +459,15 @@ fn build_insert_prompt(
     workspace: &VirtualWorkspace,
     root_uri: &Uri,
     privacy: &AiPrivacyConfig,
+    prompt_context: Option<ContextRequest>,
 ) -> String {
     let contents = workspace.get(file).unwrap_or("");
     let annotated = annotate_file_with_range_markers(contents, insert_range);
-    let context = build_prompt_context(root_uri, file, contents, insert_range, privacy)
+    let context_text = match prompt_context {
+        Some(req) => Some(ContextBuilder::new().build(req).text),
+        None => build_prompt_context(root_uri, file, contents, insert_range, privacy),
+    };
+    let context = context_text
         .map(|ctx| format!("\nExtracted context:\n{ctx}\n"))
         .unwrap_or_default();
 
@@ -749,6 +773,10 @@ mod tests {
             },
             method_signature: "public int add(int a, int b)".into(),
             context: None,
+            prompt_context: None,
+            method_signature: "public int add(int a, int b)".into(),
+            context: None,
+            prompt_context: None,
         }
     }
 
@@ -826,6 +854,7 @@ mod tests {
             &workspace,
             &root_uri,
             &AiPrivacyConfig::default(),
+            None,
         );
 
         assert!(
@@ -1022,6 +1051,7 @@ mod tests {
                     source_file: None,
                     source_snippet: None,
                     context: None,
+                    prompt_context: None,
                 },
                 &workspace,
                 &root_uri(),
@@ -1108,6 +1138,7 @@ mod tests {
             source_file: None,
             source_snippet: None,
             context: None,
+            prompt_context: None,
         };
 
         let err = executor
@@ -1168,6 +1199,7 @@ mod tests {
             source_file: None,
             source_snippet: None,
             context: None,
+            prompt_context: None,
         };
 
         let err = executor

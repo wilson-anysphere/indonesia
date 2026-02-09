@@ -539,6 +539,19 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
   let insert_range =
     insert_range_for_method_body(&source, selection).map_err(|message| (-32602, message, None))?;
 
+  let prompt_context = if state.ai_config.enabled && state.ai_config.features.semantic_search {
+    Some(build_context_request_from_args(
+      state,
+      Some(uri_string),
+      Some(selection),
+      method_signature.clone(),
+      context.clone(),
+      /*include_doc_comments=*/ true,
+    ))
+  } else {
+    None
+  };
+
   let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source)]);
 
   let llm = ai.llm();
@@ -569,6 +582,7 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
         insert_range,
         method_signature,
         context,
+        prompt_context,
       },
       &workspace,
       &root_uri,
@@ -652,6 +666,19 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
   // produce deterministic errors when clients send malformed ranges.
   let selection_range =
     insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message, None))?;
+
+  let prompt_context = if state.ai_config.enabled && state.ai_config.features.semantic_search {
+    Some(build_context_request_from_args(
+      state,
+      Some(uri_string),
+      Some(selection),
+      target.clone(),
+      context.clone(),
+      /*include_doc_comments=*/ true,
+    ))
+  } else {
+    None
+  };
 
   let target = Some(target);
   let source_file = Some(file_rel.clone());
@@ -744,6 +771,7 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         source_file,
         source_snippet,
         context,
+        prompt_context,
       },
       &workspace,
       &root_uri,
