@@ -9,7 +9,7 @@ use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, Virtua
 use nova_ai::CancellationToken;
 use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError, ExcludedPathMatcher};
 use nova_config::AiPrivacyConfig;
-use nova_core::{LineIndex, TextRange, TextSize};
+use nova_core::{LineIndex, Position as CorePosition, TextRange, TextSize};
 use nova_db::Database;
 use nova_db::InMemoryFileStore;
 use nova_format::FormatConfig;
@@ -65,11 +65,25 @@ impl ValidationConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct EditRangeSafetyConfig {
+    /// Workspace-relative file path (forward slashes).
+    pub file: String,
+    /// LSP-compatible UTF-16 range (half-open) in the *original* document to which edits must be
+    /// confined.
+    pub allowed_range: nova_ai::patch::Range,
+}
+
+#[derive(Debug, Clone)]
 pub struct CodeGenerationConfig {
     pub safety: PatchSafetyConfig,
     pub validation: ValidationConfig,
     pub max_repair_attempts: usize,
     pub allow_repair: bool,
+    /// Optional enforcement that patches only edit within a specific range (e.g. method body).
+    ///
+    /// This is enforced against the model-authored patch *before formatting* to avoid rejecting
+    /// safe patches due to formatter churn.
+    pub edit_range_safety: Option<EditRangeSafetyConfig>,
 }
 
 impl Default for CodeGenerationConfig {
@@ -79,6 +93,7 @@ impl Default for CodeGenerationConfig {
             validation: ValidationConfig::default(),
             max_repair_attempts: 2,
             allow_repair: true,
+            edit_range_safety: None,
         }
     }
 }
@@ -94,6 +109,7 @@ pub struct CodeGenerationResult {
 pub enum ErrorFeedback {
     PatchFormat(String),
     PatchApply(String),
+    EditRangeSafety(String),
     Validation(ErrorReport),
 }
 
@@ -230,6 +246,8 @@ Those files must never be sent to an LLM. Remove them from the workspace snapsho
 This usually means the editor selection is out of date. Re-run the code action."
     )]
     InvalidInsertRange { file: String, range: String },
+    #[error("patch edited outside the allowed range: {0}")]
+    EditRangeSafety(String),
     #[error("validation failed: {report:?}")]
     ValidationFailed { report: ErrorReport },
 }
@@ -313,6 +331,17 @@ pub async fn generate_patch(
 
         enforce_patch_safety(&patch, workspace, &config.safety)?;
 
+        if let Some(safety) = &config.edit_range_safety {
+            if let Err(message) = enforce_edit_range_safety_patch_intent(&patch, safety) {
+                if config.allow_repair && attempt < config.max_repair_attempts {
+                    feedback = Some(ErrorFeedback::EditRangeSafety(message));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(CodeGenerationError::EditRangeSafety(message));
+            }
+        }
+
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
                 stage: CodegenProgressStage::ApplyingPatch,
@@ -341,6 +370,18 @@ pub async fn generate_patch(
                 return Err(err.into());
             }
         };
+
+        if let Some(safety) = &config.edit_range_safety {
+            if let Err(message) = enforce_edit_range_safety_pre_format(workspace, &applied, safety)
+            {
+                if config.allow_repair && attempt < config.max_repair_attempts {
+                    feedback = Some(ErrorFeedback::EditRangeSafety(message));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(CodeGenerationError::EditRangeSafety(message));
+            }
+        }
 
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
@@ -495,6 +536,11 @@ fn build_prompt(
                 out.push_str(message);
                 out.push('\n');
             }
+            ErrorFeedback::EditRangeSafety(message) => {
+                out.push_str("Patch range-safety error:\n");
+                out.push_str(message);
+                out.push('\n');
+            }
             ErrorFeedback::Validation(report) => {
                 out.push_str("Validation errors:\n");
                 out.push_str(&report.to_prompt_block());
@@ -503,6 +549,185 @@ fn build_prompt(
     }
 
     out
+}
+
+fn enforce_edit_range_safety_patch_intent(
+    patch: &Patch,
+    safety: &EditRangeSafetyConfig,
+) -> Result<(), String> {
+    match patch {
+        Patch::Json(patch) => {
+            if !patch.ops.is_empty() {
+                return Err(format!(
+                    "patch contains file operations, but only text edits within the allowed range are permitted"
+                ));
+            }
+            for edit in &patch.edits {
+                if edit.file != safety.file {
+                    return Err(format!(
+                        "patch attempted to edit '{}' but only '{}' is allowed",
+                        edit.file, safety.file
+                    ));
+                }
+                if !patch_range_contains_range(safety.allowed_range, edit.range) {
+                    return Err(format!(
+                        "patch edit range {} is outside the allowed range {} for '{}'",
+                        fmt_patch_range(edit.range),
+                        fmt_patch_range(safety.allowed_range),
+                        safety.file
+                    ));
+                }
+            }
+        }
+        Patch::UnifiedDiff(diff) => {
+            for file in &diff.files {
+                let file_id = if file.new_path != "/dev/null" {
+                    &file.new_path
+                } else {
+                    &file.old_path
+                };
+                if file_id != &safety.file {
+                    return Err(format!(
+                        "patch attempted to edit '{}' but only '{}' is allowed",
+                        file_id, safety.file
+                    ));
+                }
+                if file.old_path != file.new_path {
+                    return Err(format!(
+                        "patch attempted to rename '{}' to '{}', but only in-place edits within the allowed range are permitted",
+                        file.old_path, file.new_path
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn enforce_edit_range_safety_pre_format(
+    before: &VirtualWorkspace,
+    applied: &AppliedPatch,
+    safety: &EditRangeSafetyConfig,
+) -> Result<(), String> {
+    // We intentionally validate against the pre-format patched workspace. Formatting can
+    // legitimately change whitespace outside the edited span, and we don't want to reject safe
+    // model patches due to formatter churn.
+    let before_text = before
+        .get(&safety.file)
+        .ok_or_else(|| format!("missing target file '{}' in workspace", safety.file))?;
+    let after_text = applied
+        .workspace
+        .get(&safety.file)
+        .ok_or_else(|| format!("missing target file '{}' after applying patch", safety.file))?;
+
+    enforce_text_unchanged_outside_range(before_text, after_text, safety.allowed_range)
+        .map_err(|message| format!("{message} (file '{}')", safety.file))
+}
+
+fn enforce_text_unchanged_outside_range(
+    before: &str,
+    after: &str,
+    allowed_range: nova_ai::patch::Range,
+) -> Result<(), String> {
+    if before == after {
+        return Ok(());
+    }
+
+    let index = LineIndex::new(before);
+    let allowed_start = index
+        .offset_of_position(
+            before,
+            CorePosition::new(allowed_range.start.line, allowed_range.start.character),
+        )
+        .ok_or_else(|| format!("invalid allowed range start {}", fmt_patch_range(allowed_range)))?;
+    let allowed_end = index
+        .offset_of_position(
+            before,
+            CorePosition::new(allowed_range.end.line, allowed_range.end.character),
+        )
+        .ok_or_else(|| format!("invalid allowed range end {}", fmt_patch_range(allowed_range)))?;
+
+    let allowed_start = u32::from(allowed_start) as usize;
+    let allowed_end = u32::from(allowed_end) as usize;
+    if allowed_start > allowed_end || allowed_end > before.len() {
+        return Err(format!(
+            "invalid allowed range {} (computed offsets {allowed_start}..{allowed_end})",
+            fmt_patch_range(allowed_range)
+        ));
+    }
+
+    let Some((changed_start, changed_end)) = diff_span_before(before, after) else {
+        return Ok(());
+    };
+
+    if changed_start < allowed_start || changed_end > allowed_end {
+        return Err(format!(
+            "patch modified text outside the allowed range {} (changed span {}..{} bytes)",
+            fmt_patch_range(allowed_range),
+            changed_start,
+            changed_end
+        ));
+    }
+
+    Ok(())
+}
+
+fn diff_span_before(before: &str, after: &str) -> Option<(usize, usize)> {
+    if before == after {
+        return None;
+    }
+
+    let before_bytes = before.as_bytes();
+    let after_bytes = after.as_bytes();
+
+    let mut prefix = 0usize;
+    let min_len = before_bytes.len().min(after_bytes.len());
+    while prefix < min_len && before_bytes[prefix] == after_bytes[prefix] {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    let max_suffix = (before_bytes.len().saturating_sub(prefix))
+        .min(after_bytes.len().saturating_sub(prefix));
+    while suffix < max_suffix
+        && before_bytes[before_bytes.len() - 1 - suffix]
+            == after_bytes[after_bytes.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mut start = prefix;
+    let mut end = before_bytes.len().saturating_sub(suffix);
+
+    // Ensure boundaries are on UTF-8 character boundaries so error reporting via `LineIndex`
+    // conversions is safe and deterministic.
+    while start > 0 && !before.is_char_boundary(start) {
+        start = start.saturating_sub(1);
+    }
+    while end < before.len() && !before.is_char_boundary(end) {
+        end = end.saturating_add(1);
+    }
+
+    Some((start, end))
+}
+
+fn patch_range_contains_range(outer: nova_ai::patch::Range, inner: nova_ai::patch::Range) -> bool {
+    patch_pos_le(outer.start, inner.start) && patch_pos_le(inner.end, outer.end)
+}
+
+fn patch_pos_le(a: nova_ai::patch::Position, b: nova_ai::patch::Position) -> bool {
+    (a.line, a.character) <= (b.line, b.character)
+}
+
+fn fmt_patch_range(range: nova_ai::patch::Range) -> String {
+    format!(
+        "{}:{}-{}:{}",
+        range.start.line + 1,
+        range.start.character + 1,
+        range.end.line + 1,
+        range.end.character + 1
+    )
 }
 
 fn format_workspace(applied: &AppliedPatch, config: &CodeGenerationConfig) -> VirtualWorkspace {
@@ -1145,5 +1370,286 @@ mod tests {
             "{paths:?}"
         );
         assert_eq!(provider.calls(), 0);
+    }
+
+    fn patch_pos_for_offset(text: &str, offset: usize) -> nova_ai::patch::Position {
+        let index = LineIndex::new(text);
+        let pos = index.position(text, TextSize::from(offset as u32));
+        nova_ai::patch::Position {
+            line: pos.line,
+            character: pos.character,
+        }
+    }
+
+    fn patch_range_for_offsets(text: &str, start: usize, end: usize) -> nova_ai::patch::Range {
+        nova_ai::patch::Range {
+            start: patch_pos_for_offset(text, start),
+            end: patch_pos_for_offset(text, end),
+        }
+    }
+
+    #[test]
+    fn edit_range_safety_accepts_insertion_at_allowed_range_boundary() {
+        let before = "class Test {\n    int add(int a, int b) {\n    }\n}\n";
+        let file = "Test.java";
+        let workspace = VirtualWorkspace::new([(file.to_string(), before.to_string())]);
+
+        let method_line = "    int add(int a, int b) {";
+        let open_brace_offset = before
+            .find(method_line)
+            .expect("method line")
+            .saturating_add(method_line.len().saturating_sub(1));
+        let close_brace_offset = before
+            .find("\n    }\n")
+            .expect("method close")
+            .saturating_add("\n    ".len());
+
+        let allowed_range = patch_range_for_offsets(before, open_brace_offset + 1, close_brace_offset);
+        let insert_pos = patch_pos_for_offset(before, close_brace_offset);
+
+        // Insert a return statement at the *end* boundary of the allowed range (right before `}`).
+        // This is safe but would be rejected by implementations that validate
+        // `AppliedPatch.touched_ranges` in output coordinates.
+        let provider = StaticProvider {
+            response: format!(
+                r#"{{
+  "edits": [{{
+    "file": "{file}",
+    "range": {{ "start": {{ "line": {line}, "character": {ch} }}, "end": {{ "line": {line}, "character": {ch} }} }},
+    "text": "return a + b;\n    "
+  }}]
+}}"#,
+                line = insert_pos.line,
+                ch = insert_pos.character
+            ),
+        };
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: file.to_string(),
+            allowed_range,
+        });
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Generate method body.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("patch should be accepted");
+
+        let applied = result
+            .applied
+            .workspace
+            .get(file)
+            .expect("patched file");
+        assert!(applied.contains("return a + b;"), "{applied}");
+    }
+
+    #[test]
+    fn edit_range_safety_rejects_json_patch_edit_outside_allowed_range() {
+        let before = "class Test {\n    int add(int a, int b) {\n    }\n}\n";
+        let file = "Test.java";
+        let workspace = VirtualWorkspace::new([(file.to_string(), before.to_string())]);
+
+        let method_line = "    int add(int a, int b) {";
+        let open_brace_offset = before
+            .find(method_line)
+            .expect("method line")
+            .saturating_add(method_line.len().saturating_sub(1));
+        let close_brace_offset = before
+            .find("\n    }\n")
+            .expect("method close")
+            .saturating_add("\n    ".len());
+
+        let allowed_range = patch_range_for_offsets(before, open_brace_offset + 1, close_brace_offset);
+
+        // Attempt to rename the method outside the allowed method-body range.
+        let name_start = before.find("add").expect("method name");
+        let name_end = name_start + "add".len();
+        let name_range = patch_range_for_offsets(before, name_start, name_end);
+
+        let provider = StaticProvider {
+            response: format!(
+                r#"{{
+  "edits": [{{
+    "file": "{file}",
+    "range": {{ "start": {{ "line": {start_line}, "character": {start_ch} }}, "end": {{ "line": {end_line}, "character": {end_ch} }} }},
+    "text": "sum"
+  }}]
+}}"#,
+                start_line = name_range.start.line,
+                start_ch = name_range.start.character,
+                end_line = name_range.end.line,
+                end_ch = name_range.end.character,
+            ),
+        };
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: file.to_string(),
+            allowed_range,
+        });
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Rename method.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("patch should be rejected");
+
+        let CodeGenerationError::EditRangeSafety(message) = err else {
+            panic!("expected EditRangeSafety, got {err:?}");
+        };
+        assert!(
+            message.contains("outside the allowed range") || message.contains("outside the allowed"),
+            "expected clear range-safety message, got: {message}"
+        );
+    }
+
+    #[test]
+    fn edit_range_safety_rejects_unified_diff_edit_outside_allowed_range() {
+        let before = "class Test {\n    int add(int a, int b) {\n    }\n}\n";
+        let file = "Test.java";
+        let workspace = VirtualWorkspace::new([(file.to_string(), before.to_string())]);
+
+        let method_line = "    int add(int a, int b) {";
+        let open_brace_offset = before
+            .find(method_line)
+            .expect("method line")
+            .saturating_add(method_line.len().saturating_sub(1));
+        let close_brace_offset = before
+            .find("\n    }\n")
+            .expect("method close")
+            .saturating_add("\n    ".len());
+
+        let allowed_range = patch_range_for_offsets(before, open_brace_offset + 1, close_brace_offset);
+
+        let provider = StaticProvider {
+            response: format!(
+                r#"--- a/{file}
++++ b/{file}
+@@ -1,4 +1,4 @@
+ class Test {{
+-    int add(int a, int b) {{
++    int sum(int a, int b) {{
+     }}
+ }}
+"#
+            ),
+        };
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: file.to_string(),
+            allowed_range,
+        });
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Rename method.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("patch should be rejected");
+
+        let CodeGenerationError::EditRangeSafety(message) = err else {
+            panic!("expected EditRangeSafety, got {err:?}");
+        };
+        assert!(
+            message.contains("outside the allowed range") || message.contains("outside the allowed"),
+            "expected clear range-safety message, got: {message}"
+        );
+    }
+
+    #[test]
+    fn edit_range_safety_is_checked_pre_format_for_unified_diffs() {
+        // Intentionally unformatted Java file. Formatting will rewrite whitespace outside the
+        // method body, so range-safety must be enforced pre-format.
+        let before = "public class Example{public int add(int a,int b){return 0;}}";
+        let file = "Example.java";
+        let workspace = VirtualWorkspace::new([(file.to_string(), before.to_string())]);
+
+        let method_sig = "add(int a,int b){";
+        let open_brace_offset = before
+            .find(method_sig)
+            .expect("method sig")
+            .saturating_add(method_sig.len().saturating_sub(1));
+        let close_brace_offset = before
+            .find("return 0;}")
+            .expect("method close")
+            .saturating_add("return 0;".len());
+        let allowed_range =
+            patch_range_for_offsets(before, open_brace_offset + 1, close_brace_offset);
+
+        let provider = StaticProvider {
+            response: format!(
+                r#"--- a/{file}
++++ b/{file}
+@@ -1 +1 @@
+-public class Example{{public int add(int a,int b){{return 0;}}}}
++public class Example{{public int add(int a,int b){{return a + b;}}}}
+"#
+            ),
+        };
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.edit_range_safety = Some(EditRangeSafetyConfig {
+            file: file.to_string(),
+            allowed_range,
+        });
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Update method body.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("patch should be accepted");
+
+        let applied = result
+            .applied
+            .workspace
+            .get(file)
+            .expect("patched file");
+        assert!(applied.contains("return a + b;"), "{applied}");
+
+        let formatted = result
+            .formatted_workspace
+            .get(file)
+            .expect("formatted file");
+        assert!(
+            formatted.contains("public class Example {"),
+            "expected formatter to change whitespace outside method body: {formatted}"
+        );
     }
 }
