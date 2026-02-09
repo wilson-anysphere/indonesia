@@ -104,8 +104,22 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             );
         }
 
+        // Plain Markdown requirement (no structured JSON output).
+        assert!(user_prompt.contains("plain Markdown"), "{user_prompt}");
+        assert!(user_prompt.contains("no JSON"), "{user_prompt}");
+
+        // Expected per-issue fields.
+        for field in ["Where:", "Why it matters:", "Suggestion:"] {
+            assert!(
+                user_prompt.contains(field),
+                "missing expected issue field {field} in prompt: {user_prompt}"
+            );
+        }
+
         // Ensure we call out potential omissions due to excluded_paths.
         assert!(user_prompt.contains("excluded_paths"), "{user_prompt}");
+        // Ensure we also call out potential truncation.
+        assert!(user_prompt.contains("truncated"), "{user_prompt}");
 
         // The omission placeholder string should only appear when the diff is actually omitted,
         // not as part of the general prompt instructions.
