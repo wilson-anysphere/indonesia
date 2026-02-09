@@ -143,6 +143,13 @@ pub(super) fn handle_execute_command(
             serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
         }
         nova_ide::COMMAND_EXPLAIN_ERROR => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::AI_EXPLAIN_ERROR_METHOD)
+            {
+                return Err(map_nova_lsp_error(err));
+            }
+
             let args: ExplainErrorArgs = parse_first_arg(params.arguments)?;
             crate::stdio_ai::run_ai_explain_error(
                 args,
@@ -153,6 +160,13 @@ pub(super) fn handle_execute_command(
             )
         }
         nova_ide::COMMAND_GENERATE_METHOD_BODY => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::AI_GENERATE_METHOD_BODY_METHOD)
+            {
+                return Err(map_nova_lsp_error(err));
+            }
+
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
             crate::stdio_ai::run_ai_generate_method_body_apply(
                 args,
@@ -163,6 +177,13 @@ pub(super) fn handle_execute_command(
             )
         }
         nova_ide::COMMAND_GENERATE_TESTS => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::AI_GENERATE_TESTS_METHOD)
+            {
+                return Err(map_nova_lsp_error(err));
+            }
+
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
             crate::stdio_ai::run_ai_generate_tests_apply(
                 args,
