@@ -6709,7 +6709,7 @@ fn stdio_server_ai_custom_requests_include_edit_range_safety_error_data() {
 
     let file_path = root.join("Test.java");
     let file_uri = uri_for_path(&file_path);
-    let text = "class Test { int answer() { } }\n";
+    let text = "class Test {\n  int answer() {\n  }\n}\n";
     std::fs::write(&file_path, text).expect("write Test.java");
 
     // Edit the correct file, but outside the method-body insert range. This should surface as an
@@ -6800,7 +6800,7 @@ local_only = true
         }),
     );
 
-    let selection = "int answer() { }";
+    let selection = "int answer() {\n  }\n";
     let start_offset = text.find(selection).expect("selection start");
     let end_offset = start_offset + selection.len();
     let pos = TextPos::new(text);

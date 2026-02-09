@@ -562,7 +562,30 @@ pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
         (BuildSystem::Maven, maven_root),
         (BuildSystem::Gradle, gradle_root),
     ])
-    .or_else(|| simple_workspace_root(start_dir))
+    .or_else(|| {
+        // If the caller explicitly provided a directory (as opposed to a file path) that contains
+        // Java sources directly, treat it as the workspace root even when a parent directory
+        // happens to look like a "simple project" (e.g. `/tmp/src`).
+        //
+        // This avoids surprising root discovery in shared temp directories and keeps ad-hoc
+        // workspaces (a folder containing just `Foo.java`) working without requiring a `src/`
+        // layout.
+        let is_under_src_dir = start_dir.ancestors().any(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("src"))
+        });
+
+        // Never treat package directories (`src/main/java/...`) or generated-output directories
+        // (`target/**`, `build/**`) as workspace roots; those should resolve to their containing
+        // project.
+        if !start_is_file && dir_contains_java_file(start_dir) && !is_under_src_dir && !is_in_noisy_dir(start_dir) {
+            Some(start_dir.to_path_buf())
+        } else {
+            simple_workspace_root(start_dir)
+        }
+    })
 }
 
 fn pick_best_workspace_root(candidates: &[(BuildSystem, Option<PathBuf>)]) -> Option<PathBuf> {
@@ -772,6 +795,20 @@ fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
         dir = parent;
     }
     None
+}
+
+fn dir_contains_java_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+    })
 }
 
 /// Walk upwards from `start` to find the Bazel workspace root.

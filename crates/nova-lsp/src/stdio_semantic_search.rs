@@ -25,6 +25,13 @@ impl SemanticSearchWorkspaceIndexStatus {
             self.indexed_bytes.load(Ordering::SeqCst),
         )
     }
+
+    pub(super) fn reset(&self) {
+        self.current_run_id.store(0, Ordering::SeqCst);
+        self.completed_run_id.store(0, Ordering::SeqCst);
+        self.indexed_files.store(0, Ordering::SeqCst);
+        self.indexed_bytes.store(0, Ordering::SeqCst);
+    }
 }
 
 impl ServerState {

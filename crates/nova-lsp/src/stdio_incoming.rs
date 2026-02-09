@@ -7,12 +7,20 @@ use lsp_types::{
     FileChangeType as LspFileChangeType,
     Uri as LspUri,
 };
-use nova_ai::ExcludedPathMatcher;
+use nova_ai::{ExcludedPathMatcher, NovaAi};
 use nova_vfs::{ChangeEvent, VfsPath};
 use serde::Deserialize;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+#[cfg(feature = "ai")]
+use nova_ai::{
+    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider,
+};
+#[cfg(feature = "ai")]
+use nova_ide::{CompletionConfig, CompletionEngine};
 
 pub(super) fn handle_notification(
     method: &str,
@@ -342,8 +350,10 @@ pub(super) fn handle_notification(
             if config_changed {
                 match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                     Ok(config) => {
-                        state.config = Arc::new(config);
-                        reload_ai_semantic_search_config(state);
+                        // Keep the AI subsystem in sync with config reloads.
+                        if let Err(err) = apply_reloaded_config(state, config) {
+                            tracing::warn!(target = "nova.lsp", "failed to apply config reload: {err}");
+                        }
                         // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                         // the registry in sync when users edit `nova.toml`.
                         state.load_extensions();
@@ -416,8 +426,10 @@ pub(super) fn handle_notification(
 
             match crate::stdio_config::reload_config_best_effort(state.project_root.as_deref()) {
                 Ok(config) => {
-                    state.config = Arc::new(config);
-                    reload_ai_semantic_search_config(state);
+                    // Keep the AI subsystem in sync with config reloads.
+                    if let Err(err) = apply_reloaded_config(state, config) {
+                        tracing::warn!(target = "nova.lsp", "failed to apply config reload: {err}");
+                    }
                     // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                     // the registry in sync when users toggle settings.
                     state.load_extensions();
@@ -517,43 +529,249 @@ pub(super) fn handle_notification(
     Ok(())
 }
 
-fn reload_ai_semantic_search_config(state: &mut ServerState) {
-    // Best-effort: stop any in-flight semantic-search indexing before swapping config/search
-    // engines. This avoids continuing to churn on a stale configuration after `nova.toml` is
-    // edited.
+fn apply_reloaded_config(
+    state: &mut ServerState,
+    mut config: nova_config::NovaConfig,
+) -> Result<(), String> {
+    let (ai_env, privacy_override) = match crate::stdio_ai::load_ai_config_from_env() {
+        Ok(value) => match value {
+            Some((ai, privacy)) => (Some(ai), Some(privacy)),
+            None => (None, None),
+        },
+        Err(err) => {
+            tracing::warn!(target = "nova.lsp", "failed to configure AI from env: {err}");
+            (None, None)
+        }
+    };
+    if let Some(ai) = ai_env {
+        config.ai = ai;
+    }
+
+    // Match startup behavior: audit logging forces AI enabled so the audit channel is active.
+    let audit_logging = matches!(
+        std::env::var("NOVA_AI_AUDIT_LOGGING").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    if audit_logging {
+        config.ai.enabled = true;
+        config.ai.audit_log.enabled = true;
+    }
+
+    // ---------------------------------------------------------------------
+    // Server-side AI overrides (privacy / cost controls)
+    // ---------------------------------------------------------------------
+    let disable_ai = matches!(
+        std::env::var("NOVA_DISABLE_AI").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let disable_ai_completions = matches!(
+        std::env::var("NOVA_DISABLE_AI_COMPLETIONS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let disable_ai_code_actions = matches!(
+        std::env::var("NOVA_DISABLE_AI_CODE_ACTIONS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let disable_ai_code_review = matches!(
+        std::env::var("NOVA_DISABLE_AI_CODE_REVIEW").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    if disable_ai {
+        config.ai.enabled = false;
+        config.ai.features.completion_ranking = false;
+        config.ai.features.semantic_search = false;
+        config.ai.features.multi_token_completion = false;
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+        config.ai.features.code_review = false;
+    } else if disable_ai_completions {
+        config.ai.features.completion_ranking = false;
+        config.ai.features.multi_token_completion = false;
+    }
+    if disable_ai_code_actions {
+        config.ai.features.explain_errors = false;
+        config.ai.features.code_actions = false;
+    }
+    if disable_ai_code_review {
+        config.ai.features.code_review = false;
+    }
+
+    // Swap in the newly-loaded config.
+    let new_ai_config = config.ai.clone();
+    state.config = Arc::new(config);
+    apply_ai_config_update(state, new_ai_config, privacy_override);
+    Ok(())
+}
+
+fn apply_ai_config_update(
+    state: &mut ServerState,
+    new_ai_config: nova_config::AiConfig,
+    privacy_override: Option<nova_ai::PrivacyMode>,
+) {
+    // Cancel any in-flight workspace indexing before we potentially drop the Tokio runtime.
     state.semantic_search_workspace_index_cancel.cancel();
 
-    state.ai_config = state.config.ai.clone();
-    state.privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&state.ai_config.privacy);
+    let prev_ai_config = state.ai_config.clone();
+    let enabled_toggled = prev_ai_config.enabled != new_ai_config.enabled;
+    let provider_settings_changed = prev_ai_config.provider != new_ai_config.provider
+        || prev_ai_config.api_key != new_ai_config.api_key
+        || prev_ai_config.privacy != new_ai_config.privacy
+        || prev_ai_config.audit_log != new_ai_config.audit_log
+        || prev_ai_config.features.code_review_max_diff_chars
+            != new_ai_config.features.code_review_max_diff_chars
+        || prev_ai_config.cache_enabled != new_ai_config.cache_enabled
+        || prev_ai_config.cache_max_entries != new_ai_config.cache_max_entries
+        || prev_ai_config.cache_ttl_secs != new_ai_config.cache_ttl_secs;
+    let needs_ai_reinit = enabled_toggled || provider_settings_changed;
+
+    // Apply the config + privacy settings first so path-exclusion checks use the updated policy
+    // even if provider initialization fails.
+    state.ai_config = new_ai_config;
+    state.privacy = privacy_override.unwrap_or_else(|| {
+        nova_ai::PrivacyMode::from_ai_privacy_config(&state.ai_config.privacy)
+    });
     state.ai_privacy_excluded_matcher =
         Arc::new(ExcludedPathMatcher::from_config(&state.ai_config.privacy));
 
+    // Drop / rebuild the AI provider + runtime as needed.
+    if !state.ai_config.enabled {
+        state.ai = None;
+        state.runtime = None;
+    } else if needs_ai_reinit || state.ai.is_none() || state.runtime.is_none() {
+        // Ensure the old runtime is dropped before creating a new one.
+        state.ai = None;
+        state.runtime = None;
+
+        match NovaAi::new(&state.ai_config) {
+            Ok(ai) => {
+                let worker_threads = state
+                    .ai_config
+                    .provider
+                    .effective_concurrency()
+                    .clamp(1, 4);
+                match tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(worker_threads)
+                    .max_blocking_threads(worker_threads)
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        state.ai = Some(ai);
+                        state.runtime = Some(runtime);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target = "nova.lsp",
+                            "failed to build Tokio runtime for AI tasks: {err}"
+                        );
+                        state.ai = None;
+                        state.runtime = None;
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(target = "nova.lsp", "failed to configure AI: {err}");
+                state.ai = None;
+                state.runtime = None;
+            }
+        }
+    }
+
+    // Update completion engine state to reflect the new config/env overrides.
+    #[cfg(feature = "ai")]
+    {
+        state.completion_service = build_completion_service(&state.ai_config, &state.privacy, state.runtime.is_some());
+    }
+
+    // Update semantic search engine + workspace indexing state.
+    state.semantic_search_workspace_index_cancel = CancellationToken::new();
+    state.semantic_search_workspace_index_status.reset();
     {
         let mut search = state
             .semantic_search
             .write()
             .unwrap_or_else(|err| err.into_inner());
         *search = nova_ai::semantic_search_from_config(&state.ai_config).unwrap_or_else(|err| {
-            eprintln!("failed to configure semantic search: {err}");
+            tracing::warn!(target = "nova.lsp", "failed to configure semantic search: {err}");
             Box::new(nova_ai::TrigramSemanticSearch::new())
         });
-    }
-
-    // Clear + reindex currently open documents so overlays remain present in the semantic-search
-    // index even when workspace indexing is disabled/unavailable.
-    {
-        let mut search = state
-            .semantic_search
-            .write()
-            .unwrap_or_else(|err| err.into_inner());
         search.clear();
     }
 
+    // Restart workspace indexing if enabled and we have a usable workspace root.
+    state.start_semantic_search_workspace_indexing();
+
+    // Best-effort: ensure open documents are indexed into the new semantic-search implementation.
     for file_id in state.analysis.vfs.open_documents().snapshot() {
         state.semantic_search_index_open_document(file_id);
     }
+}
 
-    // Best-effort: restart workspace indexing so new config settings take effect without a
-    // server restart.
-    state.start_semantic_search_workspace_indexing();
+#[cfg(feature = "ai")]
+fn build_completion_service(
+    ai_config: &nova_config::AiConfig,
+    privacy: &nova_ai::PrivacyMode,
+    runtime_available: bool,
+) -> nova_lsp::NovaCompletionService {
+    let ai_max_items_override = match std::env::var("NOVA_AI_COMPLETIONS_MAX_ITEMS") {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                match trimmed.parse::<usize>() {
+                    Ok(max_items) => Some(max_items.min(32)),
+                    Err(_) => {
+                        tracing::warn!(
+                            target = "nova.lsp",
+                            "invalid NOVA_AI_COMPLETIONS_MAX_ITEMS={value:?}; expected a non-negative integer"
+                        );
+                        None
+                    }
+                }
+            }
+        }
+        Err(_) => None,
+    };
+
+    let multi_token_enabled = runtime_available && ai_config.enabled && ai_config.features.multi_token_completion;
+    // `nova.aiCompletions.maxItems` is surfaced to the server via `NOVA_AI_COMPLETIONS_MAX_ITEMS`.
+    // Treat `0` as a hard disable so the server doesn't spawn background AI completion tasks or
+    // mark results as `is_incomplete`.
+    let multi_token_enabled = multi_token_enabled && ai_max_items_override.unwrap_or(1) > 0;
+
+    let ai_provider = if multi_token_enabled {
+        match AiClient::from_config(ai_config) {
+            Ok(client) => {
+                let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
+                    CloudMultiTokenCompletionProvider::new(Arc::new(client))
+                        .with_privacy_mode(privacy.clone()),
+                );
+                Some(provider)
+            }
+            Err(err) => {
+                tracing::warn!(target = "nova.lsp", "failed to configure AI completions: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut completion_config = CompletionConfig::default();
+    completion_config.ai_enabled = multi_token_enabled;
+    if let Some(max_items) = ai_max_items_override {
+        completion_config.ai_max_items = max_items;
+    }
+    completion_config.ai_timeout_ms = ai_config.timeouts.multi_token_completion_ms.max(1);
+
+    let engine = CompletionEngine::new(
+        completion_config,
+        CompletionContextBuilder::new(10_000),
+        ai_provider,
+    );
+    nova_lsp::NovaCompletionService::with_config(
+        engine,
+        nova_lsp::CompletionMoreConfig::from_provider_config(&ai_config.provider),
+    )
 }
