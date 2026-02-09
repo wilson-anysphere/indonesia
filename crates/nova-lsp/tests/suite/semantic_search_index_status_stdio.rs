@@ -67,6 +67,14 @@ semantic_search = false
         "expected {} to be advertised in experimental.nova.requests; got {requests:?}",
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD
     );
+    assert!(
+        requests
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|m| m == nova_lsp::SEMANTIC_SEARCH_REINDEX_METHOD),
+        "expected {} to be advertised in experimental.nova.requests; got {requests:?}",
+        nova_lsp::SEMANTIC_SEARCH_REINDEX_METHOD
+    );
 
     let notifications = initialize_resp
         .pointer("/result/capabilities/experimental/nova/notifications")

@@ -95,8 +95,8 @@ pub(super) fn initialize_result_json() -> serde_json::Value {
         nova_lsp::AI_STATUS_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
-        nova_lsp::AI_CODE_REVIEW_METHOD,
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD,
+        nova_lsp::SEMANTIC_SEARCH_REINDEX_METHOD,
         nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD,
         // Extensions
         nova_lsp::EXTENSIONS_STATUS_METHOD,

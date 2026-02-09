@@ -400,7 +400,11 @@ impl ServerState {
                 status.indexed_bytes.store(indexed_bytes, Ordering::SeqCst);
             }
 
-            status.completed_run_id.store(run_id, Ordering::SeqCst);
+            // Avoid races with reindexing: if a newer run has been started, do not overwrite the
+            // `completedRunId` for the new run.
+            if status.current_run_id.load(Ordering::SeqCst) == run_id {
+                status.completed_run_id.store(run_id, Ordering::SeqCst);
+            }
         });
     }
 }

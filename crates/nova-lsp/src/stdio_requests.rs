@@ -17,6 +17,7 @@ use std::path::{Component, Path};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use nova_vfs::VfsPath;
+use crate::stdio_progress::{send_progress_begin, send_progress_end};
 
 pub(super) fn handle_request(
     request: Request,
@@ -95,10 +96,56 @@ fn handle_request_json(
                 "result": state.semantic_search_workspace_index_status_json(),
             }))
         }
-        nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD => {
+        nova_lsp::SEMANTIC_SEARCH_REINDEX_METHOD => {
             nova_lsp::hardening::record_request();
             if let Err(err) =
-                nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD)
+                nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_REINDEX_METHOD)
+            {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SemanticSearchReindexParams {
+                #[serde(default)]
+                work_done_token: Option<serde_json::Value>,
+            }
+
+            // Allow `params` to be `null` or omitted.
+            let params: Option<SemanticSearchReindexParams> = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            let token = params.as_ref().and_then(|params| params.work_done_token.as_ref());
+            // Best-effort progress notifications.
+            let _ = send_progress_begin(client, token, "Semantic search: Reindex");
+            state.start_semantic_search_workspace_indexing();
+            let _ = send_progress_end(client, token, "Started");
+
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": state.semantic_search_workspace_index_status_json(),
+            }))
+        }
+        nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_SEARCH_METHOD)
             {
                 let (code, message) = match err {
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
@@ -881,7 +928,6 @@ fn handle_request_json(
         }
     }
 }
-
 fn semantic_search_result_path(project_root: Option<&Path>, path: &Path) -> String {
     if let Some(root) = project_root {
         if let Ok(rel) = path.strip_prefix(root) {

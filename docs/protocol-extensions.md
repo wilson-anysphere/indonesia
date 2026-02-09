@@ -1349,6 +1349,40 @@ server is in safe-mode.
 
 ---
 
+### `nova/semanticSearch/reindex`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+Trigger a fresh background workspace semantic-search indexing run.
+
+This is best-effort: the server cancels any in-flight indexing task and starts a new run when
+semantic search is enabled and properly configured. Clients can use the returned status object to
+observe the new `currentRunId` immediately.
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params. Optionally:
+
+```json
+{ "workDoneToken": "optional" }
+```
+
+When `workDoneToken` is provided, the server emits `$/progress` begin/end notifications for
+user-visible progress.
+
+#### Response
+
+Same as `nova/semanticSearch/indexStatus` (see above).
+
+#### Safe-mode
+
+This request is guarded by `nova_lsp::hardening::guard_method()` and fails with `-32603` while the
+server is in safe-mode.
+
+---
+
 ### `nova/semanticSearch/search`
 
 - **Kind:** request

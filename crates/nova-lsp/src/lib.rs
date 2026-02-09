@@ -144,6 +144,7 @@ pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
 pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 // Semantic search endpoints (handled by the `nova-lsp` binary).
 pub const SEMANTIC_SEARCH_INDEX_STATUS_METHOD: &str = "nova/semanticSearch/indexStatus";
+pub const SEMANTIC_SEARCH_REINDEX_METHOD: &str = "nova/semanticSearch/reindex";
 pub const SEMANTIC_SEARCH_SEARCH_METHOD: &str = "nova/semanticSearch/search";
 // Workspace synchronization endpoints (handled by the `nova-lsp` binary).
 pub const WORKSPACE_RENAME_PATH_METHOD: &str = "nova/workspace/renamePath";

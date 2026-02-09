@@ -71,6 +71,9 @@ mod semantic_search_search_stdio;
 #[cfg(feature = "ai")]
 #[path = "suite/semantic_search_workspace_indexing.rs"]
 mod semantic_search_workspace_indexing;
+#[cfg(feature = "ai")]
+#[path = "suite/semantic_search_reindex_stdio.rs"]
+mod semantic_search_reindex_stdio;
 #[path = "suite/stdio_call_hierarchy.rs"]
 mod stdio_call_hierarchy;
 #[path = "suite/stdio_did_save.rs"]
