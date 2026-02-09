@@ -1416,13 +1416,17 @@ pub(super) fn load_ai_config_from_env(
     .and_then(|s| s.parse::<u64>().ok())
     .map(std::time::Duration::from_secs)
     .unwrap_or_else(|| std::time::Duration::from_secs(30));
-  // Privacy defaults: safer by default (no paths, anonymize identifiers).
+  // Privacy defaults for legacy env-var based AI wiring:
+  // - `include_file_paths` stays disabled unless explicitly opted in.
+  // - `anonymize_identifiers` defaults to match `nova.toml` semantics:
+  //   - local-only mode: `false` (patch-based edits rely on exact identifiers/positions)
+  //   - cloud mode: `true` (privacy-first when sending code to third-party providers)
   //
   // Supported env vars (legacy env-var based AI wiring):
   // - `NOVA_AI_MAX_TOKENS=<n>` overrides `ai.provider.max_tokens` (values are clamped to >= 1).
   // - `NOVA_AI_CONCURRENCY=<n>` overrides `ai.provider.concurrency` (values are clamped to >= 1).
-  // - `NOVA_AI_ANONYMIZE_IDENTIFIERS=0|false|FALSE` disables identifier anonymization
-  //   (default: enabled, even in local-only mode).
+  // - `NOVA_AI_ANONYMIZE_IDENTIFIERS=0|false|FALSE` disables identifier anonymization.
+  //   When unset, defaults depend on the resolved provider/local-only mode (see above).
   // - `NOVA_AI_INCLUDE_FILE_PATHS=1|true|TRUE` allows including paths in prompts
   //   (default: disabled).
   // - `NOVA_AI_EXCLUDED_PATHS` configures `ai.privacy.excluded_paths` as a list of glob patterns.
@@ -1445,10 +1449,9 @@ pub(super) fn load_ai_config_from_env(
     std::env::var("NOVA_AI_LOCAL_ONLY").as_deref(),
     Ok("1") | Ok("true") | Ok("TRUE")
   );
-  let anonymize_identifiers = !matches!(
-    std::env::var("NOVA_AI_ANONYMIZE_IDENTIFIERS").as_deref(),
-    Ok("0") | Ok("false") | Ok("FALSE")
-  );
+  let anonymize_identifiers = std::env::var("NOVA_AI_ANONYMIZE_IDENTIFIERS")
+    .ok()
+    .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE"));
   let include_file_paths = matches!(
     std::env::var("NOVA_AI_INCLUDE_FILE_PATHS").as_deref(),
     Ok("1") | Ok("true") | Ok("TRUE")
@@ -1488,7 +1491,6 @@ pub(super) fn load_ai_config_from_env(
   cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
   cfg.provider.concurrency = provider_concurrency;
   cfg.privacy.include_file_paths = include_file_paths;
-  cfg.privacy.anonymize_identifiers = Some(anonymize_identifiers);
   cfg.privacy.redact_sensitive_strings = redact_sensitive_strings;
   cfg.privacy.redact_numeric_literals = redact_numeric_literals;
   cfg.privacy.strip_or_redact_comments = strip_or_redact_comments;
@@ -1535,6 +1537,12 @@ pub(super) fn load_ai_config_from_env(
   if force_local_only {
     cfg.privacy.local_only = true;
   }
+
+  // If anonymization isn't explicitly configured, default based on the resolved local-only mode.
+  // This matches `nova.toml` defaults and keeps patch-based code edits reliable in local-only
+  // mode (anonymizing code fences can break patch application).
+  cfg.privacy.anonymize_identifiers =
+    Some(anonymize_identifiers.unwrap_or(!cfg.privacy.local_only));
 
   cfg.provider.url = match provider.as_str() {
     "http" => {
@@ -1639,7 +1647,7 @@ mod tests {
       .expect("load_ai_config_from_env")
       .expect("config should be present");
     assert_eq!(cfg.privacy.local_only, true);
-    assert_eq!(cfg.privacy.anonymize_identifiers, Some(true));
+    assert_eq!(cfg.privacy.anonymize_identifiers, Some(false));
     assert!(!cfg.privacy.allow_cloud_code_edits);
     assert!(!cfg.privacy.allow_code_edits_without_anonymization);
     assert_eq!(cfg.privacy.redact_sensitive_strings, None);
@@ -1754,6 +1762,36 @@ mod tests {
       .expect("load_ai_config_from_env")
       .expect("config should be present");
     assert_eq!(cfg.provider.concurrency, Some(3));
+  }
+
+  #[test]
+  fn load_ai_config_from_env_defaults_anonymization_based_on_provider_kind() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "openai");
+    let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
+
+    // Explicitly clear any overrides so we can validate the default behavior.
+    let _local_only = EnvVarGuard::remove("NOVA_AI_LOCAL_ONLY");
+    let _anonymize = EnvVarGuard::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
+
+    let (cfg, _privacy) = load_ai_config_from_env()
+      .expect("load_ai_config_from_env")
+      .expect("config should be present");
+
+    assert_eq!(cfg.privacy.local_only, false);
+    assert_eq!(cfg.privacy.anonymize_identifiers, Some(true));
+
+    // `NOVA_AI_LOCAL_ONLY` forces local-only mode (and therefore flips the default anonymization
+    // behavior back to `false` unless explicitly overridden).
+    {
+      let _force_local_only = EnvVarGuard::set("NOVA_AI_LOCAL_ONLY", "1");
+      let (cfg, _privacy) = load_ai_config_from_env()
+        .expect("load_ai_config_from_env")
+        .expect("config should be present");
+      assert_eq!(cfg.privacy.local_only, true);
+      assert_eq!(cfg.privacy.anonymize_identifiers, Some(false));
+    }
   }
 
   #[test]
