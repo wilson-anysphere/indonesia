@@ -382,7 +382,14 @@ impl AiClient {
         builder.push_str(self.endpoint.as_str());
         builder.push_str(&self.model);
         builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
-        builder.push_u32(request.temperature.map(|t| t.to_bits()).unwrap_or(0));
+        // Include the option discriminant so `None` doesn't collide with `Some(0.0)`.
+        match request.temperature {
+            Some(temp) => {
+                builder.push_u32(1);
+                builder.push_u32(temp.to_bits());
+            }
+            None => builder.push_u32(0),
+        }
         builder.push_u64(
             request
                 .messages

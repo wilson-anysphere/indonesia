@@ -134,3 +134,47 @@ async fn llm_cache_misses_when_temperature_changes() {
 
     mock.assert_hits(2);
 }
+
+#[tokio::test]
+async fn llm_cache_misses_when_temperature_is_none_vs_zero() {
+    // Regression test: cache keys must distinguish "unset" temperature from an explicit `0.0`.
+    // (Without encoding the option discriminant, `None` would collide with `Some(0.0)`.)
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200).json_body(json!({ "completion": "Pong" }));
+    });
+
+    let cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
+    let client = AiClient::from_config(&cfg).unwrap();
+
+    let request_a = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: None,
+    };
+    let request_b = ChatRequest {
+        temperature: Some(0.0),
+        ..request_a.clone()
+    };
+
+    assert_eq!(
+        client
+            .chat(request_a, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
+    assert_eq!(
+        client
+            .chat(request_b, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
+
+    mock.assert_hits(2);
+}
