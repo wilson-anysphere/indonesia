@@ -1805,14 +1805,35 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
                     .unwrap_or_else(|| std::env::temp_dir().join("nova-ai-audit.log"))
             });
         let audit_enabled = audit_path.is_some();
+        #[cfg(unix)]
+        let audit_insecure_permissions = audit_path.as_ref().and_then(|path| {
+            use std::os::unix::fs::PermissionsExt;
+
+            let metadata = std::fs::metadata(path).ok()?;
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                Some(mode)
+            } else {
+                None
+            }
+        });
+        #[cfg(not(unix))]
+        let audit_insecure_permissions: Option<u32> = None;
         let audit_file = audit_path
             .as_ref()
             .and_then(|path| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .ok()
+                let mut options = std::fs::OpenOptions::new();
+                options.create(true).append(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+
+                    // AI audit logs can contain sensitive data (even after redaction).
+                    // Create with owner-only permissions by default.
+                    options.mode(0o600);
+                }
+
+                options.open(path).ok()
             })
             .map(|file| Arc::new(Mutex::new(file)));
         let audit_open_failed = audit_enabled && audit_file.is_none();
@@ -1885,17 +1906,28 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             .with(filter)
             .with(base_layer)
             .with(audit_layer);
-        if tracing::subscriber::set_global_default(subscriber).is_ok() && audit_open_failed {
-            if let Some(path) = audit_path {
+        if tracing::subscriber::set_global_default(subscriber).is_ok() {
+            if audit_open_failed {
+                if let Some(path) = audit_path.as_ref() {
+                    tracing::warn!(
+                        target: "nova.config",
+                        path = %path.display(),
+                        "failed to open AI audit log file; audit events will be dropped"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "nova.config",
+                        "failed to open AI audit log file; audit events will be dropped"
+                    );
+                }
+            }
+
+            if let (Some(path), Some(mode)) = (audit_path.as_ref(), audit_insecure_permissions) {
                 tracing::warn!(
                     target: "nova.config",
                     path = %path.display(),
-                    "failed to open AI audit log file; audit events will be dropped"
-                );
-            } else {
-                tracing::warn!(
-                    target: "nova.config",
-                    "failed to open AI audit log file; audit events will be dropped"
+                    permissions = %format!("{mode:03o}"),
+                    "AI audit log file has group/other permissions set; consider chmod 600"
                 );
             }
         }
@@ -1907,6 +1939,20 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
 #[cfg(test)]
 mod toml_tests {
     use super::*;
+
+    fn shared_audit_log_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("audit.log");
+            // Keep the directory alive for the duration of the test process so
+            // the file path stays valid even if multiple tests race to
+            // initialize global tracing.
+            std::mem::forget(dir);
+            path
+        })
+        .clone()
+    }
 
     #[test]
     fn logging_level_parses_simple_levels() {
@@ -1966,8 +2012,7 @@ mod toml_tests {
 
     #[test]
     fn audit_target_is_excluded_from_base_log_buffer_when_enabled() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let audit_path = dir.path().join("audit.log");
+        let audit_path = shared_audit_log_path();
 
         let mut config = NovaConfig::default();
         config.ai.enabled = true;
@@ -1982,6 +2027,33 @@ mod toml_tests {
         let text = buffer.last_lines(256).join("\n");
         assert!(text.contains("visible"), "{text}");
         assert!(!text.contains("should not be in base"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_log_file_is_created_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let audit_path = shared_audit_log_path();
+
+        let mut config = NovaConfig::default();
+        config.ai.enabled = true;
+        config.ai.audit_log.enabled = true;
+        config.ai.audit_log.path = Some(audit_path.clone());
+
+        init_tracing_with_config(&config);
+
+        let mode = std::fs::metadata(&audit_path)
+            .expect("audit log metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "AI audit log file should not be accessible by group/other (mode {:03o})",
+            mode
+        );
     }
 }
 

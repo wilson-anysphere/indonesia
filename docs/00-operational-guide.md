@@ -285,6 +285,14 @@ tests/
 
 ---
 
+## AI audit log permissions (Unix)
+
+When `ai.audit_log.enabled=true`, Nova can write AI audit events (prompts / model output) to a
+separate file. On Unix-like systems this audit log file is created with permissions `0600` (owner
+read/write only). If the file already exists with broader permissions, Nova emits a warning.
+
+---
+
 ## Go Fast
 
 Remember: **CPU and I/O are free**. Use them aggressively.
