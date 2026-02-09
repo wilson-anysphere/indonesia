@@ -528,6 +528,13 @@ fn build_prompt(
     if config.safety.no_new_imports {
         out.push_str("Do not add new import statements.\n");
     }
+    if let Some(safety) = &config.edit_range_safety {
+        out.push_str(&format!(
+            "Range safety: only edit '{}' within {}.\n",
+            safety.file,
+            fmt_patch_range(safety.allowed_range)
+        ));
+    }
 
     if let Some(feedback) = feedback {
         out.push_str("\nPrevious output could not be applied:\n");
