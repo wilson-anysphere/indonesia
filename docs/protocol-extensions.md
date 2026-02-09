@@ -1510,6 +1510,10 @@ Notes:
 
 - If semantic search is disabled in config (`ai.enabled=false` or `ai.features.semantic_search=false`),
   the server returns `{ "results": [] }`.
+- Semantic search uses a lightweight trigram/fuzzy matcher by default. When embeddings are enabled
+  (`ai.embeddings.enabled=true`) **and** Nova is built with the `nova-ai` Cargo feature `embeddings`,
+  the server uses an embedding-backed index. See `docs/13-ai-augmentation.md` (“Semantic search +
+  embeddings configuration”) for details and provider examples.
 - The index is best-effort and may be incomplete. In particular:
   - Open documents are indexed eagerly (subject to the file-extension filter and `ai.privacy.excluded_paths`).
   - Workspace indexing (when available) is bounded (currently: up to 2,000 files / 10 MiB total /
