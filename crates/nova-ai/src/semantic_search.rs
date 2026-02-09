@@ -920,35 +920,140 @@ mod embeddings {
                 return Ok(Vec::new());
             }
 
+            // Always sanitize inputs in a single session so anonymization stays stable across the
+            // batch even when some embeddings are served from cache.
             let mut session = self.privacy.new_session();
             let sanitized = inputs
                 .iter()
                 .map(|input| self.sanitize_text(&mut session, input))
                 .collect::<Vec<_>>();
 
-            match &self.provider_kind {
-                AiProviderKind::Ollama => self.embed_ollama_batch(&sanitized),
-                AiProviderKind::OpenAiCompatible | AiProviderKind::OpenAi | AiProviderKind::Http => {
-                    let batch_size = self.batch_size.max(1);
-                    let mut out = Vec::with_capacity(inputs.len());
-                    for chunk in sanitized.chunks(batch_size) {
-                        out.extend(self.embed_openai_compatible_batch(chunk)?);
+            let mut out = vec![None::<Vec<f32>>; inputs.len()];
+            let mut miss_indices = Vec::new();
+            let mut miss_keys = Vec::new();
+            let mut miss_inputs = Vec::new();
+
+            {
+                let cache = self.lock_memory_cache();
+                for (idx, text) in inputs.iter().enumerate() {
+                    let key = self.key_for(text);
+                    if let Some(hit) = cache.get(&key) {
+                        out[idx] = Some((**hit).clone());
+                    } else {
+                        miss_indices.push(idx);
+                        miss_keys.push(key);
+                        miss_inputs.push(sanitized[idx].clone());
                     }
-                    Ok(out)
                 }
-                AiProviderKind::AzureOpenAi => {
-                    let batch_size = self.batch_size.max(1);
-                    let mut out = Vec::with_capacity(inputs.len());
-                    for chunk in sanitized.chunks(batch_size) {
-                        out.extend(self.embed_azure_openai_batch(chunk)?);
-                    }
-                    Ok(out)
-                }
-                _ => Err(AiError::InvalidConfig(format!(
-                    "provider-backed embeddings are not supported for ai.provider.kind={:?}",
-                    self.provider_kind
-                ))),
             }
+
+            // Disk cache lookups.
+            if let Some(disk) = self.disk_cache.as_ref() {
+                let mut still_indices = Vec::new();
+                let mut still_keys = Vec::new();
+                let mut still_inputs = Vec::new();
+                let mut memory_inserts = Vec::new();
+
+                for ((idx, key), text) in miss_indices
+                    .into_iter()
+                    .zip(miss_keys.into_iter())
+                    .zip(miss_inputs.into_iter())
+                {
+                    if let Ok(Some(hit)) = disk.load(key) {
+                        out[idx] = Some(hit.clone());
+                        memory_inserts.push((key, hit));
+                    } else {
+                        still_indices.push(idx);
+                        still_keys.push(key);
+                        still_inputs.push(text);
+                    }
+                }
+
+                if !memory_inserts.is_empty() {
+                    let mut cache = self.lock_memory_cache();
+                    for (key, vec) in memory_inserts {
+                        cache.insert(key, Arc::new(vec));
+                    }
+                }
+
+                miss_indices = still_indices;
+                miss_keys = still_keys;
+                miss_inputs = still_inputs;
+            }
+
+            // Network for cache misses.
+            if !miss_inputs.is_empty() {
+                let embeddings = match &self.provider_kind {
+                    AiProviderKind::Ollama => self.embed_ollama_batch(&miss_inputs)?,
+                    AiProviderKind::OpenAiCompatible
+                    | AiProviderKind::OpenAi
+                    | AiProviderKind::Http => {
+                        let batch_size = self.batch_size.max(1);
+                        let mut out = Vec::with_capacity(miss_inputs.len());
+                        for chunk in miss_inputs.chunks(batch_size) {
+                            out.extend(self.embed_openai_compatible_batch(chunk)?);
+                        }
+                        out
+                    }
+                    AiProviderKind::AzureOpenAi => {
+                        let batch_size = self.batch_size.max(1);
+                        let mut out = Vec::with_capacity(miss_inputs.len());
+                        for chunk in miss_inputs.chunks(batch_size) {
+                            out.extend(self.embed_azure_openai_batch(chunk)?);
+                        }
+                        out
+                    }
+                    _ => {
+                        return Err(AiError::InvalidConfig(format!(
+                            "provider-backed embeddings are not supported for ai.provider.kind={:?}",
+                            self.provider_kind
+                        )));
+                    }
+                };
+
+                if embeddings.len() != miss_inputs.len() {
+                    return Err(AiError::UnexpectedResponse(format!(
+                        "embedder returned unexpected batch size: expected {}, got {}",
+                        miss_inputs.len(),
+                        embeddings.len()
+                    )));
+                }
+
+                let mut memory_inserts = Vec::with_capacity(embeddings.len());
+
+                for ((orig_idx, key), embedding) in miss_indices
+                    .into_iter()
+                    .zip(miss_keys.into_iter())
+                    .zip(embeddings.into_iter())
+                {
+                    out[orig_idx] = Some(embedding.clone());
+                    if !embedding.is_empty() {
+                        memory_inserts.push((key, embedding.clone()));
+
+                        if let Some(disk) = self.disk_cache.as_ref() {
+                            let _ = disk.store(key, &embedding);
+                        }
+                    }
+                }
+
+                if !memory_inserts.is_empty() {
+                    let mut cache = self.lock_memory_cache();
+                    for (key, vec) in memory_inserts {
+                        cache.insert(key, Arc::new(vec));
+                    }
+                }
+            }
+
+            out.into_iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    item.ok_or_else(|| {
+                        AiError::UnexpectedResponse(format!(
+                            "missing embedding output for index {idx}"
+                        ))
+                    })
+                })
+                .collect()
         }
     }
 
