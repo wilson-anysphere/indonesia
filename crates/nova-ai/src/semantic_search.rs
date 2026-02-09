@@ -955,10 +955,18 @@ mod embeddings {
         fn lock_memory_cache(
             &self,
         ) -> MutexGuard<'_, HashMap<EmbeddingCacheKey, Arc<Vec<f32>>>> {
-            self.memory_cache
+            let mut guard = self
+                .memory_cache
                 .lock()
-                .inspect_err(|_| warn_poisoned_embedding_cache_mutex_once())
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(|err| err.into_inner());
+
+            if self.memory_cache.is_poisoned() {
+                warn_poisoned_embedding_cache_mutex_once();
+                guard.clear();
+                self.memory_cache.clear_poison();
+            }
+
+            guard
         }
     }
 
@@ -1413,8 +1421,12 @@ mod embeddings {
             let mut embedder = self
                 .embedder
                 .lock()
-                .inspect_err(|_| warn_poisoned_local_embedder_mutex_once())
                 .unwrap_or_else(|err| err.into_inner());
+
+            if self.embedder.is_poisoned() {
+                warn_poisoned_local_embedder_mutex_once();
+                self.embedder.clear_poison();
+            }
 
             for chunk in inputs.chunks(self.batch_size.max(1)) {
                 let embeddings = embedder
@@ -1508,10 +1520,23 @@ mod embeddings {
         }
 
         fn lock_index(&self) -> MutexGuard<'_, EmbeddedIndex> {
-            self.index
-                .lock()
-                .inspect_err(|_| warn_poisoned_mutex_once())
-                .unwrap_or_else(|err| err.into_inner())
+            let mut guard = self.index.lock().unwrap_or_else(|err| err.into_inner());
+
+            if self.index.is_poisoned() {
+                warn_poisoned_mutex_once();
+
+                // A poisoned mutex indicates a panic while the index was mid-mutation.
+                // Drop potentially-inconsistent state and force a rebuild on the next search.
+                guard.hnsw = None;
+                guard.dims = 0;
+                guard.id_to_doc.clear();
+                guard.max_elements = 0;
+                guard.dirty = true;
+
+                self.index.clear_poison();
+            }
+
+            guard
         }
 
         pub fn with_ef_search(mut self, ef_search: usize) -> Self {
@@ -2067,7 +2092,15 @@ mod embeddings {
         pub fn __poison_index_mutex_for_test(&self) {
             // This is used by regression tests to ensure we recover from poisoning.
             // Panicking while holding the lock will poison it.
-            let _guard = self.lock_index();
+            let mut guard = self.lock_index();
+
+            // Make the internal index state inconsistent so recovery has to do real work.
+            guard.hnsw = None;
+            guard.dims = 0;
+            guard.id_to_doc.clear();
+            guard.max_elements = 0;
+            guard.dirty = false;
+
             panic!("poison EmbeddingSemanticSearch index mutex for test");
         }
 

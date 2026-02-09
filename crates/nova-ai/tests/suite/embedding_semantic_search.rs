@@ -181,26 +181,16 @@ fn embedding_search_recovers_after_mutex_poisoning() {
         .to_string(),
     );
 
+    let before = search.search("hello world");
+    assert!(!before.is_empty(), "expected non-empty results before poisoning");
+
     // Simulate a previous panic during indexing/search.
     let poisoned = catch_unwind(AssertUnwindSafe(|| search.__poison_index_mutex_for_test()));
     assert!(poisoned.is_err(), "expected poisoning helper to panic");
 
-    // Subsequent operations should recover and continue to work.
-    search.index_file(
-        path,
-        r#"
-            public class Hello {
-                public String greetings() {
-                    return "hello world";
-                }
-            }
-        "#
-        .to_string(),
-    );
-
     let results = search.search("hello world");
     assert!(!results.is_empty(), "search should still return results after recovery");
-    assert!(results[0].snippet.contains("greetings"));
+    assert_eq!(results[0].path, path);
 }
 
 #[test]
