@@ -1327,6 +1327,26 @@ mod embeddings {
                 return;
             }
 
+            // If we're already at (or extremely close to) our embedding memory budget, avoid doing
+            // any embedding work for this file. This keeps workspace indexing usable when
+            // provider-backed embeddings are enabled (network calls are expensive) and prevents
+            // doing work that will be immediately discarded.
+            let remaining_budget = self.max_memory_bytes.map(|limit| {
+                self.enforce_memory_budget();
+                limit.saturating_sub(self.embedding_bytes_used)
+            });
+            if let Some(remaining) = remaining_budget {
+                // Any stored embedding uses at least one `f32` (4 bytes). If we can't store that,
+                // skip embedding entirely.
+                if remaining < std::mem::size_of::<f32>() {
+                    self.warn_truncation_once();
+                    if changed {
+                        self.invalidate_index();
+                    }
+                    return;
+                }
+            }
+
             let mut meta = Vec::with_capacity(extracted.len());
             let mut inputs = Vec::with_capacity(extracted.len());
             for (range, kind, snippet, embed_text) in extracted {
@@ -1423,9 +1443,8 @@ mod embeddings {
             // Enforce a soft memory budget based on the stored embedding vectors. When truncating,
             // keep the earliest ranges first so behavior is deterministic.
             if let Some(limit) = self.max_memory_bytes {
-                self.enforce_memory_budget();
-
-                let remaining = limit.saturating_sub(self.embedding_bytes_used);
+                let remaining =
+                    remaining_budget.unwrap_or_else(|| limit.saturating_sub(self.embedding_bytes_used));
                 let original_len = docs.len();
                 let mut kept = Vec::new();
                 let mut kept_bytes = 0usize;
@@ -2195,6 +2214,24 @@ mod embeddings {
                 index.max_elements < total_docs,
                 "HNSW max_elements should be based on inserted docs, not raw extracted docs"
             );
+        }
+
+        #[test]
+        fn index_file_skips_embedding_when_budget_cannot_fit_any_vectors() {
+            #[derive(Debug, Clone, Copy)]
+            struct PanicEmbedder;
+
+            impl Embedder for PanicEmbedder {
+                fn embed(&self, _text: &str) -> Result<Vec<f32>, AiError> {
+                    panic!("embed should not be called when budget cannot fit any embeddings");
+                }
+            }
+
+            // `with_max_memory_bytes` clamps `0` -> `1`, which is still too small to store even a
+            // single `f32` (4 bytes). Indexing should therefore skip embedding entirely.
+            let mut search = EmbeddingSemanticSearch::new(PanicEmbedder).with_max_memory_bytes(1);
+            search.index_file(PathBuf::from("a.txt"), "hello".to_string());
+            assert!(search.docs_by_path.is_empty());
         }
     }
 }
