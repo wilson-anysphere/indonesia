@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use nova_ai::{
     AiError, ContextBuilder, ContextRequest, Embedder, EmbeddingSemanticSearch, HashEmbedder,
-    PrivacyMode,
-    SemanticSearch, VirtualWorkspace,
+    PrivacyMode, SemanticSearch, VirtualWorkspace,
 };
 
 #[test]
@@ -287,4 +286,46 @@ fn embedding_search_chunks_non_java_files_with_aligned_ranges() {
     assert_eq!(&readme[chunk.range.clone()], chunk.snippet);
     assert!(chunk.snippet.contains("flibbertigibbet"));
     assert!(chunk.range.end.saturating_sub(chunk.range.start) < readme.len());
+}
+
+#[test]
+fn embedding_search_truncates_when_memory_budget_is_too_small() {
+    let path = PathBuf::from("src/Hello.java");
+    let text = r#"
+        public class Hello {
+            public String helloWorld() { return "hello world"; }
+            public String helloAgain() { return "hello world"; }
+            public String helloThird() { return "hello world"; }
+        }
+    "#
+    .to_string();
+
+    // Baseline: without a budget, we should index all method docs.
+    let mut unlimited = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    unlimited.index_file(path.clone(), text.clone());
+    let results = unlimited.search("hello world");
+    assert_eq!(results.len(), 3, "expected all methods to be indexed");
+
+    // Each method doc stores a `Vec<f32>` embedding. Use the embedder output length to compute a
+    // tiny budget that can only hold two docs.
+    let dims = HashEmbedder::default()
+        .embed("hello")
+        .expect("hash embedding")
+        .len();
+    let bytes_per_doc = dims * std::mem::size_of::<f32>();
+    let max_memory_bytes = bytes_per_doc * 2;
+
+    let mut limited = EmbeddingSemanticSearch::new(HashEmbedder::default())
+        .with_max_memory_bytes(max_memory_bytes);
+    limited.index_file(path, text);
+
+    let limited_results = limited.search("hello world");
+    assert!(
+        !limited_results.is_empty(),
+        "search should still work even when the index is truncated"
+    );
+    assert_eq!(limited_results.len(), 2, "expected truncation to two docs");
+    assert!(limited_results.iter().any(|r| r.snippet.contains("helloWorld")));
+    assert!(limited_results.iter().any(|r| r.snippet.contains("helloAgain")));
+    assert!(!limited_results.iter().any(|r| r.snippet.contains("helloThird")));
 }

@@ -81,9 +81,13 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
     if config.embeddings.enabled {
         #[cfg(feature = "embeddings")]
         {
+            let max_memory_bytes = config.embeddings.max_memory_bytes;
             match config.embeddings.backend {
                 nova_config::AiEmbeddingsBackend::Hash => {
-                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                    return Box::new(
+                        EmbeddingSemanticSearch::new(HashEmbedder::default())
+                            .with_max_memory_bytes(max_memory_bytes),
+                    );
                 }
                 nova_config::AiEmbeddingsBackend::Provider => {
                     // Provider-backed embeddings are not guaranteed to be available for every
@@ -114,14 +118,20 @@ pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn Se
                         );
                     }
 
-                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                    return Box::new(
+                        EmbeddingSemanticSearch::new(HashEmbedder::default())
+                            .with_max_memory_bytes(max_memory_bytes),
+                    );
                 }
                 nova_config::AiEmbeddingsBackend::Local => {
                     tracing::warn!(
                         target = "nova.ai",
                         "ai.embeddings.backend=local is not implemented; falling back to hash embeddings"
                     );
-                    return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+                    return Box::new(
+                        EmbeddingSemanticSearch::new(HashEmbedder::default())
+                            .with_max_memory_bytes(max_memory_bytes),
+                    );
                 }
             }
         }
@@ -457,6 +467,9 @@ mod embeddings {
         docs_by_path: BTreeMap<PathBuf, Vec<EmbeddedDoc>>,
         index: Mutex<EmbeddedIndex>,
         ef_search: usize,
+        max_memory_bytes: Option<usize>,
+        embedding_bytes_used: usize,
+        truncation_warned: bool,
     }
 
     impl<E: Embedder> EmbeddingSemanticSearch<E> {
@@ -467,12 +480,80 @@ mod embeddings {
                 docs_by_path: BTreeMap::new(),
                 index: Mutex::new(EmbeddedIndex::empty()),
                 ef_search: 64,
+                max_memory_bytes: None,
+                embedding_bytes_used: 0,
+                truncation_warned: false,
             }
         }
 
         pub fn with_ef_search(mut self, ef_search: usize) -> Self {
             self.ef_search = ef_search.max(1);
             self
+        }
+
+        pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
+            // Treat `0` as a misconfiguration and clamp to something usable so indexing stays
+            // deterministic.
+            self.max_memory_bytes = Some(max_memory_bytes.max(1));
+            self.enforce_memory_budget();
+            self
+        }
+
+        fn embedding_bytes_for_docs(docs: &[EmbeddedDoc]) -> usize {
+            docs.iter()
+                .map(|doc| doc.embedding.len().saturating_mul(std::mem::size_of::<f32>()))
+                .fold(0usize, usize::saturating_add)
+        }
+
+        fn warn_truncation_once(&mut self) {
+            if self.truncation_warned {
+                return;
+            }
+            self.truncation_warned = true;
+
+            if let Some(limit) = self.max_memory_bytes {
+                tracing::warn!(
+                    target = "nova.ai",
+                    max_memory_bytes = limit,
+                    "embedding semantic search exceeded ai.embeddings.max_memory_bytes; truncating index to stay within budget"
+                );
+            } else {
+                tracing::warn!(
+                    target = "nova.ai",
+                    "embedding semantic search truncated index to stay within memory budget"
+                );
+            }
+        }
+
+        /// Enforce the configured embedding memory budget by dropping whole-file entries until
+        /// the estimate fits.
+        ///
+        /// This is best-effort: it estimates memory based on stored embedding vectors
+        /// (`num_docs * dims * 4`), which is the dominant term for ANN indexes.
+        fn enforce_memory_budget(&mut self) {
+            let Some(limit) = self.max_memory_bytes else {
+                return;
+            };
+
+            if self.embedding_bytes_used <= limit {
+                return;
+            }
+
+            let mut changed = false;
+            while self.embedding_bytes_used > limit {
+                let Some((_path, docs)) = self.docs_by_path.pop_last() else {
+                    self.embedding_bytes_used = 0;
+                    break;
+                };
+                let removed_bytes = Self::embedding_bytes_for_docs(&docs);
+                self.embedding_bytes_used = self.embedding_bytes_used.saturating_sub(removed_bytes);
+                changed = true;
+            }
+
+            if changed {
+                self.warn_truncation_once();
+                self.invalidate_index();
+            }
         }
 
         fn invalidate_index(&self) {
@@ -572,14 +653,23 @@ mod embeddings {
     impl<E: Embedder> SemanticSearch for EmbeddingSemanticSearch<E> {
         fn clear(&mut self) {
             self.docs_by_path.clear();
+            self.embedding_bytes_used = 0;
             let mut index = self.index.lock().expect("semantic search mutex poisoned");
             *index = EmbeddedIndex::empty();
         }
 
         fn index_file(&mut self, path: PathBuf, text: String) {
+            let mut changed = false;
+
+            if let Some(existing) = self.docs_by_path.remove(&path) {
+                let removed_bytes = Self::embedding_bytes_for_docs(&existing);
+                self.embedding_bytes_used = self.embedding_bytes_used.saturating_sub(removed_bytes);
+                changed = true;
+            }
+
             let extracted = self.docs_for_file(&path, &text);
             if extracted.is_empty() {
-                if self.docs_by_path.remove(&path).is_some() {
+                if changed {
                     self.invalidate_index();
                 }
                 return;
@@ -644,7 +734,6 @@ mod embeddings {
                     out
                 }
             };
-
             let mut docs = Vec::new();
             for ((range, kind, snippet), embedding) in meta.into_iter().zip(embeddings) {
                 let Some(mut embedding) = embedding else {
@@ -673,19 +762,65 @@ mod embeddings {
             });
 
             if docs.is_empty() {
-                if self.docs_by_path.remove(&path).is_some() {
+                if changed {
                     self.invalidate_index();
                 }
                 return;
             }
 
+            // Enforce a soft memory budget based on the stored embedding vectors. When truncating,
+            // keep the earliest ranges first so behavior is deterministic.
+            if let Some(limit) = self.max_memory_bytes {
+                self.enforce_memory_budget();
+
+                let remaining = limit.saturating_sub(self.embedding_bytes_used);
+                let original_len = docs.len();
+                let mut kept = Vec::new();
+                let mut kept_bytes = 0usize;
+
+                for doc in docs {
+                    let doc_bytes =
+                        doc.embedding
+                            .len()
+                            .saturating_mul(std::mem::size_of::<f32>());
+                    let next = kept_bytes.saturating_add(doc_bytes);
+                    if next > remaining {
+                        break;
+                    }
+                    kept_bytes = next;
+                    kept.push(doc);
+                }
+
+                if kept.len() != original_len {
+                    self.warn_truncation_once();
+                }
+
+                if kept.is_empty() {
+                    if changed {
+                        self.invalidate_index();
+                    }
+                    return;
+                }
+
+                docs = kept;
+                self.embedding_bytes_used = self.embedding_bytes_used.saturating_add(kept_bytes);
+            } else {
+                self.embedding_bytes_used = self
+                    .embedding_bytes_used
+                    .saturating_add(Self::embedding_bytes_for_docs(&docs));
+            }
+
             self.docs_by_path.insert(path, docs);
-            self.invalidate_index();
+            changed = true;
+            if changed {
+                self.invalidate_index();
+            }
         }
 
         fn remove_file(&mut self, path: &Path) {
-            let removed = self.docs_by_path.remove(path).is_some();
-            if removed {
+            if let Some(removed) = self.docs_by_path.remove(path) {
+                let removed_bytes = Self::embedding_bytes_for_docs(&removed);
+                self.embedding_bytes_used = self.embedding_bytes_used.saturating_sub(removed_bytes);
                 self.invalidate_index();
             }
         }
