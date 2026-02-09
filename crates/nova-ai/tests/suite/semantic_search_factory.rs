@@ -406,7 +406,8 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
         when.method(POST)
             .path("/openai/deployments/embed-deployment/embeddings")
             .query_param("api-version", "2024-02-01")
-            .header("api-key", "test-key");
+            .header("api-key", "test-key")
+            .body_contains("\"input\":[");
         then.status(200).json_body(json!({
             "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
         }));
