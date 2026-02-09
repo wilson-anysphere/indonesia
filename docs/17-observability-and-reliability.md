@@ -90,6 +90,10 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > In that mode, provider tuning env vars are supported:
 > `NOVA_AI_MAX_TOKENS=<n>` (overrides `ai.provider.max_tokens`, clamped to >= 1) and
 > `NOVA_AI_CONCURRENCY=<n>` (overrides `ai.provider.concurrency`, clamped to >= 1).
+> Retry policy knobs are also supported:
+> - `NOVA_AI_RETRY_MAX_RETRIES=<n>` (overrides `ai.provider.retry_max_retries`)
+> - `NOVA_AI_RETRY_INITIAL_BACKOFF_MS=<n>` (overrides `ai.provider.retry_initial_backoff_ms`, clamped to >= 1)
+> - `NOVA_AI_RETRY_MAX_BACKOFF_MS=<n>` (overrides `ai.provider.retry_max_backoff_ms`, clamped to >= 1)
 > `NOVA_DISABLE_AI=1` overrides AI enablement (including `NOVA_AI_PROVIDER` and `nova.toml`) and
 > forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` disables **AI completion features**, including:
 > - multi-token completions (`nova/completion/more`), and
