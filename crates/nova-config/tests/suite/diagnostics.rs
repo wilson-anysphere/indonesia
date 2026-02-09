@@ -813,6 +813,8 @@ enabled = true
 [ai.provider]
 max_tokens = 0
 timeout_ms = 0
+retry_initial_backoff_ms = 0
+retry_max_backoff_ms = 0
 "#;
 
     let (_config, diagnostics) =
@@ -827,6 +829,14 @@ timeout_ms = 0
             },
             ConfigValidationError::InvalidValue {
                 toml_path: "ai.provider.max_tokens".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.retry_initial_backoff_ms".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.retry_max_backoff_ms".to_string(),
                 message: "must be >= 1".to_string(),
             },
         ]
