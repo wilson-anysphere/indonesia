@@ -1108,7 +1108,7 @@ fn stdio_server_nova_ai_generate_method_body_includes_method_signature_and_conte
     let completion = serde_json::to_string(&patch).expect("patch json");
 
     // Use sentinels that do not appear in the source file, to ensure we include the explicit
-    // `method_signature` + `context` fields (rather than relying on the annotated file snippet).
+    // `methodSignature` + `context` fields (rather than relying on the annotated file snippet).
     let expected_signature = "public int add(int a, int b) throws Exception";
     let expected_context = "CONTEXT_FROM_ARGS_SHOULD_BE_INCLUDED";
 
@@ -1195,7 +1195,7 @@ fn stdio_server_nova_ai_generate_method_body_includes_method_signature_and_conte
             "method": "nova/ai/generateMethodBody",
             "params": {
                 "workDoneToken": "t1",
-                "method_signature": expected_signature,
+                "methodSignature": expected_signature,
                 "context": expected_context,
                 "uri": file_uri,
                 "range": Range::new(selection_start, selection_end)

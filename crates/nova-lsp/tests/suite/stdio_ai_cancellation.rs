@@ -224,7 +224,7 @@ concurrency = 1
             "id": 10,
             "method": "nova/ai/explainError",
             "params": {
-                "diagnostic_message": "cannot find symbol",
+                "diagnosticMessage": "cannot find symbol",
                 "code": "unknown()"
             }
         }),
@@ -374,7 +374,7 @@ concurrency = 1
             "id": 11,
             "method": "nova/ai/generateMethodBody",
             "params": {
-                "method_signature": "int add(int a, int b)",
+                "methodSignature": "int add(int a, int b)",
                 "context": null,
                 "uri": file_uri,
                 "range": { "start": selection_start, "end": selection_end }
