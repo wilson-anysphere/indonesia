@@ -230,6 +230,9 @@ mod tests {
             CompletionItem::new("println", CompletionItemKind::Method),
         ];
 
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = nova_metrics::MetricsRegistry::global();
         let before_snapshot = metrics.snapshot();
         let before_timeouts = before_snapshot
@@ -294,6 +297,9 @@ mod tests {
             CompletionItem::new("println", CompletionItemKind::Method),
         ];
 
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let metrics = nova_metrics::MetricsRegistry::global();
         let before_snapshot = metrics.snapshot();
         let before_panics = before_snapshot

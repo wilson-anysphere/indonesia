@@ -593,6 +593,9 @@ mod tests {
 
     #[tokio::test]
     async fn llm_ranker_timeout_cancels_in_flight_llm_request() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
         let llm = Arc::new(CapturingLlmClient::default());
         let ranker = LlmCompletionRanker::new(llm.clone());
 
