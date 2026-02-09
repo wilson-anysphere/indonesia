@@ -229,11 +229,16 @@ mod tests {
         ];
 
         let metrics = nova_metrics::MetricsRegistry::global();
-        let before = metrics
-            .snapshot()
+        let before_snapshot = metrics.snapshot();
+        let before_timeouts = before_snapshot
             .methods
-            .get("ai/completion_ranking")
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
             .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        let before_requests = before_snapshot
+            .methods
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.request_count)
             .unwrap_or(0);
 
         let ranked = block_on(rank_completions_with_timeout(
@@ -245,15 +250,24 @@ mod tests {
 
         assert_eq!(ranked, items);
 
-        let after = metrics
-            .snapshot()
+        let after_snapshot = metrics.snapshot();
+        let after_timeouts = after_snapshot
             .methods
-            .get("ai/completion_ranking")
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
             .map(|m| m.timeout_count)
             .unwrap_or(0);
+        let after_requests = after_snapshot
+            .methods
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         assert!(
-            after >= before.saturating_add(1),
+            after_timeouts >= before_timeouts.saturating_add(1),
             "expected ai/completion_ranking timeout_count to increment"
+        );
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected ai/completion_ranking request_count to increment"
         );
     }
 
@@ -279,11 +293,16 @@ mod tests {
         ];
 
         let metrics = nova_metrics::MetricsRegistry::global();
-        let before = metrics
-            .snapshot()
+        let before_snapshot = metrics.snapshot();
+        let before_panics = before_snapshot
             .methods
-            .get("ai/completion_ranking")
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
             .map(|m| m.panic_count)
+            .unwrap_or(0);
+        let before_requests = before_snapshot
+            .methods
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.request_count)
             .unwrap_or(0);
 
         let ranked = block_on(rank_completions_with_timeout(
@@ -295,15 +314,24 @@ mod tests {
 
         assert_eq!(ranked, items);
 
-        let after = metrics
-            .snapshot()
+        let after_snapshot = metrics.snapshot();
+        let after_panics = after_snapshot
             .methods
-            .get("ai/completion_ranking")
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
             .map(|m| m.panic_count)
             .unwrap_or(0);
+        let after_requests = after_snapshot
+            .methods
+            .get(crate::completion_ranking::AI_COMPLETION_RANKING_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         assert!(
-            after >= before.saturating_add(1),
+            after_panics >= before_panics.saturating_add(1),
             "expected ai/completion_ranking panic_count to increment"
+        );
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected ai/completion_ranking request_count to increment"
         );
     }
 
