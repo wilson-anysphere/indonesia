@@ -318,6 +318,13 @@ fn semantic_search_from_config_provider_backend_with_unsupported_provider_falls_
 
     let cfg = AiConfig {
         enabled: true,
+        // Ensure we exercise the "unsupported provider kind" fallback path rather than the
+        // `local_only` privacy guardrail (covered separately in provider-embeddings privacy
+        // tests).
+        privacy: nova_config::AiPrivacyConfig {
+            local_only: false,
+            ..nova_config::AiPrivacyConfig::default()
+        },
         provider: nova_config::AiProviderConfig {
             kind: AiProviderKind::Anthropic,
             ..nova_config::AiProviderConfig::default()
