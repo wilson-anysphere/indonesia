@@ -43,6 +43,7 @@ import {
 } from './safeMode';
 import {
   NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND,
+  NOVA_AI_SHOW_GENERIC_COMMAND,
   NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND,
   NOVA_AI_SHOW_GENERATE_TESTS_COMMAND,
   rewriteNovaAiCodeActionOrCommand,
@@ -2816,6 +2817,94 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: generate tests failed: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(NOVA_AI_SHOW_GENERIC_COMMAND, async (payload: unknown) => {
+      if (!isAiEnabled()) {
+        await handleAiDisabled();
+        return;
+      }
+
+      const args =
+        payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
+          ? (payload as NovaAiShowCommandArgs)
+          : undefined;
+      if (!args) {
+        void vscode.window.showErrorMessage('Nova AI: missing command payload.');
+        return;
+      }
+
+      const label = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : args.lspCommand;
+      const title = label ? `Nova AI: ${label}` : 'Nova AI: Result';
+      const progressTitle = label ? `Nova AI: Running ${label}…` : 'Nova AI: Running command…';
+
+      try {
+        const rawText = await runAiLspExecuteCommand(args, progressTitle);
+        const trimmed = rawText.trim();
+        if (!trimmed) {
+          void vscode.window.showInformationMessage('Nova AI: Command completed.');
+          return;
+        }
+
+        const looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+        let extension = 'md';
+        let languageId = 'markdown';
+        let content = rawText;
+
+        if (looksLikeJson) {
+          extension = 'json';
+          languageId = 'json';
+          try {
+            const parsed: unknown = JSON.parse(trimmed);
+            content = JSON.stringify(parsed, null, 2);
+          } catch {
+            // Best-effort: keep the server output if it isn't valid JSON.
+            content = rawText;
+          }
+        }
+
+        const doc = await openReadonlyAiDocument({
+          title,
+          extension,
+          languageId,
+          content,
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+
+        if (!looksLikeJson) {
+          try {
+            await vscode.commands.executeCommand('markdown.showPreviewToSide', doc.uri);
+          } catch {
+            // Best-effort: fall back to the markdown source view if the preview is unavailable.
+          }
+        }
+
+        void showCopyToClipboardAction(label || 'Result', content);
+      } catch (err) {
+        if (isRequestCancelledError(err)) {
+          return;
+        }
+        if (isAiNotConfiguredError(err)) {
+          await handleAiNotConfigured();
+          return;
+        }
+        if (isAiPrivacyExcludedError(err)) {
+          await handleAiPrivacyExcluded();
+          return;
+        }
+        if (isAiCodeEditPolicyError(err)) {
+          await handleAiCodeEditPolicyError(err);
+          return;
+        }
+        if (isAiUnsupportedUriError(err)) {
+          await handleAiUnsupportedUri();
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: command failed: ${message}`);
       }
     }),
   );

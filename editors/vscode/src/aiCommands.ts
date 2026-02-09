@@ -5,6 +5,7 @@ export const NOVA_AI_LSP_COMMAND_GENERATE_TESTS = 'nova.ai.generateTests' as con
 export const NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND = 'nova.ai.showExplainError' as const;
 export const NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND = 'nova.ai.showGenerateMethodBody' as const;
 export const NOVA_AI_SHOW_GENERATE_TESTS_COMMAND = 'nova.ai.showGenerateTests' as const;
+export const NOVA_AI_SHOW_GENERIC_COMMAND = 'nova.ai.showResult' as const;
 
 export type NovaAiLspCommandId =
   | typeof NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR
@@ -14,7 +15,8 @@ export type NovaAiLspCommandId =
 export type NovaAiLocalCommandId =
   | typeof NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND
   | typeof NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND
-  | typeof NOVA_AI_SHOW_GENERATE_TESTS_COMMAND;
+  | typeof NOVA_AI_SHOW_GENERATE_TESTS_COMMAND
+  | typeof NOVA_AI_SHOW_GENERIC_COMMAND;
 
 export type NovaAiCodeActionKindValue = 'nova.explain' | 'nova.ai.generate' | 'nova.ai.tests';
 
@@ -154,11 +156,12 @@ export function localCommandForNovaAiAction(action: {
       return NOVA_AI_SHOW_GENERATE_TESTS_COMMAND;
   }
 
-  // If we have an unknown `nova.ai.*` command, don't guess which UI to use based on
-  // code action kind (future commands might share kinds). Only fall back to kind
-  // mapping when no command id is available.
+  // If we have an unknown `nova.ai.*` command, don't guess which bespoke UI to use
+  // based on code action kind (future commands might share kinds). Instead, fall
+  // back to a generic "show result" UI. Only fall back to kind mapping when no
+  // command id is available.
   if (typeof action.lspCommandId === 'string') {
-    return undefined;
+    return isNovaAiCommandId(action.lspCommandId) ? NOVA_AI_SHOW_GENERIC_COMMAND : undefined;
   }
 
   switch (action.kind) {

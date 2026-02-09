@@ -10,6 +10,7 @@ import {
   NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY,
   NOVA_AI_LSP_COMMAND_GENERATE_TESTS,
   NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND,
+  NOVA_AI_SHOW_GENERIC_COMMAND,
   NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND,
   NOVA_AI_SHOW_GENERATE_TESTS_COMMAND,
 } from '../aiCommands';
@@ -166,4 +167,24 @@ test('rewriteNovaAiCodeActionOrCommand returns undefined for non-AI actions', ()
   });
 
   assert.equal(rewritten, undefined);
+});
+
+test('rewriteNovaAiCodeActionOrCommand maps unknown nova.ai.* commands to the generic show command', () => {
+  const rewritten = rewriteNovaAiCodeActionOrCommand({
+    command: 'nova.ai.codeReview',
+    title: 'Code review',
+    arguments: [{ uri: 'file:///foo/bar.java' }],
+  });
+
+  assert.deepEqual(rewritten, {
+    command: NOVA_AI_SHOW_GENERIC_COMMAND,
+    args: [
+      {
+        lspCommand: 'nova.ai.codeReview',
+        lspArguments: [{ uri: 'file:///foo/bar.java' }],
+        kind: undefined,
+        title: 'Code review',
+      },
+    ],
+  });
 });
