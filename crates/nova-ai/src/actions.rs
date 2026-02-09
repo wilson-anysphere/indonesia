@@ -40,6 +40,8 @@ Notes:
 - The diff may also be truncated to fit context limits. If you notice truncation/omission markers,
   mention that the review is necessarily partial.
 - Focus on actionable feedback with concrete, code-referencing suggestions.
+- Do not invent file paths, line numbers, or surrounding code that is not present in the diff. If
+  something is unclear due to missing context, ask a question in "Questions / Follow-ups".
 
 ## Diff
 ```diff
@@ -62,6 +64,11 @@ For each issue/suggestion include:
 - **Where:** file + function/method (or diff hunk) you are referring to
 - **Why it matters:** impact/risk
 - **Suggestion:** a concrete change (quote exact lines or show a small corrected snippet)
+
+Severity guidance:
+- `BLOCKER`: must fix before merge (likely bug/security issue/crash/data loss)
+- `MAJOR`: important to address soon (likely correctness/perf/maintainability risk)
+- `MINOR`: nice-to-have improvements (style/naming/small refactor)
 
 ## Tests
 - Missing tests or risky areas + specific test cases to add.

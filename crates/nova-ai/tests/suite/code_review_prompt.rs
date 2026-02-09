@@ -116,6 +116,17 @@ async fn code_review_prompt_requests_structured_markdown_output() {
             );
         }
 
+        // Hallucination guard.
+        assert!(user_prompt.contains("Do not invent"), "{user_prompt}");
+
+        // Severity guidance.
+        for guidance in ["Severity guidance", "must fix before merge", "nice-to-have"] {
+            assert!(
+                user_prompt.contains(guidance),
+                "missing severity guidance snippet {guidance} in prompt: {user_prompt}"
+            );
+        }
+
         // Ensure we call out potential omissions due to excluded_paths.
         assert!(user_prompt.contains("excluded_paths"), "{user_prompt}");
         // Ensure we also call out potential truncation.
