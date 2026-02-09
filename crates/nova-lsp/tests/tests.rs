@@ -14,6 +14,9 @@ mod ai_completion_more;
 #[cfg(feature = "ai")]
 #[path = "suite/ai_excluded_paths.rs"]
 mod ai_excluded_paths;
+#[cfg(feature = "ai")]
+#[path = "suite/stdio_ai_cancellation.rs"]
+mod stdio_ai_cancellation;
 #[path = "suite/cli_help.rs"]
 mod cli_help;
 #[path = "suite/completion_resolve.rs"]
