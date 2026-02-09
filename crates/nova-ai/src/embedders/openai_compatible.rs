@@ -99,11 +99,39 @@ impl OpenAiCompatibleEmbedder {
 
         Ok(embedding)
     }
+
+    fn embed_batch_impl(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = self.endpoint("/embeddings")?;
+        let body = OpenAiEmbeddingBatchRequest {
+            model: &self.model,
+            input,
+        };
+
+        let response = self
+            .authorize(self.client.post(url))
+            .json(&body)
+            // Redundant with the client builder timeout, but keep it explicit in case
+            // reqwest semantics change.
+            .timeout(self.timeout)
+            .send()?
+            .error_for_status()?;
+
+        let parsed: OpenAiEmbeddingResponse = response.json()?;
+        parse_openai_embeddings(parsed, input.len())
+    }
 }
 
 impl Embedder for OpenAiCompatibleEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>, AiError> {
         self.embed_once(text)
+    }
+
+    fn embed_batch(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        self.embed_batch_impl(inputs)
     }
 }
 
@@ -111,6 +139,12 @@ impl Embedder for OpenAiCompatibleEmbedder {
 struct OpenAiEmbeddingRequest<'a> {
     model: &'a str,
     input: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingBatchRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,4 +155,39 @@ struct OpenAiEmbeddingResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAiEmbeddingData {
     embedding: Vec<f32>,
+    #[serde(default)]
+    index: Option<usize>,
+}
+
+fn parse_openai_embeddings(
+    response: OpenAiEmbeddingResponse,
+    expected: usize,
+) -> Result<Vec<Vec<f32>>, AiError> {
+    let mut out = vec![None::<Vec<f32>>; expected];
+
+    for (pos, item) in response.data.into_iter().enumerate() {
+        let idx = item.index.unwrap_or(pos);
+        if idx >= expected {
+            return Err(AiError::UnexpectedResponse(format!(
+                "embeddings index {} out of range (expected < {expected})",
+                idx
+            )));
+        }
+        if out[idx].is_some() {
+            return Err(AiError::UnexpectedResponse(format!(
+                "duplicate embeddings index {}",
+                idx
+            )));
+        }
+        out[idx] = Some(item.embedding);
+    }
+
+    out.into_iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            item.filter(|v| !v.is_empty()).ok_or_else(|| {
+                AiError::UnexpectedResponse(format!("missing embeddings data for index {idx}"))
+            })
+        })
+        .collect()
 }

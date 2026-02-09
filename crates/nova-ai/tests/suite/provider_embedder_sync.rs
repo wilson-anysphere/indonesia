@@ -44,3 +44,58 @@ fn provider_embedder_can_be_used_from_sync_context_without_tokio_runtime() {
     // One embed call for indexing + one for searching.
     mock.assert_hits(2);
 }
+
+#[test]
+fn provider_embedder_batches_embedding_requests_when_indexing_multiple_docs() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings");
+        then.status(200).json_body(json!({
+            "data": [
+                { "index": 0, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 1, "embedding": [1.0, 0.0, 0.0] },
+                { "index": 2, "embedding": [1.0, 0.0, 0.0] },
+            ],
+        }));
+    });
+
+    let embedder = OpenAiCompatibleEmbedder::new(
+        Url::parse(&server.base_url()).expect("server url"),
+        "test-embedding-model",
+        Duration::from_secs(2),
+        None,
+    )
+    .expect("embedder builds");
+
+    let mut search = EmbeddingSemanticSearch::new(embedder);
+    let path = PathBuf::from("src/Hello.java");
+
+    // This file produces multiple extracted docs (type + methods), which should trigger a
+    // single `embed_batch` call.
+    search.index_file(
+        path.clone(),
+        r#"
+            package com.example;
+
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+
+                public String goodbye() {
+                    return "goodbye";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    mock.assert_hits(1);
+
+    let results = search.search("hello world");
+    assert!(!results.is_empty(), "expected non-empty results");
+    assert_eq!(results[0].path, path);
+
+    // One batched embed call for indexing + one for searching.
+    mock.assert_hits(2);
+}
