@@ -71,74 +71,30 @@ AI integration is a key differentiator for Nova. Unlike retrofitting AI onto exi
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Implementation
+### Implementation (completion ranking)
 
-```rust
-pub struct AiCompletionProvider {
-    /// Local ranking model
-    local_model: CompletionRanker,
-    
-    /// Optional cloud model for advanced completions
-    cloud_model: Option<CloudCompletionService>,
-    
-    /// Completion cache
-    cache: LruCache<CompletionContext, Vec<ScoredCompletion>>,
-}
+Completion ranking is **LLM-backed**: Nova asks an LLM to reorder the already-valid completion
+items. It is designed to be latency-bounded and safe to disable.
 
-impl AiCompletionProvider {
-    pub async fn rank_completions(
-        &self,
-        ctx: &CompletionContext,
-        items: Vec<CompletionItem>,
-    ) -> Vec<CompletionItem> {
-        // Build feature vector from context
-        let features = self.extract_features(ctx);
-        
-        // Score each item with local model
-        let mut scored: Vec<_> = items.into_iter()
-            .map(|item| {
-                let score = self.local_model.score(&features, &item);
-                (item, score)
-            })
-            .collect();
-        
-        // Sort by score
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        
-        // Optionally enhance top results with cloud model
-        if let Some(cloud) = &self.cloud_model {
-            if ctx.wants_multi_token {
-                let enhanced = cloud.enhance_completions(ctx, &scored[..10]).await;
-                scored.splice(0..0, enhanced);
-            }
-        }
-        
-        scored.into_iter().map(|(item, _)| item).collect()
-    }
-    
-    fn extract_features(&self, ctx: &CompletionContext) -> FeatureVector {
-        FeatureVector {
-            // Contextual features
-            receiver_type: ctx.receiver_type.clone(),
-            expected_type: ctx.expected_type.clone(),
-            in_method: ctx.enclosing_method.clone(),
-            in_class: ctx.enclosing_class.clone(),
-            
-            // Positional features
-            prefix_length: ctx.prefix.len(),
-            line_context: ctx.line_text.clone(),
-            
-            // Historical features
-            recent_completions: ctx.recent_selections.clone(),
-            file_patterns: ctx.file_completion_patterns.clone(),
-            
-            // Semantic features
-            visible_types: ctx.visible_types.clone(),
-            import_suggestions: ctx.potential_imports.clone(),
-        }
-    }
-}
-```
+Key details:
+
+- **Provider backend:** uses the configured `ai.provider` backend via `nova-ai::AiClient`
+  (which implements `nova_ai::LlmClient`).
+- **Timeout + fallback:** the ranking call is guarded by `ai.timeouts.completion_ranking_ms`. On
+  timeout or any error (provider failure, invalid JSON, parse issues), Nova falls back to the
+  baseline ordering.
+- **Prompt/response format:** candidates are assigned **numeric IDs** (`0..N-1`). The prompt
+  instructs the model to return **only** a JSON array of those IDs in preferred order, e.g.
+  `[3, 0, 2, 1]`.
+- **Privacy / excluded paths:** `ai.privacy.excluded_paths` is enforced when building ranking
+  prompts—code from excluded files is not sent. If the focal file is excluded, ranking is skipped
+  (baseline order).
+- **Cloud anonymization:** in cloud mode (`ai.privacy.local_only = false`) with
+  `ai.privacy.anonymize_identifiers = true`, identifier anonymization is applied only inside
+  Markdown code fences. Ranking prompts therefore keep any identifier-bearing content inside code
+  fences and **must not** embed raw identifiers as JSON strings.
+- **Caching:** when `ai.cache_enabled = true`, `AiClient` uses an in-memory response cache, which
+  reduces repeat ranking latency and provider calls.
 
 ### 2. Intelligent Code Generation
 
@@ -368,10 +324,10 @@ impl CodeReviewer {
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  COMPLETION RANKING                                              │
-│  • Small transformer or gradient boosting                       │
-│  • ~10MB model size                                             │
-│  • <1ms inference                                               │
-│  • Trained on completion logs                                   │
+│  • LLM-backed reordering via `ai.provider`                       │
+│  • Numeric candidate IDs in prompt; JSON array response          │
+│  • Guarded by `ai.timeouts.completion_ranking_ms` + fallback     │
+│  • In-memory cache when `ai.cache_enabled=true`                  │
 │                                                                  │
 │  EMBEDDING MODEL                                                 │
 │  • Sentence transformer variant                                 │
@@ -440,6 +396,10 @@ multi_token_completion = true
 completion_ranking_ms = 20
 multi_token_completion_ms = 250
 ```
+
+The LLM backend used by completion ranking (and other LLM-backed features) is configured under
+`ai.provider` and instantiated via `nova-ai::AiClient`. Optional in-memory caching for LLM calls is
+controlled by `ai.cache_enabled` (plus `ai.cache_max_entries` / `ai.cache_ttl_secs`).
 
 ### Server-side overrides (environment variables)
 
@@ -569,17 +529,20 @@ Nova’s behavior depends on the AI action:
    - file path / range metadata is omitted to avoid leaking excluded paths
    - the prompt includes a placeholder such as `[code context omitted due to excluded_paths]`
 
-2. **Patch-based code edits** (for example: `nova/ai/generateMethodBody` and
+2. **Completion ranking** is **skipped** when the focal file matches `excluded_paths` (the server
+   returns the baseline completion ordering).
+
+3. **Patch-based code edits** (for example: `nova/ai/generateMethodBody` and
    `nova/ai/generateTests`) are **rejected** when the focal/target file matches `excluded_paths`
    (the server returns an error *before* calling the model).
 
    Other edit-like features that require file-backed prompts (such as multi-token completions) are
    also disabled for excluded files.
 
-3. **Semantic search indexing** omits excluded files entirely (they are not embedded/indexed and
+4. **Semantic search indexing** omits excluded files entirely (they are not embedded/indexed and
    therefore cannot be surfaced as related-code context).
 
-4. **Extra context items**: when an AI request is otherwise allowed, any “extra files” /
+5. **Extra context items**: when an AI request is otherwise allowed, any “extra files” /
    “related code” context items whose paths match `excluded_paths` are omitted from the prompt. If
    anything was omitted, Nova injects a synthetic placeholder snippet such as
    `[some context omitted due to excluded_paths]` so the model can tell context was intentionally
@@ -753,7 +716,7 @@ impl NovaServer {
         // Get traditional completions
         let items = self.db.read().completions_at(params.file, params.position);
         
-        // AI ranking (fast, local)
+        // AI ranking (LLM-backed; guarded by `ai.timeouts.completion_ranking_ms`)
         let ranked = self.ai.rank_completions(&params, items).await;
         
         // Optional: AI multi-token completions (async, might use cloud)
