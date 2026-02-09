@@ -91,13 +91,15 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > `NOVA_AI_MAX_TOKENS=<n>` (overrides `ai.provider.max_tokens`, clamped to >= 1) and
 > `NOVA_AI_CONCURRENCY=<n>` (overrides `ai.provider.concurrency`, clamped to >= 1).
 > `NOVA_DISABLE_AI=1` overrides AI enablement (including `NOVA_AI_PROVIDER` and `nova.toml`) and
-> forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` similarly disables background/multi-token
-> completions. `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s multi-token completion
-> max-items; `0` is treated as a hard disable (values are clamped to a reasonable max, currently 32,
-> and invalid/empty values are ignored). These overrides are read at process start (restart
-> required). When `NOVA_AI_AUDIT_LOGGING` is enabled in the env-var AI mode, `nova-lsp` will
-> best-effort enable the dedicated AI audit log file channel so prompts/results are not captured in
-> the normal log buffer.
+> forces AI off. `NOVA_DISABLE_AI_COMPLETIONS=1` disables **AI completion features**, including:
+> - multi-token completions (`nova/completion/more`), and
+> - completion ranking (LLM-backed re-ordering of standard completion results), when enabled.
+> `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s **multi-token completion** max-items;
+> `0` is treated as a hard disable (values are clamped to a reasonable max, currently 32, and
+> invalid/empty values are ignored). These overrides are read at process start (restart required).
+> When `NOVA_AI_AUDIT_LOGGING` is enabled in the env-var AI mode, `nova-lsp` will best-effort enable
+> the dedicated AI audit log file channel so prompts/results are not captured in the normal log
+> buffer.
 
 ### Config diagnostics (unknown keys + validation)
 
