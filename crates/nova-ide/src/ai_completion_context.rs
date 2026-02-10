@@ -2,11 +2,12 @@ use lsp_types::Position;
 use nova_ai::MultiTokenCompletionContext;
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_db::{Database, FileId};
+use nova_types::CallKind;
 
 use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
-    infer_receiver_type_for_member_access, member_method_names_for_receiver_type, receiver_before_dot,
-    skip_whitespace_backwards, CompletionContextAnalysis,
+    infer_receiver_type_for_member_access, member_method_names_for_receiver_type_with_call_kind,
+    receiver_before_dot, skip_whitespace_backwards, CompletionContextAnalysis,
 };
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
@@ -39,11 +40,12 @@ pub fn multi_token_completion_context(
     let before = skip_whitespace_backwards(text, prefix_start);
     let after_dot = before > 0 && text.as_bytes().get(before - 1) == Some(&b'.');
 
-    let (_, receiver_type) = receiver_at_offset(db, file, text, offset, &analysis);
+    let (_, receiver_type, receiver_call_kind) = receiver_at_offset(db, file, text, offset, &analysis);
     let available_methods = normalize_completion_items(available_methods_for_receiver(
         db,
         file,
         receiver_type.as_deref(),
+        receiver_call_kind,
         &analysis,
     ));
     let importable_paths = normalize_importable_paths(importable_paths_for_receiver(
@@ -69,23 +71,28 @@ fn receiver_at_offset(
     text: &str,
     offset: usize,
     analysis: &CompletionContextAnalysis,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<CallKind>) {
     let (prefix_start, _) = identifier_prefix(text, offset);
     let before = skip_whitespace_backwards(text, prefix_start);
     if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
-        return (None, None);
+        return (None, None, None);
     }
 
     let dot_offset = before - 1;
     let receiver = receiver_before_dot(text, dot_offset);
     if !receiver.is_empty() {
-        let ty = infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
-            .or_else(|| infer_receiver_type_lexical(receiver.as_str(), analysis));
-        return (Some(receiver), ty);
+        if let Some((ty, kind)) =
+            infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
+        {
+            return (Some(receiver), Some(ty), Some(kind));
+        }
+
+        let ty = infer_receiver_type_lexical(receiver.as_str(), analysis);
+        return (Some(receiver), ty, Some(CallKind::Instance));
     }
 
     let ty = infer_receiver_type_before_dot(db, file, dot_offset);
-    (None, ty)
+    (None, ty, Some(CallKind::Instance))
 }
 
 fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnalysis) -> Option<String> {
@@ -136,13 +143,22 @@ fn available_methods_for_receiver(
     db: &dyn Database,
     file: FileId,
     receiver_type: Option<&str>,
+    receiver_call_kind: Option<CallKind>,
     analysis: &CompletionContextAnalysis,
 ) -> Vec<String> {
     if let Some(receiver_type) = receiver_type {
-        let methods = member_method_names_for_receiver_type(db, file, receiver_type);
+        let call_kind = receiver_call_kind.unwrap_or(CallKind::Instance);
+        let methods =
+            member_method_names_for_receiver_type_with_call_kind(db, file, receiver_type, call_kind);
         if !methods.is_empty() {
             return methods;
         }
+    }
+
+    // Avoid falling back to in-file method names for type receivers: those names are not valid
+    // member calls, and can cause the AI completion validator to accept invalid suggestions.
+    if matches!(receiver_call_kind, Some(CallKind::Static)) {
+        return Vec::new();
     }
 
     analysis.methods.clone()
@@ -372,5 +388,32 @@ class A {
         );
         assert!(ctx.available_methods.iter().any(|m| m == "length"));
         assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn static_receiver_method_list_uses_static_members_only() {
+        let ctx = ctx_for(
+            r#"
+class Util {
+  static int foo() { return 0; }
+  int bar() { return 0; }
+  static void baz() {}
+}
+
+class Test {
+  void m() {
+    Util.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(ctx.available_methods.iter().any(|m| m == "foo"));
+        assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "bar"),
+            "expected static receiver to exclude instance methods, got {:?}",
+            ctx.available_methods
+        );
     }
 }

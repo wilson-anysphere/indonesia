@@ -10486,14 +10486,14 @@ pub(crate) fn infer_receiver_type_for_member_access(
     file: FileId,
     receiver: &str,
     receiver_offset: usize,
-) -> Option<String> {
+) -> Option<(String, CallKind)> {
     let text = db.file_content(file);
     let analysis = analyze(text);
 
     let (mut types, env) = completion_type_store(db, file);
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
-    let (mut receiver_ty, _call_kind) =
+    let (mut receiver_ty, mut call_kind) =
         infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
     receiver_ty = ensure_local_class_receiver(&mut types, &analysis, receiver_ty);
 
@@ -10553,6 +10553,7 @@ pub(crate) fn infer_receiver_type_for_member_access(
 
                 if ok && !matches!(ty, Type::Unknown | Type::Error) {
                     receiver_ty = ty;
+                    call_kind = CallKind::Instance;
                 }
             }
         }
@@ -10570,7 +10571,54 @@ pub(crate) fn infer_receiver_type_for_member_access(
         receiver_ty,
     );
 
-    Some(format_type_fully_qualified(&types, &receiver_ty))
+    Some((format_type_fully_qualified(&types, &receiver_ty), call_kind))
+}
+
+#[cfg(any(feature = "ai", test))]
+pub(crate) fn member_method_names_for_receiver_type_with_call_kind(
+    db: &dyn Database,
+    file: FileId,
+    receiver_type: &str,
+    call_kind: CallKind,
+) -> Vec<String> {
+    if receiver_type.trim().is_empty() {
+        return Vec::new();
+    }
+
+    // Fast path: preserve existing behavior for instance receivers (includes array clone()
+    // handling, Lombok virtual members, etc.).
+    if call_kind == CallKind::Instance {
+        return member_method_names_for_receiver_type(db, file, receiver_type);
+    }
+
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
+
+    let receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return Vec::new();
+    }
+
+    let receiver_ty = maybe_load_external_type_for_member_completion(
+        db,
+        file,
+        &mut types,
+        &file_ctx,
+        receiver_ty,
+    );
+
+    let items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
+    let mut seen = BTreeSet::new();
+    for item in items {
+        if item.kind == Some(CompletionItemKind::METHOD) {
+            seen.insert(item.label);
+        }
+    }
+
+    seen.into_iter().collect()
 }
 
 fn format_type_fully_qualified(types: &TypeStore, ty: &Type) -> String {
