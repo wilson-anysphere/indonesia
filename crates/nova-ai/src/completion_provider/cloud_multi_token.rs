@@ -119,12 +119,23 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             );
 
             if let Some(reverse_map) = reverse_map {
-                deanonymize_completions(
-                    &mut completions,
-                    &reverse_map,
-                    self.max_insert_text_chars,
-                    self.max_label_chars,
-                );
+                for completion in &mut completions {
+                    crate::anonymizer::deanonymize_multi_token_completion(
+                        completion,
+                        &reverse_map,
+                    );
+
+                    // Re-apply clamping limits after de-anonymization; identifiers can get longer
+                    // when expanded back to their original names.
+                    completion.insert_text = clamp_chars(
+                        std::mem::take(&mut completion.insert_text),
+                        self.max_insert_text_chars,
+                    );
+                    completion.label = clamp_chars(
+                        std::mem::take(&mut completion.label),
+                        self.max_label_chars,
+                    );
+                }
             }
 
             Ok(completions)
@@ -276,73 +287,6 @@ fn anonymize_prompt_context(
 enum ListSection {
     AvailableMethods,
     ImportableSymbols,
-}
-
-fn deanonymize_completions(
-    completions: &mut [MultiTokenCompletion],
-    reverse_map: &ReverseIdentifierMap,
-    max_insert_text_chars: usize,
-    max_label_chars: usize,
-) {
-    for completion in completions {
-        completion.label = clamp_chars(
-            deanonymize_identifiers(&completion.label, reverse_map),
-            max_label_chars,
-        );
-        completion.insert_text = clamp_chars(
-            deanonymize_identifiers(&completion.insert_text, reverse_map),
-            max_insert_text_chars,
-        );
-
-        for edit in &mut completion.additional_edits {
-            match edit {
-                AdditionalEdit::AddImport { path } => {
-                    *path = deanonymize_identifiers(path, reverse_map);
-                }
-            }
-        }
-    }
-}
-
-fn deanonymize_identifiers(text: &str, reverse_map: &ReverseIdentifierMap) -> String {
-    if reverse_map.is_empty() || text.is_empty() {
-        return text.to_string();
-    }
-
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if is_ident_start(ch) {
-            let mut ident = String::new();
-            ident.push(ch);
-            while let Some(&next) = chars.peek() {
-                if is_ident_continue(next) {
-                    ident.push(next);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-
-            if let Some(original) = reverse_map.get(&ident) {
-                out.push_str(original);
-            } else {
-                out.push_str(&ident);
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-
-    out
-}
-
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c == '$' || c.is_ascii_alphabetic()
-}
-
-fn is_ident_continue(c: char) -> bool {
-    is_ident_start(c) || c.is_ascii_digit()
 }
 
 fn json_instructions(max_items: usize) -> String {
