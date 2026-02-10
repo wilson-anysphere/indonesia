@@ -494,7 +494,7 @@ timeout_ms = 60000
 # (often `1.0`).
 temperature = 0.2
 
-# Retry policy for transient failures in provider calls (timeouts, connection errors, 408/429, and 5xx).
+# Retry policy for transient failures in LLM requests (timeouts, connection errors, 408/429, and 5xx).
 # Set to 0 to disable retries entirely.
 retry_max_retries = 2
 retry_initial_backoff_ms = 200
@@ -502,7 +502,7 @@ retry_max_backoff_ms = 2000
 ```
 
 Note: retries are always bounded by `ai.provider.timeout_ms`—Nova clamps each retry's backoff delay
-to the remaining timeout budget (including for provider-backed embeddings).
+to the remaining timeout budget.
 
 ### Semantic search + embeddings configuration
 

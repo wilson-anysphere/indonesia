@@ -1104,9 +1104,7 @@ pub struct AiProviderConfig {
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
 
-    /// Maximum number of retries for failed provider requests.
-    ///
-    /// This policy is shared across LLM calls and provider-backed embeddings.
+    /// Maximum number of retries for failed LLM requests.
     ///
     /// Set to `0` to disable retries entirely (useful for latency-sensitive environments).
     #[serde(default = "default_retry_max_retries")]

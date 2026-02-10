@@ -1281,7 +1281,7 @@ expression: schema
           "minimum": 1.0
         },
         "retry_max_retries": {
-          "description": "Maximum number of retries for failed provider requests.\n\nThis policy is shared across LLM calls and provider-backed embeddings.\n\nSet to `0` to disable retries entirely (useful for latency-sensitive environments).",
+          "description": "Maximum number of retries for failed LLM requests.\n\nSet to `0` to disable retries entirely (useful for latency-sensitive environments).",
           "default": 2,
           "type": "integer",
           "format": "uint",
