@@ -1,4 +1,4 @@
-use nova_ai::patch::parse_structured_patch;
+use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
 use nova_ai::safety::{enforce_patch_safety, PatchSafetyConfig, SafetyError};
 use nova_ai::workspace::{PatchApplyConfig, VirtualWorkspace};
 
@@ -275,4 +275,95 @@ fn safety_rejects_bad_paths_and_large_patches() {
     config.max_total_deleted_chars = 3;
     let err = enforce_patch_safety(&patch, &ws, &config).unwrap_err();
     assert!(matches!(err, SafetyError::TooManyDeletedChars { .. }));
+}
+
+fn sample_json_patch() -> &'static str {
+    r#"{
+  "edits": [
+    {
+      "file": "Foo.java",
+      "range": {
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 0 }
+      },
+      "text": "// hello\n"
+    }
+  ]
+}"#
+}
+
+fn sample_diff_patch() -> &'static str {
+    r#"diff --git a/foo.txt b/foo.txt
+index e69de29..4b825dc 100644
+--- a/foo.txt
++++ b/foo.txt
+@@ -0,0 +1,1 @@
++hello
+"#
+}
+
+#[test]
+fn structured_patch_extracts_from_second_fence_when_first_is_not_a_patch() {
+    let raw = format!(
+        "Here's what I found.\n\n```json\n{{\"foo\":\"bar\"}}\n```\n\nNow the patch:\n\n```json\n{}\n```\n",
+        sample_json_patch()
+    );
+    let patch = parse_structured_patch(&raw).expect("parse patch");
+    assert!(matches!(patch, Patch::Json(_)));
+}
+
+#[test]
+fn structured_patch_accepts_jsonc_fence() {
+    let raw = format!("```jsonc\n{}\n```\n", sample_json_patch());
+    let patch = parse_structured_patch(&raw).expect("parse patch");
+    assert!(matches!(patch, Patch::Json(_)));
+}
+
+#[test]
+fn structured_patch_accepts_indented_udiff_fences() {
+    let raw = r#"Here you go:
+
+    ```udiff
+    diff --git a/foo.txt b/foo.txt
+    index e69de29..4b825dc 100644
+    --- a/foo.txt
+    +++ b/foo.txt
+    @@ -0,0 +1,1 @@
+    +hello
+    ```
+"#;
+
+    let patch = parse_structured_patch(raw).expect("parse patch");
+    assert!(matches!(patch, Patch::UnifiedDiff(_)));
+}
+
+#[test]
+fn structured_patch_prefers_first_successfully_parsing_fence() {
+    let raw = format!(
+        "```diff\n{}\n```\n\n```json\n{}\n```\n",
+        sample_diff_patch(),
+        sample_json_patch()
+    );
+    let patch = parse_structured_patch(&raw).expect("parse patch");
+    assert!(matches!(patch, Patch::UnifiedDiff(_)));
+}
+
+#[test]
+fn structured_patch_fallback_error_prefers_most_patch_like_fence() {
+    let raw = r#"```json
+{"foo":"bar"}
+```
+
+```diff
+diff --git a/foo.txt b/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -1,1 +1,1 @@
+-hello
++world
+BROKEN
+```"#;
+
+    let err = parse_structured_patch(raw).expect_err("expected parse failure");
+    assert!(matches!(err, PatchParseError::InvalidDiff(_)));
 }

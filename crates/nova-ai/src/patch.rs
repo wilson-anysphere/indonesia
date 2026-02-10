@@ -3,6 +3,99 @@ use thiserror::Error;
 
 const MAX_PATCH_PAYLOAD_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FenceHint {
+    Json,
+    Diff,
+    Unknown,
+}
+
+fn fence_hint_from_lang(lang: &str) -> Option<FenceHint> {
+    if lang.is_empty() {
+        return Some(FenceHint::Unknown);
+    }
+    if lang.eq_ignore_ascii_case("json") || lang.eq_ignore_ascii_case("jsonc") {
+        return Some(FenceHint::Json);
+    }
+    if lang.eq_ignore_ascii_case("diff")
+        || lang.eq_ignore_ascii_case("udiff")
+        || lang.eq_ignore_ascii_case("unified-diff")
+        || lang.eq_ignore_ascii_case("patch")
+    {
+        return Some(FenceHint::Diff);
+    }
+    None
+}
+
+fn patch_like_score(payload: &str, hint: FenceHint) -> u32 {
+    let mut score = 0u32;
+
+    match hint {
+        FenceHint::Json => score += 2,
+        FenceHint::Diff => score += 2,
+        FenceHint::Unknown => {}
+    }
+
+    if payload.starts_with('{') {
+        score += 5;
+        // "edits"/"ops" are patch-specific and indicate this is very likely intended to be
+        // a structured patch, even if the JSON is malformed or has extra fields.
+        if payload.contains("\"edits\"") {
+            score += 5;
+        }
+        if payload.contains("\"ops\"") {
+            score += 4;
+        }
+    }
+
+    if looks_like_unified_diff(payload) {
+        score += 6;
+        if payload.starts_with("diff --git") {
+            score += 1;
+        }
+        if payload.contains("\n@@") || payload.starts_with("@@") {
+            score += 2;
+        }
+    }
+
+    score
+}
+
+fn deindent_fenced_payload(payload: &str, indent_len: usize) -> std::borrow::Cow<'_, str> {
+    if indent_len == 0 || payload.is_empty() {
+        return std::borrow::Cow::Borrowed(payload);
+    }
+
+    let mut out = String::with_capacity(payload.len());
+    let mut changed = false;
+
+    for line in payload.split_inclusive('\n') {
+        let (content, newline) = match line.strip_suffix('\n') {
+            Some(content) => (content, "\n"),
+            None => (line, ""),
+        };
+
+        let bytes = content.as_bytes();
+        let can_strip = bytes.len() >= indent_len
+            && bytes[..indent_len]
+                .iter()
+                .all(|b| *b == b' ' || *b == b'\t');
+        if can_strip {
+            out.push_str(&content[indent_len..]);
+            changed = true;
+        } else {
+            out.push_str(content);
+        }
+        out.push_str(newline);
+    }
+
+    if changed {
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(payload)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
@@ -117,7 +210,14 @@ enum JsonPatchOpEnvelope {
 }
 
 fn extract_patch_payload(raw: &str) -> Option<String> {
-    let mut fenced_blocks: Vec<&str> = Vec::new();
+    #[derive(Debug, Clone, Copy)]
+    struct FencedBlock<'a> {
+        payload: &'a str,
+        indent_len: usize,
+        hint: FenceHint,
+    }
+
+    let mut fenced_blocks: Vec<FencedBlock<'_>> = Vec::new();
 
     // Prefer explicit fenced payloads first. LLMs often wrap structured output inside markdown
     // fences with a language tag (json/diff/patch) or no language tag at all.
@@ -125,29 +225,43 @@ fn extract_patch_payload(raw: &str) -> Option<String> {
     let mut in_fence = false;
     let mut fence_start = 0usize;
     let mut fence_is_candidate = false;
+    let mut fence_indent_len = 0usize;
+    let mut fence_hint = FenceHint::Unknown;
 
     for line in raw.split_inclusive('\n') {
         let line_no_newline = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = line_no_newline.trim_start();
+        let indent_len = line_no_newline.len().saturating_sub(trimmed.len());
 
         if trimmed.starts_with("```") {
             if !in_fence {
                 let info = trimmed.trim_start_matches("```");
                 let lang = info.split_whitespace().next().unwrap_or("");
-                fence_is_candidate = lang.is_empty()
-                    || lang.eq_ignore_ascii_case("json")
-                    || lang.eq_ignore_ascii_case("diff")
-                    || lang.eq_ignore_ascii_case("patch");
+                if let Some(hint) = fence_hint_from_lang(lang) {
+                    fence_is_candidate = true;
+                    fence_hint = hint;
+                    fence_indent_len = indent_len;
+                } else {
+                    fence_is_candidate = false;
+                    fence_hint = FenceHint::Unknown;
+                    fence_indent_len = 0;
+                }
                 in_fence = true;
                 fence_start = offset + line.len();
             } else {
                 // Closing fence. We intentionally accept any ``` line as a close to avoid
                 // being too strict about language annotations or indentation.
                 if fence_is_candidate {
-                    fenced_blocks.push(&raw[fence_start..offset]);
+                    fenced_blocks.push(FencedBlock {
+                        payload: &raw[fence_start..offset],
+                        indent_len: fence_indent_len,
+                        hint: fence_hint,
+                    });
                 }
                 in_fence = false;
                 fence_is_candidate = false;
+                fence_indent_len = 0;
+                fence_hint = FenceHint::Unknown;
             }
         }
 
@@ -156,54 +270,116 @@ fn extract_patch_payload(raw: &str) -> Option<String> {
 
     // Unterminated fence: treat the remainder of the response as the block payload.
     if in_fence && fence_is_candidate && fence_start <= raw.len() {
-        fenced_blocks.push(&raw[fence_start..]);
+        fenced_blocks.push(FencedBlock {
+            payload: &raw[fence_start..],
+            indent_len: fence_indent_len,
+            hint: fence_hint,
+        });
     }
 
     if !fenced_blocks.is_empty() {
-        // Prefer the first block that parses as a JSON patch.
+        // Prefer the first fenced block that successfully parses, regardless of format.
+        let mut first_candidate: Option<String> = None;
+        let mut best_fallback: Option<(u32, String)> = None;
+
         for block in &fenced_blocks {
-            let candidate = block.trim();
+            let trimmed = block.payload.trim();
+            if trimmed.len() > MAX_PATCH_PAYLOAD_BYTES {
+                continue;
+            }
+
+            let normalized = deindent_fenced_payload(trimmed, block.indent_len);
+            let candidate = normalized.trim();
             if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
                 continue;
             }
+
+            if first_candidate.is_none() {
+                first_candidate = Some(candidate.to_string());
+            }
+
+            let hint = block.hint;
+
+            // Success path: return the first candidate that parses as a patch. We don't fully trust
+            // fence language tags because models sometimes emit the wrong one.
             if candidate.starts_with('{') && is_non_empty_json_patch(candidate) {
                 return Some(candidate.to_string());
-            }
-        }
-
-        // Otherwise prefer the first block that parses as a unified diff.
-        for block in &fenced_blocks {
-            let candidate = block.trim();
-            if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
-                continue;
             }
             if looks_like_unified_diff(candidate) && parse_unified_diff(candidate).is_ok() {
                 return Some(candidate.to_string());
             }
+
+            let prefer_json_first = matches!(hint, FenceHint::Json | FenceHint::Unknown);
+            if prefer_json_first {
+                if let Some(extracted) = extract_json_patch_from_text(candidate) {
+                    return Some(extracted);
+                }
+            }
+            if let Some(diff) = extract_diff_patch_from_text(candidate) {
+                if parse_unified_diff(&diff).is_ok() {
+                    return Some(diff);
+                }
+            }
+            if !prefer_json_first {
+                if let Some(extracted) = extract_json_patch_from_text(candidate) {
+                    return Some(extracted);
+                }
+            }
+
+            // Fallback path: pick the most patch-like candidate so the eventual error
+            // corresponds to the user's intended payload.
+            let mut consider_fallback = |payload: &str| {
+                if payload.is_empty() || payload.len() > MAX_PATCH_PAYLOAD_BYTES {
+                    return;
+                }
+                let score = patch_like_score(payload, hint);
+                let should_replace = best_fallback
+                    .as_ref()
+                    .map_or(true, |(best_score, _)| score > *best_score);
+                if should_replace {
+                    best_fallback = Some((score, payload.to_string()));
+                }
+            };
+
+            // Prefer payloads that already start like a patch.
+            if candidate.starts_with('{') || looks_like_unified_diff(candidate) {
+                consider_fallback(candidate);
+            } else {
+                // If the fence is labelled as json/diff but has leading noise, try to pull out
+                // the first JSON object / diff block so we still produce a useful parse error.
+                match hint {
+                    FenceHint::Json => {
+                        if let Some(obj) = extract_first_json_object_from_text(candidate) {
+                            consider_fallback(&obj);
+                        } else {
+                            consider_fallback(candidate);
+                        }
+                    }
+                    FenceHint::Diff => {
+                        if let Some(diff) = extract_diff_patch_from_text(candidate) {
+                            consider_fallback(&diff);
+                        } else {
+                            consider_fallback(candidate);
+                        }
+                    }
+                    FenceHint::Unknown => {
+                        if let Some(diff) = extract_diff_patch_from_text(candidate) {
+                            consider_fallback(&diff);
+                        }
+                        if let Some(obj) = extract_first_json_object_from_text(candidate) {
+                            consider_fallback(&obj);
+                        }
+                        consider_fallback(candidate);
+                    }
+                }
+            }
         }
 
-        // Nothing successfully parsed; still try returning a "patch-like" block so callers get
-        // a helpful parse error (InvalidJson/InvalidDiff) instead of UnsupportedFormat.
-        let mut first_candidate = None;
-        let mut first_patch_like = None;
-        for block in &fenced_blocks {
-            let candidate = block.trim();
-            if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
-                continue;
-            }
-            if first_candidate.is_none() {
-                first_candidate = Some(candidate);
-            }
-            if first_patch_like.is_none()
-                && (candidate.starts_with('{') || looks_like_unified_diff(candidate))
-            {
-                first_patch_like = Some(candidate);
-            }
+        if let Some((_score, payload)) = best_fallback {
+            return Some(payload);
         }
 
-        return first_patch_like
-            .or(first_candidate)
-            .map(|candidate| candidate.to_string());
+        return first_candidate;
     }
 
     // No relevant fences: fall back to heuristic scanning.
