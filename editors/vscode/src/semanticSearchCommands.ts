@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 
+import { uriFromFileLike } from './frameworkDashboard';
 import { formatError, isSafeModeError } from './safeMode';
 import type { NovaRequest } from './metricsCommands';
 
 const SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND = 'nova.showSemanticSearchIndexStatus';
 const WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND = 'nova.waitForSemanticSearchIndex';
+const SEMANTIC_SEARCH_COMMAND = 'nova.semanticSearch';
+const REINDEX_SEMANTIC_SEARCH_COMMAND = 'nova.reindexSemanticSearch';
+const DEFAULT_SEMANTIC_SEARCH_LIMIT = 10;
 
 type SemanticSearchIndexStatusFields = {
   currentRunId?: number;
@@ -16,6 +20,21 @@ type SemanticSearchIndexStatusFields = {
   reason?: string;
 };
 
+type SemanticSearchMatch = {
+  path: string;
+  kind?: string;
+  score?: number;
+  snippet?: string;
+};
+
+type SemanticSearchSearchResponse = {
+  results: SemanticSearchMatch[];
+};
+
+interface SemanticSearchPickItem extends vscode.QuickPickItem {
+  match: SemanticSearchMatch;
+}
+
 export function registerNovaSemanticSearchCommands(
   context: vscode.ExtensionContext,
   request: NovaRequest,
@@ -24,7 +43,7 @@ export function registerNovaSemanticSearchCommands(
   context.subscriptions.push(output);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND, async () => {
+    vscode.commands.registerCommand(SEMANTIC_SEARCH_COMMAND, async () => {
       let pickedWorkspace: vscode.WorkspaceFolder | undefined;
       try {
         const workspaces = vscode.workspace.workspaceFolders ?? [];
@@ -33,7 +52,210 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        const queryRaw = await vscode.window.showInputBox({
+          title: 'Nova: Semantic Search',
+          prompt: 'Enter a semantic search query',
+          value: defaultSemanticSearchQueryFromSelection(),
+        });
+        const query = typeof queryRaw === 'string' ? queryRaw.trim() : '';
+        if (!query) {
+          return;
+        }
+
+        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(undefined, {
+          placeHolder: 'Select workspace folder for semantic search',
+        });
+        if (!pickedWorkspace) {
+          return;
+        }
+        const workspace = pickedWorkspace;
+
+        const payload = await vscode.window.withProgress<unknown | undefined>(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Nova: Searching with semantic search…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            return await request<unknown>(
+              'nova/semanticSearch/search',
+              {
+                query,
+                limit: DEFAULT_SEMANTIC_SEARCH_LIMIT,
+                // Routing hint for multi-root workspaces.
+                projectRoot: workspace.uri.fsPath,
+              },
+              { token },
+            );
+          },
+        );
+
+        if (typeof payload === 'undefined') {
+          // Request was gated (unsupported method) and the shared request helper already displayed
+          // a user-facing message.
+          return;
+        }
+
+        const response = readSemanticSearchSearchResponse(payload);
+        if (!response) {
+          const json = jsonStringifyBestEffort(payload);
+          output.clear();
+          output.appendLine(`[${new Date().toISOString()}] nova/semanticSearch/search`);
+          output.appendLine(`Workspace: ${workspace.name} (${workspace.uri.fsPath})`);
+          output.appendLine(`Query: ${query}`);
+          output.appendLine('');
+          output.appendLine('Unexpected response payload:');
+          output.appendLine(json);
+          output.show(true);
+          void vscode.window.showErrorMessage(
+            'Nova: semantic search returned an unexpected response (see "Nova Semantic Search" output).',
+          );
+          return;
+        }
+
+        if (response.results.length === 0) {
+          const choice = await vscode.window.showInformationMessage(
+            'Nova: No semantic search results. Ensure semantic search is enabled (ai.enabled=true and ai.features.semantic_search=true), then check index status.',
+            'Show Index Status',
+            'Wait for Indexing',
+          );
+          if (choice === 'Show Index Status') {
+            await vscode.commands.executeCommand(SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND, workspace);
+          } else if (choice === 'Wait for Indexing') {
+            await vscode.commands.executeCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, workspace);
+          }
+          return;
+        }
+
+        const items = response.results.map((result): SemanticSearchPickItem => {
+          const snippet = typeof result.snippet === 'string' ? result.snippet : '';
+          const snippetPreview = snippet ? truncateForQuickPick(snippet, 220) : undefined;
+
+          const kind = typeof result.kind === 'string' ? result.kind.trim() : '';
+          const formattedScore = formatSemanticSearchScore(result.score);
+          const descriptionParts = [kind || undefined, formattedScore ? `score ${formattedScore}` : undefined].filter(
+            (value): value is string => Boolean(value),
+          );
+
+          return {
+            label: result.path,
+            description: descriptionParts.length ? descriptionParts.join(' — ') : undefined,
+            detail: snippetPreview,
+            match: result,
+          };
+        });
+
+        const picked = await vscode.window.showQuickPick(items, {
+          placeHolder: 'Select a semantic search result to open',
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+        if (!picked) {
+          return;
+        }
+
+        const uri = uriFromFileLike(picked.match.path, { baseUri: workspace.uri, projectRoot: workspace.uri.fsPath });
+        if (!uri) {
+          void vscode.window.showErrorMessage(`Nova: Failed to resolve semantic search result path: ${picked.match.path}`);
+          return;
+        }
+
+        const document = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(document, { preview: true });
+        await revealSemanticSearchMatchBestEffort(editor, { query, snippet: picked.match.snippet });
+      } catch (err) {
+        if (isSafeModeError(err)) {
+          await handleSemanticSearchSafeModeError(output, {
+            action: 'perform semantic search',
+            workspace: pickedWorkspace,
+            err,
+          });
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: semantic search failed: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(REINDEX_SEMANTIC_SEARCH_COMMAND, async () => {
+      let pickedWorkspace: vscode.WorkspaceFolder | undefined;
+      try {
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        if (workspaces.length === 0) {
+          void vscode.window.showErrorMessage('Nova: Open a workspace folder to use Nova.');
+          return;
+        }
+
+        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand(undefined, {
+          placeHolder: 'Select workspace folder to reindex semantic search',
+        });
+        if (!pickedWorkspace) {
+          return;
+        }
+        const workspace = pickedWorkspace;
+
+        const payload = await vscode.window.withProgress<unknown | undefined>(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Nova: Reindexing semantic search…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            return await request<unknown>(
+              'nova/semanticSearch/reindex',
+              // Routing hint for multi-root workspaces.
+              { projectRoot: workspace.uri.fsPath },
+              { token },
+            );
+          },
+        );
+
+        if (typeof payload === 'undefined') {
+          return;
+        }
+
+        const summary = formatSemanticSearchIndexSummary(payload);
+        const workspacePrefix = workspace ? `${workspace.name}: ` : '';
+        const message = summary
+          ? `Nova: Semantic search reindex requested (${workspacePrefix}${summary}).`
+          : 'Nova: Semantic search reindex requested.';
+
+        const choice = await vscode.window.showInformationMessage(message, 'Wait for Indexing');
+        if (choice === 'Wait for Indexing') {
+          await vscode.commands.executeCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, workspace);
+        }
+      } catch (err) {
+        if (isSafeModeError(err)) {
+          await handleSemanticSearchSafeModeError(output, {
+            action: 'reindex semantic search',
+            workspace: pickedWorkspace,
+            err,
+          });
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: failed to reindex semantic search: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(SHOW_SEMANTIC_SEARCH_INDEX_STATUS_COMMAND, async (workspaceArg?: unknown) => {
+      let pickedWorkspace: vscode.WorkspaceFolder | undefined;
+      try {
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        if (workspaces.length === 0) {
+          void vscode.window.showErrorMessage('Nova: Open a workspace folder to use Nova.');
+          return;
+        }
+
+        pickedWorkspace =
+          workspaceFolderFromCommandArg(workspaceArg) ??
+          (await pickWorkspaceFolderForSemanticSearchCommand(undefined, {
+            placeHolder: 'Select workspace folder for semantic search indexing',
+          }));
         if (!pickedWorkspace) {
           return;
         }
@@ -102,7 +324,7 @@ export function registerNovaSemanticSearchCommands(
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, async () => {
+    vscode.commands.registerCommand(WAIT_FOR_SEMANTIC_SEARCH_INDEX_COMMAND, async (workspaceArg?: unknown) => {
       let pickedWorkspace: vscode.WorkspaceFolder | undefined;
       try {
         const workspaces = vscode.workspace.workspaceFolders ?? [];
@@ -111,7 +333,11 @@ export function registerNovaSemanticSearchCommands(
           return;
         }
 
-        pickedWorkspace = await pickWorkspaceFolderForSemanticSearchCommand();
+        pickedWorkspace =
+          workspaceFolderFromCommandArg(workspaceArg) ??
+          (await pickWorkspaceFolderForSemanticSearchCommand(undefined, {
+            placeHolder: 'Select workspace folder for semantic search indexing',
+          }));
         if (!pickedWorkspace) {
           return;
         }
@@ -273,13 +499,13 @@ async function handleSemanticSearchSafeModeError(
   if (opts.workspace) {
     output.appendLine(`Workspace: ${opts.workspace.name} (${opts.workspace.uri.fsPath})`);
   }
-  output.appendLine('Nova is running in safe mode, so semantic search indexing status is temporarily unavailable.');
+  output.appendLine(`Nova is running in safe mode, so it cannot ${opts.action} right now.`);
   output.appendLine('');
   output.appendLine(`Error: ${message}`);
   output.show(true);
 
   const choice = await vscode.window.showWarningMessage(
-    'Nova: Semantic search indexing status is unavailable while Nova is in safe mode. Wait for safe mode to clear, or restart the language server.',
+    `Nova: Cannot ${opts.action} while Nova is in safe mode. Wait for safe mode to clear, or restart the language server.`,
     'Generate Bug Report',
     'Restart Language Server',
     'Show Safe Mode',
@@ -442,6 +668,163 @@ function jsonStringifyBestEffort(value: unknown): string {
   }
 }
 
+function workspaceFolderFromCommandArg(value: unknown): vscode.WorkspaceFolder | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (value instanceof vscode.Uri) {
+    return vscode.workspace.getWorkspaceFolder(value) ?? undefined;
+  }
+
+  if (typeof value !== 'object') {
+    return undefined;
+  }
+
+  const obj = value as { uri?: unknown; name?: unknown };
+  if (obj.uri instanceof vscode.Uri && typeof obj.name === 'string') {
+    return value as vscode.WorkspaceFolder;
+  }
+
+  return undefined;
+}
+
+function defaultSemanticSearchQueryFromSelection(): string | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return undefined;
+  }
+
+  const selection = editor.selection;
+  if (selection.isEmpty) {
+    return undefined;
+  }
+
+  const raw = editor.document.getText(selection);
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const normalized = trimmed.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const maxChars = 256;
+  return normalized.length > maxChars ? normalized.slice(0, maxChars) : normalized;
+}
+
+function readSemanticSearchSearchResponse(payload: unknown): SemanticSearchSearchResponse | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+
+  const obj = payload as Record<string, unknown>;
+  const resultsRaw = obj.results;
+  if (!Array.isArray(resultsRaw)) {
+    return undefined;
+  }
+
+  const results: SemanticSearchMatch[] = [];
+  for (const entry of resultsRaw) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const result = entry as Record<string, unknown>;
+    const path = typeof result.path === 'string' ? result.path.trim() : '';
+    if (!path) {
+      continue;
+    }
+
+    results.push({
+      path,
+      kind: typeof result.kind === 'string' ? result.kind.trim() : undefined,
+      score: typeof result.score === 'number' ? result.score : undefined,
+      snippet: typeof result.snippet === 'string' ? result.snippet : undefined,
+    });
+  }
+
+  return { results };
+}
+
+function formatSemanticSearchScore(score: number | undefined): string | undefined {
+  if (typeof score !== 'number' || !Number.isFinite(score)) {
+    return undefined;
+  }
+
+  const rounded = Math.round(score * 1000) / 1000;
+  return (Object.is(rounded, -0) ? 0 : rounded).toString();
+}
+
+function truncateForQuickPick(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (maxChars <= 0) {
+    return '';
+  }
+  const chars = Array.from(normalized);
+  if (chars.length <= maxChars) {
+    return normalized;
+  }
+  if (maxChars === 1) {
+    return '…';
+  }
+  return `${chars.slice(0, maxChars - 1).join('')}…`;
+}
+
+function revealFirstMatch(editor: vscode.TextEditor, needle: string): boolean {
+  const trimmed = needle.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const text = editor.document.getText();
+  const idx = text.indexOf(trimmed);
+  if (idx < 0) {
+    return false;
+  }
+
+  const start = editor.document.positionAt(idx);
+  const end = editor.document.positionAt(idx + trimmed.length);
+  const selection = new vscode.Selection(start, end);
+  editor.selection = selection;
+  editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
+  return true;
+}
+
+async function revealSemanticSearchMatchBestEffort(
+  editor: vscode.TextEditor | undefined,
+  opts: { query: string; snippet?: string },
+): Promise<void> {
+  if (!editor) {
+    return;
+  }
+
+  try {
+    if (revealFirstMatch(editor, opts.query)) {
+      return;
+    }
+
+    const snippet = typeof opts.snippet === 'string' ? opts.snippet.trim() : '';
+    if (!snippet) {
+      return;
+    }
+
+    if (revealFirstMatch(editor, snippet)) {
+      return;
+    }
+
+    // If the server truncated the snippet (or it includes formatting that doesn't match the raw
+    // document), fall back to searching for a short prefix.
+    const prefixChars = Array.from(snippet);
+    if (prefixChars.length > 80) {
+      revealFirstMatch(editor, prefixChars.slice(0, 80).join(''));
+    }
+  } catch {
+    // Best-effort only: ignore reveal failures.
+  }
+}
+
 async function sleep(ms: number, token?: vscode.CancellationToken): Promise<void> {
   if (token?.isCancellationRequested) {
     return;
@@ -480,6 +863,7 @@ async function sleep(ms: number, token?: vscode.CancellationToken): Promise<void
 
 async function pickWorkspaceFolderForSemanticSearchCommand(
   token?: vscode.CancellationToken,
+  opts?: { placeHolder?: string },
 ): Promise<vscode.WorkspaceFolder | undefined> {
   const workspaces = vscode.workspace.workspaceFolders ?? [];
   if (workspaces.length === 0) {
@@ -502,7 +886,7 @@ async function pickWorkspaceFolderForSemanticSearchCommand(
       description: workspace.uri.fsPath,
       workspace,
     })),
-    { placeHolder: 'Select workspace folder for semantic search indexing' },
+    { placeHolder: opts?.placeHolder ?? 'Select workspace folder for semantic search' },
     token,
   );
 

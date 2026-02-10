@@ -40,6 +40,8 @@
     "onCommand:nova.reindexSemanticSearch",
     "onCommand:nova.showSemanticSearchIndexStatus",
     "onCommand:nova.waitForSemanticSearchIndex",
+    "onCommand:nova.semanticSearch",
+    "onCommand:nova.reindexSemanticSearch",
     "onCommand:nova.discoverTests",
     "onCommand:nova.reloadProject",
     "onCommand:nova.runTestInteractive",
@@ -149,6 +151,14 @@
       {
         "command": "nova.waitForSemanticSearchIndex",
         "title": "Nova: Wait for Semantic Search Indexing"
+      },
+      {
+        "command": "nova.semanticSearch",
+        "title": "Nova: Semantic Search\u2026"
+      },
+      {
+        "command": "nova.reindexSemanticSearch",
+        "title": "Nova: Reindex Semantic Search"
       },
       {
         "command": "nova.discoverTests",

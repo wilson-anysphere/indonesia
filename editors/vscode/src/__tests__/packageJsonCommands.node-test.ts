@@ -113,21 +113,36 @@ test('package.json contributes Nova semantic search commands', async () => {
   const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
   const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
 
-  const commandIds = new Set(
-    commands
-      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
-      .filter((id): id is string => typeof id === 'string'),
-  );
+  const byId = new Map<string, { title?: unknown }>();
+  for (const entry of commands) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const id = (entry as { command?: unknown }).command;
+    if (typeof id !== 'string') {
+      continue;
+    }
+    byId.set(id, { title: (entry as { title?: unknown }).title });
+  }
+
+  const commandIds = new Set(byId.keys());
 
   assert.ok(commandIds.has('nova.semanticSearch'));
   assert.ok(commandIds.has('nova.reindexSemanticSearch'));
   assert.ok(commandIds.has('nova.showSemanticSearchIndexStatus'));
   assert.ok(commandIds.has('nova.waitForSemanticSearchIndex'));
+  assert.ok(commandIds.has('nova.semanticSearch'));
+  assert.ok(commandIds.has('nova.reindexSemanticSearch'));
 
   assert.ok(activationEvents.includes('onCommand:nova.semanticSearch'));
   assert.ok(activationEvents.includes('onCommand:nova.reindexSemanticSearch'));
   assert.ok(activationEvents.includes('onCommand:nova.showSemanticSearchIndexStatus'));
   assert.ok(activationEvents.includes('onCommand:nova.waitForSemanticSearchIndex'));
+  assert.ok(activationEvents.includes('onCommand:nova.semanticSearch'));
+  assert.ok(activationEvents.includes('onCommand:nova.reindexSemanticSearch'));
+
+  assert.equal(byId.get('nova.semanticSearch')?.title, 'Nova: Semantic Search…');
+  assert.equal(byId.get('nova.reindexSemanticSearch')?.title, 'Nova: Reindex Semantic Search');
 });
 
 test('package.json contributes Run/Debug Test/Main command palette entries via local interactive IDs', async () => {

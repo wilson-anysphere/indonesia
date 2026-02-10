@@ -23,6 +23,8 @@ export const SAFE_MODE_EXEMPT_REQUESTS: ReadonlySet<string> = new Set<string>([
   'nova/ai/generateTests',
   // Internal/experimental endpoints that may bypass safe-mode guard in some builds.
   'nova/semanticSearch/indexStatus',
+  'nova/semanticSearch/reindex',
+  'nova/semanticSearch/search',
 ]);
 
 export function formatError(err: unknown): string {

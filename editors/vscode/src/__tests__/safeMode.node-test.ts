@@ -105,3 +105,9 @@ test('SAFE_MODE_EXEMPT_REQUESTS includes nova/ai/* endpoints (AI custom requests
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/generateMethodBody'), true);
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/generateTests'), true);
 });
+
+test('SAFE_MODE_EXEMPT_REQUESTS includes nova/semanticSearch/* endpoints (experimental)', () => {
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/semanticSearch/indexStatus'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/semanticSearch/reindex'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/semanticSearch/search'), true);
+});
