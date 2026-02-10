@@ -1969,6 +1969,108 @@ mod tests {
         assert!(matches!(err, AiError::Cancelled), "{err:?}");
     }
 
+    #[derive(Clone, Default)]
+    struct FlakyStreamProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for FlakyStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "FlakyStreamProvider does not support chat".to_string(),
+            ))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Err(AiError::Timeout);
+            }
+
+            let stream = async_stream::try_stream! {
+                yield "ok".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_retry_audit_logs_include_attempt_numbers() {
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(FlakyStreamProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut client = make_test_client(provider);
+        client.retry.max_retries = 1;
+        client.retry.initial_backoff = Duration::from_millis(1);
+        client.retry.max_backoff = Duration::from_millis(1);
+
+        let stream = client
+            .chat_stream(
+                ChatRequest {
+                    messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("stream starts after retry");
+
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "ok");
+
+        let events = events.lock().unwrap();
+        let audit = audit_events(&events);
+
+        let request_attempts: Vec<String> = audit
+            .iter()
+            .filter(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
+            .filter_map(|event| event.fields.get("attempt").cloned())
+            .collect();
+        assert_eq!(
+            request_attempts,
+            vec!["0".to_string(), "1".to_string()],
+            "expected attempt to increment for each stream establishment request"
+        );
+
+        let error = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_error"))
+            .expect("expected error audit event");
+        assert_eq!(error.fields.get("retry_count").map(String::as_str), Some("0"));
+
+        let response = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_response"))
+            .expect("expected response audit event");
+        assert_eq!(
+            response.fields.get("retry_count").map(String::as_str),
+            Some("1"),
+            "expected stream response to record the retry count"
+        );
+    }
+
     #[derive(Default)]
     struct CapturedRequest {
         request: Mutex<Option<ChatRequest>>,
