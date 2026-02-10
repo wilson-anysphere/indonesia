@@ -1,4 +1,5 @@
 use crate::{
+    http::map_reqwest_error,
     providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
@@ -76,10 +77,12 @@ impl LlmProvider for OllamaProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let parsed: OllamaChatResponse = response.json().await?;
+            let parsed: OllamaChatResponse = response.json().await.map_err(map_reqwest_error)?;
             let content = parsed.message.map(|m| m.content).unwrap_or_default();
             Ok::<_, AiError>(content)
         };
@@ -118,9 +121,10 @@ impl LlmProvider for OllamaProvider {
                 .post(url)
                 .json(&body)
                 .timeout(self.timeout)
-                .send() => resp?,
+                .send() => resp.map_err(map_reqwest_error)?,
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         let mut bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
@@ -144,7 +148,7 @@ impl LlmProvider for OllamaProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
                 buffer.extend_from_slice(&chunk);
 
                 while let Some(rel_pos) = buffer[cursor..].iter().position(|&b| b == b'\n') {
@@ -197,10 +201,12 @@ impl LlmProvider for OllamaProvider {
                 .get(url)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let parsed: OllamaTagsResponse = response.json().await?;
+            let parsed: OllamaTagsResponse = response.json().await.map_err(map_reqwest_error)?;
             Ok::<_, AiError>(parsed.models.into_iter().map(|m| m.name).collect())
         };
 

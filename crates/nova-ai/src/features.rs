@@ -26,7 +26,7 @@ fn record_action_metrics<T>(metric: &str, duration: Duration, result: &Result<T,
 
     if let Err(err) = result {
         registry.record_error(metric);
-        if matches!(err, AiError::Timeout) {
+        if matches!(err, AiError::Timeout) || matches!(err, AiError::Http(inner) if inner.is_timeout()) {
             registry.record_timeout(metric);
         }
     }

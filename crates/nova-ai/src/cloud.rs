@@ -1,6 +1,7 @@
 use crate::providers::LlmProvider;
 use crate::types::{AiStream, ChatMessage, ChatRequest, ChatRole};
 use crate::AiError;
+use crate::http::map_reqwest_error;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -95,10 +96,12 @@ impl LlmProvider for AnthropicProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let bytes = response.bytes().await?;
+            let bytes = response.bytes().await.map_err(map_reqwest_error)?;
             parse_anthropic_completion(&bytes)
         };
 
@@ -298,10 +301,12 @@ impl LlmProvider for GeminiProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let bytes = response.bytes().await?;
+            let bytes = response.bytes().await.map_err(map_reqwest_error)?;
             parse_gemini_completion(&bytes)
         };
 
@@ -621,9 +626,11 @@ impl LlmProvider for AzureOpenAiProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
-            let bytes = response.bytes().await?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
+            let bytes = response.bytes().await.map_err(map_reqwest_error)?;
             parse_openai_completion(&bytes)
         };
 
@@ -802,9 +809,11 @@ impl LlmProvider for HttpProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
-            let bytes = response.bytes().await?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
+            let bytes = response.bytes().await.map_err(map_reqwest_error)?;
             parse_http_completion(&bytes)
         };
 

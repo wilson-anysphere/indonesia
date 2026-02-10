@@ -23,6 +23,7 @@ mod completion_validation;
 #[doc(hidden)]
 pub mod diff;
 mod error;
+mod http;
 #[cfg(feature = "embeddings")]
 mod embedders;
 mod features;

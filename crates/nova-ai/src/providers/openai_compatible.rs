@@ -1,4 +1,5 @@
 use crate::{
+    http::map_reqwest_error,
     providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
@@ -96,10 +97,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let parsed: OpenAiChatCompletionResponse = response.json().await?;
+            let parsed: OpenAiChatCompletionResponse =
+                response.json().await.map_err(map_reqwest_error)?;
             let content = parsed
                 .choices
                 .into_iter()
@@ -138,9 +142,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
-            resp = request_builder.send() => resp?,
+            resp = request_builder.send() => resp.map_err(map_reqwest_error)?,
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         let mut bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
@@ -208,7 +213,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
                 buffer.extend_from_slice(&chunk);
             }
         };
@@ -224,9 +229,11 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 .authorize(self.client.get(url))
                 .timeout(self.timeout)
                 .send()
-                .await?
-                .error_for_status()?;
-            let parsed: OpenAiModelsResponse = response.json().await?;
+                .await
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
+            let parsed: OpenAiModelsResponse = response.json().await.map_err(map_reqwest_error)?;
             Ok::<_, AiError>(parsed.data.into_iter().map(|model| model.id).collect())
         };
 
