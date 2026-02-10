@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{error::Error, fmt};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum AiError {
     Http(Arc<reqwest::Error>),
     Json(Arc<serde_json::Error>),
@@ -68,13 +68,52 @@ impl fmt::Display for AiError {
     }
 }
 
+impl fmt::Debug for AiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn sanitize(text: &str) -> String {
+            crate::audit::sanitize_error_for_tracing(text)
+        }
+
+        match self {
+            AiError::Http(err) => f
+                .debug_struct("AiError::Http")
+                .field("message", &sanitize(&err.to_string()))
+                .field("status", &err.status().map(|s| s.as_u16()))
+                .field("is_timeout", &err.is_timeout())
+                .field("is_connect", &err.is_connect())
+                .finish(),
+            AiError::Json(err) => f
+                .debug_struct("AiError::Json")
+                .field("message", &sanitize(&err.to_string()))
+                .finish(),
+            AiError::Url(err) => f.debug_tuple("AiError::Url").field(err).finish(),
+            AiError::InvalidConfig(msg) => f
+                .debug_struct("AiError::InvalidConfig")
+                .field("message", &sanitize(msg))
+                .finish(),
+            AiError::Timeout => f.write_str("AiError::Timeout"),
+            AiError::Cancelled => f.write_str("AiError::Cancelled"),
+            AiError::UnexpectedResponse(msg) => f
+                .debug_struct("AiError::UnexpectedResponse")
+                .field("message", &sanitize(msg))
+                .finish(),
+        }
+    }
+}
+
 impl Error for AiError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            AiError::Http(err) => Some(err.as_ref()),
-            AiError::Json(err) => Some(err.as_ref()),
             AiError::Url(err) => Some(err),
-            AiError::InvalidConfig(_) | AiError::Timeout | AiError::Cancelled | AiError::UnexpectedResponse(_) => None,
+            // Do not expose reqwest/serde_json errors via `source()`: their `Display`/`Debug`
+            // output can include unsanitized content (notably request URLs with embedded
+            // credentials), and many error reporters include source chains in user-facing output.
+            AiError::Http(_)
+            | AiError::Json(_)
+            | AiError::InvalidConfig(_)
+            | AiError::Timeout
+            | AiError::Cancelled
+            | AiError::UnexpectedResponse(_) => None,
         }
     }
 }
@@ -118,6 +157,20 @@ mod tests {
         assert!(
             !message.contains("?key="),
             "AiError display should strip URL query params: {message}"
+        );
+
+        let debug = format!("{ai_err:?}");
+        assert!(
+            !debug.contains(secret),
+            "AiError debug leaked secret token: {debug}"
+        );
+        assert!(
+            !debug.contains("?key="),
+            "AiError debug should strip URL query params: {debug}"
+        );
+        assert!(
+            ai_err.source().is_none(),
+            "AiError::Http should not expose reqwest::Error via source()"
         );
     }
 }
