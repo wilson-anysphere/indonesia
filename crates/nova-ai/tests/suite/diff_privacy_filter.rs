@@ -42,6 +42,41 @@ index 3333333..4444444 100644
 }
 
 #[test]
+fn git_diff_unquoted_paths_with_spaces_are_filtered() {
+    // This matches `git diff` output when `core.quotePath=false`.
+    let excluded_path = "src/secrets/secret file.txt";
+
+    let excluded_section = r#"diff --git a/src/secrets/secret file.txt b/src/secrets/secret file.txt
+index 1111111..2222222 100644
+--- a/src/secrets/secret file.txt	
++++ b/src/secrets/secret file.txt	
+@@ -1 +1 @@
+-old
++SECRET_MARKER
+"#;
+
+    let allowed_section = r#"diff --git a/src/Main.java b/src/Main.java
+index 3333333..4444444 100644
+--- a/src/Main.java
++++ b/src/Main.java
+@@ -1 +1 @@
+-class Main {}
++class Main { /* ok */ }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("SECRET_MARKER"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_rename_header_is_excluded_if_either_path_matches() {
     let excluded_path = "src/secrets/old-name.txt";
 

@@ -338,28 +338,112 @@ fn split_first_whitespace_token(input: &str) -> Option<(&str, &str)> {
 
 fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
     if let Some(rest) = line.strip_prefix("diff --git ") {
-        let (old, rest) = parse_diff_token(rest)?;
-        let (new, rest) = parse_diff_token(rest)?;
-        if !rest.trim().is_empty() {
-            return None;
+        let rest = rest.trim_end_matches(&['\r', '\n'][..]);
+
+        // First attempt: normal token parsing (quoted strings or simple unquoted paths).
+        if let Some((old, rest)) = parse_diff_token(rest) {
+            if let Some((new, rest)) = parse_diff_token(rest) {
+                if rest.trim().is_empty() {
+                    return Some(vec![old, new]);
+                }
+            }
         }
+
+        // Fallback: support `core.quotePath=false` output where paths may contain literal spaces
+        // and are therefore not safely tokenizable by whitespace. This is best-effort and errs
+        // on the side of failing closed if ambiguous.
+        let (old, new) = parse_diff_git_paths_with_unquoted_spaces(rest)?;
         return Some(vec![old, new]);
     }
 
     if let Some(rest) = line.strip_prefix("diff --cc ") {
-        let (path, rest) = parse_diff_token(rest)?;
-        if !rest.trim().is_empty() {
+        let rest = rest.trim_end_matches(&['\r', '\n'][..]).trim();
+
+        if rest.trim_start().starts_with('"') {
+            let (path, remaining) = parse_diff_token(rest)?;
+            if !remaining.trim().is_empty() {
+                return None;
+            }
+            return Some(vec![path]);
+        }
+
+        if rest.is_empty() {
             return None;
         }
-        return Some(vec![path]);
+        return Some(vec![rest.to_string()]);
     }
 
     if let Some(rest) = line.strip_prefix("diff --combined ") {
-        let (path, rest) = parse_diff_token(rest)?;
-        if !rest.trim().is_empty() {
+        let rest = rest.trim_end_matches(&['\r', '\n'][..]).trim();
+
+        if rest.trim_start().starts_with('"') {
+            let (path, remaining) = parse_diff_token(rest)?;
+            if !remaining.trim().is_empty() {
+                return None;
+            }
+            return Some(vec![path]);
+        }
+
+        if rest.is_empty() {
             return None;
         }
-        return Some(vec![path]);
+        return Some(vec![rest.to_string()]);
+    }
+
+    None
+}
+
+fn parse_diff_git_paths_with_unquoted_spaces(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    // Collect all possible boundaries where the *second* path starts. If we find exactly one,
+    // accept it; otherwise fail closed.
+    let mut candidates = Vec::<(String, String)>::new();
+
+    fn is_whitespace_byte(b: u8) -> bool {
+        b.is_ascii_whitespace()
+    }
+
+    fn maybe_add_candidate(rest: &str, start: usize, candidates: &mut Vec<(String, String)>) {
+        let old = rest[..start].trim_end();
+        let new = rest[start..].trim_start();
+        if old.is_empty() || new.is_empty() {
+            return;
+        }
+        if !(old.starts_with("a/") || old == "/dev/null") {
+            return;
+        }
+        if !(new.starts_with("b/") || new == "/dev/null") {
+            return;
+        }
+        candidates.push((old.to_string(), new.to_string()));
+    }
+
+    // Candidate boundaries for `b/…`
+    for (pos, _) in rest.match_indices("b/") {
+        if pos == 0 {
+            continue;
+        }
+        if is_whitespace_byte(rest.as_bytes()[pos - 1]) {
+            maybe_add_candidate(rest, pos, &mut candidates);
+        }
+    }
+
+    // Candidate boundaries for `/dev/null`
+    for (pos, _) in rest.match_indices("/dev/null") {
+        if pos == 0 {
+            continue;
+        }
+        if is_whitespace_byte(rest.as_bytes()[pos - 1]) {
+            maybe_add_candidate(rest, pos, &mut candidates);
+        }
+    }
+
+    if candidates.len() == 1 {
+        return Some(candidates.remove(0));
     }
 
     None
