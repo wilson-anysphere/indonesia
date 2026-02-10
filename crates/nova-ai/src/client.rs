@@ -730,6 +730,10 @@ impl LlmClient for AiClient {
             );
         }
 
+        // Clone before moving `cancel` into the provider so the wrapper can enforce cancellation
+        // even if the provider's stream doesn't poll the token correctly.
+        let cancel_for_stream = cancel.clone();
+
         let inner =
             match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
             {
@@ -772,19 +776,44 @@ impl LlmClient for AiClient {
         let safe_endpoint_for_stream = safe_endpoint.clone();
         let request_id_for_stream = request_id;
         let started_at_for_stream = started_at;
+        let idle_timeout = self.request_timeout;
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
             let mut inner = inner;
             let mut completion = String::new();
             let mut chunk_count = 0usize;
-            while let Some(item) = inner.next().await {
+            loop {
+                let item = tokio::select! {
+                    biased;
+                    _ = cancel_for_stream.cancelled() => Err(AiError::Cancelled),
+                    item = tokio::time::timeout(idle_timeout, inner.next()) => match item {
+                        Ok(item) => Ok(item),
+                        Err(_) => Err(AiError::Timeout),
+                    },
+                };
+
                 match item {
-                    Ok(chunk) => {
+                    Ok(Some(Ok(chunk))) => {
                         chunk_count += 1;
                         completion.push_str(&chunk);
                         yield chunk;
                     }
+                    Ok(Some(Err(err))) => {
+                        if audit_enabled {
+                            audit::log_llm_error(
+                                request_id_for_stream,
+                                provider_label,
+                                &model,
+                                &err.to_string(),
+                                started_at_for_stream.elapsed(),
+                                /*retry_count=*/ 0,
+                                /*stream=*/ true,
+                            );
+                        }
+                        Err(err)?;
+                    }
+                    Ok(None) => break,
                     Err(err) => {
                         if audit_enabled {
                             audit::log_llm_error(
@@ -1063,6 +1092,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct NeverYieldingProvider;
+
+    #[async_trait]
+    impl LlmProvider for NeverYieldingProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "NeverYieldingProvider does not support chat".to_string(),
+            ))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            // A stream that never yields and never terminates.
+            Ok(Box::pin(
+                futures::stream::pending::<Result<String, AiError>>(),
+            ))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
     fn make_test_client(provider: Arc<dyn LlmProvider>) -> AiClient {
         let privacy = PrivacyFilter::new(&nova_config::AiPrivacyConfig::default())
             .expect("default privacy config is valid");
@@ -1272,6 +1332,34 @@ mod tests {
             .expect("completion field present");
         assert!(completion.contains("[REDACTED]"));
         assert!(!completion.contains(secret));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_cancel_interrupts_idle_provider_stream() {
+        let client = make_test_client(Arc::new(NeverYieldingProvider));
+        let cancel = CancellationToken::new();
+        let cancel_for_test = cancel.clone();
+
+        let mut stream = client
+            .chat_stream(
+                ChatRequest {
+                    messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                cancel,
+            )
+            .await
+            .expect("stream starts");
+
+        cancel_for_test.cancel();
+
+        let err = tokio::time::timeout(Duration::from_millis(250), stream.try_next())
+            .await
+            .expect("stream should observe cancellation promptly")
+            .expect_err("expected cancellation error");
+
+        assert!(matches!(err, AiError::Cancelled), "{err:?}");
     }
 
     #[derive(Default)]
