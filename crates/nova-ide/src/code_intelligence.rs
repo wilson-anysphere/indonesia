@@ -10419,10 +10419,6 @@ pub(crate) fn field_type_for_receiver_type(
 
     let class_id = class_id_of_type(&mut types, &receiver_ty)?;
 
-    // Traverse the class hierarchy, preferring instance fields, but falling back to static fields
-    // (Java allows accessing static fields through instances).
-    let mut instance_match: Option<Type> = None;
-    let mut static_match: Option<Type> = None;
     let mut interfaces = Vec::<Type>::new();
     let mut current = Some(class_id);
     let mut seen = HashSet::<ClassId>::new();
@@ -10440,34 +10436,17 @@ pub(crate) fn field_type_for_receiver_type(
 
         interfaces.extend(class_def.interfaces.clone());
 
-        if instance_match.is_none() {
-            if let Some(field) = class_def
-                .fields
-                .iter()
-                .find(|field| field.name == field_name && !field.is_static)
-            {
-                instance_match = Some(field.ty.clone());
-            }
-        }
-
-        if static_match.is_none() {
-            if let Some(field) = class_def
-                .fields
-                .iter()
-                .find(|field| field.name == field_name && field.is_static)
-            {
-                static_match = Some(field.ty.clone());
-            }
+        // Field lookup uses the nearest declaration in the class hierarchy, regardless of whether
+        // the field is static. This matches Java's field hiding rules and also supports the
+        // (discouraged but legal) `instance.STATIC_FIELD` access form.
+        if let Some(field) = class_def.fields.iter().find(|field| field.name == field_name) {
+            return Some(format_type_fully_qualified(&types, &field.ty));
         }
 
         let super_ty = class_def.super_class.clone();
         current = super_ty
             .as_ref()
             .and_then(|ty| class_id_of_type(&mut types, ty));
-    }
-
-    if let Some(ty) = instance_match.or(static_match) {
-        return Some(format_type_fully_qualified(&types, &ty));
     }
 
     // Interface fields (constants) are inherited. Search implemented interfaces (and their
@@ -18084,6 +18063,32 @@ fn infer_receiver(
     receiver: &str,
     offset: usize,
 ) -> (Type, CallKind) {
+    fn in_scope_field<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> Option<&'a FieldDecl> {
+        let mut current = enclosing_class(analysis, offset);
+        let mut seen = HashSet::<Span>::new();
+        while let Some(class) = current {
+            if !seen.insert(class.name_span) {
+                break;
+            }
+
+            let field = analysis.fields.iter().find(|field| {
+                field.name == name
+                    && span_within(field.name_span, class.body_span)
+                    && enclosing_class(analysis, field.name_span.start)
+                        .is_some_and(|owner| owner.name_span == class.name_span)
+            });
+            if field.is_some() {
+                return field;
+            }
+
+            let Some(extends) = class.extends.as_deref() else {
+                break;
+            };
+            current = analysis.classes.iter().find(|c| c.name == extends);
+        }
+        None
+    }
+
     if receiver.starts_with('"') {
         return (
             types
@@ -18137,7 +18142,7 @@ fn infer_receiver(
             );
         }
 
-        if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+        if let Some(field) = in_scope_field(analysis, receiver, offset) {
             return (
                 parse_source_type_in_context(types, file_ctx, &field.ty),
                 CallKind::Instance,
@@ -18151,7 +18156,7 @@ fn infer_receiver(
         );
     }
 
-    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+    if let Some(field) = in_scope_field(analysis, receiver, offset) {
         return (
             parse_source_type_in_context(types, file_ctx, &field.ty),
             CallKind::Instance,

@@ -295,7 +295,18 @@ fn collect_class_defs(
                     FieldKind::RecordComponent => (false, true),
                     FieldKind::Field => {
                         let raw = data.modifiers.raw;
-                        (raw & Modifiers::STATIC != 0, raw & Modifiers::FINAL != 0)
+                        // In Java, interface (and annotation) fields are implicitly
+                        // `public static final`, even when the modifiers are omitted.
+                        //
+                        // Preserve explicit modifiers for classes/enums/records, but
+                        // ensure interfaces model the implicit static/final semantics
+                        // so downstream semantic features (member lookup, AI context,
+                        // etc.) behave correctly.
+                        if kind == ClassKind::Interface {
+                            (true, true)
+                        } else {
+                            (raw & Modifiers::STATIC != 0, raw & Modifiers::FINAL != 0)
+                        }
                     }
                 };
                 fields.push(FieldDef {

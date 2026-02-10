@@ -753,6 +753,49 @@ class A {
     }
 
     #[test]
+    fn call_chain_field_access_prefers_nearest_field_declaration() {
+        let ctx = ctx_for(
+            r#"
+class BaseType {
+  void baseMethod() {}
+}
+
+class SubType {
+  void subMethod() {}
+}
+
+class Base {
+  BaseType s = new BaseType();
+}
+
+class B extends Base {
+  static SubType s = new SubType();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("SubType"),
+            "expected receiver type to contain `SubType`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "subMethod"));
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "baseMethod"),
+            "expected receiver to use the nearest field declaration, got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
     fn call_chain_dotted_field_chain_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
