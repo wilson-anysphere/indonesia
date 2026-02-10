@@ -690,6 +690,7 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "limit"
             | "skip"
             | "forEach"
+            | "forEachOrdered"
             | "findFirst"
             | "findAny"
             | "anyMatch"
@@ -875,6 +876,7 @@ class Example {
             .peek(System.out::println)
             .collect(Collectors.toList());
         items.stream().forEach(System.out::println);
+        items.stream().forEachOrdered(System.out::println);
         items.stream().findFirst();
         items.stream().findAny();
         items.stream().anyMatch(s -> s.isEmpty());
@@ -965,6 +967,7 @@ class Example {
         assert!(out.contains(".skip("), "{out}");
         assert!(out.contains(".peek("), "{out}");
         assert!(out.contains(".forEach("), "{out}");
+        assert!(out.contains(".forEachOrdered("), "{out}");
         assert!(out.contains(".findFirst("), "{out}");
         assert!(out.contains(".findAny("), "{out}");
         assert!(out.contains(".anyMatch("), "{out}");
