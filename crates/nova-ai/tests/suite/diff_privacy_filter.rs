@@ -495,6 +495,30 @@ index 2222222..3333333 100644
 }
 
 #[test]
+fn git_section_uses_unified_headers_to_prevent_excluded_paths_bypass() {
+    let excluded_path = "src/secrets/Secret.java";
+
+    // Malformed section: the diff header claims this is for Ok.java, but the unified headers
+    // identify a different file. The filter should still omit the section if the unified headers
+    // match an excluded path.
+    let diff = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/secrets/Secret.java
++++ b/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++MISMATCH_SECRET
+"#;
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert!(!filtered.contains("MISMATCH_SECRET"));
+}
+
+#[test]
 fn unified_diff_windows_paths_with_backslashes_and_timestamps_are_supported() {
     let excluded_path = r"C:\Users\alice\secrets\secret.txt";
 

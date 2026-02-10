@@ -119,7 +119,8 @@ where
         // A well-formed git file section has at most one unified header pair (`---` / `+++`).
         // Multiple pairs suggest concatenated/mixed diff formats, which we treat as ambiguous and
         // fail closed to avoid leaking excluded content.
-        if count_unified_file_headers(section_lines) > 1 {
+        let unified_header_count = count_unified_file_headers(section_lines);
+        if unified_header_count > 1 {
             return Err(DiffParseError::InvalidHeader);
         }
         let header = lines
@@ -130,9 +131,26 @@ where
         let raw_paths = parse_diff_section_paths(header)
             .or_else(|| parse_git_section_paths_fallback(section_lines))
             .ok_or(DiffParseError::InvalidHeader)?;
+        let mut candidates = raw_paths.paths;
+
+        // Also consider `rename from/to` and `copy from/to` metadata within the section. This
+        // prevents bypasses where the `diff --git` header paths are truncated or inconsistent
+        // with the rest of the section.
+        candidates.extend(extract_git_section_metadata_paths(section_lines)?);
+
+        // If the section includes a unified header pair, treat those paths as candidates too.
+        // This prevents bypasses where the `diff --git` header points at an allowed path but the
+        // `---`/`+++` headers point at an excluded path.
+        if unified_header_count == 1 {
+            if let Some((old, new)) = extract_git_section_file_header_paths(section_lines)? {
+                candidates.push(old);
+                candidates.push(new);
+            }
+        }
+
         let mut any_path = false;
         let mut excluded = false;
-        for raw in raw_paths.paths {
+        for raw in candidates {
             // `a/` and `b/` are typically git's pseudo prefixes, but they can also be real
             // directory names (e.g. `git diff --no-prefix` or non-git diffs). To avoid bypasses,
             // treat both the raw and stripped variants as match candidates.
@@ -168,6 +186,107 @@ where
         omitted_any,
         parsed: true,
     })
+}
+
+fn extract_git_section_metadata_paths(section: &[&str]) -> Result<Vec<String>, DiffParseError> {
+    let mut out = Vec::<String>::new();
+
+    for line in section {
+        // Note: metadata lines appear before hunks; hunk lines are prefixed with ` ` / `+` / `-`,
+        // so they can't match these prefixes.
+        if let Some(path) = parse_git_trailing_path_or_err(line, "rename from ")? {
+            out.push(path);
+            continue;
+        }
+        if let Some(path) = parse_git_trailing_path_or_err(line, "rename to ")? {
+            out.push(path);
+            continue;
+        }
+        if let Some(path) = parse_git_trailing_path_or_err(line, "copy from ")? {
+            out.push(path);
+            continue;
+        }
+        if let Some(path) = parse_git_trailing_path_or_err(line, "copy to ")? {
+            out.push(path);
+            continue;
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_git_trailing_path_or_err(
+    line: &str,
+    prefix: &str,
+) -> Result<Option<String>, DiffParseError> {
+    let Some(rest) = line.strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    let rest = rest.trim_end_matches(&['\r', '\n'][..]);
+    if rest.is_empty() {
+        return Err(DiffParseError::InvalidHeader);
+    }
+
+    if rest.trim_start().starts_with('"') {
+        let (token, remaining) =
+            parse_diff_token(rest).ok_or(DiffParseError::InvalidHeader)?;
+        if !remaining.trim().is_empty() {
+            return Err(DiffParseError::InvalidHeader);
+        }
+        return Ok(Some(token));
+    }
+
+    Ok(Some(rest.to_string()))
+}
+
+fn extract_git_section_file_header_paths(
+    section: &[&str],
+) -> Result<Option<(String, String)>, DiffParseError> {
+    for idx in 0..section.len().saturating_sub(1) {
+        if !is_unified_file_header_at(section, idx) {
+            continue;
+        }
+
+        let old_line = section.get(idx).copied().ok_or(DiffParseError::InvalidHeader)?;
+        let new_line = section
+            .get(idx + 1)
+            .copied()
+            .ok_or(DiffParseError::InvalidHeader)?;
+        let old_raw = parse_git_file_header_path(old_line, "--- ")
+            .ok_or(DiffParseError::InvalidHeader)?;
+        let new_raw = parse_git_file_header_path(new_line, "+++ ")
+            .ok_or(DiffParseError::InvalidHeader)?;
+        return Ok(Some((old_raw, new_raw)));
+    }
+
+    Ok(None)
+}
+
+fn parse_git_file_header_path(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.strip_prefix(prefix)?;
+    let rest = rest.trim_end_matches(&['\r', '\n'][..]);
+    if rest.is_empty() {
+        return None;
+    }
+
+    if rest.trim_start().starts_with('"') {
+        let (token, remaining) = parse_diff_token(rest)?;
+        return validate_unified_header_path_remainder(token, remaining);
+    }
+
+    // Git diffs sometimes include a trailing tab even when no timestamp follows. When present,
+    // treat the tab as a delimiter so paths containing spaces remain parseable.
+    if let Some((path_part, after_tab)) = rest.split_once('\t') {
+        let after_tab = after_tab.trim();
+        if !after_tab.is_empty() && !looks_like_unified_diff_timestamp(after_tab) {
+            return None;
+        }
+        return Some(path_part.to_string());
+    }
+
+    // Unlike generic unified diffs, git's `---` / `+++` file headers do not include timestamps.
+    // Accept spaces as literal path characters.
+    Some(rest.to_string())
 }
 
 fn preamble_has_unified_headers(lines: &[&str]) -> bool {
