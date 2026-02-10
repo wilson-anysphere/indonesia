@@ -449,6 +449,30 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "println"
             | "printf"
             | "format"
+            // Common JDK method identifiers that are ubiquitous in completion prompts.
+            // Keeping these intact improves readability of anonymized cloud prompts.
+            //
+            // java.util.stream.Stream (method chaining)
+            | "filter"
+            | "map"
+            | "flatMap"
+            | "collect"
+            | "sorted"
+            | "forEach"
+            | "findFirst"
+            | "findAny"
+            // java.util.stream.Collectors
+            | "toList"
+            | "toSet"
+            | "joining"
+            // java.lang.String
+            | "length"
+            | "substring"
+            | "charAt"
+            | "isEmpty"
+            | "trim"
+            | "toLowerCase"
+            | "toUpperCase"
     )
 }
 
@@ -557,5 +581,62 @@ mod tests {
         assert!(out.contains("/*__NOVA_AI_RANGE_END__*/"), "{out}");
         assert!(out.contains("/* [REDACTED] */"), "{out}");
         assert!(!out.contains("secret"), "{out}");
+    }
+
+    #[test]
+    fn preserves_common_jdk_method_identifiers_when_anonymizing_identifiers() {
+        let code = r#"
+class Example {
+    void run(List<String> items) {
+        items.stream().filter(s -> !s.isEmpty()).map(String::trim).flatMap(s -> s.stream()).sorted().collect(Collectors.toList());
+        items.stream().forEach(System.out::println);
+        items.stream().findFirst();
+        items.stream().findAny();
+        items.stream().collect(Collectors.toSet());
+        items.stream().collect(Collectors.joining(","));
+
+        int len = "abc".length();
+        String sub = "abc".substring(1);
+        char ch = "abc".charAt(0);
+        String norm = " Abc ".trim().toLowerCase().toUpperCase();
+    }
+}
+"#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: true,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: false,
+        });
+
+        let out = anonymizer.anonymize(code);
+
+        // Sanity check: anonymization should still happen for user-defined identifiers.
+        assert!(out.contains("class id_0"), "{out}");
+
+        // Stream methods.
+        assert!(out.contains(".filter("), "{out}");
+        assert!(out.contains(".map("), "{out}");
+        assert!(out.contains(".flatMap("), "{out}");
+        assert!(out.contains(".collect("), "{out}");
+        assert!(out.contains(".sorted("), "{out}");
+        assert!(out.contains(".forEach("), "{out}");
+        assert!(out.contains(".findFirst("), "{out}");
+        assert!(out.contains(".findAny("), "{out}");
+
+        // Collectors.
+        assert!(out.contains("Collectors.toList"), "{out}");
+        assert!(out.contains("Collectors.toSet"), "{out}");
+        assert!(out.contains("Collectors.joining"), "{out}");
+
+        // String methods.
+        assert!(out.contains(".length("), "{out}");
+        assert!(out.contains(".substring("), "{out}");
+        assert!(out.contains(".charAt("), "{out}");
+        assert!(out.contains(".isEmpty("), "{out}");
+        assert!(out.contains(".trim("), "{out}");
+        assert!(out.contains(".toLowerCase("), "{out}");
+        assert!(out.contains(".toUpperCase("), "{out}");
     }
 }
