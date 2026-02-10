@@ -14,7 +14,7 @@ use url::Url;
 /// Anthropic Messages API provider.
 #[derive(Clone)]
 pub(crate) struct AnthropicProvider {
-    endpoint: Url,
+    base_url: Url,
     model: String,
     timeout: Duration,
     client: reqwest::Client,
@@ -22,7 +22,7 @@ pub(crate) struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub(crate) fn new(
-        endpoint: Url,
+        base_url: Url,
         api_key: String,
         model: impl Into<String>,
         timeout: Duration,
@@ -40,11 +40,26 @@ impl AnthropicProvider {
             .build()?;
 
         Ok(Self {
-            endpoint,
+            base_url,
             model: model.into(),
             timeout,
             client,
         })
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url, AiError> {
+        // Accept both:
+        // - http://localhost:8000  (we will append /v1/...)
+        // - http://localhost:8000/v1  (we will append /...)
+        let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+        let base = Url::parse(&format!("{base_str}/"))?;
+        let base_path = base.path().trim_end_matches('/');
+
+        if base_path.ends_with("/v1") {
+            Ok(base.join(path.trim_start_matches('/'))?)
+        } else {
+            Ok(base.join(&format!("v1/{}", path.trim_start_matches('/')))?)
+        }
     }
 }
 
@@ -55,10 +70,7 @@ impl LlmProvider for AnthropicProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let url = self
-            .endpoint
-            .join("v1/messages")
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let url = self.endpoint("/messages")?;
 
         let (system, messages) = anthropic_messages(&request.messages);
 
@@ -213,7 +225,7 @@ impl LlmProvider for AnthropicProvider {
 /// Gemini (Generative Language) provider.
 #[derive(Clone)]
 pub(crate) struct GeminiProvider {
-    endpoint: Url,
+    base_url: Url,
     api_key: String,
     model: String,
     timeout: Duration,
@@ -222,19 +234,34 @@ pub(crate) struct GeminiProvider {
 
 impl GeminiProvider {
     pub(crate) fn new(
-        endpoint: Url,
+        base_url: Url,
         api_key: String,
         model: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, AiError> {
         let client = reqwest::Client::builder().build()?;
         Ok(Self {
-            endpoint,
+            base_url,
             api_key,
             model: model.into(),
             timeout,
             client,
         })
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url, AiError> {
+        // Accept both:
+        // - http://localhost:8000  (we will append /v1beta/...)
+        // - http://localhost:8000/v1beta  (we will append /...)
+        let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+        let base = Url::parse(&format!("{base_str}/"))?;
+        let base_path = base.path().trim_end_matches('/');
+
+        if base_path.ends_with("/v1beta") {
+            Ok(base.join(path.trim_start_matches('/'))?)
+        } else {
+            Ok(base.join(&format!("v1beta/{}", path.trim_start_matches('/')))?)
+        }
     }
 }
 
@@ -245,10 +272,10 @@ impl LlmProvider for GeminiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let mut url = self
-            .endpoint
-            .join(&format!("v1beta/models/{}:generateContent", self.model))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let mut url = self.endpoint(&format!(
+            "/models/{}:generateContent",
+            self.model
+        ))?;
         url.query_pairs_mut().append_pair("key", &self.api_key);
 
         let prompt = messages_to_prompt(&request.messages);
@@ -520,7 +547,7 @@ impl LlmProvider for GeminiProvider {
 /// Azure OpenAI chat-completions provider.
 #[derive(Clone)]
 pub(crate) struct AzureOpenAiProvider {
-    endpoint: Url,
+    base_url: Url,
     deployment: String,
     api_version: String,
     timeout: Duration,
@@ -529,7 +556,7 @@ pub(crate) struct AzureOpenAiProvider {
 
 impl AzureOpenAiProvider {
     pub(crate) fn new(
-        endpoint: Url,
+        base_url: Url,
         api_key: String,
         deployment: String,
         api_version: String,
@@ -545,12 +572,27 @@ impl AzureOpenAiProvider {
             .default_headers(headers)
             .build()?;
         Ok(Self {
-            endpoint,
+            base_url,
             deployment,
             api_version,
             timeout,
             client,
         })
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url, AiError> {
+        // Accept both:
+        // - http://localhost:8000  (we will append /openai/...)
+        // - http://localhost:8000/openai  (we will append /...)
+        let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+        let base = Url::parse(&format!("{base_str}/"))?;
+        let base_path = base.path().trim_end_matches('/');
+
+        if base_path.ends_with("/openai") {
+            Ok(base.join(path.trim_start_matches('/'))?)
+        } else {
+            Ok(base.join(&format!("openai/{}", path.trim_start_matches('/')))?)
+        }
     }
 }
 
@@ -561,13 +603,10 @@ impl LlmProvider for AzureOpenAiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let mut url = self
-            .endpoint
-            .join(&format!(
-                "openai/deployments/{}/chat/completions",
-                self.deployment
-            ))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let mut url = self.endpoint(&format!(
+            "/deployments/{}/chat/completions",
+            self.deployment
+        ))?;
         url.query_pairs_mut()
             .append_pair("api-version", &self.api_version);
 
