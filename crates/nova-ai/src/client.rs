@@ -2909,6 +2909,32 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
+    struct FailStartStreamProvider;
+
+    #[async_trait]
+    impl LlmProvider for FailStartStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            Err(AiError::Timeout)
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct CancelledStreamProvider;
 
     #[async_trait]
@@ -3185,6 +3211,101 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_start_timeout_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+
+        let before_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_timeouts = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        let before_timeout_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(FailStartStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig {
+                max_retries: 0,
+                initial_backoff: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+            },
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let err = match client.chat_stream(request, CancellationToken::new()).await {
+            Ok(_) => panic!("expected timeout"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AiError::Timeout));
+
+        let after_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_timeouts = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        let after_timeout_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} request_count to increment"
+        );
+        assert!(
+            after_timeouts >= before_timeouts.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} timeout_count to increment"
+        );
+        assert!(
+            after_timeout_metric >= before_timeout_metric.saturating_add(1),
+            "expected {AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC} timeout_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn chat_stream_cancelled_increments_metrics() {
         let _guard = crate::test_support::metrics_lock()
             .lock()
@@ -3242,6 +3363,99 @@ mod tests {
         assert!(
             after >= before.saturating_add(1),
             "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_cancelled_before_start_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+
+        let before_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let before_cancelled_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(OkStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = match client.chat_stream(request, cancel).await {
+            Ok(_) => panic!("expected cancellation"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AiError::Cancelled));
+
+        let after_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let after_cancelled_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} request_count to increment"
+        );
+        assert!(
+            after_errors >= before_errors.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
+        );
+        assert!(
+            after_cancelled_metric >= before_cancelled_metric.saturating_add(1),
+            "expected {AI_CHAT_STREAM_ERROR_CANCELLED_METRIC} error_count to increment"
         );
     }
 
