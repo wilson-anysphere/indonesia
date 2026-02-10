@@ -54,13 +54,23 @@ fn redact_sensitive_header_values(input: &str) -> String {
 fn redact_api_keys(input: &str) -> String {
     static SK_RE: OnceLock<Regex> = OnceLock::new();
     static AIZA_RE: OnceLock<Regex> = OnceLock::new();
+    static AWS_ACCESS_KEY_RE: OnceLock<Regex> = OnceLock::new();
+    static GITHUB_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
     let sk_re =
-        SK_RE.get_or_init(|| Regex::new(r"sk-[A-Za-z0-9]{10,}").expect("sk regex should compile"));
+        SK_RE.get_or_init(|| Regex::new(r"sk-[A-Za-z0-9_-]{16,}").expect("sk regex should compile"));
     let aiza_re = AIZA_RE
         .get_or_init(|| Regex::new(r"AIza[0-9A-Za-z\-_]{10,}").expect("aiza regex should compile"));
+    let aws_re = AWS_ACCESS_KEY_RE.get_or_init(|| {
+        Regex::new(r"\bAKIA[0-9A-Z]{16}\b").expect("aws access key regex should compile")
+    });
+    let gh_re = GITHUB_TOKEN_RE.get_or_init(|| {
+        Regex::new(r"\bghp_[A-Za-z0-9]{30,}\b").expect("github token regex should compile")
+    });
 
     let out = sk_re.replace_all(input, REDACTION);
-    aiza_re.replace_all(&out, REDACTION).into_owned()
+    let out = aiza_re.replace_all(&out, REDACTION);
+    let out = aws_re.replace_all(&out, REDACTION);
+    gh_re.replace_all(&out, REDACTION).into_owned()
 }
 
 fn redact_sensitive_kv_pairs(input: &str) -> String {
@@ -206,6 +216,36 @@ mod tests {
         assert!(out.contains("x-goog-api-key: <redacted>"));
         assert!(out.contains("api-key: <redacted>"));
         assert!(out.contains("token: <redacted>"));
+    }
+
+    #[test]
+    fn redacts_openai_style_api_keys_with_hyphens() {
+        let secret = "sk-proj-abc_def-0123456789ABCDEFGHIJ";
+        let input = format!("key={secret}");
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains("key=<redacted>"), "{out}");
+    }
+
+    #[test]
+    fn redacts_aws_access_keys() {
+        let secret = "AKIA0123456789ABCDEF";
+        let input = format!("aws_key={secret}");
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains("<redacted>"), "{out}");
+    }
+
+    #[test]
+    fn redacts_github_personal_access_tokens() {
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let input = format!("token={secret}");
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains("<redacted>"), "{out}");
     }
 
     #[test]
