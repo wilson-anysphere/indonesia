@@ -376,6 +376,24 @@ mod tests {
         multi_token_completion_context(&db, file, position)
     }
 
+    fn ctx_for_multi(
+        source_with_cursor: &str,
+        extra_files: Vec<(&str, &str)>,
+    ) -> MultiTokenCompletionContext {
+        let (source, position) = fixture_position(source_with_cursor);
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
+        db.set_file_text(file, source);
+
+        for (path, text) in extra_files {
+            let id = db.file_id_for_path(path);
+            db.set_file_text(id, text.to_string());
+        }
+
+        multi_token_completion_context(&db, file, position)
+    }
+
     #[test]
     fn expected_type_infers_variable_declaration_assignment() {
         let ctx = ctx_for(
@@ -988,5 +1006,44 @@ class Test {
             "expected interface receiver to include Object.toString; got {:?}",
             ctx.available_methods
         );
+    }
+
+    #[test]
+    fn dotted_field_chain_infers_inherited_fields_across_files() {
+        let ctx = ctx_for_multi(
+            r#"
+class A extends Base {
+  void m() {
+    this.b.s.<cursor>
+  }
+}
+"#,
+            vec![
+                (
+                    "/__nova_test_ws__/src/Base.java",
+                    r#"
+class Base {
+  B b = new B();
+}
+"#,
+                ),
+                (
+                    "/__nova_test_ws__/src/B.java",
+                    r#"
+class B {
+  String s = "x";
+}
+"#,
+                ),
+            ],
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
     }
 }

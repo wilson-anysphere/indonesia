@@ -10654,6 +10654,106 @@ pub(crate) fn infer_receiver_type_for_member_access(
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
         && class_id_of_type(&mut types, &receiver_ty).is_none()
     {
+        fn resolve_field_type_in_store(
+            types: &mut TypeStore,
+            receiver_ty: &Type,
+            field_name: &str,
+            call_kind: CallKind,
+        ) -> Option<Type> {
+            // Java arrays have a pseudo-field `length`.
+            if field_name == "length" && matches!(receiver_ty, Type::Array(_)) {
+                return Some(Type::Primitive(PrimitiveType::Int));
+            }
+
+            let class_id = class_id_of_type(types, receiver_ty)?;
+
+            // Traverse the class hierarchy, using the nearest field declaration (Java field hiding
+            // rules) and collecting interfaces so we can search for inherited interface constants.
+            let mut interfaces = Vec::<Type>::new();
+            let mut current = Some(class_id);
+            let mut seen = HashSet::<ClassId>::new();
+            while let Some(class_id) = current.take() {
+                if !seen.insert(class_id) {
+                    break;
+                }
+
+                let class_ty = Type::class(class_id, vec![]);
+                ensure_type_fields_loaded(types, &class_ty);
+
+                let (field_ty, super_ty, ifaces) = {
+                    let class_def = types.class(class_id)?;
+                    (
+                        class_def
+                            .fields
+                            .iter()
+                            .find(|field| {
+                                field.name == field_name
+                                    && match call_kind {
+                                        CallKind::Static => field.is_static,
+                                        CallKind::Instance => true,
+                                    }
+                            })
+                            .map(|field| field.ty.clone()),
+                        class_def.super_class.clone(),
+                        class_def.interfaces.clone(),
+                    )
+                };
+
+                if let Some(field_ty) = field_ty {
+                    return Some(field_ty);
+                }
+
+                interfaces.extend(ifaces);
+                current = super_ty
+                    .as_ref()
+                    .and_then(|ty| class_id_of_type(types, ty));
+            }
+
+            // Interface fields (constants) are inherited. Search implemented interfaces (and their
+            // super-interfaces) for static fields.
+            let mut queue: VecDeque<Type> = interfaces.into();
+            let mut seen_ifaces = HashSet::<ClassId>::new();
+            while let Some(iface_ty) = queue.pop_front() {
+                let Some(iface_id) = class_id_of_type(types, &iface_ty) else {
+                    continue;
+                };
+                if !seen_ifaces.insert(iface_id) {
+                    continue;
+                }
+
+                let iface_class_ty = Type::class(iface_id, vec![]);
+                ensure_type_fields_loaded(types, &iface_class_ty);
+
+                let (field_ty, ifaces) = {
+                    let iface_def = types.class(iface_id)?;
+                    (
+                        iface_def
+                            .fields
+                            .iter()
+                            .find(|field| {
+                                field.name == field_name
+                                    && match call_kind {
+                                        CallKind::Static => field.is_static,
+                                        CallKind::Instance => true,
+                                    }
+                            })
+                            .map(|field| field.ty.clone()),
+                        iface_def.interfaces.clone(),
+                    )
+                };
+
+                if let Some(field_ty) = field_ty {
+                    return Some(field_ty);
+                }
+
+                for super_iface in ifaces {
+                    queue.push_back(super_iface);
+                }
+            }
+
+            None
+        }
+
         let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
         if parts.len() >= 2 {
             let (mut ty, mut kind) =
@@ -10662,39 +10762,12 @@ pub(crate) fn infer_receiver_type_for_member_access(
             if !matches!(ty, Type::Unknown | Type::Error) {
                 let mut ok = true;
                 for part in parts.into_iter().skip(1) {
-                    ensure_type_fields_loaded(&mut types, &ty);
-                    let Some(class_id) = class_id_of_type(&mut types, &ty) else {
-                        ok = false;
-                        break;
-                    };
-                    let Some(class_def) = types.class(class_id) else {
+                    let Some(field_ty) = resolve_field_type_in_store(&mut types, &ty, part, kind) else {
                         ok = false;
                         break;
                     };
 
-                    let mut field = class_def.fields.iter().find(|field| {
-                        field.name == part
-                            && match kind {
-                                CallKind::Static => field.is_static,
-                                CallKind::Instance => !field.is_static,
-                            }
-                    });
-
-                    // Java allows accessing static fields through an instance. If we can't find an
-                    // instance field, fall back to a static one.
-                    if field.is_none() && kind == CallKind::Instance {
-                        field = class_def
-                            .fields
-                            .iter()
-                            .find(|field| field.name == part && field.is_static);
-                    }
-
-                    let Some(field) = field else {
-                        ok = false;
-                        break;
-                    };
-
-                    ty = field.ty.clone();
+                    ty = field_ty;
                     kind = CallKind::Instance;
                     ty = ensure_local_class_receiver(&mut types, &analysis, ty);
                 }
