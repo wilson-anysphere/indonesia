@@ -254,12 +254,15 @@ impl SemanticSearch for TrigramSemanticSearch {
                     return None;
                 }
 
+                let (range, snippet) =
+                    snippet_range_and_text(&doc.original, &doc.normalized, &normalized_query);
+
                 Some(SearchResult {
                     path: path.clone(),
-                    range: 0..doc.original.len(),
+                    range,
                     kind: "file".to_string(),
                     score,
-                    snippet: snippet(&doc.original, &doc.normalized, &normalized_query),
+                    snippet,
                 })
             })
             .collect();
@@ -366,31 +369,60 @@ fn score_match(
     score
 }
 
-fn snippet(original: &str, normalized: &str, query: &str) -> String {
+fn snippet_range_and_text(original: &str, normalized: &str, query: &str) -> (Range<usize>, String) {
+    const MATCH_CONTEXT_BYTES: usize = 30;
+    const PREFIX_FALLBACK_CHARS: usize = 80;
+
     if query.is_empty() {
-        return String::new();
+        return (0..0, String::new());
     }
 
-    if let Some(pos) = normalized.find(query) {
-        let mut start = pos.saturating_sub(30);
-        let mut end = (pos + query.len() + 30).min(original.len());
+    let range = if let Some(pos) = normalized.find(query) {
+        // `normalize` preserves text length (one ASCII byte per input byte) so normalized match
+        // offsets are also valid byte offsets in `original` (modulo UTF-8 character boundaries).
+        let start = pos.saturating_sub(MATCH_CONTEXT_BYTES);
+        let end = (pos + query.len() + MATCH_CONTEXT_BYTES).min(original.len());
+        let start = clamp_char_boundary_before(original, start);
+        let end = clamp_char_boundary_after(original, end).max(start);
+        start..end
+    } else {
+        // Best-effort fallback: avoid returning a whole-file range for fuzzy matches so downstream
+        // callers can still reason about where the match likely occurred.
+        prefix_char_range(original, PREFIX_FALLBACK_CHARS)
+    };
 
-        while start > 0 && !original.is_char_boundary(start) {
-            start -= 1;
-        }
-        while end < original.len() && !original.is_char_boundary(end) {
-            end += 1;
-        }
-
-        return original[start..end].trim().to_string();
-    }
-
-    original
-        .chars()
-        .take(80)
-        .collect::<String>()
+    let snippet = original
+        .get(range.clone())
+        .unwrap_or_default()
         .trim()
-        .to_string()
+        .to_string();
+
+    (range, snippet)
+}
+
+fn clamp_char_boundary_before(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn clamp_char_boundary_after(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset < text.len() && !text.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
+}
+
+fn prefix_char_range(text: &str, max_chars: usize) -> Range<usize> {
+    let end = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    0..end
 }
 
 #[cfg(feature = "embeddings")]
