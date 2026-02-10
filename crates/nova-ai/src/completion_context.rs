@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 /// Semantic context used to build prompts for multi-token completion generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultiTokenCompletionContext {
@@ -13,6 +15,42 @@ pub struct MultiTokenCompletionContext {
 #[derive(Clone, Debug, Default)]
 pub struct CompletionContextBuilder {
     pub max_prompt_chars: usize,
+}
+
+/// Escape arbitrary user-provided content so it cannot terminate a Markdown fenced code block.
+///
+/// This guarantees the returned string contains **no literal `"```"` substring** by inserting a
+/// backslash before any backtick that would otherwise form 3 consecutive backticks.
+fn escape_markdown_fence_payload(text: &str) -> Cow<'_, str> {
+    // Fast path: if there's no triple-backtick substring, we don't need to allocate.
+    if !text.contains("```") {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len() + text.len() / 2);
+    let mut backticks = 0usize;
+
+    for ch in text.chars() {
+        if ch == '`' {
+            if backticks == 2 {
+                // Break the run before we would emit a third consecutive '`'.
+                out.push('\\');
+                backticks = 0;
+            }
+            out.push('`');
+            backticks += 1;
+        } else {
+            out.push(ch);
+            backticks = 0;
+        }
+    }
+
+    debug_assert!(
+        !out.contains("```"),
+        "escape_markdown_fence_payload must remove all triple backticks"
+    );
+
+    Cow::Owned(out)
 }
 
 impl CompletionContextBuilder {
@@ -39,8 +77,11 @@ impl CompletionContextBuilder {
         max_items: usize,
     ) -> String {
         // Keep the formatting stable for tests and provider caching.
-        let receiver_type = ctx.receiver_type.as_deref().unwrap_or("<unknown>");
-        let expected_type = ctx.expected_type.as_deref().unwrap_or("<unknown>");
+        let receiver_type =
+            escape_markdown_fence_payload(ctx.receiver_type.as_deref().unwrap_or("<unknown>"));
+        let expected_type =
+            escape_markdown_fence_payload(ctx.expected_type.as_deref().unwrap_or("<unknown>"));
+        let surrounding_code = escape_markdown_fence_payload(&ctx.surrounding_code);
 
         let mut prompt = String::new();
         prompt.push_str("You are Nova, a Java code completion engine.\n");
@@ -60,13 +101,13 @@ impl CompletionContextBuilder {
         );
         prompt.push_str("- Avoid suggesting file paths.\n");
         prompt.push_str("\n");
-        prompt.push_str(&format!("Receiver type: {receiver_type}\n"));
-        prompt.push_str(&format!("Expected type: {expected_type}\n"));
+        prompt.push_str(&format!("Receiver type: {}\n", receiver_type.as_ref()));
+        prompt.push_str(&format!("Expected type: {}\n", expected_type.as_ref()));
         prompt.push_str("\n");
         prompt.push_str("Available methods:\n");
         for method in &ctx.available_methods {
             prompt.push_str("- ");
-            prompt.push_str(method);
+            prompt.push_str(escape_markdown_fence_payload(method).as_ref());
             prompt.push('\n');
         }
         if !ctx.importable_paths.is_empty() {
@@ -74,13 +115,13 @@ impl CompletionContextBuilder {
             prompt.push_str("Importable symbols:\n");
             for path in &ctx.importable_paths {
                 prompt.push_str("- ");
-                prompt.push_str(path);
+                prompt.push_str(escape_markdown_fence_payload(path).as_ref());
                 prompt.push('\n');
             }
         }
         prompt.push('\n');
         prompt.push_str("Surrounding code:\n```java\n");
-        prompt.push_str(&ctx.surrounding_code);
+        prompt.push_str(surrounding_code.as_ref());
         if !ctx.surrounding_code.ends_with('\n') {
             prompt.push('\n');
         }
@@ -129,6 +170,28 @@ mod tests {
         assert!(prompt.contains("- collect"));
         assert!(prompt.contains("- java.util.stream.Collectors"));
         assert!(prompt.contains("```java\npeople.stream().\n```"));
+    }
+
+    #[test]
+    fn prompt_escapes_triple_backticks_to_keep_fences_stable() {
+        let ctx = MultiTokenCompletionContext {
+            receiver_type: Some("A```B".into()),
+            expected_type: Some("C````D".into()),
+            surrounding_code: "a``````b".into(),
+            available_methods: vec!["m```1".into(), "ok".into()],
+            importable_paths: vec!["com.example.``````Foo".into()],
+        };
+
+        let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 2);
+        assert!(
+            prompt.contains("```java\n"),
+            "expected prompt to contain opening fence: {prompt}"
+        );
+        assert_eq!(
+            prompt.match_indices("```").count(),
+            2,
+            "expected exactly one opening and one closing fence: {prompt}"
+        );
     }
 
     #[test]
