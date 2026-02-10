@@ -47,14 +47,54 @@ pub struct TestAiServer {
 
 impl TestAiServer {
     pub fn start(response: Value) -> Self {
+        let body_bytes = serde_json::to_vec(&response).expect("serialize response");
+        let body_bytes = Arc::new(body_bytes);
+
+        Self::start_with_complete_responder(move |_call, stream| {
+            let response_body = body_bytes.as_slice();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(response_body);
+        })
+    }
+
+    pub fn start_flaky(success_response: Value) -> Self {
+        let body_bytes = serde_json::to_vec(&success_response).expect("serialize response");
+        let body_bytes = Arc::new(body_bytes);
+
+        Self::start_with_complete_responder(move |call, stream| {
+            if call == 0 {
+                let body = b"boom";
+                let header = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+            } else {
+                let response_body = body_bytes.as_slice();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(response_body);
+            }
+        })
+    }
+
+    fn start_with_complete_responder<F>(complete_responder: F) -> Self
+    where
+        F: Fn(usize, &mut std::net::TcpStream) + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         listener.set_nonblocking(true).expect("set_nonblocking");
 
         let addr = listener.local_addr().expect("local_addr");
         let base_url = format!("http://{addr}");
-
-        let body_bytes = serde_json::to_vec(&response).expect("serialize response");
-        let body_bytes = Arc::new(body_bytes);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_thread = hits.clone();
@@ -124,14 +164,8 @@ impl TestAiServer {
             drop(reader);
 
             if method == "POST" && path == "/complete" {
-                hits_thread.fetch_add(1, Ordering::SeqCst);
-                let response_body = body_bytes.as_slice();
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    response_body.len()
-                );
-                let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(response_body);
+                let call = hits_thread.fetch_add(1, Ordering::SeqCst);
+                complete_responder(call, &mut stream);
                 let _ = stream.flush();
             } else {
                 let body = b"not found";
