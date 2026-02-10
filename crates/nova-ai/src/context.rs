@@ -702,16 +702,22 @@ fn looks_like_file_name(token: &str) -> bool {
     // a base name from its extension.
     let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
 
-    let Some((_base, ext)) = token.rsplit_once('.') else {
+    let Some((_base, ext_raw)) = token.rsplit_once('.') else {
         return false;
     };
 
-    let ext = ext
-        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
-        .to_ascii_lowercase();
-    if ext.is_empty() {
+    // Allow suffixes like `Foo.java:123` by only considering the leading alphanumeric run of the
+    // extension.
+    let ext_raw = ext_raw.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    let ext_end = ext_raw
+        .as_bytes()
+        .iter()
+        .take_while(|b| b.is_ascii_alphanumeric())
+        .count();
+    if ext_end == 0 {
         return false;
     }
+    let ext = ext_raw[..ext_end].to_ascii_lowercase();
 
     is_known_file_extension(&ext)
 }

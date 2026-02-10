@@ -365,6 +365,25 @@ fn related_code_query_avoids_file_names_with_trailing_period() {
 }
 
 #[test]
+fn related_code_query_skips_stacktrace_filename_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for stacktrace filename-only selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "Foo.java:123";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for filename-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_obvious_secret_tokens_in_fallback() {
     struct PanicSearch;
 
