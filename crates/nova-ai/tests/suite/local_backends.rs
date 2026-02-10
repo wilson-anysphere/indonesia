@@ -307,6 +307,14 @@ async fn openai_compatible_stream_sends_authorization_header_when_api_key_is_set
             auth.to_str().expect("authorization header utf8"),
             "Bearer test-key"
         );
+        let accept = req
+            .headers()
+            .get(hyper::header::ACCEPT)
+            .expect("accept header");
+        assert_eq!(
+            accept.to_str().expect("accept header utf8"),
+            "text/event-stream"
+        );
 
         let chunks = vec![
             Ok::<_, std::io::Error>(hyper::body::Bytes::from(
@@ -669,6 +677,14 @@ async fn openai_compatible_streaming_parsing() {
                     .unwrap();
             }
             assert!(req.headers().get(hyper::header::AUTHORIZATION).is_none());
+            let accept = req
+                .headers()
+                .get(hyper::header::ACCEPT)
+                .expect("accept header");
+            assert_eq!(
+                accept.to_str().expect("accept header utf8"),
+                "text/event-stream"
+            );
 
             let bytes = hyper::body::to_bytes(req.into_body())
                 .await

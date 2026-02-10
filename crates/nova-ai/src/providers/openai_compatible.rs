@@ -6,7 +6,7 @@ use crate::{
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -140,7 +140,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
         // Instead, we apply `self.timeout` to:
         // 1) Establishing the response (send + headers), and
         // 2) Idle time between streamed chunks while reading the body.
-        let request_builder = self.authorize(self.client.post(url)).json(&body);
+        let request_builder = self
+            .authorize(self.client.post(url))
+            .header(ACCEPT, "text/event-stream")
+            .json(&body);
 
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
