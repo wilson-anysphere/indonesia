@@ -20605,6 +20605,19 @@ class A {
     }
 
     #[test]
+    fn infer_receiver_type_before_dot_is_best_effort_and_handles_out_of_bounds_offsets() {
+        let java = "class A {}".to_string();
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java);
+
+        assert_eq!(infer_receiver_type_before_dot(&db, file, 0), None);
+        assert_eq!(infer_receiver_type_before_dot(&db, file, 999), None);
+        assert_eq!(infer_receiver_type_before_dot(&db, file, usize::MAX), None);
+    }
+
+    #[test]
     fn member_method_names_for_receiver_type_includes_minimal_jdk_methods() {
         let java = "class A {}".to_string();
 
