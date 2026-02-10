@@ -27,9 +27,12 @@ impl ExcludedPathMatcher {
 
     pub fn new(patterns: &[String]) -> Result<Self, AiError> {
         let mut builder = GlobSetBuilder::new();
-        for pattern in patterns {
+        for (idx, pattern) in patterns.iter().enumerate() {
             let glob = Glob::new(pattern).map_err(|err| {
-                AiError::InvalidConfig(format!("invalid excluded_paths glob {pattern:?}: {err}"))
+                AiError::InvalidConfig(format!(
+                    "invalid ai.privacy.excluded_paths[{idx}] glob: {}",
+                    summarize_glob_error(&err)
+                ))
             })?;
             builder.add(glob);
         }
@@ -269,6 +272,21 @@ fn summarize_regex_error(err: &regex::Error) -> String {
         regex::Error::CompiledTooBig(size) => format!("compiled regex too big ({size} bytes)"),
         _ => "unknown error".to_string(),
     }
+}
+
+fn summarize_glob_error(err: &globset::Error) -> String {
+    // `globset` includes the raw pattern in its `Display` output, e.g.
+    // `error parsing glob '<pattern>': <reason>`.
+    //
+    // The pattern itself may contain sensitive path segments, so strip it and keep the reason.
+    let message = err.to_string();
+    if let Some(pos) = message.find("':") {
+        return message[pos + 2..].trim_start_matches(':').trim().to_string();
+    }
+    if let Some(pos) = message.find("\":") {
+        return message[pos + 2..].trim_start_matches(':').trim().to_string();
+    }
+    message
 }
 
 fn sanitize_markdown_fenced_code_blocks<FCode, FPlain>(
@@ -622,6 +640,29 @@ class Foo {
 
         let err = ExcludedPathMatcher::from_config(&cfg).expect_err("should fail");
         assert!(matches!(err, AiError::InvalidConfig(_)), "{err:?}");
+    }
+
+    #[test]
+    fn excluded_paths_invalid_patterns_do_not_echo_pattern_values_in_errors() {
+        let secret = "super-secret-excluded-path";
+        let cfg = AiPrivacyConfig {
+            excluded_paths: vec![format!("{secret}[unterminated")],
+            ..AiPrivacyConfig::default()
+        };
+
+        let err = match ExcludedPathMatcher::from_config(&cfg) {
+            Ok(_) => panic!("expected invalid glob to fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "ExcludedPathMatcher error leaked excluded_paths value: {message}"
+        );
+        assert!(
+            message.contains("ai.privacy.excluded_paths[0]"),
+            "ExcludedPathMatcher error should include the failing index: {message}"
+        );
     }
 
     #[test]
