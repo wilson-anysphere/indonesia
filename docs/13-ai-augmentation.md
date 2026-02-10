@@ -602,6 +602,9 @@ Local embeddings are fully offline and run inside the Nova process.
 > Requires building Nova with `nova-ai/embeddings-local` (which implies `nova-ai/embeddings`). When
 > `nova-ai/embeddings-local` is missing, Nova logs a warning and falls back to `backend="hash"`.
 
+Note: depending on the build and model selection, the local embedder may download model files into
+`ai.embeddings.model_dir` on first use.
+
 ```toml
 [ai]
 enabled = true
@@ -702,29 +705,6 @@ backend = "provider"
 Note: Azure OpenAI embeddings support may depend on your Nova build/version. If provider embeddings
 are not supported for the selected `ai.provider.kind`, Nova will log a warning and fall back to
 `backend="hash"`.
-
-#### Local embeddings (in-process)
-
-The `local` backend runs an embedding model **in-process** (no external HTTP provider). This keeps
-code on-device, but may download model files into `ai.embeddings.model_dir` on first use (depending
-on the build and model selection).
-
-This backend requires building Nova with `nova-ai/embeddings-local` (otherwise Nova falls back to
-`backend="hash"`).
-
-```toml
-[ai]
-enabled = true
-
-[ai.features]
-semantic_search = true
-
-[ai.embeddings]
-enabled = true
-backend = "local"
-local_model = "all-MiniLM-L6-v2" # fastembed model id (default)
-model_dir = ".nova/models/embeddings"
-```
 
 #### Privacy notes: provider embeddings + semantic search
 
