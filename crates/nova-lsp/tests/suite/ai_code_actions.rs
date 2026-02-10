@@ -6504,6 +6504,139 @@ local_only = true
 }
 
 #[test]
+fn stdio_server_provider_error_does_not_leak_url_secrets() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let secret = "super-secret-token-123456";
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(500).body("boom");
+    });
+
+    // Inject userinfo + query params to simulate misconfigured endpoints that embed credentials in
+    // URLs. `reqwest::Error` includes request URLs in its Display/Debug output; the server must not
+    // surface those secrets back to editor clients.
+    let base = url::Url::parse(&server.base_url()).expect("base url");
+    let port = base.port().expect("port");
+    let endpoint = format!("http://user:pass@127.0.0.1:{port}/complete?key={secret}&other=1");
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+retry_max_retries = 0
+retry_initial_backoff_ms = 1
+retry_max_backoff_ms = 1
+
+[ai.privacy]
+local_only = true
+"#,
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure ambient env vars don't override the config file.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/explainError",
+            "params": {
+                "diagnosticMessage": "cannot find symbol",
+                "code": "unknown()"
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32603));
+    assert_eq!(
+        error
+            .get("data")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("provider"),
+        "expected provider error kind, got: {resp:#?}"
+    );
+
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .expect("error message");
+    assert!(
+        !message.contains(secret),
+        "provider error message leaked secret query value: {message}"
+    );
+    assert!(
+        !message.contains("?key="),
+        "provider error message leaked query string: {message}"
+    );
+    assert!(
+        !message.contains("user:pass@"),
+        "provider error message leaked URL userinfo: {message}"
+    );
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    mock.assert_hits(1);
+}
+
+#[test]
 fn stdio_server_execute_command_ai_errors_include_provider_error_data() {
     let _lock = crate::support::stdio_server_lock();
     let server = MockServer::start();
