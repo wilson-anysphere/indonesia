@@ -243,6 +243,25 @@ fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
 }
 
 #[test]
+fn related_code_query_skips_obvious_secret_tokens_in_fallback() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for secret-like related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = r#""sk-verysecretstringthatislong""#;
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for secret-like focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 

@@ -736,6 +736,14 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if tok.is_empty() {
             continue;
         }
+        // Avoid sending obvious `key=value` credential-like strings as semantic-search queries.
+        if tok.contains('=') {
+            continue;
+        }
+        // Avoid sending obvious secret/token strings as semantic-search queries.
+        if looks_like_secret_token(tok) {
+            continue;
+        }
         if tok
             .bytes()
             .all(|b| b == b'_' || b == b'$' || b.is_ascii_digit())
@@ -825,6 +833,48 @@ fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> &str {
 
 fn clean_query_word(tok: &str) -> &str {
     tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+}
+
+fn looks_like_secret_token(tok: &str) -> bool {
+    let trimmed = tok.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.starts_with("sk-") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if trimmed.starts_with("AKIA") && trimmed.len() >= 16 {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("ghp_") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if trimmed.contains("-----BEGIN") {
+        return true;
+    }
+
+    // Heuristic: long-ish base64/hex-ish strings.
+    trimmed.len() >= 32 && is_mostly_alnum_or_symbols(trimmed)
+}
+
+fn is_mostly_alnum_or_symbols(s: &str) -> bool {
+    let mut good = 0usize;
+    let mut total = 0usize;
+
+    for c in s.chars() {
+        total += 1;
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/' | '.') {
+            good += 1;
+        }
+    }
+
+    // Avoid redacting natural language strings; require the vast majority to be "token-like".
+    total > 0 && good * 100 / total >= 95
 }
 
 fn is_semantic_query_stop_word(ident: &str) -> bool {
