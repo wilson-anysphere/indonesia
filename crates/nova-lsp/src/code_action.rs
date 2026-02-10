@@ -1386,6 +1386,8 @@ mod tests {
             excluded_path_prefixes: vec!["secret/".into()],
             ..PatchSafetyConfig::default()
         };
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = VirtualWorkspace::default();
@@ -1442,11 +1444,13 @@ mod tests {
 }"#;
 
         let provider = MockAiProvider::new(vec![Ok(patch.into())]);
-        let config = CodeGenerationConfig::default();
+        let mut config = CodeGenerationConfig::default();
         let privacy = AiPrivacyConfig {
             excluded_paths: vec!["secret/**".into()],
             ..AiPrivacyConfig::default()
         };
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
 
         let executor = AiCodeActionExecutor::new(&provider, config, privacy);
         let workspace = VirtualWorkspace::default();
@@ -1617,6 +1621,8 @@ mod tests {
             no_new_imports: true,
             ..PatchSafetyConfig::default()
         };
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = example_workspace();
