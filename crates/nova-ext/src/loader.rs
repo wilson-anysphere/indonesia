@@ -92,11 +92,15 @@ pub enum LoadError {
         #[source]
         source: std::io::Error,
     },
-    #[error("failed to parse extension manifest {manifest_path:?}: {source}")]
+    #[error("failed to parse extension manifest {manifest_path:?}: {message}")]
     ManifestParse {
         manifest_path: PathBuf,
-        #[source]
-        source: toml::de::Error,
+        /// Snippet-free, sanitized error message produced by `toml::de::Error::message()`.
+        ///
+        /// `toml::de::Error`'s `Display` output can include the offending source snippet, which may
+        /// contain secrets (for example, credentials embedded in URLs). Keep only the message so
+        /// extension load failures are safe to log and include in bug report bundles.
+        message: String,
     },
     #[error("extension {id:?} at {dir:?}: unsupported abi_version {abi_version} (supported: {supported})")]
     UnsupportedAbiVersion {
@@ -177,10 +181,10 @@ impl ExtensionManager {
                 source,
             })?;
 
-        let manifest = toml::from_str::<ExtensionManifest>(&manifest_text).map_err(|source| {
+        let manifest = toml::from_str::<ExtensionManifest>(&manifest_text).map_err(|err| {
             LoadError::ManifestParse {
                 manifest_path: manifest_path.clone(),
-                source,
+                message: sanitize_toml_error_message(err.message()),
             }
         })?;
 
@@ -467,6 +471,63 @@ impl ExtensionManager {
     }
 }
 
+fn sanitize_toml_error_message(message: &str) -> String {
+    fn redact_quoted(message: &str, quote: char) -> String {
+        const REDACTED: &str = "<redacted>";
+        let mut out = String::with_capacity(message.len());
+        let mut rest = message;
+        while let Some(start) = rest.find(quote) {
+            out.push_str(&rest[..start]);
+            let quote_len = quote.len_utf8();
+            let Some(after_open) = rest.get(start + quote_len..) else {
+                out.push_str(&rest[start..]);
+                return out;
+            };
+
+            let Some(end_rel) = after_open.find(quote) else {
+                out.push_str(&rest[start..]);
+                return out;
+            };
+
+            let Some(after_close) = after_open.get(end_rel + quote_len..) else {
+                out.push_str(&rest[start..]);
+                return out;
+            };
+
+            out.push(quote);
+            out.push_str(REDACTED);
+            out.push(quote);
+            rest = after_close;
+        }
+        out.push_str(rest);
+        out
+    }
+
+    // `toml::de::Error::message()` can still include user-provided scalar values in quotes, for
+    // example:
+    // `invalid semver version 'secret': ...` or `invalid type: string "secret", expected u32`.
+    //
+    // Extension load errors are commonly surfaced through CLI/LSP diagnostics and logs; redact
+    // quoted substrings to avoid leaking arbitrary manifest contents.
+    let mut out = redact_quoted(message, '"');
+    out = redact_quoted(&out, '\'');
+
+    // `serde` / `toml` wrap offending enum variants (and unknown fields) in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Only redact the *first* backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 fn resolve_entry_path(dir: &Path, manifest: &ExtensionManifest) -> Result<PathBuf, LoadError> {
     if manifest
         .entry
@@ -592,6 +653,7 @@ fn find_duplicate_extension_ids(loaded: &[LoadedExtension]) -> BTreeMap<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as _;
     use tempfile::TempDir;
 
     fn write_manifest(dir: &Path, manifest: &str) {
@@ -775,6 +837,52 @@ capabilities = ["diagnostics"]
 
         let err = ExtensionManager::load_from_dir(&ext_dir).unwrap_err();
         assert!(matches!(err, LoadError::ManifestParse { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn manifest_parse_errors_do_not_leak_string_values_or_source_snippets() {
+        let secret = "super-secret-api-key";
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("ext");
+        fs::create_dir_all(&ext_dir).unwrap();
+
+        // Invalid semver versions include the raw string in a custom error message wrapped in
+        // single quotes; ensure we don't leak arbitrary string values in logs/diagnostics.
+        write_manifest(
+            &ext_dir,
+            &format!(
+                r#"
+id = "test"
+version = "{secret}"
+entry = "plugin.wasm"
+abi_version = {SUPPORTED_ABI_VERSION}
+capabilities = ["diagnostics"]
+"#
+            ),
+        );
+        write_dummy_wasm(&ext_dir, "plugin.wasm");
+
+        let err = ExtensionManager::load_from_dir(&ext_dir).unwrap_err();
+        let message = err.to_string();
+
+        assert!(
+            !message.contains(secret),
+            "LoadError leaked string value from manifest: {message}"
+        );
+        assert!(
+            !message.contains("version ="),
+            "LoadError display should not include source snippets: {message}"
+        );
+        assert!(
+            err.source().is_none(),
+            "LoadError should not expose toml::de::Error as source (may leak manifest snippets)"
+        );
+
+        let debug = format!("{err:?}");
+        assert!(
+            !debug.contains(secret),
+            "LoadError debug leaked string value from manifest: {debug}"
+        );
     }
 
     #[test]
