@@ -593,6 +593,7 @@ same metrics:
 
 - `timeoutCount` increments for timeouts (for example: embedding provider stalls)
 - `errorCount` increments for other failures (HTTP/JSON/unexpected responses, etc)
+- `panicCount` increments if the semantic-search operation panics while running (should be rare)
 
 The stdio server additionally records workspace-indexing metrics for best-effort background
 workspace indexing (see `nova/semanticSearch/indexStatus`):
