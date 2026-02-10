@@ -198,6 +198,39 @@ index 1234567..0000000
 }
 
 #[test]
+fn unified_diff_applies_to_paths_starting_with_b_directory_with_git_headers() {
+    let ws = VirtualWorkspace::new(vec![("b/foo.txt".to_string(), "a\n".to_string())]);
+
+    let diff = r#"diff --git a/b/foo.txt b/b/foo.txt
+--- a/b/foo.txt
++++ b/b/foo.txt
+@@ -1 +1 @@
+-a
++b
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let applied = ws.apply_patch(&patch).expect("apply diff");
+    assert_eq!(applied.workspace.get("b/foo.txt").unwrap(), "b\n");
+}
+
+#[test]
+fn unified_diff_applies_to_paths_starting_with_b_directory_with_plain_headers() {
+    let ws = VirtualWorkspace::new(vec![("b/foo.txt".to_string(), "a\n".to_string())]);
+
+    let diff = r#"--- a/b/foo.txt
++++ b/b/foo.txt
+@@ -1 +1 @@
+-a
++b
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let applied = ws.apply_patch(&patch).expect("apply diff");
+    assert_eq!(applied.workspace.get("b/foo.txt").unwrap(), "b\n");
+}
+
+#[test]
 fn json_patch_ops_create_rename_delete() {
     let ws = VirtualWorkspace::new(vec![("Foo.java".to_string(), "class Foo {}\n".to_string())]);
 
