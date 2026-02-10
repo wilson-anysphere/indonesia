@@ -484,6 +484,58 @@ fn prefix_char_range(text: &str, max_chars: usize) -> Range<usize> {
     0..end
 }
 
+#[cfg(test)]
+mod metric_guard_tests {
+    use super::*;
+
+    #[test]
+    fn semantic_search_metric_guard_records_panics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = MetricsRegistry::global();
+
+        let before = metrics.snapshot();
+        let before_requests = before
+            .methods
+            .get(AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_panics = before
+            .methods
+            .get(AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+            .map(|m| m.panic_count)
+            .unwrap_or(0);
+
+        let result = std::panic::catch_unwind(|| {
+            let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_SEARCH_METRIC);
+            panic!("boom");
+        });
+        assert!(result.is_err(), "expected metric guard scope to panic");
+
+        let after = metrics.snapshot();
+        let after_requests = after
+            .methods
+            .get(AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_panics = after
+            .methods
+            .get(AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+            .map(|m| m.panic_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_SEMANTIC_SEARCH_SEARCH_METRIC} request_count to increment"
+        );
+        assert!(
+            after_panics >= before_panics.saturating_add(1),
+            "expected {AI_SEMANTIC_SEARCH_SEARCH_METRIC} panic_count to increment"
+        );
+    }
+}
+
 #[cfg(feature = "embeddings")]
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
