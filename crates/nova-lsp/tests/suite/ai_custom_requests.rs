@@ -819,3 +819,184 @@ multi_token_completion = true
 
     shutdown(child, stdin, stdout);
 }
+
+#[test]
+fn stdio_ai_status_custom_request_reflects_env_override_disable_ai_code_actions() {
+    let _lock = support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+api_key = "supersecret"
+
+[ai.provider]
+kind = "http"
+url = "http://127.0.0.1:1234/complete"
+model = "default"
+
+[ai.features]
+explain_errors = true
+code_actions = true
+multi_token_completion = true
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env("NOVA_DISABLE_AI_CODE_ACTIONS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/status",
+            "params": {}
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.get("enabled").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(result.get("configured").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        result
+            .pointer("/envOverrides/disableAiCodeActions")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/explain_errors")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/code_actions")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/multi_token_completion")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // Must not leak API keys.
+    assert!(
+        !result.to_string().contains("supersecret"),
+        "expected status payload to omit API keys; got: {result:#?}"
+    );
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_status_custom_request_reflects_env_override_disable_ai_code_review() {
+    let _lock = support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+api_key = "supersecret"
+
+[ai.provider]
+kind = "http"
+url = "http://127.0.0.1:1234/complete"
+model = "default"
+
+[ai.features]
+code_actions = true
+code_review = true
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        .env("NOVA_DISABLE_AI_CODE_REVIEW", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/status",
+            "params": {}
+        }),
+    );
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.get("enabled").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(result.get("configured").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        result
+            .pointer("/envOverrides/disableAiCodeReview")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/code_review")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        result
+            .pointer("/features/code_actions")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // Must not leak API keys.
+    assert!(
+        !result.to_string().contains("supersecret"),
+        "expected status payload to omit API keys; got: {result:#?}"
+    );
+
+    shutdown(child, stdin, stdout);
+}
