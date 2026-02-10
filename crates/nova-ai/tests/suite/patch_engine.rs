@@ -43,6 +43,83 @@ fn unified_diff_preserves_crlf() {
 }
 
 #[test]
+fn unified_diff_create_infers_crlf_style_from_workspace() {
+    let original = "class Foo {\r\n    void a() {}\r\n}\r\n";
+    let ws = VirtualWorkspace::new(vec![
+        ("src/Foo.java".to_string(), original.to_string()),
+        // Include a file in a different directory with LF to ensure we prefer the same-directory
+        // style.
+        ("Other.java".to_string(), "line1\nline2\n".to_string()),
+    ]);
+
+    let diff = r#"diff --git a/src/New.java b/src/New.java
+new file mode 100644
+--- /dev/null
++++ b/src/New.java
+@@ -0,0 +1,3 @@
++class New {
++    void b() {}
++}
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let applied = ws
+        .apply_patch_with_config(
+            &patch,
+            &PatchApplyConfig {
+                allow_new_files: true,
+            },
+        )
+        .expect("apply diff");
+    let created = applied.workspace.get("src/New.java").expect("file exists");
+
+    assert!(created.contains("class New"));
+    assert!(created.contains("\r\n"), "expected CRLF line endings");
+    assert!(
+        !has_lone_lf(created),
+        "should not introduce lone LF characters"
+    );
+    assert!(
+        created.ends_with("\r\n"),
+        "should infer trailing CRLF newline"
+    );
+}
+
+#[test]
+fn unified_diff_create_infers_missing_trailing_newline() {
+    // CRLF file with no trailing newline: the created file should inherit both the line ending
+    // style and the lack of trailing newline.
+    let original = "a\r\nb";
+    let ws = VirtualWorkspace::new(vec![("Example.java".to_string(), original.to_string())]);
+
+    let diff = r#"diff --git a/New.java b/New.java
+new file mode 100644
+--- /dev/null
++++ b/New.java
+@@ -0,0 +1,2 @@
++line1
++line2
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let applied = ws
+        .apply_patch_with_config(
+            &patch,
+            &PatchApplyConfig {
+                allow_new_files: true,
+            },
+        )
+        .expect("apply diff");
+    let created = applied.workspace.get("New.java").expect("file exists");
+
+    assert_eq!(created, "line1\r\nline2");
+    assert!(
+        !created.ends_with('\n') && !created.ends_with('\r'),
+        "should not add a trailing newline"
+    );
+}
+
+#[test]
 fn unified_diff_preserves_trailing_newline() {
     let original = "a\nline2\n";
     let ws = VirtualWorkspace::new(vec![("Example.java".to_string(), original.to_string())]);

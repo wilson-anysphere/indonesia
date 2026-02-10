@@ -160,10 +160,7 @@ impl VirtualWorkspace {
                     if out.files.contains_key(&target_path) {
                         return Err(PatchApplyError::FileAlreadyExists { file: target_path });
                     }
-                    let style = TextStyle {
-                        line_ending: LineEnding::Lf,
-                        trailing_newline: true,
-                    };
+                    let style = infer_text_style_for_new_file(&out, &target_path);
                     let (new_text, applied) =
                         apply_unified_diff_hunks("", &file.hunks, style, &target_path)?;
                     out.files.insert(target_path.clone(), new_text.clone());
@@ -496,6 +493,39 @@ enum UnifiedDiffFileOp {
     Delete,
     Rename,
     Modify,
+}
+
+fn infer_text_style_for_new_file(workspace: &VirtualWorkspace, path: &str) -> TextStyle {
+    let target_dir = parent_directory(path);
+    let in_same_dir = workspace.files.iter().find(|(candidate, _contents)| {
+        // Prefer any existing file that already lives in the same directory as the file being
+        // created so we follow that directory's prevailing style (LF/CRLF + trailing newline).
+        parent_directory(candidate) == target_dir
+    });
+
+    if let Some((_path, contents)) = in_same_dir {
+        return TextStyle::from_original(contents);
+    }
+
+    // Otherwise fall back to any file in the workspace (deterministic due to BTreeMap ordering).
+    if let Some((_path, contents)) = workspace.files.iter().next() {
+        return TextStyle::from_original(contents);
+    }
+
+    // Empty workspace: fall back to a conventional default.
+    TextStyle {
+        line_ending: LineEnding::Lf,
+        trailing_newline: true,
+    }
+}
+
+fn parent_directory(path: &str) -> &str {
+    // Patch paths are normalized to use `/` separators (see safety.rs); keep the logic simple and
+    // platform-independent.
+    match path.rsplit_once('/') {
+        Some((dir, _file)) => dir,
+        None => "",
+    }
 }
 
 fn classify_unified_diff_file(
