@@ -20238,7 +20238,7 @@ class A {}
 
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        use async_trait::async_trait;
+        use futures::future::BoxFuture;
         use nova_ai::{AiError, AiStream, ChatRequest, LlmClient};
         use tokio_util::sync::CancellationToken;
 
@@ -20261,29 +20261,46 @@ class A {}
             }
         }
 
-        #[async_trait]
         impl LlmClient for MockLlm {
-            async fn chat(
-                &self,
+            fn chat<'life0, 'async_trait>(
+                &'life0 self,
                 _request: ChatRequest,
                 _cancel: CancellationToken,
-            ) -> Result<String, AiError> {
+            ) -> BoxFuture<'async_trait, Result<String, AiError>>
+            where
+                'life0: 'async_trait,
+                Self: 'async_trait,
+            {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                Ok(self.response.clone())
+                let response = self.response.clone();
+                Box::pin(async move { Ok(response) })
             }
 
-            async fn chat_stream(
-                &self,
+            fn chat_stream<'life0, 'async_trait>(
+                &'life0 self,
                 _request: ChatRequest,
                 _cancel: CancellationToken,
-            ) -> Result<AiStream, AiError> {
-                Err(AiError::UnexpectedResponse(
-                    "mock llm does not support streaming".to_string(),
-                ))
+            ) -> BoxFuture<'async_trait, Result<AiStream, AiError>>
+            where
+                'life0: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    Err(AiError::UnexpectedResponse(
+                        "mock llm does not support streaming".to_string(),
+                    ))
+                })
             }
 
-            async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
-                Ok(vec![])
+            fn list_models<'life0, 'async_trait>(
+                &'life0 self,
+                _cancel: CancellationToken,
+            ) -> BoxFuture<'async_trait, Result<Vec<String>, AiError>>
+            where
+                'life0: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move { Ok(vec![]) })
             }
         }
 

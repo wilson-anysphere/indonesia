@@ -53,7 +53,6 @@ ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
 path = "src/lib.rs"
 
 [dev-dependencies]
-async-trait = "0.1"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 criterion = "0.5"
 tempfile = "3"
