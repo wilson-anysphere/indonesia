@@ -1744,7 +1744,9 @@ fn stdio_server_generate_method_body_prompt_includes_semantic_search_related_cod
         when.method(POST)
             .path("/complete")
             .body_contains("Generate a Java method body")
-            .body_contains(marker);
+            // The related file includes a concrete implementation; semantic-search context
+            // enrichment should include it so the provider can synthesize the method body.
+            .body_contains("return a + b;");
         then.status(200).json_body(json!({ "completion": completion }));
     });
 
@@ -1967,7 +1969,9 @@ fn stdio_server_generate_method_body_semantic_search_includes_related_file_paths
         when.method(POST)
             .path("/complete")
             .body_contains("Generate a Java method body")
-            .body_contains(marker)
+            // Ensure the semantic-search snippet comes from the related file and that file paths
+            // are included when `ai.privacy.include_file_paths=true`.
+            .body_contains("return a + b;")
             .body_contains("Helper.java");
         then.status(200).json_body(json!({ "completion": completion }));
     });
@@ -2423,7 +2427,9 @@ fn stdio_server_generate_tests_prompt_includes_semantic_search_related_code() {
         when.method(POST)
             .path("/complete")
             .body_contains("Generate Java unit tests")
-            .body_contains(marker);
+            // The related file includes a real implementation; semantic-search context enrichment
+            // should include it to help test generation.
+            .body_contains("return a + b;");
         then.status(200).json_body(json!({ "completion": completion }));
     });
 
@@ -2644,7 +2650,9 @@ fn stdio_server_generate_tests_semantic_search_includes_related_file_paths_when_
         when.method(POST)
             .path("/complete")
             .body_contains("Generate Java unit tests")
-            .body_contains(marker)
+            // Ensure semantic-search results include the related file content and that file paths
+            // are included when opted in.
+            .body_contains("return a + b;")
             .body_contains("Helper.java");
         then.status(200).json_body(json!({ "completion": completion }));
     });
