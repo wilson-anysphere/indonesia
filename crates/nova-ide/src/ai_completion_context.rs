@@ -965,4 +965,28 @@ class Test {
             ctx.available_methods
         );
     }
+
+    #[test]
+    fn interface_receiver_includes_object_methods() {
+        let ctx = ctx_for(
+            r#"
+interface I {
+  void ifaceMethod();
+}
+
+class Test {
+  void m(I i) {
+    i.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(ctx.available_methods.iter().any(|m| m == "ifaceMethod"));
+        assert!(
+            ctx.available_methods.iter().any(|m| m == "toString"),
+            "expected interface receiver to include Object.toString; got {:?}",
+            ctx.available_methods
+        );
+    }
 }

@@ -12778,6 +12778,7 @@ fn semantic_member_completions(
     let Some(class_id) = class_id_of_type(types, &receiver_for_members) else {
         return Vec::new();
     };
+    let receiver_kind = types.class(class_id).map(|def| def.kind);
 
     let mut items = Vec::new();
     let mut seen_fields = HashSet::<String>::new();
@@ -12857,6 +12858,21 @@ fn semantic_member_completions(
         for super_iface in super_ifaces {
             queue.push_back(super_iface);
         }
+    }
+
+    // In Java, interface values still have access to `Object` instance members (JLS 4.10.2).
+    // `TypeStore`'s subtyping model accounts for this, but workspace-derived interfaces do not
+    // necessarily record `Object` in their `super_class` chain, so we include it explicitly here.
+    if receiver_kind == Some(ClassKind::Interface) && call_kind == CallKind::Instance {
+        collect_members_from_class(
+            types,
+            types.well_known().object,
+            call_kind,
+            false,
+            &mut seen_fields,
+            &mut seen_methods,
+            &mut items,
+        );
     }
 
     items

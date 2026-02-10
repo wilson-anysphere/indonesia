@@ -1505,6 +1505,32 @@ class A implements I {
 }
 
 #[test]
+fn completion_includes_object_members_for_interface_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+interface I { void i(); }
+
+class A {
+  void m(I i) {
+    i.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"i"),
+        "expected completion list to contain interface method `i`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"toString"),
+        "expected completion list to contain Object.toString for interface receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_string_member_detail_with_return_type() {
     let (db, file, pos) = fixture(
         r#"
