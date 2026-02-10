@@ -374,8 +374,10 @@ mod tests {
 
         // Candidate list also includes the injection substring (rare, but must be safe).
         let candidates = vec![
-            CompletionItem::new("println", CompletionItemKind::Method),
-            CompletionItem::new(format!("````{secret}"), CompletionItemKind::Class),
+            CompletionItem::new("println", CompletionItemKind::Method)
+                .with_detail(format!("void println(```{secret})")),
+            CompletionItem::new(format!("````{secret}"), CompletionItemKind::Class)
+                .with_detail(format!("`````{secret}Detail")),
         ];
 
         let prompt = CompletionRankingPromptBuilder::new(0).build_prompt(&ctx, &candidates);

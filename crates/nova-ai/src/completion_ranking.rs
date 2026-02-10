@@ -841,8 +841,10 @@ mod tests {
         );
 
         let candidates = vec![
-            CompletionItem::new(format!("my{injected}Method"), CompletionItemKind::Method),
-            CompletionItem::new(format!("my{injected}Field"), CompletionItemKind::Method),
+            CompletionItem::new(format!("my{injected}Method"), CompletionItemKind::Method)
+                .with_detail(format!("void my{injected}Method(int x)")),
+            CompletionItem::new(format!("my{injected}Field"), CompletionItemKind::Method)
+                .with_detail(format!("String my{injected}Field")),
         ];
 
         let llm = Arc::new(MockLlm::new("[0]"));
