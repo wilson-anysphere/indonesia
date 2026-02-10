@@ -132,9 +132,13 @@ where
             Some(paths) => paths,
             None => {
                 // Fail closed for malformed quoted headers (unterminated quotes / invalid escapes).
-                // For unquoted headers, treat parsing failure as ambiguous and allow rename/copy
-                // metadata or unified headers to provide the paths instead.
-                if git_header_looks_quoted(header) {
+                //
+                // Git can emit headers where only one side is quoted (e.g. a rename from a
+                // non-ASCII path to a path with spaces). Those headers are valid but may not be
+                // tokenizable by simple whitespace rules. If the quoted strings themselves are
+                // well-formed, fall back to extracting paths from within-section metadata or
+                // unified headers.
+                if git_header_has_malformed_quotes(header) {
                     return Err(DiffParseError::InvalidHeader);
                 }
 
@@ -992,12 +996,40 @@ fn is_git_section_header_line(line: &str) -> bool {
     line.starts_with("diff --git ") || line.starts_with("diff --cc ") || line.starts_with("diff --combined ")
 }
 
-fn git_header_looks_quoted(line: &str) -> bool {
-    for prefix in ["diff --git ", "diff --cc ", "diff --combined "] {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            return rest.trim_start().starts_with('"');
-        }
+fn git_header_has_malformed_quotes(line: &str) -> bool {
+    let line = line.trim_end_matches(&['\r', '\n'][..]);
+    if !(line.starts_with("diff --git ")
+        || line.starts_with("diff --cc ")
+        || line.starts_with("diff --combined "))
+    {
+        return false;
     }
+
+    // Scan for any git-style quoted strings (`"..."`) and ensure they are well-formed according
+    // to the same C-style escape parser used by [`parse_diff_token`].
+    //
+    // This lets us distinguish:
+    // - malformed quoted headers (fail closed)
+    // - valid quoted headers that are ambiguous due to unquoted spaces (fallback to metadata)
+    let mut idx = 0usize;
+    while idx < line.len() {
+        let ch = line[idx..].chars().next().unwrap_or('\0');
+        if ch != '"' {
+            idx += ch.len_utf8();
+            continue;
+        }
+
+        let after_quote = &line[idx + 1..];
+        let Some((_bytes, consumed)) = parse_git_c_style_bytes(after_quote, |c| c == '"') else {
+            return true;
+        };
+        let remaining = &after_quote[consumed..];
+        if !remaining.starts_with('"') {
+            return true;
+        }
+        idx += 1 + consumed + 1;
+    }
+
     false
 }
 

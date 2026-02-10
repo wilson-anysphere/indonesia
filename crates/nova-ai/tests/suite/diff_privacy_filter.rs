@@ -147,6 +147,40 @@ index 0000000..1111111 100644
 }
 
 #[test]
+fn git_diff_rename_with_mixed_quoted_and_unquoted_spaces_is_filtered_via_rename_headers() {
+    // Real `git diff --cached` output can have mixed quoting: git C-quotes non-ASCII paths, but
+    // does not quote spaces in the `diff --git` header. Ensure we don't fail closed on this valid
+    // format, and can still extract paths from `rename from/to` metadata.
+    let excluded_path = "src/a and b.txt";
+
+    let excluded_section = r#"diff --git "a/src/caf\303\251.txt" b/src/a and b.txt
+similarity index 100%
+rename from "src/caf\303\251.txt"
+rename to src/a and b.txt
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 0000000..1111111 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 10; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("a and b.txt"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_binary_files_line_with_spaces_is_filtered() {
     // Binary diffs may omit `---`/`+++` headers and include only a `Binary files ... differ` line.
     // Ensure we can still determine the file path and omit excluded sections.
