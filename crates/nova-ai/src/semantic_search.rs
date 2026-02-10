@@ -11,6 +11,7 @@ use nova_metrics::MetricsRegistry;
 
 const AI_SEMANTIC_SEARCH_SEARCH_METRIC: &str = "ai/semantic_search/search";
 const AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC: &str = "ai/semantic_search/index_file";
+const AI_SEMANTIC_SEARCH_FINALIZE_INDEXING_METRIC: &str = "ai/semantic_search/finalize_indexing";
 
 #[cfg(feature = "embeddings")]
 fn ai_error_is_timeout(err: &AiError) -> bool {
@@ -88,7 +89,9 @@ pub trait SemanticSearch: Send + Sync {
     /// method after a bulk indexing loop to make the first search fast.
     ///
     /// The default implementation is a no-op.
-    fn finalize_indexing(&self) {}
+    fn finalize_indexing(&self) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_FINALIZE_INDEXING_METRIC);
+    }
 
     /// Index an entire project database.
     ///
@@ -2003,9 +2006,7 @@ mod embeddings {
                 };
                 self.index_file(path, text);
             }
-
-            let mut index = self.lock_index();
-            self.rebuild_index_locked(&mut index);
+            self.finalize_indexing();
         }
 
         fn index_file(&mut self, path: PathBuf, text: String) {
@@ -2202,6 +2203,8 @@ mod embeddings {
         }
 
         fn finalize_indexing(&self) {
+            let _guard =
+                super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_FINALIZE_INDEXING_METRIC);
             let mut index = self.lock_index();
             if index.dirty {
                 self.rebuild_index_locked(&mut index);
