@@ -47,6 +47,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
+use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(
@@ -115,6 +116,9 @@ enum AiCommand {
     Models(AiModelsArgs),
     /// Review a unified diff (from stdin, a file, or `git diff`) using the configured AI backend.
     Review(AiReviewArgs),
+    /// Run an offline semantic-search query against the configured semantic-search engine.
+    #[command(name = "semantic-search")]
+    SemanticSearch(AiSemanticSearchArgs),
 }
 
 #[derive(Args)]
@@ -153,6 +157,26 @@ struct AiReviewArgs {
     staged: bool,
 
     /// Emit JSON suitable for scripting: `{ "review": "..." }`.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AiSemanticSearchArgs {
+    /// Search query text.
+    query: String,
+
+    /// Workspace root / target directory to index (defaults to current directory).
+    ///
+    /// This is used for config discovery and as the root for scanning project files.
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+
+    /// Maximum number of results to return (clamped to 50).
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+
+    /// Emit machine-readable JSON: `{ "results": [...] }`.
     #[arg(long)]
     json: bool,
 }
@@ -756,6 +780,7 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         Command::Ai(args) => match &args.command {
             AiCommand::Models(args) => Some(args.path.as_path()),
             AiCommand::Review(args) => Some(args.path.as_path()),
+            AiCommand::SemanticSearch(args) => Some(args.path.as_path()),
         },
         Command::Cache(args) => match &args.command {
             CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
@@ -1354,6 +1379,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 
                 Ok(0)
             }
+            AiCommand::SemanticSearch(args) => handle_ai_semantic_search(args, config),
         },
         Command::Parse(args) => {
             let ws = Workspace::open_with_config(&args.file, config)?;
@@ -1363,6 +1389,202 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             Ok(exit)
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CliSemanticSearchResult {
+    path: String,
+    kind: String,
+    score: f32,
+    snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CliSemanticSearchResponse {
+    results: Vec<CliSemanticSearchResult>,
+}
+
+fn semantic_search_extension_allowed(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+
+    ext.eq_ignore_ascii_case("java")
+        || ext.eq_ignore_ascii_case("kt")
+        || ext.eq_ignore_ascii_case("kts")
+        || ext.eq_ignore_ascii_case("gradle")
+        || ext.eq_ignore_ascii_case("md")
+}
+
+fn semantic_search_display_path(workspace_root: &Path, path: &Path) -> String {
+    match path.strip_prefix(workspace_root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => display_path(rel),
+        _ => display_path(path),
+    }
+}
+
+fn semantic_search_human_snippet(snippet: &str) -> String {
+    snippet
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn handle_ai_semantic_search(args: AiSemanticSearchArgs, config: &NovaConfig) -> Result<i32> {
+    let env_truthy = |name: &str| {
+        matches!(
+            std::env::var(name).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    };
+
+    if !config.ai.enabled {
+        if env_truthy("NOVA_DISABLE_AI") {
+            anyhow::bail!(
+                "AI is disabled by NOVA_DISABLE_AI=1. Unset NOVA_DISABLE_AI (or set it to 0) and enable it \
+                 by setting `[ai].enabled = true` in nova.toml (or pass `--config <path>` / set {config_env}).",
+                config_env = NOVA_CONFIG_ENV_VAR
+            );
+        }
+        anyhow::bail!(
+            "AI is disabled. Enable it by setting `[ai].enabled = true` in nova.toml (or pass `--config <path>` / set {config_env}).",
+            config_env = NOVA_CONFIG_ENV_VAR
+        );
+    }
+
+    if !config.ai.features.semantic_search {
+        anyhow::bail!(
+            "AI semantic search is disabled (ai.features.semantic_search=false). Enable it by setting \
+             `ai.features.semantic_search = true` in nova.toml (or pass `--config <path>` / set {config_env}).",
+            config_env = NOVA_CONFIG_ENV_VAR
+        );
+    }
+
+    let workspace_root = resolve_path_workdir(&args.path);
+    let workspace_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.clone());
+    anyhow::ensure!(
+        workspace_root.is_dir(),
+        "--path must be a directory (got {})",
+        workspace_root.display()
+    );
+
+    let excluded_matcher = nova_ai::ExcludedPathMatcher::from_config(&config.ai.privacy)?;
+
+    let mut search = nova_ai::semantic_search_from_config(&config.ai)
+        .with_context(|| "failed to initialize semantic search")?;
+
+    const MAX_INDEXED_FILES: u64 = 2_000;
+    const MAX_INDEXED_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+    const MAX_FILE_BYTES: u64 = 256 * 1024; // 256 KiB
+
+    let mut indexed_files = 0u64;
+    let mut indexed_bytes = 0u64;
+
+    let mut walk = WalkDir::new(&workspace_root).follow_links(false).into_iter();
+    while let Some(entry) = walk.next() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        if entry.file_type().is_dir() {
+            let name = entry.file_name().to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                ".git" | ".hg" | ".svn" | "target" | "build" | "out" | "node_modules"
+            ) {
+                walk.skip_current_dir();
+                continue;
+            }
+        }
+
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.path().to_path_buf();
+        if !semantic_search_extension_allowed(&path) {
+            continue;
+        }
+
+        if excluded_matcher.is_match(&path) {
+            continue;
+        }
+
+        // Keep memory bounded (matches the LSP workspace-indexing limits).
+        let meta_len = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+        if meta_len > MAX_FILE_BYTES {
+            continue;
+        }
+        if indexed_files >= MAX_INDEXED_FILES || indexed_bytes >= MAX_INDEXED_BYTES {
+            break;
+        }
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let len = text.len() as u64;
+        if len > MAX_FILE_BYTES {
+            continue;
+        }
+        if indexed_files + 1 > MAX_INDEXED_FILES || indexed_bytes.saturating_add(len) > MAX_INDEXED_BYTES
+        {
+            break;
+        }
+
+        search.index_file(path, text);
+        indexed_files += 1;
+        indexed_bytes = indexed_bytes.saturating_add(len);
+    }
+
+    search.finalize_indexing();
+
+    let limit = args.limit.min(50);
+    let mut results = if limit == 0 {
+        Vec::new()
+    } else {
+        search.search(&args.query)
+    };
+    results.truncate(limit);
+
+    let response = CliSemanticSearchResponse {
+        results: results
+            .into_iter()
+            .map(|result| CliSemanticSearchResult {
+                path: semantic_search_display_path(&workspace_root, &result.path),
+                kind: result.kind,
+                score: result.score,
+                snippet: result.snippet,
+            })
+            .collect(),
+    };
+
+    if args.json {
+        print_output(&response, true)?;
+        return Ok(0);
+    }
+
+    if response.results.is_empty() {
+        println!("No results.");
+        return Ok(0);
+    }
+
+    for (idx, result) in response.results.iter().enumerate() {
+        let snippet = semantic_search_human_snippet(&result.snippet);
+        println!(
+            "{}. {:.3} {} {}",
+            idx + 1,
+            result.score,
+            result.path,
+            snippet
+        );
+    }
+
+    Ok(0)
 }
 
 fn load_ai_review_diff(args: &AiReviewArgs) -> Result<String> {
