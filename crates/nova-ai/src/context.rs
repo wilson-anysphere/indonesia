@@ -640,55 +640,47 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
 
-    // Skip file-name-like tokens such as `Secret.java` or the extension `java` itself.
-    if identifier_looks_like_file_name_component(text, start, end, tok) {
+    // Skip file-name-like tokens such as `Secret-config.properties`. This uses a lightweight
+    // "token" scan around the identifier and is careful to stop at quote boundaries so a string
+    // literal like `".../Secret.java"` does not cause us to drop surrounding identifiers.
+    if identifier_in_file_name_token(text, start, end, tok) {
         return true;
     }
 
     false
 }
 
-fn identifier_looks_like_file_name_component(
-    text: &str,
-    start: usize,
-    end: usize,
-    tok: &str,
-) -> bool {
-    let bytes = text.as_bytes();
-
-    // `Foo.java` (base component).
-    if end < bytes.len() && bytes[end] == b'.' {
-        if let Some(ext) = file_extension_at(text, end + 1) {
-            if is_known_file_extension(ext) {
-                return true;
-            }
-        }
+fn identifier_in_file_name_token(text: &str, start: usize, end: usize, _tok: &str) -> bool {
+    let bounds = surrounding_token_bounds(text, start, end);
+    if bounds.is_empty() {
+        return false;
     }
 
-    // `Foo.java` (extension component).
-    if start > 0 && bytes[start - 1] == b'.' {
-        if is_known_file_extension(tok) {
-            return true;
-        }
-    }
-
-    false
+    looks_like_file_name(&text[bounds])
 }
 
-fn file_extension_at<'a>(text: &'a str, start: usize) -> Option<&'a str> {
-    if start >= text.len() {
-        return None;
+fn surrounding_token_bounds(text: &str, start: usize, end: usize) -> Range<usize> {
+    fn is_boundary(b: u8) -> bool {
+        // Treat non-ASCII bytes as boundaries so we never slice on invalid UTF-8 boundaries.
+        if !b.is_ascii() {
+            return true;
+        }
+        b.is_ascii_whitespace()
+            || matches!(b, b'"' | b'\'' | b'/' | b'\\')
     }
 
     let bytes = text.as_bytes();
-    let mut end = start;
-    while end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
-        end += 1;
+    let mut token_start = start.min(bytes.len());
+    let mut token_end = end.min(bytes.len()).max(token_start);
+
+    while token_start > 0 && !is_boundary(bytes[token_start - 1]) {
+        token_start -= 1;
     }
-    if end == start {
-        return None;
+    while token_end < bytes.len() && !is_boundary(bytes[token_end]) {
+        token_end += 1;
     }
-    Some(&text[start..end])
+
+    token_start..token_end
 }
 
 fn looks_like_file_name(token: &str) -> bool {

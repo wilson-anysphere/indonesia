@@ -243,6 +243,44 @@ fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
 }
 
 #[test]
+fn related_code_query_avoids_file_name_tokens_with_extensions() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = r#"
+        Secret-config.properties
+        return foo.bar();
+    "#;
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.to_ascii_lowercase().contains("secret"),
+        "query should not include file-name segments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-file identifiers, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_skips_obvious_secret_tokens_in_fallback() {
     struct PanicSearch;
 
