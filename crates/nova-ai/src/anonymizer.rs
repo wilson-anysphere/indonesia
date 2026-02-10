@@ -71,7 +71,7 @@ impl CodeAnonymizer {
     /// The mapping is **request-scoped**: create a new anonymizer per request and do not reuse the
     /// mapping across requests. Reusing mappings across requests can leak cross-request identity
     /// correlation (e.g., the same placeholder name referring to the same original identifier).
-    pub fn identifier_map(&self) -> &HashMap<String, String> {
+    pub(crate) fn identifier_map(&self) -> &HashMap<String, String> {
         &self.name_map
     }
 
@@ -84,7 +84,7 @@ impl CodeAnonymizer {
     /// should not happen for maps produced by [`CodeAnonymizer`]), the reverse map keeps the
     /// lexicographically smallest original.
     pub fn reverse_identifier_map(&self) -> HashMap<String, String> {
-        build_reverse_identifier_map(&self.name_map)
+        build_reverse_identifier_map(self.identifier_map())
     }
 
     /// Consume the anonymizer and return its identifier mapping (original identifier → anonymized
