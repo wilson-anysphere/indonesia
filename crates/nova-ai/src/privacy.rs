@@ -125,6 +125,18 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
             .expect("valid unix path regex")
     });
 
+    // Absolute *nix directory paths that include spaces in the final segment.
+    //
+    // These paths are usually terminated with a `/` when surfaced in logs (e.g. workspace roots).
+    // Matching the trailing separator lets us safely include spaces without consuming following
+    // prose.
+    static UNIX_DIR_PATH_WITH_SPACES_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?m)(?P<path>/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*/)+[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)+/)(?P<suffix>[\s"'<>)\]}]|$)"#,
+        )
+        .expect("valid unix dir path-with-spaces regex")
+    });
+
     // Absolute *nix paths that include spaces in the final file name.
     //
     // We keep this more restrictive than [`UNIX_PATH_RE`] by requiring a file extension so we can
@@ -147,6 +159,17 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
             r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*[A-Za-z0-9._$@+()\\-]+(?:[\\/]+)?)",
         )
             .expect("valid windows path regex")
+    });
+
+    // Windows drive directory paths whose final segment contains spaces (e.g. `C:\Users\A\My Project\`).
+    //
+    // These are common in workspace roots and command line output. We require a trailing separator
+    // so we can include spaces without consuming subsequent prose.
+    static WINDOWS_DIR_PATH_WITH_SPACES_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)+[\\/]+)(?P<suffix>[\s"'<>)\]}]|$)"#,
+        )
+        .expect("valid windows dir path-with-spaces regex")
     });
 
     // Windows drive paths whose final file segment contains spaces (e.g. `C:\Users\A\My File.txt`).
@@ -179,6 +202,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         out = Cow::Owned(s);
     }
 
+    let replaced = UNIX_DIR_PATH_WITH_SPACES_RE.replace_all(out.as_ref(), "[PATH]$suffix");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
     let replaced = UNIX_PATH_FILE_WITH_SPACES_RE.replace_all(out.as_ref(), "[PATH]");
     if let Cow::Owned(s) = replaced {
         out = Cow::Owned(s);
@@ -190,6 +218,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     }
 
     let replaced = WINDOWS_PATH_FILE_WITH_SPACES_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = WINDOWS_DIR_PATH_WITH_SPACES_RE.replace_all(out.as_ref(), "[PATH]$suffix");
     if let Cow::Owned(s) = replaced {
         out = Cow::Owned(s);
     }
@@ -317,6 +350,16 @@ mod tests {
     }
 
     #[test]
+    fn redact_file_paths_rewrites_windows_dirs_with_spaces_in_last_segment_and_trailing_separator() {
+        let prompt = r#"opening C:\Users\alice\My Project\"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"C:\Users\alice\My Project\"), "{out}");
+        assert!(!out.contains("My Project"), "{out}");
+        assert!(!out.contains("alice"), "{out}");
+    }
+
+    #[test]
     fn redact_file_paths_rewrites_windows_absolute_paths_with_forward_slashes() {
         let prompt = r#"log("opening C:/Users/alice/secret.txt")"#;
         let out = redact_file_paths(prompt);
@@ -410,6 +453,16 @@ mod tests {
         assert!(!out.contains("/Users/alice/My Project/secret.txt"), "{out}");
         assert!(!out.contains("My Project"), "{out}");
         assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unix_dirs_with_spaces_in_last_segment_and_trailing_separator() {
+        let prompt = r#"opening /Users/alice/My Project/"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("/Users/alice/My Project/"), "{out}");
+        assert!(!out.contains("My Project"), "{out}");
+        assert!(!out.contains("alice"), "{out}");
     }
 
     #[test]
