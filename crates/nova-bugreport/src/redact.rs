@@ -7,6 +7,7 @@ pub(crate) fn redact_string(input: &str) -> String {
     let mut out = input.to_owned();
     out = redact_urls(&out);
     out = redact_bearer_tokens(&out);
+    out = redact_sensitive_header_values(&out);
     out = redact_api_keys(&out);
     out = redact_sensitive_kv_pairs(&out);
     out
@@ -29,11 +30,23 @@ fn redact_urls(input: &str) -> String {
 fn redact_bearer_tokens(input: &str) -> String {
     static BEARER_RE: OnceLock<Regex> = OnceLock::new();
     let re = BEARER_RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b(authorization\s*[:=]\s*bearer\s+)([^\s"']+)"#)
+        Regex::new(r#"(?i)\b(authorization\s*[:=]\s*(?:bearer|basic)\s+)([^\s"']+)"#)
             .expect("bearer regex should compile")
     });
 
     re.replace_all(input, format!("$1{REDACTION}")).into_owned()
+}
+
+fn redact_sensitive_header_values(input: &str) -> String {
+    static HEADER_RE: OnceLock<Regex> = OnceLock::new();
+    let re = HEADER_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b((?:x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|x-[a-z0-9-]*token|token))\b\s*:\s*([^\r\n]+)",
+        )
+        .expect("header regex should compile")
+    });
+
+    re.replace_all(input, format!("$1: {REDACTION}")).into_owned()
 }
 
 fn redact_api_keys(input: &str) -> String {
@@ -162,5 +175,25 @@ mod tests {
         let out = redact_string(input);
 
         assert_eq!(out, "Authorization: Bearer <redacted>");
+    }
+
+    #[test]
+    fn redacts_basic_tokens() {
+        let input = "Authorization: Basic dXNlcjpwYXNz";
+        let out = redact_string(input);
+
+        assert_eq!(out, "Authorization: Basic <redacted>");
+    }
+
+    #[test]
+    fn redacts_api_key_headers() {
+        let secret = "super-secret-api-key";
+        let input = format!("x-goog-api-key: {secret}\napi-key: {secret}\ntoken: {secret}\n");
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains("x-goog-api-key: <redacted>"));
+        assert!(out.contains("api-key: <redacted>"));
+        assert!(out.contains("token: <redacted>"));
     }
 }
