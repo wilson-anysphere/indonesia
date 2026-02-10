@@ -31,12 +31,12 @@ fn redact_bearer_tokens(input: &str) -> String {
     static BEARER_RE: OnceLock<Regex> = OnceLock::new();
     let re = BEARER_RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)(['"]?\bauthorization\b['"]?\s*[:=]\s*['"]?\s*(?:bearer|basic)\s+)([^\s"']+)"#,
+            r#"(?i)(['"]?\bauthorization\b['"]?\s*[:=]\s*['"]?\s*)([a-z][a-z0-9_-]*\s+)([^\s"']+)"#,
         )
             .expect("bearer regex should compile")
     });
 
-    re.replace_all(input, format!("$1{REDACTION}")).into_owned()
+    re.replace_all(input, format!("$1$2{REDACTION}")).into_owned()
 }
 
 fn redact_sensitive_header_values(input: &str) -> String {
@@ -185,6 +185,15 @@ mod tests {
         let out = redact_string(input);
 
         assert_eq!(out, "Authorization: Basic <redacted>");
+    }
+
+    #[test]
+    fn redacts_other_authorization_schemes() {
+        let secret = "SUPERSECRET-TOKEN";
+        let input = format!("Authorization: Token {secret}");
+        let out = redact_string(&input);
+
+        assert_eq!(out, "Authorization: Token <redacted>");
     }
 
     #[test]
