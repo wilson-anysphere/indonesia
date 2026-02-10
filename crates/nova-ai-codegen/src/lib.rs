@@ -1569,6 +1569,100 @@ mod tests {
         assert_eq!(provider.calls(), 1);
     }
 
+    #[test]
+    fn repair_loop_retries_when_new_imports_introduced() {
+        let patch_with_import = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+      "text": "import java.util.List;\n\n"
+    }
+  ]
+}"#
+        .to_string();
+        let patch_without_import = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "42"
+    }
+  ]
+}"#
+        .to_string();
+
+        let provider = MockPromptCompletionProvider::new(vec![patch_with_import, patch_without_import]);
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let mut config = CodeGenerationConfig::default();
+        config.max_repair_attempts = 1;
+        config.allow_repair = true;
+        config.safety.no_new_imports = true;
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42 without adding imports.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("repair loop should recover from new-imports violation");
+
+        assert_eq!(provider.calls(), 2);
+        let applied = result
+            .applied
+            .workspace
+            .get("Example.java")
+            .expect("patched file");
+        assert!(applied.contains("return 42;"), "{applied}");
+    }
+
+    #[test]
+    fn new_imports_violation_fails_without_repair() {
+        let patch_with_import = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+      "text": "import java.util.List;\n\n"
+    }
+  ]
+}"#
+        .to_string();
+        let patch_without_import = r#"{"edits":[]}"#.to_string();
+
+        let provider = MockPromptCompletionProvider::new(vec![patch_with_import, patch_without_import]);
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let mut config = CodeGenerationConfig::default();
+        config.max_repair_attempts = 1;
+        config.allow_repair = false;
+        config.safety.no_new_imports = true;
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42 without adding imports.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("new imports should fail fast when repair is disabled");
+
+        let CodeGenerationError::Safety(SafetyError::NewImports { .. }) = err else {
+            panic!("expected Safety(NewImports), got {err:?}");
+        };
+        assert_eq!(provider.calls(), 1);
+    }
+
     struct CountingProvider {
         calls: AtomicUsize,
     }
