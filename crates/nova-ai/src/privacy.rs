@@ -359,4 +359,31 @@ mod tests {
         assert!(!out.contains("Acme"), "{out}");
         assert!(!out.contains("secret.txt"), "{out}");
     }
+
+    #[test]
+    fn redact_file_paths_rewrites_file_uri_with_host() {
+        let prompt = r#"opening file://localhost/home/alice/project/Secret.java"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
+        assert!(!out.contains("localhost"), "{out}");
+        assert!(!out.contains("Secret.java"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_jar_file_uris() {
+        let prompt = r#"loading jar:file:///home/alice/project/secret.jar!/com/example/Foo.class"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
+        assert!(!out.contains("/home/alice/project/secret.jar"), "{out}");
+        assert!(!out.contains("Foo.class"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_preserves_surrounding_delimiters() {
+        let prompt = r#"Error (file:///home/alice/project/Secret.java)"#;
+        let out = redact_file_paths(prompt);
+        assert_eq!(out, "Error ([PATH])");
+    }
 }
