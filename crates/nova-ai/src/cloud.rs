@@ -113,10 +113,7 @@ impl LlmProvider for AnthropicProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
-        let url = self
-            .endpoint
-            .join("v1/messages")
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let url = self.endpoint("/messages")?;
 
         let (system, messages) = anthropic_messages(&request.messages);
 
@@ -319,13 +316,8 @@ impl LlmProvider for GeminiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
-        let mut url = self
-            .endpoint
-            .join(&format!(
-                "v1beta/models/{}:streamGenerateContent",
-                self.model
-            ))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let mut url =
+            self.endpoint(&format!("/models/{}:streamGenerateContent", self.model))?;
         url.query_pairs_mut()
             .append_pair("key", &self.api_key)
             .append_pair("alt", "sse");
@@ -644,13 +636,10 @@ impl LlmProvider for AzureOpenAiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
-        let mut url = self
-            .endpoint
-            .join(&format!(
-                "openai/deployments/{}/chat/completions",
-                self.deployment
-            ))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let mut url = self.endpoint(&format!(
+            "/deployments/{}/chat/completions",
+            self.deployment
+        ))?;
         url.query_pairs_mut()
             .append_pair("api-version", &self.api_version);
 
