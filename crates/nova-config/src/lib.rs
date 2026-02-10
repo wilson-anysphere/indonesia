@@ -1516,12 +1516,21 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // `invalid type: string "secret", expected a boolean`.
     //
     // Config parsing errors are commonly surfaced through CLI/LSP diagnostics and logs, so redact
-    // double-quoted substrings to avoid leaking arbitrary config string values (including secrets)
-    // even when no snippet is included.
+    // quoted substrings to avoid leaking arbitrary config string values (including secrets) even
+    // when no snippet is included.
     static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static BACKTICK_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
+
     let re = QUOTED_STRING_RE
         .get_or_init(|| regex::Regex::new(r#""[^"]*""#).expect("quoted-string regex should compile"));
-    re.replace_all(message, r#""<redacted>""#).into_owned()
+
+    let out = re.replace_all(message, r#""<redacted>""#);
+
+    // `serde` / `toml` also wrap offending enum variants in backticks:
+    // `unknown variant \`secret\`, expected ...`
+    let re = BACKTICK_STRING_RE
+        .get_or_init(|| regex::Regex::new(r#"`[^`]*`"#).expect("backtick-string regex should compile"));
+    re.replace_all(&out, "`<redacted>`").into_owned()
 }
 
 impl From<toml::de::Error> for ConfigError {
