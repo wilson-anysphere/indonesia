@@ -120,7 +120,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // final path segment space-free so we don't greedily consume non-path prose following the
         // path token.
         Regex::new(
-            r"(?m)(?P<path>/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*/)+[A-Za-z0-9._@$+()\\-]+)",
+            r"(?m)(?P<path>/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*/)+[A-Za-z0-9._@$+()\\-]+/?)",
         )
             .expect("valid unix path regex")
     });
@@ -277,6 +277,15 @@ mod tests {
             !out.contains("/home/alice/project/secret.txt"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unix_absolute_paths_with_trailing_separator() {
+        let prompt = r#"opening /home/alice/project/secret/"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("/home/alice/project/secret/"), "{out}");
+        assert!(!out.contains("/home/alice/project/secret"), "{out}");
     }
 
     #[test]
