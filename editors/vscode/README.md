@@ -172,6 +172,22 @@ npm run compile
 - **Nova: Reset Request Metrics** (`nova.resetRequestMetrics`)
   - Resets request metrics via `nova/resetMetrics` (available in safe mode).
 
+- **Nova AI: Show Status** (`nova.ai.showStatus`)
+  - Fetches the AI runtime/config status via `nova/ai/status`.
+  - In multi-root workspaces, targets the active editor's workspace folder when possible; otherwise prompts you to select a workspace folder.
+
+- **Nova AI: Show Models** (`nova.ai.showModels`)
+  - Fetches available AI models via `nova/ai/models`.
+  - In multi-root workspaces, targets the active editor's workspace folder when possible; otherwise prompts you to select a workspace folder.
+
+- **Nova: Semantic Search…** (`nova.semanticSearch`)
+  - Prompts for a query, then searches your workspace via `nova/semanticSearch/search`.
+  - In multi-root workspaces, targets the active editor's workspace folder when possible; otherwise prompts you to select a workspace folder.
+
+- **Nova: Reindex Semantic Search** (`nova.reindexSemanticSearch`)
+  - Triggers a semantic search reindex via `nova/semanticSearch/reindex`.
+  - In multi-root workspaces, targets the active editor's workspace folder when possible; otherwise prompts you to select a workspace folder.
+
 - **Nova: Show Semantic Search Index Status** (`nova.showSemanticSearchIndexStatus`)
   - Fetches semantic-search indexing state via `nova/semanticSearch/indexStatus`.
   - Pretty-prints the JSON payload to the **Nova Semantic Search** output channel, including a short summary (done/in progress, indexed files/bytes), with an action to copy the JSON to your clipboard.

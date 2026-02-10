@@ -102,7 +102,7 @@ test('package.json contributes Nova request metrics commands', async () => {
   assert.ok(activationEvents.includes('onCommand:nova.resetRequestMetrics'));
 });
 
-test('package.json contributes Nova semantic search index status commands', async () => {
+test('package.json contributes Nova semantic search commands', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
   const pkg = JSON.parse(raw) as {
@@ -119,9 +119,13 @@ test('package.json contributes Nova semantic search index status commands', asyn
       .filter((id): id is string => typeof id === 'string'),
   );
 
+  assert.ok(commandIds.has('nova.semanticSearch'));
+  assert.ok(commandIds.has('nova.reindexSemanticSearch'));
   assert.ok(commandIds.has('nova.showSemanticSearchIndexStatus'));
   assert.ok(commandIds.has('nova.waitForSemanticSearchIndex'));
 
+  assert.ok(activationEvents.includes('onCommand:nova.semanticSearch'));
+  assert.ok(activationEvents.includes('onCommand:nova.reindexSemanticSearch'));
   assert.ok(activationEvents.includes('onCommand:nova.showSemanticSearchIndexStatus'));
   assert.ok(activationEvents.includes('onCommand:nova.waitForSemanticSearchIndex'));
 });
@@ -202,10 +206,14 @@ test('package.json contributes Nova AI show commands (avoids LSP executeCommand 
   assert.equal(byId.get('nova.ai.showExplainError')?.title, 'Nova AI: Explain Error');
   assert.equal(byId.get('nova.ai.showGenerateMethodBody')?.title, 'Nova AI: Generate Method Body');
   assert.equal(byId.get('nova.ai.showGenerateTests')?.title, 'Nova AI: Generate Tests');
+  assert.equal(byId.get('nova.ai.showStatus')?.title, 'Nova AI: Show Status');
+  assert.equal(byId.get('nova.ai.showModels')?.title, 'Nova AI: Show Models');
 
   assert.ok(activationEvents.includes('onCommand:nova.ai.showExplainError'));
   assert.ok(activationEvents.includes('onCommand:nova.ai.showGenerateMethodBody'));
   assert.ok(activationEvents.includes('onCommand:nova.ai.showGenerateTests'));
+  assert.ok(activationEvents.includes('onCommand:nova.ai.showStatus'));
+  assert.ok(activationEvents.includes('onCommand:nova.ai.showModels'));
 
   // Server-provided `workspace/executeCommand` IDs must not be contributed to avoid collisions with
   // vscode-languageclient's auto-registered command handlers.

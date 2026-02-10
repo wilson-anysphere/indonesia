@@ -30,10 +30,14 @@
     "onCommand:nova.ai.showExplainError",
     "onCommand:nova.ai.showGenerateMethodBody",
     "onCommand:nova.ai.showGenerateTests",
+    "onCommand:nova.ai.showStatus",
+    "onCommand:nova.ai.showModels",
     "onCommand:nova.bugReport",
     "onCommand:nova.buildProject",
     "onCommand:nova.showRequestMetrics",
     "onCommand:nova.resetRequestMetrics",
+    "onCommand:nova.semanticSearch",
+    "onCommand:nova.reindexSemanticSearch",
     "onCommand:nova.showSemanticSearchIndexStatus",
     "onCommand:nova.waitForSemanticSearchIndex",
     "onCommand:nova.discoverTests",
@@ -107,6 +111,14 @@
         "title": "Nova AI: Generate Tests"
       },
       {
+        "command": "nova.ai.showStatus",
+        "title": "Nova AI: Show Status"
+      },
+      {
+        "command": "nova.ai.showModels",
+        "title": "Nova AI: Show Models"
+      },
+      {
         "command": "nova.bugReport",
         "title": "Nova: Generate Bug Report"
       },
@@ -121,6 +133,14 @@
       {
         "command": "nova.resetRequestMetrics",
         "title": "Nova: Reset Request Metrics"
+      },
+      {
+        "command": "nova.semanticSearch",
+        "title": "Nova: Semantic Search\u2026"
+      },
+      {
+        "command": "nova.reindexSemanticSearch",
+        "title": "Nova: Reindex Semantic Search"
       },
       {
         "command": "nova.showSemanticSearchIndexStatus",
