@@ -755,6 +755,41 @@ index 9999999..aaaaaaa 100644
 }
 
 #[test]
+fn git_diff_token_parsing_supports_hex_escapes() {
+    let excluded_path = "src/secrets/café.txt";
+
+    // `\xC3\xA9` are the UTF-8 bytes for "é".
+    let excluded_section = r#"diff --git "a/src/secrets/caf\xC3\xA9.txt" "b/src/secrets/caf\xC3\xA9.txt"
+index 1111111..2222222 100644
+--- "a/src/secrets/caf\xC3\xA9.txt"
++++ "b/src/secrets/caf\xC3\xA9.txt"
+@@ -1 +1 @@
+-old
++HEX_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 9999999..aaaaaaa 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 15; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("HEX_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn parsing_failure_fails_closed_with_single_sentinel_line_and_preserves_newline_style() {
     let diff_lf = "diff --git \"a/src/secrets/bad.txt b/src/secrets/bad.txt\n+LEAK\n";
     let diff_crlf = diff_lf.replace('\n', "\r\n");
