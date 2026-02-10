@@ -9,6 +9,7 @@ use nova_ai::{
     SafetyError, VirtualWorkspace,
 };
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
+use tempfile::TempDir;
 use url::Url;
 
 fn dummy_ai_client_config(privacy: AiPrivacyConfig) -> AiConfig {
@@ -79,6 +80,73 @@ fn privacy_excluded_paths_omit_snippet_for_absolute_path() {
         );
         assert!(client.sanitize_snippet(&excluded).is_none());
     }
+}
+
+#[test]
+fn privacy_excluded_paths_omit_snippet_for_absolute_path_with_dotdot_and_dot_segments() {
+    let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
+        local_only: true,
+        anonymize_identifiers: Some(true),
+        excluded_paths: vec!["src/secrets/**".to_string()],
+        ..AiPrivacyConfig::default()
+    }))
+    .expect("client");
+
+    let tmp = TempDir::new().expect("tempdir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+
+    let excluded_with_parent = nova_ai::CodeSnippet::new(
+        root.join("workspace")
+            .join("src")
+            .join("public")
+            .join("..")
+            .join("secrets")
+            .join("Secret.java"),
+        "class Secret { String token = \"sk-verysecretstringthatislong\"; }",
+    );
+    assert!(
+        client.sanitize_snippet(&excluded_with_parent).is_none(),
+        "`..` segments must not bypass excluded_paths matching"
+    );
+
+    let excluded_with_curdir = nova_ai::CodeSnippet::new(
+        root.join("workspace")
+            .join("src")
+            .join(".")
+            .join("secrets")
+            .join("Secret.java"),
+        "class Secret { String token = \"sk-verysecretstringthatislong\"; }",
+    );
+    assert!(
+        client.sanitize_snippet(&excluded_with_curdir).is_none(),
+        "`.` segments must not bypass excluded_paths matching"
+    );
+}
+
+#[test]
+fn privacy_excluded_paths_do_not_match_absolute_paths_via_empty_suffix() {
+    // Regression test: if absolute-path suffix scanning ever starts trying to match an empty
+    // suffix (`PathBuf::new()`), patterns that match the empty path would incorrectly exclude any
+    // absolute path.
+    let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
+        local_only: true,
+        anonymize_identifiers: Some(true),
+        excluded_paths: vec!["".to_string()],
+        ..AiPrivacyConfig::default()
+    }))
+    .expect("client");
+
+    let tmp = TempDir::new().expect("tempdir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+
+    let snippet = nova_ai::CodeSnippet::new(
+        root.join("workspace").join("src").join("Main.java"),
+        "class Main {}",
+    );
+    assert!(
+        client.sanitize_snippet(&snippet).is_some(),
+        "empty excluded_paths patterns must not exclude absolute paths"
+    );
 }
 
 #[test]
