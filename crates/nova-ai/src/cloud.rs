@@ -486,12 +486,18 @@ fn parse_anthropic_completion(bytes: &[u8]) -> Result<String, AiError> {
     }
 
     let resp: AnthropicResponse = serde_json::from_slice(bytes)?;
-    resp.content
-        .into_iter()
-        .next()
-        .map(|c| c.text)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AiError::UnexpectedResponse("missing content[0].text".into()))
+    let mut out = String::new();
+    for item in resp.content {
+        if !item.text.is_empty() {
+            out.push_str(&item.text);
+        }
+    }
+
+    if out.is_empty() {
+        return Err(AiError::UnexpectedResponse("missing content[*].text".into()));
+    }
+
+    Ok(out)
 }
 
 fn parse_gemini_completion(bytes: &[u8]) -> Result<String, AiError> {
@@ -514,15 +520,25 @@ fn parse_gemini_completion(bytes: &[u8]) -> Result<String, AiError> {
     }
 
     let resp: GeminiResponse = serde_json::from_slice(bytes)?;
-    resp.candidates
-        .into_iter()
-        .next()
-        .and_then(|c| c.content.parts.into_iter().next())
-        .map(|p| p.text)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            AiError::UnexpectedResponse("missing candidates[0].content.parts[0].text".into())
-        })
+    let mut out = String::new();
+
+    let candidate = resp.candidates.into_iter().next().ok_or_else(|| {
+        AiError::UnexpectedResponse("missing candidates[0].content.parts[*].text".into())
+    })?;
+
+    for part in candidate.content.parts {
+        if !part.text.is_empty() {
+            out.push_str(&part.text);
+        }
+    }
+
+    if out.is_empty() {
+        return Err(AiError::UnexpectedResponse(
+            "missing candidates[0].content.parts[*].text".into(),
+        ));
+    }
+
+    Ok(out)
 }
 
 fn parse_http_completion(bytes: &[u8]) -> Result<String, AiError> {

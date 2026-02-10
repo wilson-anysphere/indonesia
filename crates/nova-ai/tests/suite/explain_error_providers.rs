@@ -315,3 +315,61 @@ async fn explain_error_works_for_each_provider_kind() {
         handle.abort();
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_completion_concatenates_multiple_content_blocks() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/messages");
+        Response::new(Body::from(
+            r#"{"content":[{"text":"first"},{"text":""},{"text":"second"}]}"#,
+        ))
+    };
+    let (addr, handle) = spawn_server(handler);
+    let mut cfg = base_config(
+        AiProviderKind::Anthropic,
+        Url::parse(&format!("http://{addr}")).unwrap(),
+        "claude-3-5-sonnet-latest",
+    );
+    cfg.api_key = Some("test-key".to_string());
+    cfg.privacy.local_only = false;
+    let ai = NovaAi::new(&cfg).unwrap();
+    let out = ai
+        .explain_error("cannot find symbol", dummy_ctx(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(out, "firstsecond");
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn gemini_completion_concatenates_multiple_parts() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(
+            req.uri().path(),
+            "/v1beta/models/gemini-1.5-flash:generateContent"
+        );
+        assert!(req
+            .uri()
+            .query()
+            .unwrap_or_default()
+            .contains("key=test-key"));
+        Response::new(Body::from(
+            r#"{"candidates":[{"content":{"parts":[{"text":"alpha"},{"text":""},{"text":"beta"},{"text":"gamma"}]}}]}"#,
+        ))
+    };
+    let (addr, handle) = spawn_server(handler);
+    let mut cfg = base_config(
+        AiProviderKind::Gemini,
+        Url::parse(&format!("http://{addr}")).unwrap(),
+        "gemini-1.5-flash",
+    );
+    cfg.api_key = Some("test-key".to_string());
+    cfg.privacy.local_only = false;
+    let ai = NovaAi::new(&cfg).unwrap();
+    let out = ai
+        .explain_error("cannot find symbol", dummy_ctx(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(out, "alphabetagamma");
+    handle.abort();
+}
