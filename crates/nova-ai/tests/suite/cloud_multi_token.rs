@@ -346,7 +346,8 @@ async fn deanonymization_does_not_rewrite_inside_strings_or_comments() {
     assert_eq!(
         out[0].insert_text,
         format!(
-            "String s = \"{method_token}\"; // {method_token}\ngetSecretToken(); /* {method_token} */"
+            r#"char q = '\''; String s = "a\"{method_token}\""; // {method_token}
+getSecretToken(); /* {method_token} */ char c = '{method_token}';"#
         )
     );
     assert_eq!(
@@ -469,7 +470,7 @@ impl LlmClient for StringsAndCommentsRoundTripLlm {
         let method_token = extract_first_section_bullet(&prompt, "Available methods:");
         let import_token = extract_first_section_bullet(&prompt, "Importable symbols:");
         let insert_text = format!(
-            "String s = \"{method_token}\"; // {method_token}\n{method_token}(); /* {method_token} */"
+            "char q = '\\''; String s = \"a\\\"{method_token}\\\"\"; // {method_token}\n{method_token}(); /* {method_token} */ char c = '{method_token}';"
         );
 
         *self.prompt.lock().expect("prompt mutex") = Some(prompt);
