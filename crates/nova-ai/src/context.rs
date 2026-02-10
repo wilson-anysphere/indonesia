@@ -544,8 +544,13 @@ struct IdentCandidate<'a> {
 
 fn related_code_query_from_focal_code(focal_code: &str) -> String {
     // 1) Prefer identifier-like tokens outside comments/strings.
+    let path_spans = find_path_like_spans(focal_code);
     let mut unique: BTreeMap<&str, usize> = BTreeMap::new();
     for cand in extract_identifier_candidates(focal_code) {
+        if pos_in_spans(&path_spans, cand.first_pos) {
+            continue;
+        }
+
         let tok = cand.token;
         if is_semantic_query_stop_word(tok) {
             continue;
@@ -604,6 +609,107 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     // 2) Fallback: take a small redacted snippet. This is useful when the focal code contains
     // only literals (e.g., a selected string) and no identifiers.
     related_code_query_fallback(focal_code)
+}
+
+fn pos_in_spans(spans: &[Range<usize>], pos: usize) -> bool {
+    if spans.is_empty() {
+        return false;
+    }
+
+    // Find the first span whose end is after `pos`.
+    let idx = spans.partition_point(|span| span.end <= pos);
+    idx < spans.len() && spans[idx].start <= pos && pos < spans[idx].end
+}
+
+fn find_path_like_spans(text: &str) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let mut in_token = false;
+    let mut token_start = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if in_token {
+                let token = &text[token_start..idx];
+                if looks_like_path_token(token) {
+                    spans.push(token_start..idx);
+                }
+                in_token = false;
+            }
+            continue;
+        }
+
+        if !in_token {
+            token_start = idx;
+            in_token = true;
+        }
+    }
+
+    if in_token {
+        let token = &text[token_start..text.len()];
+        if looks_like_path_token(token) {
+            spans.push(token_start..text.len());
+        }
+    }
+
+    spans
+}
+
+fn looks_like_path_token(token: &str) -> bool {
+    // If there are any path separators in the whitespace-delimited token, treat it as a path when
+    // it resembles a multi-segment filesystem/URI path (to avoid leaking usernames/dirs).
+    let sep_count = token
+        .bytes()
+        .filter(|b| *b == b'/' || *b == b'\\')
+        .count();
+
+    if sep_count > 0 {
+        if token.contains("://") {
+            return true;
+        }
+        if token.starts_with('/') || token.starts_with("\\\\") {
+            return true;
+        }
+        if token.contains("..") || token.contains("./") || token.contains(".\\") {
+            return true;
+        }
+        if token.as_bytes().windows(3).any(|w| w[1] == b':' && (w[2] == b'\\' || w[2] == b'/')) {
+            // Windows drive prefix, possibly preceded by punctuation (e.g. `(C:\Users\...)`).
+            return true;
+        }
+        if sep_count >= 2 {
+            return true;
+        }
+        // Single-segment relative paths that include an extension are still paths
+        // (e.g. `src/Main.java`).
+        if token.contains('.') {
+            return true;
+        }
+
+        return false;
+    }
+
+    looks_like_file_name(token)
+}
+
+fn looks_like_file_name(token: &str) -> bool {
+    // Keep this conservative: only treat well-known source/doc extensions as file paths.
+    const EXTENSIONS: &[&str] = &[
+        "java", "kt", "kts", "md", "gradle", "xml", "json", "toml", "yml", "yaml", "txt",
+        "properties",
+    ];
+
+    let Some((_base, ext)) = token.rsplit_once('.') else {
+        return false;
+    };
+
+    let ext = ext
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    if ext.is_empty() {
+        return false;
+    }
+
+    EXTENSIONS.iter().any(|candidate| ext == *candidate)
 }
 
 fn related_code_query_fallback(focal_code: &str) -> String {

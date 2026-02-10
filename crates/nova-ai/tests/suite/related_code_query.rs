@@ -80,7 +80,7 @@ fn related_code_query_prefers_identifiers_over_comment_noise() {
 }
 
 #[test]
-fn related_code_query_is_length_capped_and_path_safe() {
+fn related_code_query_is_length_capped() {
     #[derive(Default)]
     struct CapturingSearch {
         last_query: Mutex<Option<String>>,
@@ -94,10 +94,52 @@ fn related_code_query_is_length_capped_and_path_safe() {
     }
 
     let search = CapturingSearch::default();
-    let huge = "public void veryLongMethodNameWithLotsOfStuff() { int count = 0; }\n"
-        .repeat(1024);
+    let long_ident = "VeryLongIdentifierNameWithLotsOfRepeatingStuff".repeat(64);
+    assert!(
+        long_ident.len() > RELATED_CODE_QUERY_MAX_BYTES,
+        "expected long identifier to exceed query cap"
+    );
+
+    let focal_code = format!("int {long_ident} = 0;");
+
+    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        query.len() == RELATED_CODE_QUERY_MAX_BYTES,
+        "expected query length == {RELATED_CODE_QUERY_MAX_BYTES}, got {}",
+        query.len(),
+    );
+    assert_eq!(
+        query,
+        long_ident[..RELATED_CODE_QUERY_MAX_BYTES],
+        "expected query to be truncated identifier prefix"
+    );
+}
+
+#[test]
+fn related_code_query_avoids_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
     let focal_code = format!(
-        "{huge}\n// leaking path should not show up: /home/alice/project/secret.txt\n"
+        "/home/{private_segment}/project/secret.txt\nreturn foo.bar();\n"
     );
 
     let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
@@ -109,13 +151,15 @@ fn related_code_query_is_length_capped_and_path_safe() {
         .expect("query captured");
 
     assert!(
-        query.len() <= RELATED_CODE_QUERY_MAX_BYTES,
-        "expected query length <= {RELATED_CODE_QUERY_MAX_BYTES}, got {}",
-        query.len()
+        !query.contains(private_segment),
+        "query should not include path segments: {query}"
     );
     assert!(
-        !query.contains("/home/alice/project/secret.txt"),
-        "query should not include file paths: {query}"
+        !query.to_ascii_lowercase().contains("secret"),
+        "query should not include file-name segments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-path identifiers, got: {query}"
     );
 }
-
