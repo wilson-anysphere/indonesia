@@ -208,3 +208,27 @@ fn related_code_query_skips_empty_queries() {
         "expected related code to be cleared when search is skipped"
     );
 }
+
+#[test]
+fn related_code_query_skips_low_signal_focal_code() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for low-signal related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let req = base_request("return a + b;").with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for low-signal focal code"
+    );
+
+    let req = base_request("null").with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for stop-word-only focal code"
+    );
+}
