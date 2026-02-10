@@ -585,6 +585,77 @@ async fn ollama_streaming_parsing_preserves_utf8_split_across_chunks() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn ollama_stream_timeout_is_idle_based_not_total_duration() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/api/chat" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        // Send chunks frequently enough to stay under the provider idle timeout,
+        // but allow the total stream duration to exceed it.
+        let chunks = stream! {
+            let parts: [&'static [u8]; 4] = [
+                br#"{"message":{"content":"A"},"done":false}
+"#,
+                br#"{"message":{"content":"B"},"done":false}
+"#,
+                br#"{"message":{"content":"C"},"done":false}
+"#,
+                br#"{"done":true}
+"#,
+            ];
+
+            for (idx, part) in parts.into_iter().enumerate() {
+                if idx != 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                yield Ok::<_, std::io::Error>(hyper::body::Bytes::from_static(part));
+            }
+        };
+
+        Response::builder()
+            .header("content-type", "application/x-ndjson")
+            .body(Body::wrap_stream(chunks))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+
+    let mut cfg = ollama_config(url);
+    cfg.provider.timeout_ms = 100;
+
+    let client = AiClient::from_config(&cfg).unwrap();
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+
+    assert_eq!(output, "ABC");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_streaming_parsing() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 
