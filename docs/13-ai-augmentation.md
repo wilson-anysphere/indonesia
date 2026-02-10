@@ -531,7 +531,8 @@ model = "my-model"
   { "completion": "..." }
   ```
 
-- `chat_stream()` sends the same request body, but with `"stream": true`:
+- `chat_stream()` sends the same request body, but with `"stream": true` (and `Accept:
+  text/event-stream`):
 
   ```
   { "stream": true, "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }

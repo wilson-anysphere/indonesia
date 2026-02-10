@@ -1048,8 +1048,9 @@ pub enum AiProviderKind {
     /// Non-streaming response body:
     /// `{ "completion": "..." }`
     ///
-    /// Streaming (`chat_stream()`) request body:
-    /// `{ "stream": true, "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
+    /// Streaming (`chat_stream()`) request:
+    /// - Header: `Accept: text/event-stream`
+    /// - JSON body: `{ "stream": true, "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
     ///
     /// Streaming response (optional): providers may reply using Server-Sent Events (SSE) with
     /// `Content-Type: text/event-stream`.
