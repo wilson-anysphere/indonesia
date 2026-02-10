@@ -1,5 +1,7 @@
 use crate::AiError;
 
+pub(crate) mod sse;
+
 pub(crate) fn map_reqwest_error(err: reqwest::Error) -> AiError {
     if err.is_timeout() {
         AiError::Timeout

@@ -1,16 +1,11 @@
 use crate::{
-    http::map_reqwest_error,
+    http::{map_reqwest_error, sse::SseDecoder},
     providers::LlmProvider,
-    stream_decode::{
-        ensure_max_stream_frame_size, trim_ascii_whitespace, MAX_STREAM_FRAME_BYTES,
-    },
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
-use bytes::BytesMut;
-use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -157,77 +152,31 @@ impl LlmProvider for OpenAiCompatibleProvider {
         .error_for_status()
         .map_err(map_reqwest_error)?;
 
-        let mut bytes_stream = response.bytes_stream();
+        let bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut buffer = BytesMut::new();
-            // Index of the next byte we haven't scanned yet for `\n`. This avoids rescanning the
-            // same prefix repeatedly when the transport splits a single SSE line across many
-            // small chunks.
-            let mut scan_start: usize = 0;
+            let mut decoder = SseDecoder::new(bytes_stream);
 
             loop {
-                // Drain all complete lines already buffered before waiting for more bytes.
-                while let Some(rel_pos) = buffer[scan_start..].iter().position(|&b| b == b'\n') {
-                    let newline_pos = scan_start + rel_pos;
-                    // Split off the line (including the trailing '\n') so `buffer` stays valid.
-                    let mut line = buffer.split_to(newline_pos + 1);
-                    // `split_to` advances the start of `buffer`, so any previous scan offset is no
-                    // longer meaningful.
-                    scan_start = 0;
-                    // Drop the trailing '\n'.
-                    line.truncate(newline_pos);
-                    // Handle CRLF line endings.
-                    if line.last() == Some(&b'\r') {
-                        line.truncate(line.len() - 1);
-                    }
+                let Some(event) = decoder.next_event(&cancel, timeout).await? else { break };
+                let data = event.data.trim();
+                if data.is_empty() {
+                    continue;
+                }
 
-                    let line = trim_ascii_whitespace(&line);
-                    if line.is_empty() {
-                        continue;
-                    }
+                if data == "[DONE]" {
+                    return;
+                }
 
-                    let Some(data) = line.strip_prefix(b"data:") else {
-                        continue;
-                    };
-                    let data = trim_ascii_whitespace(data);
-                    if data.is_empty() {
-                        continue;
-                    }
-                    if data == b"[DONE]" {
-                        return;
-                    }
-
-                    let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_slice(data)?;
-                    for choice in parsed.choices {
-                        if let Some(content) = choice.delta.content {
-                            if !content.is_empty() {
-                                yield content;
-                            }
+                let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_str(data)?;
+                for choice in parsed.choices {
+                    if let Some(content) = choice.delta.content {
+                        if !content.is_empty() {
+                            yield content;
                         }
                     }
                 }
-                // We've scanned everything currently in the buffer without finding a newline.
-                scan_start = buffer.len();
-
-                let next = tokio::select! {
-                    _ = cancel.cancelled() => Err(AiError::Cancelled),
-                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => {
-                        match chunk {
-                            Ok(item) => Ok(item),
-                            Err(_) => Err(AiError::Timeout),
-                        }
-                    }
-                }?;
-
-                let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(map_reqwest_error)?;
-                // At this point the buffer contains only a single partial line (no '\n'), so its
-                // length is the current frame size. Validate the next chunk before buffering it to
-                // prevent unbounded growth if the server never sends delimiters.
-                ensure_max_stream_frame_size(buffer.len(), chunk.as_ref(), MAX_STREAM_FRAME_BYTES)?;
-                buffer.extend_from_slice(&chunk);
             }
         };
 

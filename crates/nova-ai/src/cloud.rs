@@ -1,10 +1,8 @@
+use crate::http::{map_reqwest_error, sse::SseDecoder};
 use crate::providers::LlmProvider;
-use crate::stream_decode::{
-    ensure_max_stream_frame_size, stream_frame_too_large_error, MAX_STREAM_FRAME_BYTES,
-};
+use crate::stream_decode::{ensure_max_stream_frame_size, MAX_STREAM_FRAME_BYTES};
 use crate::types::{AiStream, ChatMessage, ChatRequest, ChatRole};
 use crate::AiError;
-use crate::http::map_reqwest_error;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -156,54 +154,25 @@ impl LlmProvider for AnthropicProvider {
         .error_for_status()
         .map_err(map_reqwest_error)?;
 
-        let mut bytes_stream = response.bytes_stream();
+        let bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut decoder = SseDecoder::new();
-            let mut events = Vec::<SseEvent>::new();
+            let mut decoder = SseDecoder::new(bytes_stream);
 
-            'outer: loop {
-                let next = tokio::select! {
-                    _ = cancel.cancelled() => Err(AiError::Cancelled),
-                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => match chunk {
-                        Ok(item) => Ok(item),
-                        Err(_) => Err(AiError::Timeout),
-                    },
-                }?;
+            loop {
+                let Some(event) = decoder.next_event(&cancel, timeout).await? else { break };
 
-                let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(map_reqwest_error)?;
-                decoder.push(&chunk, &mut events)?;
-
-                for event in events.drain(..) {
-                    if event.event.as_deref() == Some("message_stop") {
-                        break 'outer;
-                    }
-                    if event.data.is_empty() {
-                        continue;
-                    }
-                    let parsed: AnthropicStreamEvent = serde_json::from_slice(&event.data)?;
-                    match parsed.kind.as_str() {
-                        "content_block_delta" => {
-                            if let Some(text) = parsed.delta.and_then(|d| d.text) {
-                                if !text.is_empty() {
-                                    yield text;
-                                }
-                            }
-                        }
-                        "message_stop" => break 'outer,
-                        _ => {}
-                    }
+                if event.event.as_deref() == Some("message_stop") {
+                    return;
                 }
-            }
 
-            decoder.finish(&mut events)?;
-            for event in events {
-                if event.data.is_empty() {
+                let data = event.data.trim();
+                if data.is_empty() {
                     continue;
                 }
-                let parsed: AnthropicStreamEvent = serde_json::from_slice(&event.data)?;
+
+                let parsed: AnthropicStreamEvent = serde_json::from_str(data)?;
                 match parsed.kind.as_str() {
                     "content_block_delta" => {
                         if let Some(text) = parsed.delta.and_then(|d| d.text) {
@@ -212,6 +181,7 @@ impl LlmProvider for AnthropicProvider {
                             }
                         }
                     }
+                    "message_stop" => return,
                     _ => {}
                 }
             }
@@ -368,17 +338,47 @@ impl LlmProvider for GeminiProvider {
         .map_err(map_reqwest_error)?;
 
         let is_sse = content_type_is_event_stream(response.headers());
-        let mut bytes_stream = response.bytes_stream();
+        let bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
 
         let stream = try_stream! {
             // Gemini streaming responses can be either SSE (`data: {...}` frames) or newline-delimited
             // JSON. We detect based on `Content-Type`, but also accept `data:` frames even when
             // content-type is misconfigured.
-            let mut decoder = SseDecoder::new();
-            let mut events = Vec::<SseEvent>::new();
-            let mut line_buf = LineDecoder::new();
             let mut last_text = String::new();
+            let mut bytes_stream = bytes_stream;
+
+            if is_sse {
+                let mut decoder = SseDecoder::new(bytes_stream);
+                loop {
+                    let Some(event) = decoder.next_event(&cancel, timeout).await? else { break };
+                    let data = event.data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    if data == "[DONE]" {
+                        return;
+                    }
+
+                    let parsed: GeminiStreamResponse = serde_json::from_str(data)?;
+                    if let Some(text) = parsed
+                        .candidates
+                        .into_iter()
+                        .next()
+                        .and_then(|c| c.content)
+                        .and_then(|c| c.parts.into_iter().next())
+                        .map(|p| p.text)
+                    {
+                        let delta = gemini_delta(&mut last_text, &text);
+                        if !delta.is_empty() {
+                            yield delta;
+                        }
+                    }
+                }
+                return;
+            }
+
+            let mut line_buf = LineDecoder::new();
 
             loop {
                 let next = tokio::select! {
@@ -391,33 +391,6 @@ impl LlmProvider for GeminiProvider {
 
                 let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(map_reqwest_error)?;
-
-                if is_sse {
-                    decoder.push(&chunk, &mut events)?;
-                    for event in events.drain(..) {
-                        if event.data == b"[DONE]" {
-                            return;
-                        }
-                        if event.data.is_empty() {
-                            continue;
-                        }
-                        let parsed: GeminiStreamResponse = serde_json::from_slice(&event.data)?;
-                        if let Some(text) = parsed
-                            .candidates
-                            .into_iter()
-                            .next()
-                            .and_then(|c| c.content)
-                            .and_then(|c| c.parts.into_iter().next())
-                            .map(|p| p.text)
-                        {
-                            let delta = gemini_delta(&mut last_text, &text);
-                            if !delta.is_empty() {
-                                yield delta;
-                            }
-                        }
-                    }
-                    continue;
-                }
 
                 // NDJSON or misconfigured content-type. Parse line-by-line, and accept SSE `data:`
                 // frames if present.
@@ -465,33 +438,6 @@ impl LlmProvider for GeminiProvider {
                         }
                     }
                 }
-            }
-
-            if is_sse {
-                decoder.finish(&mut events)?;
-                for event in events.drain(..) {
-                    if event.data == b"[DONE]" {
-                        return;
-                    }
-                    if event.data.is_empty() {
-                        continue;
-                    }
-                    let parsed: GeminiStreamResponse = serde_json::from_slice(&event.data)?;
-                    if let Some(text) = parsed
-                        .candidates
-                        .into_iter()
-                        .next()
-                        .and_then(|c| c.content)
-                        .and_then(|c| c.parts.into_iter().next())
-                        .map(|p| p.text)
-                    {
-                        let delta = gemini_delta(&mut last_text, &text);
-                        if !delta.is_empty() {
-                            yield delta;
-                        }
-                    }
-                }
-                return;
             }
 
             // Flush any pending buffered lines if the server closed the connection without a final
@@ -686,54 +632,23 @@ impl LlmProvider for AzureOpenAiProvider {
         .error_for_status()
         .map_err(map_reqwest_error)?;
 
-        let mut bytes_stream = response.bytes_stream();
+        let bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut decoder = SseDecoder::new();
-            let mut events = Vec::<SseEvent>::new();
-
-            'outer: loop {
-                let next = tokio::select! {
-                    _ = cancel.cancelled() => Err(AiError::Cancelled),
-                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => match chunk {
-                        Ok(item) => Ok(item),
-                        Err(_) => Err(AiError::Timeout),
-                    },
-                }?;
-
-                let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(map_reqwest_error)?;
-                decoder.push(&chunk, &mut events)?;
-
-                for event in events.drain(..) {
-                    if event.data == b"[DONE]" {
-                        break 'outer;
-                    }
-                    if event.data.is_empty() {
-                        continue;
-                    }
-
-                    let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_slice(&event.data)?;
-                    for choice in parsed.choices {
-                        if let Some(content) = choice.delta.content {
-                            if !content.is_empty() {
-                                yield content;
-                            }
-                        }
-                    }
-                }
-            }
-
-            decoder.finish(&mut events)?;
-            for event in events {
-                if event.data == b"[DONE]" {
-                    break;
-                }
-                if event.data.is_empty() {
+            let mut decoder = SseDecoder::new(bytes_stream);
+            loop {
+                let Some(event) = decoder.next_event(&cancel, timeout).await? else { break };
+                let data = event.data.trim();
+                if data.is_empty() {
                     continue;
                 }
-                let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_slice(&event.data)?;
+
+                if data == "[DONE]" {
+                    return;
+                }
+
+                let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_str(data)?;
                 for choice in parsed.choices {
                     if let Some(content) = choice.delta.content {
                         if !content.is_empty() {
@@ -884,56 +799,26 @@ impl LlmProvider for HttpProvider {
             return Ok(Box::pin(stream));
         }
 
-        let mut bytes_stream = response.bytes_stream();
+        let bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut decoder = SseDecoder::new();
-            let mut events = Vec::<SseEvent>::new();
-
-            'outer: loop {
-                let next = tokio::select! {
-                    _ = cancel.cancelled() => Err(AiError::Cancelled),
-                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => match chunk {
-                        Ok(item) => Ok(item),
-                        Err(_) => Err(AiError::Timeout),
-                    },
-                }?;
-
-                let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(map_reqwest_error)?;
-                decoder.push(&chunk, &mut events)?;
-
-                for event in events.drain(..) {
-                    if event.data == b"[DONE]" {
-                        break 'outer;
-                    }
-                    if event.data.is_empty() {
-                        continue;
-                    }
-                    let parsed: HttpStreamResponse = serde_json::from_slice(&event.data)?;
-                    let completion = parsed.completion.ok_or_else(|| {
-                        AiError::UnexpectedResponse("missing completion field".into())
-                    })?;
-                    if completion.is_empty() {
-                        continue;
-                    }
-                    yield completion;
-                }
-            }
-
-            decoder.finish(&mut events)?;
-            for event in events {
-                if event.data == b"[DONE]" {
-                    break;
-                }
-                if event.data.is_empty() {
+            let mut decoder = SseDecoder::new(bytes_stream);
+            loop {
+                let Some(event) = decoder.next_event(&cancel, timeout).await? else { break };
+                let data = event.data.trim();
+                if data.is_empty() {
                     continue;
                 }
-                let parsed: HttpStreamResponse = serde_json::from_slice(&event.data)?;
-                let completion = parsed.completion.ok_or_else(|| {
-                    AiError::UnexpectedResponse("missing completion field".into())
-                })?;
+
+                if data == "[DONE]" {
+                    return;
+                }
+
+                let parsed: HttpStreamResponse = serde_json::from_str(data)?;
+                let completion = parsed
+                    .completion
+                    .ok_or_else(|| AiError::UnexpectedResponse("missing completion field".into()))?;
                 if completion.is_empty() {
                     continue;
                 }
@@ -1190,140 +1075,6 @@ fn gemini_delta(last_text: &mut String, chunk_text: &str) -> String {
     }
 }
 
-#[derive(Debug)]
-struct SseEvent {
-    #[allow(dead_code)]
-    event: Option<String>,
-    data: Vec<u8>,
-}
-
-#[derive(Default)]
-struct SseDecoder {
-    buffer: Vec<u8>,
-    current_event: Option<String>,
-    current_data: Vec<u8>,
-    saw_any_field: bool,
-}
-
-impl SseDecoder {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn push(&mut self, chunk: &[u8], out: &mut Vec<SseEvent>) -> Result<(), AiError> {
-        ensure_max_stream_frame_size(self.buffer.len(), chunk, MAX_STREAM_FRAME_BYTES)?;
-        self.buffer.extend_from_slice(chunk);
-        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
-            let rest = self.buffer.split_off(pos + 1);
-            let mut line = std::mem::take(&mut self.buffer);
-            self.buffer = rest;
-
-            // Remove trailing '\n' and optional '\r'.
-            if line.last() == Some(&b'\n') {
-                line.pop();
-            }
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-
-            self.process_line(&line, out)?;
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self, out: &mut Vec<SseEvent>) -> Result<(), AiError> {
-        if !self.buffer.is_empty() {
-            let mut line = std::mem::take(&mut self.buffer);
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            self.process_line(&line, out)?;
-        }
-
-        if self.saw_any_field {
-            out.push(SseEvent {
-                event: self.current_event.take(),
-                data: std::mem::take(&mut self.current_data),
-            });
-            self.saw_any_field = false;
-        }
-
-        Ok(())
-    }
-
-    fn process_line(&mut self, line: &[u8], out: &mut Vec<SseEvent>) -> Result<(), AiError> {
-        if line.is_empty() {
-            if self.saw_any_field {
-                out.push(SseEvent {
-                    event: self.current_event.take(),
-                    data: std::mem::take(&mut self.current_data),
-                });
-                self.saw_any_field = false;
-            }
-            return Ok(());
-        }
-
-        if line.starts_with(b":") {
-            // Comment/keepalive line.
-            return Ok(());
-        }
-
-        if let Some(rest) = line.strip_prefix(b"event:") {
-            let rest = trim_sse_value(rest);
-            let event = std::str::from_utf8(rest).map_err(|e| {
-                AiError::UnexpectedResponse(format!("invalid utf-8 in sse event field: {e}"))
-            })?;
-            self.current_event = Some(event.to_string());
-            self.saw_any_field = true;
-            return Ok(());
-        }
-
-        if let Some(rest) = line.strip_prefix(b"data:") {
-            let rest = trim_sse_value(rest);
-            let extra = if self.current_data.is_empty() {
-                rest.len()
-            } else {
-                // We insert a newline between successive `data:` fields (per the SSE spec).
-                1usize.saturating_add(rest.len())
-            };
-            let attempted_len = self.current_data.len().saturating_add(extra);
-            if attempted_len > MAX_STREAM_FRAME_BYTES {
-                return Err(stream_frame_too_large_error(
-                    attempted_len,
-                    MAX_STREAM_FRAME_BYTES,
-                ));
-            }
-            if !self.current_data.is_empty() {
-                self.current_data.push(b'\n');
-            }
-            self.current_data.extend_from_slice(rest);
-            self.saw_any_field = true;
-            return Ok(());
-        }
-
-        // Ignore other fields (id:, retry:, etc).
-        Ok(())
-    }
-}
-
-fn trim_sse_value(mut bytes: &[u8]) -> &[u8] {
-    while let Some((&b, rest)) = bytes.split_first() {
-        if b == b' ' || b == b'\t' {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    while let Some((&b, rest)) = bytes.split_last() {
-        if b == b' ' || b == b'\t' {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    bytes
-}
-
 #[derive(Default)]
 struct LineDecoder {
     buffer: Vec<u8>,
@@ -1399,51 +1150,6 @@ mod tests {
     };
     use std::convert::Infallible;
     use tokio::sync::oneshot;
-
-    #[test]
-    fn sse_decoder_errors_on_oversized_line_without_newline() {
-        let mut decoder = SseDecoder::new();
-        let mut events = Vec::new();
-        let chunk = vec![b'a'; crate::stream_decode::MAX_STREAM_FRAME_BYTES + 1];
-        let err = decoder
-            .push(&chunk, &mut events)
-            .expect_err("expected frame-too-large error");
-        match err {
-            AiError::UnexpectedResponse(msg) => assert!(
-                msg.contains("stream frame too large"),
-                "unexpected error message: {msg}"
-            ),
-            other => panic!("expected UnexpectedResponse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sse_decoder_errors_on_oversized_event_data_across_multiple_data_fields() {
-        let mut decoder = SseDecoder::new();
-        let mut events = Vec::new();
-
-        let max = crate::stream_decode::MAX_STREAM_FRAME_BYTES;
-        let half = max / 2;
-        let mut chunk = Vec::new();
-        chunk.extend_from_slice(b"data: ");
-        chunk.extend(std::iter::repeat(b'a').take(half));
-        chunk.extend_from_slice(b"\n");
-        chunk.extend_from_slice(b"data: ");
-        // This pushes the total event payload over `max` once we include the inserted `\n`.
-        chunk.extend(std::iter::repeat(b'b').take(half + 16));
-        chunk.extend_from_slice(b"\n");
-
-        let err = decoder
-            .push(&chunk, &mut events)
-            .expect_err("expected frame-too-large error");
-        match err {
-            AiError::UnexpectedResponse(msg) => assert!(
-                msg.contains("stream frame too large"),
-                "unexpected error message: {msg}"
-            ),
-            other => panic!("expected UnexpectedResponse, got {other:?}"),
-        }
-    }
 
     #[test]
     fn line_decoder_errors_on_oversized_line_without_newline() {
