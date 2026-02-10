@@ -13,6 +13,8 @@ const AI_SEMANTIC_SEARCH_SEARCH_METRIC: &str = "ai/semantic_search/search";
 const AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC: &str = "ai/semantic_search/index_file";
 const AI_SEMANTIC_SEARCH_INDEX_PROJECT_METRIC: &str = "ai/semantic_search/index_project";
 const AI_SEMANTIC_SEARCH_FINALIZE_INDEXING_METRIC: &str = "ai/semantic_search/finalize_indexing";
+const AI_SEMANTIC_SEARCH_CLEAR_METRIC: &str = "ai/semantic_search/clear";
+const AI_SEMANTIC_SEARCH_REMOVE_FILE_METRIC: &str = "ai/semantic_search/remove_file";
 
 #[cfg(feature = "embeddings")]
 fn ai_error_is_timeout(err: &AiError) -> bool {
@@ -78,13 +80,17 @@ pub struct SearchResult {
 /// dependencies.
 pub trait SemanticSearch: Send + Sync {
     /// Clear any indexed state.
-    fn clear(&mut self) {}
+    fn clear(&mut self) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_CLEAR_METRIC);
+    }
 
     /// Add or replace a single file in the index.
     fn index_file(&mut self, _path: PathBuf, _text: String) {}
 
     /// Remove a single file from the index.
-    fn remove_file(&mut self, _path: &Path) {}
+    fn remove_file(&mut self, _path: &Path) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_REMOVE_FILE_METRIC);
+    }
 
     /// Finalize any pending indexing work after a bulk update.
     ///
@@ -279,6 +285,7 @@ impl TrigramSemanticSearch {
 
 impl SemanticSearch for TrigramSemanticSearch {
     fn clear(&mut self) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_CLEAR_METRIC);
         self.docs.clear();
     }
 
@@ -296,6 +303,7 @@ impl SemanticSearch for TrigramSemanticSearch {
     }
 
     fn remove_file(&mut self, path: &Path) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_REMOVE_FILE_METRIC);
         self.docs.remove(path);
     }
 
@@ -2054,6 +2062,7 @@ mod embeddings {
 
     impl<E: Embedder> SemanticSearch for EmbeddingSemanticSearch<E> {
         fn clear(&mut self) {
+            let _guard = super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_CLEAR_METRIC);
             self.docs_by_path.clear();
             self.embedding_bytes_used = 0;
             // See `invalidate_index` for why we drop the old HNSW index inside our dedicated pool.
@@ -2270,6 +2279,8 @@ mod embeddings {
         }
 
         fn remove_file(&mut self, path: &Path) {
+            let _guard =
+                super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_REMOVE_FILE_METRIC);
             if let Some(removed) = self.docs_by_path.remove(path) {
                 let removed_bytes = Self::embedding_bytes_for_docs(&removed);
                 self.embedding_bytes_used = self.embedding_bytes_used.saturating_sub(removed_bytes);

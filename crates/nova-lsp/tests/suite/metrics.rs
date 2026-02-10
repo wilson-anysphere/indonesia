@@ -168,6 +168,13 @@ semantic_search = true
     assert!(
         snapshot
             .methods
+            .get("ai/semantic_search/clear")
+            .is_some_and(|m| m.request_count > 0),
+        "expected semantic-search clear to be recorded"
+    );
+    assert!(
+        snapshot
+            .methods
             .get("lsp/semantic_search/workspace_index")
             .is_some_and(|m| m.request_count > 0),
         "expected workspace-indexing duration metric to be recorded"

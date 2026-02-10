@@ -419,6 +419,16 @@ mod tests {
             .get("ai/semantic_search/search")
             .map(|m| m.request_count)
             .unwrap_or(0);
+        let before_clear = before_snapshot
+            .methods
+            .get("ai/semantic_search/clear")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_remove_file = before_snapshot
+            .methods
+            .get("ai/semantic_search/remove_file")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
 
         let db = VirtualWorkspace::new([
             ("src/A.java".to_string(), "class A { void hello() {} }".to_string()),
@@ -427,6 +437,7 @@ mod tests {
 
         let mut search = TrigramSemanticSearch::new();
         search.index_project(&db);
+        search.remove_file(std::path::Path::new("src/B.java"));
         let _results = search.search("hello");
 
         let after_snapshot = metrics.snapshot();
@@ -450,6 +461,16 @@ mod tests {
             .get("ai/semantic_search/search")
             .map(|m| m.request_count)
             .unwrap_or(0);
+        let after_clear = after_snapshot
+            .methods
+            .get("ai/semantic_search/clear")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_remove_file = after_snapshot
+            .methods
+            .get("ai/semantic_search/remove_file")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
 
         assert!(
             after_index_project >= before_index_project.saturating_add(1),
@@ -466,6 +487,14 @@ mod tests {
         assert!(
             after_search >= before_search.saturating_add(1),
             "expected ai/semantic_search/search to record requests"
+        );
+        assert!(
+            after_clear >= before_clear.saturating_add(1),
+            "expected ai/semantic_search/clear to record requests"
+        );
+        assert!(
+            after_remove_file >= before_remove_file.saturating_add(1),
+            "expected ai/semantic_search/remove_file to record requests"
         );
     }
 }

@@ -583,8 +583,10 @@ Nova also records semantic-search metrics (used for semantic search itself and f
 building). These are recorded even when semantic search is using the offline trigram fallback
 backend.
 
+- `ai/semantic_search/clear` — semantic-search index resets (one per `clear()` call)
 - `ai/semantic_search/index_file` — semantic-search file updates (one per `index_file()` call)
 - `ai/semantic_search/index_project` — bulk semantic-search indexing runs (one per `index_project()` call)
+- `ai/semantic_search/remove_file` — semantic-search index deletions (one per `remove_file()` call)
 - `ai/semantic_search/search` — semantic-search query execution (one per `search()` call)
 - `ai/semantic_search/finalize_indexing` — bulk indexing finalization (for example: rebuilding the embedding ANN index)
 
