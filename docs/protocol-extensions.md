@@ -1014,10 +1014,17 @@ These endpoints are currently implemented in the `nova-lsp` **binary**
 
 Most AI endpoints require a configured AI provider (`ai.enabled=true` in `nova.toml` or via the
 legacy `NOVA_AI_*` env vars like `NOVA_AI_PROVIDER`). When configuring AI via env vars, provider
-tuning env vars `NOVA_AI_MAX_TOKENS` / `NOVA_AI_TEMPERATURE` / `NOVA_AI_CONCURRENCY` can override
-`ai.provider.max_tokens` / `ai.provider.temperature` / `ai.provider.concurrency` (`max_tokens`/
-`concurrency` are clamped to >= 1; `temperature` must be >= 0). `NOVA_AI_EXCLUDED_PATHS` can be used
-to set `ai.privacy.excluded_paths` (comma/newline separated glob list). `nova/ai/status` does
+tuning env vars can override provider defaults:
+
+- `NOVA_AI_MAX_TOKENS` → `ai.provider.max_tokens` (clamped to >= 1)
+- `NOVA_AI_TEMPERATURE` → `ai.provider.temperature` (must be >= 0)
+- `NOVA_AI_CONCURRENCY` → `ai.provider.concurrency` (clamped to >= 1)
+- `NOVA_AI_RETRY_MAX_RETRIES` → `ai.provider.retry_max_retries` (must be >= 0; `0` disables retries)
+- `NOVA_AI_RETRY_INITIAL_BACKOFF_MS` → `ai.provider.retry_initial_backoff_ms` (clamped to >= 1)
+- `NOVA_AI_RETRY_MAX_BACKOFF_MS` → `ai.provider.retry_max_backoff_ms` (clamped to >= 1)
+
+`NOVA_AI_EXCLUDED_PATHS` can be used to set `ai.privacy.excluded_paths` (comma/newline separated glob
+list). `nova/ai/status` does
 **not** require AI to be configured and returns a non-sensitive snapshot of the server’s effective
 AI state even when AI is disabled.
 
