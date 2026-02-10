@@ -8873,24 +8873,36 @@ fn completion_item_detail_for_ai(item: &CompletionItem) -> Option<String> {
         .as_ref()
         .and_then(|d| d.detail.as_deref())
         .and_then(sanitize_detail_part);
+    let label_description = item
+        .label_details
+        .as_ref()
+        .and_then(|d| d.description.as_deref())
+        .and_then(sanitize_detail_part);
 
-    match (detail, label_detail) {
-        (None, None) => None,
-        (Some(detail), None) => Some(detail.to_string()),
-        (None, Some(label_detail)) => Some(label_detail.to_string()),
-        (Some(detail), Some(label_detail)) => {
-            if detail == label_detail {
-                return Some(detail.to_string());
-            }
-            if detail.contains(label_detail) {
-                return Some(detail.to_string());
-            }
-            if label_detail.contains(detail) {
-                return Some(label_detail.to_string());
-            }
-
-            Some(format!("{detail} {label_detail}"))
+    let mut parts = Vec::<&str>::new();
+    for part in [detail, label_detail, label_description]
+        .into_iter()
+        .flatten()
+    {
+        if parts.iter().any(|p| p == &part) {
+            continue;
         }
+        // Avoid repeating parts when one already contains the other (e.g. `print(String)` vs
+        // `String`), while preserving the richer fragment.
+        if parts.iter().any(|p| p.contains(part)) {
+            continue;
+        }
+        if let Some(existing_idx) = parts.iter().position(|p| part.contains(p)) {
+            parts[existing_idx] = part;
+            continue;
+        }
+        parts.push(part);
+    }
+
+    match parts.as_slice() {
+        [] => None,
+        [single] => Some((*single).to_string()),
+        _ => Some(parts.join(" ")),
     }
 }
 
@@ -20257,7 +20269,7 @@ mod tests {
                 detail: Some("void".to_string()),
                 label_details: Some(lsp_types::CompletionItemLabelDetails {
                     detail: Some("(String value)".to_string()),
-                    description: None,
+                    description: Some("java.io.PrintStream".to_string()),
                 }),
                 ..Default::default()
             },
@@ -20267,7 +20279,7 @@ mod tests {
                 detail: None,
                 label_details: Some(lsp_types::CompletionItemLabelDetails {
                     detail: Some("(int v)".to_string()),
-                    description: None,
+                    description: Some("java.io.PrintStream".to_string()),
                 }),
                 ..Default::default()
             },
@@ -20278,7 +20290,7 @@ mod tests {
                 detail: Some("/home/alice/project/Foo.java".to_string()),
                 label_details: Some(lsp_types::CompletionItemLabelDetails {
                     detail: Some("(should keep)".to_string()),
-                    description: None,
+                    description: Some("com.example.Foo".to_string()),
                 }),
                 ..Default::default()
             },
@@ -20301,12 +20313,20 @@ mod tests {
         assert!(prompt.contains("void (String value)"), "{prompt}");
         assert!(prompt.contains("(int v)"), "{prompt}");
         assert!(
+            prompt.contains("java.io.PrintStream"),
+            "expected label_details.description to contribute to detail when not path-like: {prompt}"
+        );
+        assert!(
             !prompt.contains("/home/alice/project/Foo.java"),
             "expected prompt to omit file paths from candidate detail: {prompt}"
         );
         assert!(
             prompt.contains("(should keep)"),
             "expected non-path label_details.detail to still be included: {prompt}"
+        );
+        assert!(
+            prompt.contains("com.example.Foo"),
+            "expected non-path label_details.description to still be included: {prompt}"
         );
     }
 
