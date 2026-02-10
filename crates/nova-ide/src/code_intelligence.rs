@@ -10467,6 +10467,19 @@ pub(crate) fn infer_receiver_type_before_dot(
         }
     }
 
+    // Parenthesized call chain like `(people.stream()).<cursor>`: the receiver expression ends in
+    // `)`, but the call expression itself ends one character earlier than the dot. After unwrapping
+    // the parentheses, try the same call-inference logic again at the inner expression boundary.
+    if end > 0 && bytes.get(end - 1) == Some(&b')') {
+        if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
+            return infer_call_return_type(db, file, text, &analysis, call);
+        }
+
+        if let Some(call) = scan_call_expr_ending_at(text, &analysis, end) {
+            return infer_call_return_type(db, file, text, &analysis, &call);
+        }
+    }
+
     if inner.starts_with('"') {
         return Some("java.lang.String".to_string());
     }
@@ -20694,8 +20707,8 @@ mod tests {
     #[test]
     fn infer_receiver_type_before_dot_infers_stream_from_local_var_call_chain() {
         let java = r#"
-import java.util.List;
-
+ import java.util.List;
+ 
 class A {
   void m() {
     List<String> people = List.of();
@@ -20727,9 +20740,44 @@ class A {
     }
 
     #[test]
-    fn infer_receiver_type_before_dot_infers_stream_for_chained_filter_call() {
+    fn infer_receiver_type_before_dot_infers_stream_from_parenthesized_call_chain() {
         let java = r#"
 import java.util.List;
+
+class A {
+  void m() {
+    List<String> people = List.of();
+    (people.stream()).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("(people.stream()).")
+            .expect("expected `(people.stream()).` in fixture")
+            + "(people.stream())".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        let base = ty
+            .as_deref()
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default();
+        assert!(
+            base.ends_with("Stream"),
+            "expected receiver type to end with `Stream`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_stream_for_chained_filter_call() {
+        let java = r#"
+ import java.util.List;
 
 class A {
   void m() {

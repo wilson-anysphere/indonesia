@@ -484,6 +484,36 @@ class A {
     }
 
     #[test]
+    fn stream_call_chain_receiver_type_and_methods_are_semantic_in_parens() {
+        let ctx = ctx_for(
+            r#"
+import java.util.List;
+
+class Person {}
+
+class A {
+  void m(List<Person> people) {
+    (people.stream()).<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Stream"),
+            "expected receiver type to contain `Stream`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "filter"));
+        assert!(ctx.available_methods.iter().any(|m| m == "map"));
+        assert!(ctx.available_methods.iter().any(|m| m == "collect"));
+        assert!(ctx
+            .importable_paths
+            .iter()
+            .any(|path| path == "java.util.stream.Collectors"));
+    }
+
+    #[test]
     fn dotted_field_chain_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
