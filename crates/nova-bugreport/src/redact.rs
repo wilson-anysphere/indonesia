@@ -56,6 +56,8 @@ fn redact_api_keys(input: &str) -> String {
     static AIZA_RE: OnceLock<Regex> = OnceLock::new();
     static AWS_ACCESS_KEY_RE: OnceLock<Regex> = OnceLock::new();
     static GITHUB_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
+    static LONG_HEX_RE: OnceLock<Regex> = OnceLock::new();
+    static LONG_BASE64ISH_RE: OnceLock<Regex> = OnceLock::new();
     let sk_re =
         SK_RE.get_or_init(|| Regex::new(r"sk-[A-Za-z0-9_-]{16,}").expect("sk regex should compile"));
     let aiza_re = AIZA_RE
@@ -66,11 +68,18 @@ fn redact_api_keys(input: &str) -> String {
     let gh_re = GITHUB_TOKEN_RE.get_or_init(|| {
         Regex::new(r"\bghp_[A-Za-z0-9]{30,}\b").expect("github token regex should compile")
     });
+    let long_hex_re = LONG_HEX_RE
+        .get_or_init(|| Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("long hex regex should compile"));
+    let long_base64ish_re = LONG_BASE64ISH_RE.get_or_init(|| {
+        Regex::new(r"[A-Za-z0-9+/=_-]{32,}").expect("long base64ish regex should compile")
+    });
 
     let out = sk_re.replace_all(input, REDACTION);
     let out = aiza_re.replace_all(&out, REDACTION);
     let out = aws_re.replace_all(&out, REDACTION);
-    gh_re.replace_all(&out, REDACTION).into_owned()
+    let out = gh_re.replace_all(&out, REDACTION);
+    let out = long_hex_re.replace_all(&out, REDACTION);
+    long_base64ish_re.replace_all(&out, REDACTION).into_owned()
 }
 
 fn redact_sensitive_kv_pairs(input: &str) -> String {
@@ -246,6 +255,20 @@ mod tests {
 
         assert!(!out.contains(secret));
         assert!(out.contains("<redacted>"), "{out}");
+    }
+
+    #[test]
+    fn redacts_long_hex_strings() {
+        let secret = "0123456789abcdef0123456789abcdef";
+        let out = redact_string(secret);
+        assert_eq!(out, "<redacted>");
+    }
+
+    #[test]
+    fn redacts_long_base64ish_strings() {
+        let secret = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-";
+        let out = redact_string(secret);
+        assert_eq!(out, "<redacted>");
     }
 
     #[test]
