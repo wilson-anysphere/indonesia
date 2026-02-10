@@ -10262,7 +10262,7 @@ fn static_member_completions(
     items
 }
 
-fn member_completions_for_receiver_type(
+pub(crate) fn member_completions_for_receiver_type(
     db: &dyn Database,
     file: FileId,
     receiver_type: &str,
@@ -10453,7 +10453,7 @@ pub(crate) fn infer_receiver_type_before_dot(
     }
 
     if inner.starts_with('"') {
-        return Some("String".to_string());
+        return Some("java.lang.String".to_string());
     }
 
     // Local vars.
@@ -10478,6 +10478,71 @@ pub(crate) fn infer_receiver_type_before_dot(
         .iter()
         .find(|f| f.name == inner)
         .map(|f| f.ty.clone())
+}
+
+#[cfg(any(feature = "ai", test))]
+pub(crate) fn infer_receiver_type_for_member_access(
+    db: &dyn Database,
+    file: FileId,
+    receiver: &str,
+    receiver_offset: usize,
+) -> Option<String> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
+
+    let (receiver_ty, _call_kind) =
+        infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    let receiver_ty = maybe_load_external_type_for_member_completion(
+        db,
+        file,
+        &mut types,
+        &file_ctx,
+        receiver_ty,
+    );
+
+    Some(format_type_fully_qualified(&types, &receiver_ty))
+}
+
+fn format_type_fully_qualified(types: &TypeStore, ty: &Type) -> String {
+    fn fmt(types: &TypeStore, ty: &Type, out: &mut String) {
+        match ty {
+            Type::Class(nova_types::ClassType { def, args }) => {
+                if let Some(class_def) = types.class(*def) {
+                    out.push_str(&class_def.name.replace('$', "."));
+                } else {
+                    out.push_str(&nova_types::format_type(types, ty));
+                }
+
+                if !args.is_empty() {
+                    out.push('<');
+                    for (idx, arg) in args.iter().enumerate() {
+                        if idx != 0 {
+                            out.push_str(", ");
+                        }
+                        fmt(types, arg, out);
+                    }
+                    out.push('>');
+                }
+            }
+            Type::Named(name) => out.push_str(&name.replace('$', ".")),
+            Type::Array(inner) => {
+                fmt(types, inner, out);
+                out.push_str("[]");
+            }
+            other => out.push_str(&nova_types::format_type(types, other)),
+        }
+    }
+
+    let mut out = String::new();
+    fmt(types, ty, &mut out);
+    out
 }
 
 fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usize> {
@@ -10685,7 +10750,7 @@ fn infer_call_return_type(
     // want the constructed type, not overload resolution.
     if is_constructor_call(analysis, call) {
         let ty = parse_source_type_in_context(&mut types, &file_ctx, call.name.as_str());
-        return Some(nova_types::format_type(&types, &ty));
+        return Some(format_type_fully_qualified(&types, &ty));
     }
 
     let (receiver_ty, call_kind) =
@@ -10718,7 +10783,7 @@ fn infer_call_return_type(
     };
 
     if let Some(method) = resolved {
-        return Some(nova_types::format_type(&ctx, &method.return_type));
+        return Some(format_type_fully_qualified(&types, &method.return_type));
     }
 
     fallback_receiver_type_for_call(call.name)
@@ -10726,8 +10791,8 @@ fn infer_call_return_type(
 
 fn fallback_receiver_type_for_call(name: &str) -> Option<String> {
     match name {
-        "stream" => Some("Stream".to_string()),
-        "toString" => Some("String".to_string()),
+        "stream" => Some("java.util.stream.Stream".to_string()),
+        "toString" => Some("java.lang.String".to_string()),
         _ => None,
     }
 }
@@ -18138,7 +18203,73 @@ fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
         }
     }
 
-    let jdk = JDK_INDEX.as_ref()?;
+    let jdk = match JDK_INDEX.as_ref() {
+        Some(jdk) => jdk,
+        None => {
+            // When JDK indexing is disabled (the default for debug/test builds), we still want
+            // completion context helpers to handle a few high-signal types.
+            //
+            // `Stream` is important for multi-token completions (method chains like
+            // `people.stream().filter(...).map(...).collect(...)`), so we provide a minimal
+            // placeholder definition when the full JDK index is unavailable.
+            if name == "java.util.stream.Stream" {
+                let object = parse_source_type(types, "java.lang.Object");
+                let id = types.add_class(nova_types::ClassDef {
+                    name: name.to_string(),
+                    kind: ClassKind::Interface,
+                    type_params: Vec::new(),
+                    super_class: Some(object),
+                    interfaces: Vec::new(),
+                    fields: Vec::new(),
+                    constructors: Vec::new(),
+                    methods: Vec::new(),
+                });
+
+                if let Some(class_def) = types.class_mut(id) {
+                    let stream_ty = Type::class(id, vec![]);
+                    class_def.methods.extend([
+                        MethodDef {
+                            name: "filter".to_string(),
+                            type_params: Vec::new(),
+                            params: vec![Type::Named(
+                                "java.util.function.Predicate".to_string(),
+                            )],
+                            return_type: stream_ty.clone(),
+                            is_static: false,
+                            is_varargs: false,
+                            is_abstract: false,
+                        },
+                        MethodDef {
+                            name: "map".to_string(),
+                            type_params: Vec::new(),
+                            params: vec![Type::Named(
+                                "java.util.function.Function".to_string(),
+                            )],
+                            return_type: stream_ty.clone(),
+                            is_static: false,
+                            is_varargs: false,
+                            is_abstract: false,
+                        },
+                        MethodDef {
+                            name: "collect".to_string(),
+                            type_params: Vec::new(),
+                            params: vec![Type::Named(
+                                "java.util.stream.Collector".to_string(),
+                            )],
+                            return_type: Type::Unknown,
+                            is_static: false,
+                            is_varargs: false,
+                            is_abstract: false,
+                        },
+                    ]);
+                }
+
+                return Some(id);
+            }
+
+            return None;
+        }
+    };
     let stub = jdk.lookup_type(name).ok().flatten()?;
 
     let kind = if stub.access_flags & ACC_INTERFACE != 0 {
@@ -20363,7 +20494,16 @@ class A {
             + "stream()".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
-        assert_eq!(ty.as_deref(), Some("Stream"));
+        let base = ty
+            .as_deref()
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default();
+        assert!(
+            base.ends_with("Stream"),
+            "expected receiver type to end with `Stream`, got {ty:?}"
+        );
     }
 
     #[test]

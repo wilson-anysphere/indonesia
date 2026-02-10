@@ -5,16 +5,15 @@ use nova_db::{Database, FileId};
 
 use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
-    member_method_names_for_receiver_type, receiver_before_dot, skip_whitespace_backwards,
-    CompletionContextAnalysis,
+    infer_receiver_type_for_member_access, member_method_names_for_receiver_type, receiver_before_dot,
+    skip_whitespace_backwards, CompletionContextAnalysis,
 };
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
 ///
-/// This is intentionally best-effort and deterministic. It reuses the semantic
-/// receiver-type and member enumeration helpers in `code_intelligence.rs` (type
-/// store + minimal JDK / optional classpath) and falls back to lightweight
-/// lexical inference for locals/fields.
+/// This is intentionally best-effort and deterministic. It reuses semantic receiver-type inference
+/// and member enumeration helpers from `code_intelligence.rs` (type store + minimal JDK / optional
+/// classpath) and falls back to lightweight lexical inference for locals/fields when needed.
 pub fn multi_token_completion_context(
     db: &dyn Database,
     file: FileId,
@@ -80,7 +79,8 @@ fn receiver_at_offset(
     let dot_offset = before - 1;
     let receiver = receiver_before_dot(text, dot_offset);
     if !receiver.is_empty() {
-        let ty = infer_receiver_type(receiver.as_str(), analysis);
+        let ty = infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
+            .or_else(|| infer_receiver_type_lexical(receiver.as_str(), analysis));
         return (Some(receiver), ty);
     }
 
@@ -88,9 +88,9 @@ fn receiver_at_offset(
     (None, ty)
 }
 
-fn infer_receiver_type(receiver: &str, analysis: &CompletionContextAnalysis) -> Option<String> {
+fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnalysis) -> Option<String> {
     if receiver.starts_with('"') {
-        return Some("String".to_string());
+        return Some("java.lang.String".to_string());
     }
 
     analysis
@@ -119,6 +119,7 @@ fn available_methods_for_receiver(
             return methods;
         }
     }
+
     analysis.methods.clone()
 }
 
@@ -188,9 +189,18 @@ mod tests {
         (source, Position::new(pos.line, pos.character))
     }
 
+    fn ctx_for(source_with_cursor: &str) -> MultiTokenCompletionContext {
+        let (source, position) = fixture_position(source_with_cursor);
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
+        db.set_file_text(file, source);
+        multi_token_completion_context(&db, file, position)
+    }
+
     #[test]
     fn expected_type_infers_variable_declaration_assignment() {
-        let (source, position) = fixture_position(
+        let ctx = ctx_for(
             r#"
 import java.util.List;
 
@@ -202,17 +212,12 @@ class Test {
 "#,
         );
 
-        let mut db = InMemoryFileStore::new();
-        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
-        db.set_file_text(file, source);
-
-        let ctx = multi_token_completion_context(&db, file, position);
         assert_eq!(ctx.expected_type.as_deref(), Some("List<String>"));
     }
 
     #[test]
     fn expected_type_infers_return_statement() {
-        let (source, position) = fixture_position(
+        let ctx = ctx_for(
             r#"
 import java.util.List;
 
@@ -224,11 +229,59 @@ class Test {
 "#,
         );
 
-        let mut db = InMemoryFileStore::new();
-        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
-        db.set_file_text(file, source);
-
-        let ctx = multi_token_completion_context(&db, file, position);
         assert_eq!(ctx.expected_type.as_deref(), Some("List<String>"));
     }
+
+    #[test]
+    fn string_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    String s = "x";
+    s.<cursor>
+  }
 }
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn stream_call_chain_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+import java.util.List;
+
+class Person {}
+
+class A {
+  void m(List<Person> people) {
+    people.stream().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Stream"),
+            "expected receiver type to contain `Stream`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "filter"));
+        assert!(ctx.available_methods.iter().any(|m| m == "map"));
+        assert!(ctx.available_methods.iter().any(|m| m == "collect"));
+        assert!(ctx
+            .importable_paths
+            .iter()
+            .any(|path| path == "java.util.stream.Collectors"));
+    }
+}
+

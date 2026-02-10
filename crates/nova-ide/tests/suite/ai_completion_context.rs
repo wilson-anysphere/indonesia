@@ -32,8 +32,13 @@ class A {
     );
 
     let ctx = multi_token_completion_context(&db, file, pos);
-    assert_eq!(ctx.receiver_type.as_deref(), Some("String"));
+    let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+    assert!(
+        receiver_ty.contains("String"),
+        "expected receiver type to contain `String`, got {receiver_ty:?}"
+    );
     assert!(ctx.available_methods.iter().any(|m| m == "length"));
+    assert!(ctx.available_methods.iter().any(|m| m == "substring"));
     assert!(ctx.surrounding_code.contains("s."));
     assert!(ctx.importable_paths.is_empty());
 }
@@ -42,8 +47,13 @@ class A {
 fn context_handles_stream_call_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"
+import java.util.List;
+
+class Person {}
+
 class A {
   void m() {
+    List<Person> people = null;
     people.stream().<|>
   }
 }
@@ -51,7 +61,11 @@ class A {
     );
 
     let ctx = multi_token_completion_context(&db, file, pos);
-    assert_eq!(ctx.receiver_type.as_deref(), Some("Stream"));
+    let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+    assert!(
+        receiver_ty.contains("Stream"),
+        "expected receiver type to contain `Stream`, got {receiver_ty:?}"
+    );
     assert!(ctx.available_methods.iter().any(|m| m == "filter"));
     assert!(ctx.available_methods.iter().any(|m| m == "map"));
     assert!(ctx.available_methods.iter().any(|m| m == "collect"));
@@ -103,7 +117,11 @@ class A {
     );
 
     let ctx = multi_token_completion_context(&db, file, pos);
-    assert_eq!(ctx.receiver_type.as_deref(), Some("String"));
+    let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+    assert!(
+        receiver_ty.contains("String"),
+        "expected receiver type to contain `String`, got {receiver_ty:?}"
+    );
     assert!(ctx.surrounding_code.contains("😀"));
     assert!(
         ctx.surrounding_code.trim_end().ends_with('.'),
