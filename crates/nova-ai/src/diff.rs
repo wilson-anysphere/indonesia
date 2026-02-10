@@ -179,14 +179,8 @@ where
         let new_raw =
             parse_file_header_path(new_header, "+++ ").ok_or(DiffParseError::InvalidHeader)?;
 
-        let old_path = normalize_diff_path(&old_raw, true);
-        let new_path = normalize_diff_path(&new_raw, true);
-        if old_path.is_none() && new_path.is_none() {
-            return Err(DiffParseError::InvalidHeader);
-        }
-
-        let excluded =
-            is_excluded_diff_paths(old_path.as_deref(), new_path.as_deref(), is_excluded);
+        let excluded = is_excluded_unified_diff_paths(&old_raw, &new_raw, is_excluded)
+            .ok_or(DiffParseError::InvalidHeader)?;
         if excluded {
             omitted_any = true;
             out.push_str(sentinel_line);
@@ -204,6 +198,39 @@ where
     })
 }
 
+fn is_excluded_unified_diff_paths<F>(
+    old_raw: &str,
+    new_raw: &str,
+    is_excluded: &F,
+) -> Option<bool>
+where
+    F: Fn(&Path) -> bool,
+{
+    // Unified diff headers can come from git or from other tools. `a/` and `b/` may be:
+    // - git's source/dest prefixes, which callers generally *don't* include in excluded_paths
+    // - real directory names (e.g. comparing two directories named `a/` and `b/`)
+    //
+    // To avoid bypasses, treat both the raw path and the git-stripped variant as match candidates.
+    let old_raw_path = normalize_diff_path(old_raw, false);
+    let old_stripped_path = normalize_diff_path(old_raw, true);
+    let new_raw_path = normalize_diff_path(new_raw, false);
+    let new_stripped_path = normalize_diff_path(new_raw, true);
+
+    let any_path = old_raw_path.is_some()
+        || old_stripped_path.is_some()
+        || new_raw_path.is_some()
+        || new_stripped_path.is_some();
+    if !any_path {
+        return None;
+    }
+
+    let excluded = old_raw_path.as_deref().is_some_and(is_excluded)
+        || old_stripped_path.as_deref().is_some_and(is_excluded)
+        || new_raw_path.as_deref().is_some_and(is_excluded)
+        || new_stripped_path.as_deref().is_some_and(is_excluded);
+    Some(excluded)
+}
+
 fn is_unified_file_header_at(lines: &[&str], idx: usize) -> bool {
     let Some(line) = lines.get(idx) else {
         return false;
@@ -215,18 +242,6 @@ fn is_unified_file_header_at(lines: &[&str], idx: usize) -> bool {
         return false;
     };
     next.starts_with("+++ ")
-}
-
-fn is_excluded_diff_paths<F>(
-    old_path: Option<&Path>,
-    new_path: Option<&Path>,
-    is_excluded: &F,
-) -> bool
-where
-    F: Fn(&Path) -> bool,
-{
-    // Be conservative: omit if either the old *or* new path matches the exclusion patterns.
-    old_path.is_some_and(is_excluded) || new_path.is_some_and(is_excluded)
 }
 
 fn normalize_diff_path(raw: &str, strip_a_b_prefix: bool) -> Option<PathBuf> {

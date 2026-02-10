@@ -308,6 +308,34 @@ fn unified_diff_with_timestamps_is_supported() {
 }
 
 #[test]
+fn unified_diff_does_not_strip_real_a_directory_prefix_from_paths() {
+    let excluded_path = "a/src/secrets/secret.txt";
+
+    let excluded_section = "--- a/src/secrets/secret.txt\n\
++++ a/src/secrets/secret.txt\n\
+@@ -1 +1 @@\n\
+-old\n\
++REAL_A_SECRET\n";
+
+    let allowed_section = "--- src/Ok.java\n\
++++ src/Ok.java\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 8; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("REAL_A_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn unified_diff_windows_paths_with_backslashes_and_timestamps_are_supported() {
     let excluded_path = r"C:\Users\alice\secrets\secret.txt";
 
