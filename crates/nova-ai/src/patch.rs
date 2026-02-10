@@ -1165,19 +1165,6 @@ diff --git a/foo.txt b/foo.txt
 BROKEN
 ```"#;
 
-        eprintln!(
-            "diff::parse_diff_git_paths(header)={:?}",
-            crate::diff::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt")
-        );
-        eprintln!(
-            "patch::parse_diff_git_paths(header)={:?}",
-            super::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt")
-        );
-        eprintln!(
-            "diff::parse_diff_token(new)={:?}",
-            crate::diff::parse_diff_token("\"b/foo.txt")
-        );
-
         let err = parse_structured_patch(raw).expect_err("expected failure");
         assert!(matches!(err, PatchParseError::InvalidDiff(_)));
     }
@@ -1456,6 +1443,25 @@ index e69de29..4b825dc 100644\n\
     fn diff_git_header_tokenization_errors_on_missing_tokens() {
         assert!(super::parse_diff_git_paths("diff --git a/foo.txt").is_err());
         assert!(super::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt").is_err());
+    }
+
+    #[test]
+    fn malformed_diff_git_header_fails_closed_even_if_unified_headers_are_present() {
+        let missing_new = r#"diff --git a/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -0,0 +1,1 @@
++hello"#;
+        let err = parse_unified_diff(missing_new).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidDiff(_)));
+
+        let unterminated_quote = r#"diff --git a/foo.txt "b/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -0,0 +1,1 @@
++hello"#;
+        let err = parse_unified_diff(unterminated_quote).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidDiff(_)));
     }
 
 }
