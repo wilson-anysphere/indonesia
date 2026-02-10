@@ -249,31 +249,31 @@ fn normalize_diff_path(raw: &str) -> Option<PathBuf> {
 
 fn parse_file_header_path(line: &str, prefix: &str) -> Option<String> {
     let rest = line.strip_prefix(prefix)?;
+    let rest = rest.trim_end_matches(&['\r', '\n'][..]);
+
+    // If the path is quoted, use git-style C unquoting. (This matches the format emitted by git
+    // when paths contain spaces or non-ASCII characters.)
     if rest.trim_start().starts_with('"') {
-        let (token, _) = parse_diff_token(rest)?;
-        return Some(token);
+        let (token, remaining) = parse_diff_token(rest)?;
+        return validate_unified_header_path_remainder(token, remaining);
     }
 
     // Unified diff headers may include a timestamp after the filename, separated by a tab.
     // To support unquoted paths containing spaces, treat everything up to the first tab (if
     // present) as the path.
-    if let Some((path_part, _)) = rest.split_once('\t') {
-        return unescape_git_path_fragment(path_part.trim_end_matches('\r'));
+    if let Some((path_part, after_tab)) = rest.split_once('\t') {
+        let after_tab = after_tab.trim();
+        if !after_tab.is_empty() && !looks_like_unified_diff_timestamp(after_tab) {
+            return None;
+        }
+        return Some(path_part.to_string());
     }
 
-    let (token, remaining) = parse_diff_token(rest)?;
-    if remaining.trim().is_empty() {
-        return Some(token);
-    }
-
-    // If there is additional content after the filename without a tab separator, only accept it
-    // if it looks like a timestamp. Otherwise, treat the header as ambiguous and fail closed.
-    let remaining = remaining.trim_start();
-    if looks_like_unified_diff_timestamp(remaining) {
-        return Some(token);
-    }
-
-    None
+    // Unquoted path without tab: accept either `--- path` or `--- path <timestamp>`, but fail
+    // closed if extra fields don't look like a timestamp. We do *not* apply C unquoting here to
+    // avoid mis-parsing Windows-style backslashes in diffs produced by non-git tools.
+    let (token, remaining) = split_first_whitespace_token(rest)?;
+    validate_unified_header_path_remainder(token.to_string(), remaining)
 }
 
 fn looks_like_unified_diff_timestamp(s: &str) -> bool {
@@ -300,6 +300,40 @@ fn looks_like_unified_diff_timestamp(s: &str) -> bool {
         && bytes[7] == b'-'
         && is_digit(bytes[8])
         && is_digit(bytes[9])
+}
+
+fn validate_unified_header_path_remainder(path: String, remaining: &str) -> Option<String> {
+    let remaining = remaining.trim();
+    if remaining.is_empty() {
+        return Some(path);
+    }
+
+    // If there is additional content after the filename, only accept it if it looks like a
+    // timestamp. Otherwise, treat the header as ambiguous and fail closed.
+    if looks_like_unified_diff_timestamp(remaining) {
+        return Some(path);
+    }
+
+    None
+}
+
+fn split_first_whitespace_token(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    if input.is_empty() {
+        return None;
+    }
+
+    let mut end = input.len();
+    for (idx, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            end = idx;
+            break;
+        }
+    }
+
+    let token = &input[..end];
+    let rest = &input[end..];
+    Some((token, rest))
 }
 
 fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
@@ -360,14 +394,6 @@ fn parse_diff_token(input: &str) -> Option<(String, &str)> {
 
 fn is_git_section_header_line(line: &str) -> bool {
     line.starts_with("diff --git ") || line.starts_with("diff --cc ") || line.starts_with("diff --combined ")
-}
-
-fn unescape_git_path_fragment(input: &str) -> Option<String> {
-    let (bytes, consumed) = parse_git_c_style_bytes(input, |_| false)?;
-    if consumed != input.len() {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
 }
 
 /// Parse bytes using git's C-style escaping rules.

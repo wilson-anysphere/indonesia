@@ -203,6 +203,49 @@ fn unified_diff_with_timestamps_is_supported() {
 }
 
 #[test]
+fn unified_diff_windows_paths_with_backslashes_and_timestamps_are_supported() {
+    let excluded_path = r"C:\Users\alice\secrets\secret.txt";
+
+    let excluded_section = format!(
+        "--- {excluded_path}\t2026-02-10 12:00:00.000000000 +0000\n\
++++ {excluded_path}\t2026-02-10 12:00:00.000000000 +0000\n\
+@@ -1 +1 @@\n\
+-old\n\
++WIN_SECRET\n"
+    );
+
+    let allowed_section = "--- a/src/Ok.java\t2026-02-10 12:00:00.000000000 +0000\n\
++++ b/src/Ok.java\t2026-02-10 12:00:00.000000000 +0000\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 7; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("WIN_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
+fn unified_diff_with_ambiguous_quoted_headers_fails_closed() {
+    let diff = "--- \"a/src/Ok.java\" \"b/src/secrets/Secret.java\"\n\
++++ \"b/src/Ok.java\" \"b/src/secrets/Secret.java\"\n\
+@@ -1 +1 @@\n\
+-old\n\
++LEAK\n";
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |_| false);
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+}
+
+#[test]
 fn git_diff_token_parsing_supports_octal_escapes() {
     let excluded_path = "src/secrets/café.txt";
 
@@ -246,4 +289,3 @@ fn parsing_failure_fails_closed_with_single_sentinel_line_and_preserves_newline_
     assert_eq!(filtered, sentinel_line("\r\n"));
     assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
 }
-
