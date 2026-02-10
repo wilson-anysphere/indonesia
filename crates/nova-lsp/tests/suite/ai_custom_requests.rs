@@ -261,6 +261,21 @@ fn code_review_request_omits_excluded_diff(req: &HttpMockRequest) -> bool {
     body.contains("[diff omitted due to excluded_paths]") && !body.contains(SECRET_MARKER)
 }
 
+const CODE_REVIEW_TRUNCATION_HEAD_MARKER: &str = "NOVA_CODE_REVIEW_HEAD_MARKER_8b06c0ad";
+const CODE_REVIEW_TRUNCATION_MIDDLE_MARKER: &str = "NOVA_CODE_REVIEW_MIDDLE_MARKER_b0cf6f47";
+const CODE_REVIEW_TRUNCATION_TAIL_MARKER: &str = "NOVA_CODE_REVIEW_TAIL_MARKER_7f57f676";
+
+fn code_review_request_truncates_large_diff(req: &HttpMockRequest) -> bool {
+    let Some(body) = req.body.as_deref() else {
+        return false;
+    };
+    let body = String::from_utf8_lossy(body);
+    body.contains(CODE_REVIEW_TRUNCATION_HEAD_MARKER)
+        && body.contains(CODE_REVIEW_TRUNCATION_TAIL_MARKER)
+        && body.contains("[diff truncated: omitted")
+        && !body.contains(CODE_REVIEW_TRUNCATION_MIDDLE_MARKER)
+}
+
 #[test]
 fn stdio_ai_code_review_custom_request_returns_string_and_emits_progress() {
     let _lock = support::stdio_server_lock();
@@ -423,6 +438,74 @@ excluded_paths = ["src/secrets/**"]
                 "diff": "diff --git a/Secret.java b/Secret.java\n+// DO_NOT_LEAK_THIS_SECRET\n",
                 "uri": secret_uri,
             }
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(result.as_str(), Some("mock review"));
+
+    mock.assert_hits(1);
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
+fn stdio_ai_code_review_custom_request_truncates_large_diffs() {
+    let _lock = support::stdio_server_lock();
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .matches(code_review_request_truncates_large_diff);
+        then.status(200).json_body(json!({ "completion": "mock review" }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+code_review_max_diff_chars = 200
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            endpoint = format!("{}/complete", server.base_url())
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    let diff = format!(
+        "diff --git a/Main.java b/Main.java\n+// {head}\n+{a}\n+// {middle}\n+{b}\n+// {tail}\n",
+        head = CODE_REVIEW_TRUNCATION_HEAD_MARKER,
+        middle = CODE_REVIEW_TRUNCATION_MIDDLE_MARKER,
+        tail = CODE_REVIEW_TRUNCATION_TAIL_MARKER,
+        a = "A".repeat(2000),
+        b = "B".repeat(2000),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/codeReview",
+            "params": { "diff": diff }
         }),
     );
 
