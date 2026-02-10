@@ -709,66 +709,116 @@ impl LlmClient for AiClient {
 
         let timeout = self.request_timeout;
         let operation_start = Instant::now();
-        let permit = tokio::time::timeout(timeout, self.acquire_permit(&cancel))
+        // Acquire a semaphore permit per attempt. This mirrors `chat()` and avoids holding the
+        // concurrency slot while we back off between retries. The permit from the successful
+        // attempt is held for the lifetime of the returned stream.
+        let mut attempt = 0usize;
+
+        let (permit, inner, started_at, retry_count) = loop {
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
+            }
+
+            let remaining = timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
+            }
+
+            let permit =
+                match tokio::time::timeout(remaining, self.acquire_permit(&cancel)).await {
+                    Ok(permit) => permit?,
+                    Err(_) => return Err(AiError::Timeout),
+                };
+
+            let remaining = timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                drop(permit);
+                return Err(AiError::Timeout);
+            }
+
+            let started_at = Instant::now();
+            if let Some(prompt) = prompt_for_log.as_deref() {
+                audit::log_llm_request(
+                    request_id,
+                    self.provider_label,
+                    &self.model,
+                    prompt,
+                    safe_endpoint.as_deref(),
+                    attempt,
+                    /*stream=*/ true,
+                );
+            }
+
+            let out = match tokio::time::timeout(
+                remaining,
+                self.provider.chat_stream(request.clone(), cancel.clone()),
+            )
             .await
-            .map_err(|_| AiError::Timeout)??;
-        let remaining = timeout.saturating_sub(operation_start.elapsed());
-        if remaining == Duration::ZERO {
-            return Err(AiError::Timeout);
-        }
-
-        let started_at = Instant::now();
-        if let Some(prompt) = prompt_for_log.as_deref() {
-            audit::log_llm_request(
-                request_id,
-                self.provider_label,
-                &self.model,
-                prompt,
-                safe_endpoint.as_deref(),
-                /*attempt=*/ 0,
-                /*stream=*/ true,
-            );
-        }
-
-        // Clone before moving `cancel` into the provider so the wrapper can enforce cancellation
-        // even if the provider's stream doesn't poll the token correctly.
-        let cancel_for_stream = cancel.clone();
-
-        let inner =
-            match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
             {
-                Ok(result) => match result {
-                    Ok(stream) => stream,
-                    Err(err) => {
+                Ok(res) => res,
+                Err(_) => Err(AiError::Timeout),
+            };
+
+            match out {
+                Ok(stream) => break (permit, stream, started_at, attempt),
+                Err(err) if attempt < self.retry.max_retries && self.should_retry(&err) => {
+                    if self.audit_enabled {
+                        audit::log_llm_error(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            &err.to_string(),
+                            started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ true,
+                        );
+                    }
+
+                    attempt += 1;
+                    warn!(
+                        provider = ?self.provider_kind,
+                        attempt,
+                        error = %err,
+                        "llm stream request failed, retrying"
+                    );
+
+                    drop(permit);
+                    let remaining = timeout.saturating_sub(operation_start.elapsed());
+                    if remaining == Duration::ZERO {
+                        return Err(AiError::Timeout);
+                    }
+                    if let Err(err) = self.backoff_sleep(attempt, remaining, &cancel).await {
                         if self.audit_enabled {
                             audit::log_llm_error(
                                 request_id,
                                 self.provider_label,
                                 &self.model,
                                 &err.to_string(),
-                                started_at.elapsed(),
-                                /*retry_count=*/ 0,
+                                operation_start.elapsed(),
+                                attempt,
                                 /*stream=*/ true,
                             );
                         }
                         return Err(err);
                     }
-                },
-                Err(_) => {
+                }
+                Err(err) => {
                     if self.audit_enabled {
                         audit::log_llm_error(
                             request_id,
                             self.provider_label,
                             &self.model,
-                            &AiError::Timeout.to_string(),
+                            &err.to_string(),
                             started_at.elapsed(),
-                            /*retry_count=*/ 0,
+                            attempt,
                             /*stream=*/ true,
                         );
                     }
-                    return Err(AiError::Timeout);
+                    drop(permit);
+                    return Err(err);
                 }
-            };
+            }
+        };
 
         let audit_enabled = self.audit_enabled;
         let provider_label = self.provider_label;
@@ -776,7 +826,12 @@ impl LlmClient for AiClient {
         let safe_endpoint_for_stream = safe_endpoint.clone();
         let request_id_for_stream = request_id;
         let started_at_for_stream = started_at;
+        let retry_count_for_stream = retry_count;
         let idle_timeout = self.request_timeout;
+
+        // Clone before moving `cancel_for_stream` into the wrapper so it can enforce cancellation
+        // even if the provider's stream doesn't poll the token correctly.
+        let cancel_for_stream = cancel.clone();
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
@@ -807,7 +862,7 @@ impl LlmClient for AiClient {
                                 &model,
                                 &err.to_string(),
                                 started_at_for_stream.elapsed(),
-                                /*retry_count=*/ 0,
+                                retry_count_for_stream,
                                 /*stream=*/ true,
                             );
                         }
@@ -822,7 +877,7 @@ impl LlmClient for AiClient {
                                 &model,
                                 &err.to_string(),
                                 started_at_for_stream.elapsed(),
-                                /*retry_count=*/ 0,
+                                retry_count_for_stream,
                                 /*stream=*/ true,
                             );
                         }
@@ -839,7 +894,7 @@ impl LlmClient for AiClient {
                     safe_endpoint_for_stream.as_deref(),
                     &completion,
                     started_at_for_stream.elapsed(),
-                    /*retry_count=*/ 0,
+                    retry_count_for_stream,
                     /*stream=*/ true,
                     Some(chunk_count),
                 );

@@ -1,3 +1,4 @@
+use futures::TryStreamExt;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server, StatusCode,
@@ -52,6 +53,19 @@ fn http_config(url: Url) -> AiConfig {
     let mut cfg = AiConfig::default();
     cfg.enabled = true;
     cfg.provider.kind = AiProviderKind::Http;
+    cfg.provider.url = url;
+    cfg.provider.model = "test-model".to_string();
+    cfg.provider.timeout_ms = 1_000;
+    cfg.provider.concurrency = Some(1);
+    cfg.provider.max_tokens = 32;
+    cfg.cache_enabled = false;
+    cfg
+}
+
+fn openai_compatible_config(url: Url) -> AiConfig {
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = url;
     cfg.provider.model = "test-model".to_string();
     cfg.provider.timeout_ms = 1_000;
@@ -165,6 +179,133 @@ async fn max_retries_allows_retry_on_500() {
         request_count.load(Ordering::SeqCst),
         2,
         "expected one retry after the initial 500"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_stream_retries_before_first_chunk_on_500() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_handler = request_count.clone();
+    let handler = move |req: Request<Body>| {
+        let request_count = request_count_for_handler.clone();
+        async move {
+            assert_eq!(req.method(), hyper::Method::POST);
+            assert_eq!(req.uri().path(), "/v1/chat/completions");
+            let _ = hyper::body::to_bytes(req.into_body()).await;
+
+            let call = request_count.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("boom"))
+                    .expect("response")
+            } else {
+                let sse = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"P\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ong\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                );
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .expect("response")
+            }
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).expect("url");
+
+    let mut cfg = openai_compatible_config(url);
+    cfg.provider.retry_max_retries = 1;
+    cfg.provider.retry_initial_backoff_ms = 1;
+    cfg.provider.retry_max_backoff_ms = 1;
+
+    let client = AiClient::from_config(&cfg).expect("client");
+    let stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("Ping")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("expected retry to establish stream");
+
+    let chunks: Vec<String> = stream.try_collect().await.expect("stream ok");
+    assert_eq!(chunks.concat(), "Pong");
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected one retry after the initial 500"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_stream_retries_before_first_chunk_on_429() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_handler = request_count.clone();
+    let handler = move |req: Request<Body>| {
+        let request_count = request_count_for_handler.clone();
+        async move {
+            assert_eq!(req.method(), hyper::Method::POST);
+            assert_eq!(req.uri().path(), "/v1/chat/completions");
+            let _ = hyper::body::to_bytes(req.into_body()).await;
+
+            let call = request_count.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Response::builder()
+                    .status(StatusCode::TOO_MANY_REQUESTS)
+                    .body(Body::from("slow down"))
+                    .expect("response")
+            } else {
+                let sse = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Pong\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                );
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .expect("response")
+            }
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).expect("url");
+
+    let mut cfg = openai_compatible_config(url);
+    cfg.provider.retry_max_retries = 1;
+    cfg.provider.retry_initial_backoff_ms = 1;
+    cfg.provider.retry_max_backoff_ms = 1;
+
+    let client = AiClient::from_config(&cfg).expect("client");
+    let stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("Ping")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("expected retry to establish stream");
+
+    let chunks: Vec<String> = stream.try_collect().await.expect("stream ok");
+    assert_eq!(chunks.concat(), "Pong");
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected one retry after the initial 429"
     );
 
     handle.abort();
