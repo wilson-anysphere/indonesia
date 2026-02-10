@@ -1,6 +1,7 @@
 mod ai_eval;
 mod cloud_multi_token;
 mod cloud_endpoints;
+mod cloud_streaming;
 mod code_review;
 mod code_review_truncation;
 mod completion_ranking_cache;
