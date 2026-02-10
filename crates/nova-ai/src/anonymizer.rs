@@ -1189,6 +1189,17 @@ class Example {
     }
 
     #[test]
+    fn escaped_quotes_in_string_and_char_literals_do_not_break_scanner() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Foo".to_string());
+
+        let code = r#"char q = '\''; String s = "a\"id_0\""; id_0();"#;
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, r#"char q = '\''; String s = "a\"id_0\""; Foo();"#);
+    }
+
+    #[test]
     fn does_not_replace_inside_comments() {
         let mut reverse = HashMap::new();
         reverse.insert("id_0".to_string(), "Foo".to_string());
