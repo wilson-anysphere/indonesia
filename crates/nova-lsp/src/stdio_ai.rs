@@ -1388,9 +1388,30 @@ pub(super) fn maybe_add_related_code(
     .semantic_search
     .read()
     .unwrap_or_else(|err| err.into_inner());
-  let mut req = req.with_related_code_from_focal(search.as_ref(), 3);
+  const MAX_RELATED_CODE: usize = 3;
+
+  // Pull a few extra candidates so we can drop excluded/self/duplicate paths while still keeping
+  // the final snippet count small.
+  let mut req = req.with_related_code_from_focal(search.as_ref(), MAX_RELATED_CODE.saturating_mul(4));
+
+  // Best-effort: don't include semantic-search results for the same file as the focal selection.
+  if let Some(focal_path) = req.file_path.as_deref() {
+    let focal_path = Path::new(focal_path);
+    req.related_code.retain(|item| item.path != focal_path);
+  }
+
+  // Enforce excluded_paths after results are produced (defense-in-depth).
   req.related_code
     .retain(|item| !is_ai_excluded_path(state, &item.path));
+
+  // Prefer unique paths so we don't waste the limited related-code budget on multiple snippets
+  // from the same file.
+  {
+    let mut seen = std::collections::BTreeSet::new();
+    req.related_code.retain(|item| seen.insert(item.path.clone()));
+  }
+
+  req.related_code.truncate(MAX_RELATED_CODE);
   req
 }
 
