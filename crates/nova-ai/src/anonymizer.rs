@@ -663,6 +663,13 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "Collections"
             | "Arrays"
             | "Objects"
+            // Functional interfaces / helpers frequently referenced in method signatures.
+            | "Function"
+            | "Predicate"
+            | "Consumer"
+            | "Supplier"
+            | "Comparator"
+            | "Collector"
             // Common fields/methods used in snippets.
             | "out"
             | "err"
@@ -881,6 +888,13 @@ class Example {
         opt.orElseThrow();
         opt.ifPresent(System.out::println);
         opt.ifPresentOrElse(System.out::println, () -> {});
+
+        Function<String, String> fn1 = String::trim;
+        Predicate<String> pred = s -> s.isEmpty();
+        Consumer<String> cons = System.out::println;
+        Supplier<String> sup = () -> "x";
+        Comparator<String> cmp = String::compareTo;
+        Collector<String, ?, List<String>> col = Collectors.toList();
     }
 }
 "#;
@@ -952,6 +966,14 @@ class Example {
         assert!(out.contains(".orElseThrow("), "{out}");
         assert!(out.contains(".ifPresent("), "{out}");
         assert!(out.contains(".ifPresentOrElse("), "{out}");
+
+        // Common functional interface type names.
+        assert!(out.contains("Function<"), "{out}");
+        assert!(out.contains("Predicate<"), "{out}");
+        assert!(out.contains("Consumer<"), "{out}");
+        assert!(out.contains("Supplier<"), "{out}");
+        assert!(out.contains("Comparator<"), "{out}");
+        assert!(out.contains("Collector<"), "{out}");
     }
 
     #[test]
