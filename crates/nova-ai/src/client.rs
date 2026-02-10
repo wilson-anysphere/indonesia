@@ -1519,9 +1519,15 @@ impl LlmClient for AiClient {
                 }
 
                 let (result, should_backoff) = {
-                    let permit = tokio::time::timeout(remaining, self.acquire_permit(&cancel))
+                    let permit = match tokio::time::timeout(remaining, self.acquire_permit(&cancel))
                         .await
-                        .map_err(|_| AiError::Timeout)??;
+                    {
+                        Ok(permit) => match permit {
+                            Ok(permit) => permit,
+                            Err(err) => break 'list_models_result Err(err),
+                        },
+                        Err(_) => break 'list_models_result Err(AiError::Timeout),
+                    };
 
                     let remaining = timeout.saturating_sub(operation_start.elapsed());
                     if remaining == Duration::ZERO {
@@ -3558,6 +3564,191 @@ mod tests {
         assert!(
             after >= before.saturating_add(1),
             "expected {AI_LIST_MODELS_RETRY_METRIC} request_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_models_cancelled_while_waiting_for_semaphore_records_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+
+        let before_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let before_cancelled_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = Arc::new(AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(ListModelsOkProvider),
+            semaphore: Arc::new(Semaphore::new(0)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(1),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig {
+                max_retries: 0,
+                initial_backoff: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+            },
+        });
+
+        let cancel = CancellationToken::new();
+        let cancel_for_task = cancel.clone();
+        let handle = tokio::spawn(async move { client.list_models(cancel_for_task).await });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+
+        let err = handle
+            .await
+            .expect("join")
+            .expect_err("expected cancellation");
+        assert!(matches!(err, AiError::Cancelled));
+
+        let after_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let after_cancelled_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_LIST_MODELS_METRIC} request_count to increment"
+        );
+        assert!(
+            after_errors >= before_errors.saturating_add(1),
+            "expected {AI_LIST_MODELS_METRIC} error_count to increment"
+        );
+        assert!(
+            after_cancelled_metric >= before_cancelled_metric.saturating_add(1),
+            "expected {AI_LIST_MODELS_ERROR_CANCELLED_METRIC} error_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_models_timeout_waiting_for_semaphore_records_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+
+        let before_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_timeouts = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        let before_timeout_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_ERROR_TIMEOUT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(ListModelsOkProvider),
+            semaphore: Arc::new(Semaphore::new(0)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_millis(10),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig {
+                max_retries: 0,
+                initial_backoff: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+            },
+        };
+
+        let err = client
+            .list_models(CancellationToken::new())
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, AiError::Timeout));
+
+        let after_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_timeouts = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        let after_timeout_metric = metrics
+            .snapshot()
+            .methods
+            .get(AI_LIST_MODELS_ERROR_TIMEOUT_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_LIST_MODELS_METRIC} request_count to increment"
+        );
+        assert!(
+            after_timeouts >= before_timeouts.saturating_add(1),
+            "expected {AI_LIST_MODELS_METRIC} timeout_count to increment"
+        );
+        assert!(
+            after_timeout_metric >= before_timeout_metric.saturating_add(1),
+            "expected {AI_LIST_MODELS_ERROR_TIMEOUT_METRIC} timeout_count to increment"
         );
     }
 } 
