@@ -384,6 +384,25 @@ fn related_code_query_skips_stacktrace_filename_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_file_uri_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for file-uri-only selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "file:///home/user/project/src/Foo.java";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for file-uri-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_does_not_treat_member_access_with_underscore_suffix_as_filename() {
     #[derive(Default)]
     struct CapturingSearch {

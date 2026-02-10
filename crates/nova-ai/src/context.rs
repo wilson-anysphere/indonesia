@@ -640,6 +640,30 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
 
+    // Treat URI schemes like `file:///...` or `https://...` as path-like so we don't end up with
+    // low-signal queries such as `file` when the selection is primarily a path/URL.
+    if end < bytes.len() && bytes[end] == b':' {
+        // Common shape: `scheme:/...` or `scheme:\\...`.
+        if end + 1 < bytes.len() && matches!(bytes[end + 1], b'/' | b'\\') {
+            return true;
+        }
+
+        // Nested schemes like `jar:file:/...` should also be treated as path-like for the outer
+        // scheme.
+        let mut i = end + 1;
+        if i < bytes.len() && is_ident_start(bytes[i]) {
+            i += 1;
+            while i < bytes.len() && is_ident_continue(bytes[i]) {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b':' {
+                if i + 1 < bytes.len() && matches!(bytes[i + 1], b'/' | b'\\') {
+                    return true;
+                }
+            }
+        }
+    }
+
     // Skip file-name-like tokens such as `Secret-config.properties`. This uses a lightweight
     // "token" scan around the identifier and is careful to stop at quote boundaries so a string
     // literal like `".../Secret.java"` does not cause us to drop surrounding identifiers.
