@@ -145,6 +145,15 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         )
         .expect("valid escaped unix path regex")
     });
+
+    // UNC paths where the backslash separators are JSON-escaped as `\\`.
+    //
+    // These often appear when logs serialize a string representation of a Windows UNC path, e.g.:
+    // - "\\\\server\\\\share\\\\Users\\\\alice\\\\secret.txt"
+    static ESCAPED_WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?m)(?P<path>\\\\{2,}[A-Za-z0-9._$@+-]{2,}\\\\+[A-Za-z0-9._$@+-]{2,}(?:\\\\+[A-Za-z0-9._$@+()-]+(?: [A-Za-z0-9._$@+()-]+)*)*\\\\*)")
+            .expect("valid escaped windows unc path regex")
+    });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Allow spaces inside directory segments (common in macOS/Windows-y projects), but keep the
@@ -244,6 +253,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     }
 
     let replaced = ESCAPED_UNIX_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = ESCAPED_WINDOWS_UNC_PATH_RE.replace_all(out.as_ref(), "[PATH]");
     if let Cow::Owned(s) = replaced {
         out = Cow::Owned(s);
     }
@@ -396,6 +410,20 @@ mod tests {
         let out = redact_file_paths(prompt);
         assert!(out.contains("[PATH]"), "{out}");
         assert!(!out.contains(r"\/home\/alice\/project\/secret.txt"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_json_escaped_unc_paths() {
+        let prompt = r#"opening \\\\server123\\\\share456\\\\Users\\\\alice\\\\secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(
+            !out.contains(r"\\\\server123\\\\share456\\\\Users\\\\alice\\\\secret.txt"),
+            "{out}"
+        );
+        assert!(!out.contains("server123"), "{out}");
+        assert!(!out.contains("share456"), "{out}");
         assert!(!out.contains("secret.txt"), "{out}");
     }
 
