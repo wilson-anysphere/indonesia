@@ -658,6 +658,9 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "LinkedList"
             | "Optional"
             | "Stream"
+            | "IntStream"
+            | "LongStream"
+            | "DoubleStream"
             | "Collectors"
             | "Collections"
             | "Arrays"
@@ -701,6 +704,7 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "max"
             | "min"
             | "toArray"
+            | "boxed"
             // java.util.stream.Collectors
             | "toList"
             | "toSet"
@@ -729,6 +733,7 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "equals"
             | "hashCode"
             // java.util.Optional
+            | "empty"
             | "ofNullable"
             | "orElse"
             | "orElseGet"
@@ -736,6 +741,14 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "isPresent"
             | "ifPresent"
             | "ifPresentOrElse"
+            // Common JDK factory helpers
+            | "of"
+            | "copyOf"
+            | "entry"
+            | "ofEntries"
+            | "emptyList"
+            | "emptySet"
+            | "emptyMap"
             // Common collection helpers
             | "get"
             | "put"
@@ -933,6 +946,19 @@ class Example {
         opt.ifPresent(System.out::println);
         opt.ifPresentOrElse(System.out::println, () -> {});
 
+        Optional.empty();
+        Stream.of("a");
+        IntStream.of(1).boxed();
+        List.copyOf(items);
+        List.of("a");
+        Set.of("a");
+        Map.of("a", "b");
+        Map.entry("a", "b");
+        Map.ofEntries(Map.entry("a", "b"));
+        Collections.emptyList();
+        Collections.emptySet();
+        Collections.emptyMap();
+
         Function<String, String> fn1 = String::trim;
         Predicate<String> pred = s -> s.isEmpty();
         Consumer<String> cons = System.out::println;
@@ -1029,6 +1055,21 @@ class Example {
         assert!(out.contains(".orElseThrow("), "{out}");
         assert!(out.contains(".ifPresent("), "{out}");
         assert!(out.contains(".ifPresentOrElse("), "{out}");
+
+        // Common JDK factory helpers.
+        assert!(out.contains(".empty("), "{out}");
+        assert!(out.contains("Stream.of"), "{out}");
+        assert!(out.contains("IntStream.of"), "{out}");
+        assert!(out.contains(".boxed("), "{out}");
+        assert!(out.contains("List.copyOf"), "{out}");
+        assert!(out.contains("List.of"), "{out}");
+        assert!(out.contains("Set.of"), "{out}");
+        assert!(out.contains("Map.of"), "{out}");
+        assert!(out.contains("Map.entry"), "{out}");
+        assert!(out.contains("Map.ofEntries"), "{out}");
+        assert!(out.contains("Collections.emptyList"), "{out}");
+        assert!(out.contains("Collections.emptySet"), "{out}");
+        assert!(out.contains("Collections.emptyMap"), "{out}");
 
         // Common functional interface type names.
         assert!(out.contains("Function<"), "{out}");
