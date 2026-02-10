@@ -21,7 +21,11 @@ pub enum AiError {
 
 impl From<reqwest::Error> for AiError {
     fn from(err: reqwest::Error) -> Self {
-        Self::Http(Arc::new(err))
+        if err.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Http(Arc::new(err))
+        }
     }
 }
 

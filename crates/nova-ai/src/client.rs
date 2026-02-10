@@ -2326,7 +2326,7 @@ mod tests {
             .expect_err("expected timeout");
         assert!(timeout_err.is_timeout(), "expected reqwest timeout error");
 
-        let err = AiError::from(timeout_err);
+        let err = AiError::Http(Arc::new(timeout_err));
         record_chat_error_metrics(metrics, &err);
 
         let snap = metrics.snapshot();
@@ -2664,7 +2664,7 @@ mod tests {
             .expect_err("expected timeout");
         assert!(timeout_err.is_timeout(), "expected reqwest timeout error");
 
-        let err = AiError::from(timeout_err);
+        let err = AiError::Http(Arc::new(timeout_err));
         record_chat_stream_error_metrics(&metrics, &err);
 
         let snap = metrics.snapshot();
