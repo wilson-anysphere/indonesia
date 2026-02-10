@@ -404,6 +404,11 @@ mod tests {
             .get("ai/semantic_search/index_project")
             .map(|m| m.request_count)
             .unwrap_or(0);
+        let before_finalize = before_snapshot
+            .methods
+            .get("ai/semantic_search/finalize_indexing")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         let before_index = before_snapshot
             .methods
             .get("ai/semantic_search/index_file")
@@ -430,6 +435,11 @@ mod tests {
             .get("ai/semantic_search/index_project")
             .map(|m| m.request_count)
             .unwrap_or(0);
+        let after_finalize = after_snapshot
+            .methods
+            .get("ai/semantic_search/finalize_indexing")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         let after_index = after_snapshot
             .methods
             .get("ai/semantic_search/index_file")
@@ -444,6 +454,10 @@ mod tests {
         assert!(
             after_index_project >= before_index_project.saturating_add(1),
             "expected ai/semantic_search/index_project to record requests"
+        );
+        assert!(
+            after_finalize >= before_finalize.saturating_add(1),
+            "expected ai/semantic_search/finalize_indexing to record requests"
         );
         assert!(
             after_index >= before_index.saturating_add(2),
