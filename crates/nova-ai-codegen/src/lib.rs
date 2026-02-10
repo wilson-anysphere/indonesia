@@ -1201,6 +1201,7 @@ mod tests {
     struct MockPromptCompletionProvider {
         responses: Vec<String>,
         calls: AtomicUsize,
+        prompts: Mutex<Vec<String>>,
     }
 
     impl MockPromptCompletionProvider {
@@ -1208,11 +1209,19 @@ mod tests {
             Self {
                 responses,
                 calls: AtomicUsize::new(0),
+                prompts: Mutex::new(Vec::new()),
             }
         }
 
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.prompts
+                .lock()
+                .expect("poisoned mutex")
+                .clone()
         }
     }
 
@@ -1220,9 +1229,13 @@ mod tests {
     impl PromptCompletionProvider for MockPromptCompletionProvider {
         async fn complete(
             &self,
-            _prompt: &str,
+            prompt: &str,
             _cancel: &CancellationToken,
         ) -> Result<String, PromptCompletionError> {
+            self.prompts
+                .lock()
+                .expect("poisoned mutex")
+                .push(prompt.to_string());
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .responses
@@ -1648,6 +1661,18 @@ mod tests {
         .expect("repair loop should recover from safety violation");
 
         assert_eq!(provider.calls(), 2);
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2, "{prompts:?}");
+        assert!(
+            prompts[1].contains("Patch safety violation:"),
+            "expected safety violation feedback in retry prompt:\n{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("patch inserts too many characters"),
+            "expected safety violation details in retry prompt:\n{}",
+            prompts[1]
+        );
         let applied = result
             .applied
             .workspace
@@ -1695,6 +1720,7 @@ mod tests {
             panic!("expected Safety(TooManyInsertedChars), got {err:?}");
         };
         assert_eq!(provider.calls(), 1);
+        assert_eq!(provider.prompts().len(), 1);
     }
 
     #[test]
@@ -1742,6 +1768,18 @@ mod tests {
         .expect("repair loop should recover from new-imports violation");
 
         assert_eq!(provider.calls(), 2);
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2, "{prompts:?}");
+        assert!(
+            prompts[1].contains("Patch safety violation:"),
+            "expected safety violation feedback in retry prompt:\n{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("import java.util.List;"),
+            "expected import line in retry prompt feedback:\n{}",
+            prompts[1]
+        );
         let applied = result
             .applied
             .workspace
@@ -1789,6 +1827,7 @@ mod tests {
             panic!("expected Safety(NewImports), got {err:?}");
         };
         assert_eq!(provider.calls(), 1);
+        assert_eq!(provider.prompts().len(), 1);
     }
 
     #[test]
