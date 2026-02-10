@@ -1,4 +1,4 @@
-use lsp_types::Position;
+use lsp_types::{CompletionItemKind, Position};
 use nova_ai::MultiTokenCompletionContext;
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_db::{Database, FileId};
@@ -6,8 +6,9 @@ use nova_types::CallKind;
 
 use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
-    infer_receiver_type_for_member_access, member_method_names_for_receiver_type_with_call_kind,
-    receiver_before_dot, skip_whitespace_backwards, CompletionContextAnalysis,
+    infer_receiver_type_for_member_access, member_completions_for_receiver_type,
+    member_method_names_for_receiver_type_with_call_kind, receiver_before_dot,
+    skip_whitespace_backwards, CompletionContextAnalysis,
 };
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
@@ -91,8 +92,29 @@ fn receiver_at_offset(
             // In that case, prefer the lightweight lexical inference which consults the
             // completion-context analysis fields.
             let trimmed = ty.trim();
-            if !trimmed.starts_with("this.") && !trimmed.starts_with("super.") {
+            let receiver_trimmed = receiver.trim();
+            let is_suspicious_lowercase_type_ref = kind == CallKind::Static
+                && trimmed == receiver_trimmed
+                && receiver_trimmed
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_lowercase());
+
+            if !trimmed.starts_with("this.")
+                && !trimmed.starts_with("super.")
+                && !is_suspicious_lowercase_type_ref
+            {
                 return (Some(receiver), Some(ty), Some(kind));
+            }
+
+            // Best-effort recovery for `foo().bar.<cursor>`: `receiver_before_dot` only captures
+            // `bar`, and semantic inference may interpret that as a (lowercase) type reference.
+            // If the segment directly before `bar` ends with a call (`)`), try to interpret this
+            // as a field access on the call's return type.
+            if is_suspicious_lowercase_type_ref {
+                if let Some(field_ty) = call_chain_field_access_type(db, file, text, dot_offset) {
+                    return (Some(receiver), Some(field_ty), Some(CallKind::Instance));
+                }
             }
         }
 
@@ -161,6 +183,42 @@ fn is_valid_identifier_token(ident: &str) -> bool {
     }
 
     chars.all(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '$'))
+}
+
+fn call_chain_field_access_type(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    dot_offset: usize,
+) -> Option<String> {
+    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    if receiver_end == 0 {
+        return None;
+    }
+
+    let (receiver_start, field_name) = identifier_prefix(text, receiver_end);
+    if field_name.is_empty() {
+        return None;
+    }
+
+    let before_field = skip_whitespace_backwards(text, receiver_start);
+    let prev_dot = before_field
+        .checked_sub(1)
+        .filter(|idx| text.as_bytes().get(*idx) == Some(&b'.'))?;
+
+    // Only attempt this recovery when the previous segment ends in `)`, i.e. when we have
+    // `<call>().<field>.<cursor>`.
+    let prev_end = skip_whitespace_backwards(text, prev_dot);
+    if prev_end == 0 || text.as_bytes().get(prev_end - 1) != Some(&b')') {
+        return None;
+    }
+
+    let receiver_ty = infer_receiver_type_before_dot(db, file, prev_dot)?;
+    let items = member_completions_for_receiver_type(db, file, &receiver_ty, "");
+    items
+        .into_iter()
+        .find(|item| item.kind == Some(CompletionItemKind::FIELD) && item.label == field_name)
+        .and_then(|item| item.detail)
 }
 
 fn available_methods_for_receiver(
@@ -487,16 +545,16 @@ class A {
     fn stream_call_chain_receiver_type_and_methods_are_semantic_in_parens() {
         let ctx = ctx_for(
             r#"
-import java.util.List;
-
+ import java.util.List;
+ 
 class Person {}
 
-class A {
-  void m(List<Person> people) {
-    (people.stream()).<cursor>
-  }
-}
-"#,
+ class A {
+   void m(List<Person> people) {
+     (people.stream()).<cursor>
+   }
+ }
+ "#,
         );
 
         let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
@@ -511,6 +569,33 @@ class A {
             .importable_paths
             .iter()
             .any(|path| path == "java.util.stream.Collectors"));
+    }
+
+    #[test]
+    fn call_chain_field_access_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
     }
 
     #[test]
