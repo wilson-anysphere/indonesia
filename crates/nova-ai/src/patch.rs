@@ -1213,9 +1213,9 @@ index e69de29..4b825dc 100644
     #[test]
     fn parses_rename_metadata_with_quoted_paths() {
         let raw = r#"diff --git "a/old name.txt" "b/new name.txt"
-similarity index 100%
-rename from "old name.txt"
-rename to "new name.txt""#;
+ similarity index 100%
+ rename from "old name.txt"
+ rename to "new name.txt""#;
 
         let patch = parse_structured_patch(raw).expect("parse patch");
         assert_eq!(
@@ -1233,9 +1233,9 @@ rename to "new name.txt""#;
     #[test]
     fn parses_rename_metadata_for_paths_starting_with_b_directory() {
         let raw = r#"diff --git a/b/foo.txt b/b/bar.txt
-similarity index 100%
-rename from b/foo.txt
-rename to b/bar.txt"#;
+ similarity index 100%
+ rename from b/foo.txt
+ rename to b/bar.txt"#;
 
         let patch = parse_structured_patch(raw).expect("parse patch");
         assert_eq!(
@@ -1244,6 +1244,26 @@ rename to b/bar.txt"#;
                 files: vec![UnifiedDiffFile {
                     old_path: "b/foo.txt".to_string(),
                     new_path: "b/bar.txt".to_string(),
+                    hunks: Vec::new(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_rename_metadata_with_unquoted_paths_containing_spaces() {
+        let raw = r#"diff --git a/dir with space/old name.txt b/dir with space/new name.txt
+similarity index 100%
+rename from dir with space/old name.txt
+rename to dir with space/new name.txt"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "dir with space/old name.txt".to_string(),
+                    new_path: "dir with space/new name.txt".to_string(),
                     hunks: Vec::new(),
                 }],
             })
@@ -1294,6 +1314,88 @@ index e69de29..4b825dc 100644
                 files: vec![UnifiedDiffFile {
                     old_path: "café.txt".to_string(),
                     new_path: "café.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_create_diff_with_quoted_path_and_dev_null() {
+        let raw = r#"diff --git "a/foo bar.txt" "b/foo bar.txt"
+new file mode 100644
+--- /dev/null
++++ "b/foo bar.txt"
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "/dev/null".to_string(),
+                    new_path: "foo bar.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_delete_diff_with_quoted_path_and_dev_null() {
+        let raw = r#"diff --git "a/foo bar.txt" "b/foo bar.txt"
+deleted file mode 100644
+--- "a/foo bar.txt"
++++ /dev/null
+@@ -1 +0,0 @@
+-hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "foo bar.txt".to_string(),
+                    new_path: "/dev/null".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 1,
+                        old_len: 1,
+                        new_start: 0,
+                        new_len: 0,
+                        lines: vec![UnifiedDiffLine::Remove("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_unquoted_paths_with_space_delimited_timestamp() {
+        let raw = r#"--- a/foo.txt 2026-02-10
++++ b/foo.txt 2026-02-10
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "foo.txt".to_string(),
+                    new_path: "foo.txt".to_string(),
                     hunks: vec![UnifiedDiffHunk {
                         old_start: 0,
                         old_len: 0,
