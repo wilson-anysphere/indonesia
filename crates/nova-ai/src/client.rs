@@ -2464,6 +2464,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -2521,6 +2522,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -2581,6 +2583,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
