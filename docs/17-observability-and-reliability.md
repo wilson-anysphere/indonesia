@@ -586,6 +586,12 @@ backend.
 - `ai/semantic_search/index_file` — semantic-search file updates (one per `index_file()` call)
 - `ai/semantic_search/search` — semantic-search query execution (one per `search()` call)
 
+When semantic search is backed by embeddings, failures to compute embeddings are reflected on these
+same metrics:
+
+- `timeoutCount` increments for timeouts (for example: embedding provider stalls)
+- `errorCount` increments for other failures (HTTP/JSON/unexpected responses, etc)
+
 The stdio server additionally records workspace-indexing metrics for best-effort background
 workspace indexing (see `nova/semanticSearch/indexStatus`):
 
