@@ -433,7 +433,7 @@ fn validate_ai(
                     out.errors
                         .push(ConfigValidationError::AiLocalOnlyUrlNotLocal {
                             provider: config.ai.provider.kind.clone(),
-                            url: config.ai.provider.url.to_string(),
+                            url: crate::sanitize_url_for_debug(&config.ai.provider.url),
                         });
                 }
             }

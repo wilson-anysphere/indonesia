@@ -1188,7 +1188,7 @@ impl fmt::Debug for AiProviderConfig {
     }
 }
 
-fn sanitize_url_for_debug(url: &Url) -> String {
+pub(crate) fn sanitize_url_for_debug(url: &Url) -> String {
     const REDACTION: &str = "<redacted>";
     let mut out = String::new();
 

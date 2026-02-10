@@ -144,6 +144,55 @@ kind = "open_ai"
 }
 
 #[test]
+fn validates_ai_local_only_url_not_local_redacts_sensitive_parts() {
+    let secret = "super-secret-token";
+    let text = format!(
+        r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = true
+
+[ai.provider]
+kind = "http"
+url = "https://user:pass@example.com/path?key={secret}&other=1"
+"#,
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(diagnostics.errors.len(), 1, "{:#?}", diagnostics.errors);
+    match &diagnostics.errors[0] {
+        ConfigValidationError::AiLocalOnlyUrlNotLocal { provider, url } => {
+            assert_eq!(provider, &AiProviderKind::Http);
+            assert!(
+                !url.contains(secret),
+                "expected url to redact sensitive query param values: {url}"
+            );
+            assert!(
+                !url.contains("user:pass"),
+                "expected url to redact userinfo: {url}"
+            );
+            assert!(
+                url.contains("<redacted>@example.com/path"),
+                "expected url to include redaction marker for userinfo: {url}"
+            );
+            assert!(
+                url.contains("key=<redacted>"),
+                "expected url to redact ?key= query param: {url}"
+            );
+            assert!(
+                url.contains("other=1"),
+                "expected url to preserve non-sensitive query params: {url}"
+            );
+        }
+        other => panic!("expected AiLocalOnlyUrlNotLocal error, got {other:?}"),
+    }
+}
+
+#[test]
 fn validates_jdk_home_is_non_empty() {
     let text = r#"
 [jdk]
