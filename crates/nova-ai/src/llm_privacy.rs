@@ -458,6 +458,36 @@ class Foo {
     }
 
     #[test]
+    fn code_review_prompt_escapes_fence_markers_to_keep_sanitization_intact() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let diff = format!(
+            "diff --git a/src/Main.java b/src/Main.java\n\
+--- a/src/Main.java\n\
++++ b/src/Main.java\n\
+@@ -1,1 +1,1 @@\n\
+-class Main {{}}\n\
++class Main {{ String s = \"```{secret}```\"; }}\n"
+        );
+
+        let prompt = crate::actions::code_review_prompt(&diff);
+        assert!(prompt.contains(secret), "prompt should include raw input");
+
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+        assert!(
+            !out.contains(secret),
+            "sanitized prompt should not leak identifiers even when diff contains fence markers: {out}"
+        );
+    }
+
+    #[test]
     fn excluded_paths_relative_patterns_match_absolute_paths() {
         let cfg = AiPrivacyConfig {
             excluded_paths: vec!["secret/**".into()],
