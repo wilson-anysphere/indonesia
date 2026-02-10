@@ -666,7 +666,16 @@ fn surrounding_token_bounds(text: &str, start: usize, end: usize) -> Range<usize
             return true;
         }
         b.is_ascii_whitespace()
-            || matches!(b, b'"' | b'\'' | b'/' | b'\\')
+            || matches!(
+                b,
+                // Quote boundaries keep string literals from suppressing surrounding identifiers.
+                b'"' | b'\''
+                // Path separators.
+                | b'/' | b'\\'
+                // Common punctuation that delimits file names in stack traces / logs.
+                | b':' | b',' | b';'
+                | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b'<' | b'>'
+            )
     }
 
     let bytes = text.as_bytes();
