@@ -29,6 +29,7 @@ mod provider_embeddings_ollama;
 mod provider_embeddings_memory_cache_eviction;
 mod project_database_adapters;
 mod provider_embedder_sync;
+mod provider_embedder_batch_cache;
 mod provider_embedder_privacy;
 mod provider_embeddings_privacy;
 mod retry_config;
