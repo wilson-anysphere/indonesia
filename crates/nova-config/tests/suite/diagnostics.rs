@@ -51,6 +51,32 @@ api_key = "{secret}
 }
 
 #[test]
+fn toml_type_errors_do_not_leak_string_values() {
+    use std::error::Error as _;
+
+    // Type mismatch errors can include the offending string value in the error message.
+    // Ensure we don't leak arbitrary string contents into logs when config parsing fails.
+    let secret = "super-secret-api-key";
+    let text = format!(
+        r#"
+[ai]
+enabled = "{secret}"
+"#,
+    );
+
+    let err = NovaConfig::load_from_str_with_diagnostics(&text).expect_err("expected parse error");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "ConfigError display leaked string value: {message}"
+    );
+    assert!(
+        err.source().is_none(),
+        "ConfigError should not expose toml::de::Error as source (may leak raw config text)"
+    );
+}
+
+#[test]
 fn reports_unknown_keys_in_build_section() {
     let text = r#"
 [build]

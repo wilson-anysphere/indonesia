@@ -1511,6 +1511,19 @@ pub enum ConfigError {
     Toml(String),
 }
 
+fn sanitize_toml_error_message(message: &str) -> String {
+    // `toml::de::Error::message()` can still include user-provided scalar values, e.g.
+    // `invalid type: string "secret", expected a boolean`.
+    //
+    // Config parsing errors are commonly surfaced through CLI/LSP diagnostics and logs, so redact
+    // double-quoted substrings to avoid leaking arbitrary config string values (including secrets)
+    // even when no snippet is included.
+    static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = QUOTED_STRING_RE
+        .get_or_init(|| regex::Regex::new(r#""[^"]*""#).expect("quoted-string regex should compile"));
+    re.replace_all(message, r#""<redacted>""#).into_owned()
+}
+
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> Self {
         // `toml::de::Error`'s default `Display` includes a source snippet, which may contain
@@ -1522,7 +1535,7 @@ impl From<toml::de::Error> for ConfigError {
         //
         // Note: `toml::de::Error` does not expose stable line/column APIs on all supported `toml`
         // versions; keep this simple and snippet-free.
-        ConfigError::Toml(err.message().to_string())
+        ConfigError::Toml(sanitize_toml_error_message(err.message()))
     }
 }
 
