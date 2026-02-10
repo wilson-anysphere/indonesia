@@ -216,10 +216,20 @@ async fn gemini_chat_stream_yields_text_deltas() {
         );
 
         let query = req.uri().query().unwrap_or_default();
-        assert!(query.contains("key=test-key"));
+        assert!(
+            !query.contains("key="),
+            "expected Gemini api key to be sent via header, not query: {query}"
+        );
         if query.contains("alt=") {
             assert!(query.contains("alt=sse"));
         }
+        assert_eq!(
+            req.headers()
+                .get("x-goog-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap(),
+            "test-key"
+        );
 
         let chunks = vec![
             Ok::<_, std::io::Error>(hyper::body::Bytes::from(
@@ -278,10 +288,20 @@ async fn gemini_chat_stream_timeout_is_idle_based_not_total_duration() {
         }
 
         let query = req.uri().query().unwrap_or_default();
-        assert!(query.contains("key=test-key"));
+        assert!(
+            !query.contains("key="),
+            "expected Gemini api key to be sent via header, not query: {query}"
+        );
         if query.contains("alt=") {
             assert!(query.contains("alt=sse"));
         }
+        assert_eq!(
+            req.headers()
+                .get("x-goog-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap(),
+            "test-key"
+        );
 
         let _ = hyper::body::to_bytes(req.into_body())
             .await

@@ -200,7 +200,6 @@ impl LlmProvider for AnthropicProvider {
 #[derive(Clone)]
 pub(crate) struct GeminiProvider {
     base_url: Url,
-    api_key: String,
     model: String,
     timeout: Duration,
     client: reqwest::Client,
@@ -213,10 +212,23 @@ impl GeminiProvider {
         model: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, AiError> {
-        let client = reqwest::Client::builder().build()?;
+        // Prefer sending API keys via headers rather than embedding them into the URL query string.
+        //
+        // `reqwest::Error` includes the request URL in its `Display` output, which can leak query
+        // params into non-audit logs if callers accidentally emit `%err` / `?err`. Passing the key
+        // via header keeps the URL safe-by-default.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-goog-api-key",
+            HeaderValue::from_str(&api_key)
+                .map_err(|e| AiError::InvalidConfig(format!("invalid gemini api_key: {e}")))?,
+        );
+
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
         Ok(Self {
             base_url,
-            api_key,
             model: model.into(),
             timeout,
             client,
@@ -246,11 +258,10 @@ impl LlmProvider for GeminiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let mut url = self.endpoint(&format!(
+        let url = self.endpoint(&format!(
             "/models/{}:generateContent",
             self.model
         ))?;
-        url.query_pairs_mut().append_pair("key", &self.api_key);
 
         let prompt = messages_to_prompt(&request.messages);
 
@@ -300,7 +311,6 @@ impl LlmProvider for GeminiProvider {
             self.model
         ))?;
         url.query_pairs_mut()
-            .append_pair("key", &self.api_key)
             .append_pair("alt", "sse");
 
         let prompt = messages_to_prompt(&request.messages);
@@ -1399,18 +1409,18 @@ mod tests {
                 .into_owned()
                 .collect();
             pairs.sort();
-            assert_eq!(
-                pairs,
-                vec![
-                    ("alt".to_string(), "sse".to_string()),
-                    ("key".to_string(), "dummy-key".to_string())
-                ]
-            );
+            assert_eq!(pairs, vec![("alt".to_string(), "sse".to_string())]);
             assert_eq!(
                 req.headers()
                     .get(hyper::header::ACCEPT)
                     .and_then(|v| v.to_str().ok()),
                 Some("text/event-stream")
+            );
+            assert_eq!(
+                req.headers()
+                    .get("x-goog-api-key")
+                    .and_then(|v| v.to_str().ok()),
+                Some("dummy-key")
             );
 
             let stream = async_stream::stream! {

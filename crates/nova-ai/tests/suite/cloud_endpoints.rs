@@ -129,11 +129,18 @@ async fn gemini_endpoint_preserves_prefix_and_avoids_double_v1beta() {
             let expected_path = expected_path.clone();
             async move {
                 assert_eq!(req.uri().path(), expected_path);
-                assert!(req
-                    .uri()
-                    .query()
-                    .unwrap_or_default()
-                    .contains("key=test-key"));
+                let query = req.uri().query().unwrap_or_default();
+                assert!(
+                    !query.contains("key="),
+                    "expected Gemini api key to be sent via header, not query: {query}"
+                );
+                assert_eq!(
+                    req.headers()
+                        .get("x-goog-api-key")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap(),
+                    "test-key"
+                );
                 Response::new(Body::from(
                     r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}"#,
                 ))

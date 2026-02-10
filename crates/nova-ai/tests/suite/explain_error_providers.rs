@@ -217,11 +217,18 @@ async fn explain_error_works_for_each_provider_kind() {
                 req.uri().path(),
                 "/v1beta/models/gemini-1.5-flash:generateContent"
             );
-            assert!(req
-                .uri()
-                .query()
-                .unwrap_or_default()
-                .contains("key=test-key"));
+            let query = req.uri().query().unwrap_or_default();
+            assert!(
+                !query.contains("key="),
+                "expected Gemini api key to be sent via header, not query: {query}"
+            );
+            assert_eq!(
+                req.headers()
+                    .get("x-goog-api-key")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap(),
+                "test-key"
+            );
             Response::new(Body::from(
                 r#"{"candidates":[{"content":{"parts":[{"text":"explanation"}]}}]}"#,
             ))
@@ -348,11 +355,18 @@ async fn gemini_completion_concatenates_multiple_parts() {
             req.uri().path(),
             "/v1beta/models/gemini-1.5-flash:generateContent"
         );
-        assert!(req
-            .uri()
-            .query()
-            .unwrap_or_default()
-            .contains("key=test-key"));
+        let query = req.uri().query().unwrap_or_default();
+        assert!(
+            !query.contains("key="),
+            "expected Gemini api key to be sent via header, not query: {query}"
+        );
+        assert_eq!(
+            req.headers()
+                .get("x-goog-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap(),
+            "test-key"
+        );
         Response::new(Body::from(
             r#"{"candidates":[{"content":{"parts":[{"text":"alpha"},{"text":""},{"text":"beta"},{"text":"gamma"}]}}]}"#,
         ))
