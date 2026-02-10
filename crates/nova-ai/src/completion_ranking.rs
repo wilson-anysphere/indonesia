@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -317,15 +318,14 @@ fn completion_kind_label(kind: CompletionItemKind) -> &'static str {
 
 fn sanitize_label(label: &str, max_chars: usize) -> String {
     // Labels are expected to be single-line but be defensive.
-    let mut out = label.replace(['\n', '\r'], " ");
-    out = out.replace("```", "``\\`");
-    truncate_chars(&out, max_chars)
+    let out = label.replace(['\n', '\r'], " ");
+    let escaped = escape_markdown_fence_payload(&out);
+    truncate_chars(escaped.as_ref(), max_chars)
 }
 
 fn sanitize_code_block(text: &str, max_chars: usize) -> String {
-    let mut out = text.replace("```", "``\\`");
-    out = truncate_chars(&out, max_chars);
-    out
+    let escaped = escape_markdown_fence_payload(text);
+    truncate_chars(escaped.as_ref(), max_chars)
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
@@ -336,6 +336,53 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     text.chars().take(max_chars).collect()
+}
+
+/// Escape user-derived text that is embedded in a Markdown fenced code block.
+///
+/// ## Why this exists (privacy hardening)
+///
+/// `AiClient` applies `PrivacyFilter::sanitize_prompt_text` before sending prompts to cloud
+/// providers. The filter uses a deliberately tiny Markdown fence parser that treats **any**
+/// occurrence of the substring `"```"` as a fence boundary.
+///
+/// If completion context (prefix/current line) or candidate labels contain `"```"`, the sanitizer
+/// can terminate the fence early and treat the remainder as plain text. In cloud mode, plain text
+/// is not identifier-anonymized, which can leak raw project identifiers.
+///
+/// This helper guarantees the returned string contains **no literal `"```"` substring**, even for
+/// longer runs like `````` (5+ backticks), by inserting a backslash before any backtick that would
+/// otherwise form 3 consecutive backticks.
+fn escape_markdown_fence_payload(text: &str) -> Cow<'_, str> {
+    // Fast path: no fence substring means we can borrow.
+    if !text.contains("```") {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len() + text.len() / 2);
+    let mut backticks = 0usize;
+
+    for ch in text.chars() {
+        if ch == '`' {
+            if backticks == 2 {
+                // Break the run before we would emit a third consecutive '`'.
+                out.push('\\');
+                backticks = 0;
+            }
+            out.push('`');
+            backticks += 1;
+        } else {
+            out.push(ch);
+            backticks = 0;
+        }
+    }
+
+    debug_assert!(
+        !out.contains("```"),
+        "escape_markdown_fence_payload must remove all triple backticks"
+    );
+
+    Cow::Owned(out)
 }
 
 fn parse_ranked_ids(text: &str, candidate_count: usize) -> Option<Vec<usize>> {
@@ -489,7 +536,9 @@ pub async fn maybe_rank_completions<R: CompletionRanker>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm_privacy::PrivacyFilter;
     use crate::{AiError, AiStream};
+    use nova_config::AiPrivacyConfig;
 
     #[derive(Clone)]
     struct MockLlm {
@@ -847,6 +896,73 @@ mod tests {
         assert!(
             after_error >= before_error.saturating_add(1),
             "expected {AI_COMPLETION_RANKING_ERROR_METRIC} error_count to increment"
+        );
+    }
+
+    #[test]
+    fn completion_ranking_prompt_is_privacy_safe_against_markdown_fence_injection() {
+        let secret = "SecretService";
+        // Use 5 backticks; a naive `str::replace(\"```\", \"``\\\\`\")` is insufficient because it
+        // can re-introduce a literal triple-backtick substring for longer runs.
+        let injected = format!("`````{secret}");
+        let ctx = CompletionContext::new(
+            format!("my{injected}Prefix"),
+            format!("var x = 0; {injected} x = null;"),
+        );
+
+        let candidates = vec![
+            CompletionItem::new(format!("my{injected}Method"), CompletionItemKind::Method),
+            CompletionItem::new(format!("my{injected}Field"), CompletionItemKind::Method),
+        ];
+
+        let llm = Arc::new(MockLlm::new("[0]"));
+        let ranker = LlmCompletionRanker::new(llm);
+        let prompt = ranker
+            .build_prompt(&ctx, &candidates)
+            .expect("prompt should be buildable");
+        assert!(
+            prompt.contains(secret),
+            "raw prompt should contain user-derived identifier pre-sanitization"
+        );
+
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("privacy filter");
+        let mut session = filter.new_session();
+        let sanitized = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(
+            !sanitized.contains(secret),
+            "sanitized prompt must not leak identifiers in cloud mode: {sanitized}"
+        );
+
+        // Fence sanity: the prompt contains 3 fenced blocks (prefix/line/candidates).
+        assert_eq!(
+            sanitized.match_indices("```").count(),
+            6,
+            "expected exactly one opening+closing fence per section: {sanitized}"
+        );
+
+        // Candidate IDs must survive so the local caller can map the model's output.
+        let marker = "Candidates:\n```java\n";
+        let start = sanitized
+            .find(marker)
+            .unwrap_or_else(|| panic!("expected candidates section marker in prompt\n{sanitized}"));
+        let after = &sanitized[start + marker.len()..];
+        let end = after
+            .find("```")
+            .unwrap_or_else(|| panic!("expected closing candidates fence in prompt\n{sanitized}"));
+        let block = &after[..end];
+        assert!(
+            block.lines().any(|line| line.starts_with("0:")),
+            "expected candidate 0 to be present after sanitization\n{block}"
+        );
+        assert!(
+            block.lines().any(|line| line.starts_with("1:")),
+            "expected candidate 1 to be present after sanitization\n{block}"
         );
     }
 }
