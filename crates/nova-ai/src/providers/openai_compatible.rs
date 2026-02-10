@@ -147,12 +147,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let stream = try_stream! {
             let mut buffer = BytesMut::new();
+            // Index of the next byte we haven't scanned yet for `\n`. This avoids rescanning the
+            // same prefix repeatedly when the transport splits a single SSE line across many
+            // small chunks.
+            let mut scan_start: usize = 0;
 
             loop {
                 // Drain all complete lines already buffered before waiting for more bytes.
-                while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+                while let Some(rel_pos) = buffer[scan_start..].iter().position(|&b| b == b'\n') {
+                    let newline_pos = scan_start + rel_pos;
                     // Split off the line (including the trailing '\n') so `buffer` stays valid.
                     let mut line = buffer.split_to(newline_pos + 1);
+                    // `split_to` advances the start of `buffer`, so any previous scan offset is no
+                    // longer meaningful.
+                    scan_start = 0;
                     // Drop the trailing '\n'.
                     line.truncate(newline_pos);
                     // Handle CRLF line endings.
@@ -186,6 +194,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         }
                     }
                 }
+                // We've scanned everything currently in the buffer without finding a newline.
+                scan_start = buffer.len();
 
                 let next = tokio::select! {
                     _ = cancel.cancelled() => Err(AiError::Cancelled),
