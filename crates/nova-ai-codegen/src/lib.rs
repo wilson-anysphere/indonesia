@@ -112,6 +112,7 @@ pub struct CodeGenerationResult {
 pub enum ErrorFeedback {
     PatchFormat(String),
     PatchApply(String),
+    SafetyViolation(String),
     EditRangeSafety(String),
     Validation(ErrorReport),
 }
@@ -335,7 +336,16 @@ pub async fn generate_patch(
             }
         };
 
-        enforce_patch_safety(&patch, workspace, &config.safety)?;
+        if let Err(err) = enforce_patch_safety(&patch, workspace, &config.safety) {
+            if config.allow_repair && attempt < config.max_repair_attempts {
+                feedback = Some(ErrorFeedback::SafetyViolation(format!(
+                    "{err}\nPlease adjust the patch to comply with the safety limits listed above."
+                )));
+                attempt += 1;
+                continue;
+            }
+            return Err(err.into());
+        }
 
         if let Some(safety) = &config.edit_range_safety {
             if let Err(message) = enforce_edit_range_safety_patch_intent(&patch, safety) {
@@ -400,7 +410,16 @@ pub async fn generate_patch(
         let formatted_workspace = format_workspace(&applied, config);
 
         if config.safety.no_new_imports {
-            enforce_no_new_imports(workspace, &formatted_workspace, &applied)?;
+            if let Err(err) = enforce_no_new_imports(workspace, &formatted_workspace, &applied) {
+                if config.allow_repair && attempt < config.max_repair_attempts {
+                    feedback = Some(ErrorFeedback::SafetyViolation(format!(
+                        "{err}\nRemove the new imports (or use fully-qualified names / existing imports) and try again."
+                    )));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(err.into());
+            }
         }
 
         if let Some(progress) = progress {
@@ -546,6 +565,11 @@ fn build_prompt(
             }
             ErrorFeedback::PatchApply(message) => {
                 out.push_str("Patch apply error:\n");
+                out.push_str(message);
+                out.push('\n');
+            }
+            ErrorFeedback::SafetyViolation(message) => {
+                out.push_str("Patch safety violation:\n");
                 out.push_str(message);
                 out.push('\n');
             }
@@ -1124,6 +1148,41 @@ mod tests {
         }
     }
 
+    struct MockPromptCompletionProvider {
+        responses: Vec<String>,
+        calls: AtomicUsize,
+    }
+
+    impl MockPromptCompletionProvider {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                responses,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl PromptCompletionProvider for MockPromptCompletionProvider {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .responses
+                .get(idx)
+                .cloned()
+                .or_else(|| self.responses.last().cloned())
+                .unwrap_or_default())
+        }
+    }
+
     struct BlockingProvider {
         started_tx: Mutex<Option<mpsc::Sender<()>>>,
         resume_rx: Mutex<Option<mpsc::Receiver<()>>>,
@@ -1414,6 +1473,100 @@ mod tests {
             generated.contains("@Test"),
             "expected @Test, got: {generated}"
         );
+    }
+
+    #[test]
+    fn repair_loop_retries_when_patch_safety_violation_occurs() {
+        let unsafe_patch = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "4242424242"
+    }
+  ]
+}"#
+        .to_string();
+        let safe_patch = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "42"
+    }
+  ]
+}"#
+        .to_string();
+
+        let provider = MockPromptCompletionProvider::new(vec![unsafe_patch, safe_patch]);
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let mut config = CodeGenerationConfig::default();
+        config.max_repair_attempts = 1;
+        config.allow_repair = true;
+        config.safety.max_total_inserted_chars = 5;
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("repair loop should recover from safety violation");
+
+        assert_eq!(provider.calls(), 2);
+        let applied = result
+            .applied
+            .workspace
+            .get("Example.java")
+            .expect("patched file");
+        assert!(applied.contains("return 42;"), "{applied}");
+    }
+
+    #[test]
+    fn patch_safety_violation_fails_without_repair() {
+        let unsafe_patch = r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "4242424242"
+    }
+  ]
+}"#
+        .to_string();
+        let safe_patch = r#"{"edits":[]}"#.to_string();
+
+        let provider = MockPromptCompletionProvider::new(vec![unsafe_patch, safe_patch]);
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let mut config = CodeGenerationConfig::default();
+        config.max_repair_attempts = 1;
+        config.allow_repair = false;
+        config.safety.max_total_inserted_chars = 5;
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("safety violation should fail fast when repair is disabled");
+
+        let CodeGenerationError::Safety(SafetyError::TooManyInsertedChars { .. }) = err else {
+            panic!("expected Safety(TooManyInsertedChars), got {err:?}");
+        };
+        assert_eq!(provider.calls(), 1);
     }
 
     struct CountingProvider {
