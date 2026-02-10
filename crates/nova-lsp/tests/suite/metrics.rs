@@ -186,6 +186,282 @@ semantic_search = true
 }
 
 #[test]
+fn stdio_server_records_semantic_search_workspace_index_skip_metric_missing_root() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let root = workspace.path();
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+"#,
+    )
+    .expect("write nova.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure a developer's legacy AI env-var wiring can't override the config file and make
+        // this test flaky.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // No rootUri/rootPath: semantic-search workspace indexing should be skipped.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/metrics",
+            "params": null
+        }),
+    );
+    let metrics_resp = read_response_with_id(&mut stdout, 2);
+    let result = metrics_resp.get("result").cloned().expect("result");
+    let snapshot: MetricsSnapshot = serde_json::from_value(result).expect("decode snapshot");
+
+    assert!(
+        snapshot
+            .methods
+            .get("lsp/semantic_search/workspace_index/skipped_missing_workspace_root")
+            .is_some_and(|m| m.request_count > 0),
+        "expected skip metric to be recorded"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_records_semantic_search_workspace_index_skip_metric_safe_mode() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let root = workspace.path();
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+"#,
+    )
+    .expect("write nova.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env("NOVA_LSP_TEST_FORCE_SAFE_MODE", "1")
+        // Ensure a developer's legacy AI env-var wiring can't override the config file and make
+        // this test flaky.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": crate::support::file_uri_string(root),
+            }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/metrics",
+            "params": null
+        }),
+    );
+    let metrics_resp = read_response_with_id(&mut stdout, 2);
+    let result = metrics_resp.get("result").cloned().expect("result");
+    let snapshot: MetricsSnapshot = serde_json::from_value(result).expect("decode snapshot");
+
+    assert!(
+        snapshot
+            .methods
+            .get("lsp/semantic_search/workspace_index/skipped_safe_mode")
+            .is_some_and(|m| m.request_count > 0),
+        "expected safe-mode skip metric to be recorded"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_records_semantic_search_workspace_index_skip_metric_runtime_unavailable() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let root = workspace.path();
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+
+[ai.provider]
+kind = "open_ai"
+"#,
+    )
+    .expect("write nova.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure a developer's legacy AI env-var wiring can't override the config file and make
+        // this test flaky.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": crate::support::file_uri_string(root),
+            }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/metrics",
+            "params": null
+        }),
+    );
+    let metrics_resp = read_response_with_id(&mut stdout, 2);
+    let result = metrics_resp.get("result").cloned().expect("result");
+    let snapshot: MetricsSnapshot = serde_json::from_value(result).expect("decode snapshot");
+
+    assert!(
+        snapshot
+            .methods
+            .get("lsp/semantic_search/workspace_index/skipped_runtime_unavailable")
+            .is_some_and(|m| m.request_count > 0),
+        "expected runtime-unavailable skip metric to be recorded"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn salsa_memos_evict_under_memory_enforcement() {
     // Use a tiny budget so we reliably exceed the query-cache allocation even in small tests.
     let memory = MemoryManager::new(MemoryBudget::from_total(1_000));
