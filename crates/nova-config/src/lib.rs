@@ -1519,18 +1519,27 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // quoted substrings to avoid leaking arbitrary config string values (including secrets) even
     // when no snippet is included.
     static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
-    static BACKTICK_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
 
     let re = QUOTED_STRING_RE
         .get_or_init(|| regex::Regex::new(r#""[^"]*""#).expect("quoted-string regex should compile"));
 
-    let out = re.replace_all(message, r#""<redacted>""#);
+    let mut out = re.replace_all(message, r#""<redacted>""#).into_owned();
 
-    // `serde` / `toml` also wrap offending enum variants in backticks:
-    // `unknown variant \`secret\`, expected ...`
-    let re = BACKTICK_STRING_RE
-        .get_or_init(|| regex::Regex::new(r#"`[^`]*`"#).expect("backtick-string regex should compile"));
-    re.replace_all(&out, "`<redacted>`").into_owned()
+    // `serde` / `toml` wrap offending enum variants (and unknown fields) in backticks:
+    // `unknown variant `secret`, expected one of `a`, `b``
+    //
+    // Only redact the *first* backticked segment so we keep the expected/allowed value list
+    // actionable while still avoiding leaks of user-provided values.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
 }
 
 impl From<toml::de::Error> for ConfigError {
