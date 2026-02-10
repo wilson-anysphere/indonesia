@@ -511,6 +511,16 @@ clamps each retry's backoff delay to the remaining timeout budget.
 Nova includes a minimal JSON-over-HTTP provider (`kind = "http"`) primarily intended for **proxies**
 and **tests**.
 
+For `kind = "http"`, `ai.provider.url` is treated as the full completion endpoint (Nova POSTs to it
+directly), e.g.:
+
+```toml
+[ai.provider]
+kind = "http"
+url = "http://localhost:1234/complete"
+model = "my-model"
+```
+
 - `chat()` sends a single JSON request body and expects a single JSON response body:
 
   ```

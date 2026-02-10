@@ -1039,6 +1039,9 @@ pub enum AiProviderKind {
     AzureOpenAi,
     /// A simple JSON-over-HTTP API (useful for proxies and tests).
     ///
+    /// Requests are sent by POSTing to `ai.provider.url` as configured (it is treated as a full
+    /// endpoint, not a base URL).
+    ///
     /// Non-streaming request body:
     /// `{ "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
     ///
@@ -1085,6 +1088,7 @@ pub struct AiProviderConfig {
     /// - Anthropic: `https://api.anthropic.com`
     /// - Gemini: `https://generativelanguage.googleapis.com`
     /// - Azure OpenAI: `https://{resource}.openai.azure.com`
+    /// - HTTP (kind = "http"): `http://localhost:1234/complete`
     #[serde(default = "default_provider_url")]
     #[schemars(schema_with = "crate::schema::url_schema")]
     pub url: Url,
