@@ -74,6 +74,22 @@ pub fn redact_suspicious_literals(code: &str, cfg: &RedactionConfig) -> String {
 }
 
 pub(crate) fn redact_file_paths(text: &str) -> String {
+    // `file://` URIs (both Unix and Windows forms).
+    //
+    // We keep this regex intentionally permissive and redact the full URI token to avoid leaking
+    // sensitive path metadata via common error formats (e.g. stack traces that include
+    // `file:///...` locations).
+    //
+    // Examples:
+    // - file:///home/alice/project/Secret.java
+    // - file:///C:/Users/Alice/Secret.java
+    // - file://localhost/home/alice/project/Secret.java
+    //
+    // We stop at common delimiters so surrounding punctuation is preserved (e.g. `(... )`).
+    static FILE_URI_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?mi)(?P<path>\bfile:(?:(?:/{2,})|\\\\+)[^\s"'<>)\]}]+)"#)
+            .expect("valid file uri regex")
+    });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
@@ -89,7 +105,8 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
             .expect("valid windows path regex")
     });
 
-    let out = UNIX_PATH_RE.replace_all(text, "[PATH]").into_owned();
+    let out = FILE_URI_RE.replace_all(text, "[PATH]").into_owned();
+    let out = UNIX_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
 }
 
@@ -187,5 +204,26 @@ mod tests {
         let out = redact_file_paths(prompt);
         assert!(out.contains("[PATH]"), "{out}");
         assert!(!out.contains(r"C:\Users\alice\secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unix_file_uris() {
+        let prompt = r#"opening file:///home/alice/project/Secret.java"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("file:///home/alice/project/Secret.java"), "{out}");
+        assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_file_uris() {
+        let prompt = r#"opening file:///C:/Users/Alice/Secret.java"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(
+            !out.contains("file:///C:/Users/Alice/Secret.java"),
+            "{out}"
+        );
+        assert!(!out.contains("C:/Users/Alice/Secret.java"), "{out}");
     }
 }
