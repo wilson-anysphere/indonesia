@@ -1663,6 +1663,34 @@ mod tests {
         assert_eq!(provider.calls(), 1);
     }
 
+    #[test]
+    fn build_prompt_includes_safety_violation_feedback() {
+        let config = CodeGenerationConfig::default();
+        let prompt = build_prompt(
+            "Base prompt.",
+            &config,
+            Some(&ErrorFeedback::SafetyViolation(
+                "patch inserts too many characters (123 > 10)".to_string(),
+            )),
+        );
+
+        let idx_previous = prompt
+            .find("Previous output could not be applied:")
+            .expect("expected previous-output header in prompt");
+        let idx_safety = prompt
+            .find("Patch safety violation:")
+            .expect("expected safety-violation header in prompt");
+
+        assert!(
+            idx_previous < idx_safety,
+            "expected safety section after previous-output header:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("patch inserts too many characters"),
+            "expected safety violation message in prompt:\n{prompt}"
+        );
+    }
+
     struct CountingProvider {
         calls: AtomicUsize,
     }
