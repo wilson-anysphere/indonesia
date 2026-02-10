@@ -351,19 +351,34 @@ fn parse_git_binary_files_line(line: &str) -> Result<Option<(String, String)>, D
                 let new = parse_git_binary_path_token(new_raw)?;
 
                 let same_no_prefix = old == new;
+                let prefixes_look_like_git =
+                    (old.starts_with("a/") && new.starts_with("b/"))
+                        || (old.starts_with("b/") && new.starts_with("a/"));
+
                 let same_git_prefix = {
                     let old_stripped = old.strip_prefix("a/").or_else(|| old.strip_prefix("b/"));
                     let new_stripped = new.strip_prefix("a/").or_else(|| new.strip_prefix("b/"));
-
-                    let prefixes_look_like_git = (old.starts_with("a/") && new.starts_with("b/"))
-                        || (old.starts_with("b/") && new.starts_with("a/"));
 
                     prefixes_look_like_git
                         && old_stripped.is_some()
                         && old_stripped == new_stripped
                 };
 
-                if same_no_prefix || same_git_prefix {
+                // Best-effort for custom `--src-prefix` / `--dst-prefix` values that differ only by
+                // a single leading path segment (e.g. `old/` vs `new/`). This avoids failing
+                // closed on a binary summary line for a modified file where the filename contains
+                // the ` and ` delimiter substring.
+                let same_custom_prefix = if prefixes_look_like_git || same_no_prefix {
+                    false
+                } else if let (Some((old_prefix, old_rest)), Some((new_prefix, new_rest))) =
+                    (old.split_once('/'), new.split_once('/'))
+                {
+                    old_prefix != new_prefix && !old_rest.is_empty() && old_rest == new_rest
+                } else {
+                    false
+                };
+
+                if same_no_prefix || same_git_prefix || same_custom_prefix {
                     candidates.push((old, new));
                 }
             }
