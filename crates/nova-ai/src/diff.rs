@@ -420,6 +420,21 @@ fn parse_diff_section_paths(line: &str) -> Option<DiffSectionPaths> {
     None
 }
 
+/// Parse old/new paths from a `diff --git` header line.
+///
+/// Returns `None` if the line is not a `diff --git` header or if paths cannot be determined
+/// reliably (e.g. ambiguous unquoted whitespace).
+pub(crate) fn parse_diff_git_paths(line: &str) -> Option<(String, String)> {
+    let paths = parse_diff_section_paths(line)?;
+    let mut iter = paths.paths.into_iter();
+    let old = iter.next()?;
+    let new = iter.next()?;
+    if iter.next().is_some() {
+        return None;
+    }
+    Some((old, new))
+}
+
 fn parse_diff_git_paths_with_unquoted_spaces(rest: &str) -> Option<(String, String)> {
     let rest = rest.trim();
     if rest.is_empty() {
@@ -481,7 +496,7 @@ fn parse_diff_git_paths_with_unquoted_spaces(rest: &str) -> Option<(String, Stri
 /// Supports:
 /// - unquoted tokens delimited by ASCII whitespace
 /// - double-quoted tokens with C-style backslash escapes (a best-effort subset of git's quoting rules)
-fn parse_diff_token(input: &str) -> Option<(String, &str)> {
+pub(crate) fn parse_diff_token(input: &str) -> Option<(String, &str)> {
     let input = input.trim_start();
     if input.is_empty() {
         return None;

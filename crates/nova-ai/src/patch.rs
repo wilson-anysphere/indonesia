@@ -606,7 +606,12 @@ fn parse_git_file_block(
         return Ok(None);
     }
 
-    let (mut old_path, mut new_path) = parse_diff_git_paths(header)?;
+    let mut old_path = String::new();
+    let mut new_path = String::new();
+    if let Some((old, new)) = parse_diff_git_paths(header)? {
+        old_path = old;
+        new_path = new;
+    }
     let mut idx = start_idx + 1;
 
     let mut rename_from: Option<String> = None;
@@ -618,21 +623,9 @@ fn parse_git_file_block(
             break;
         }
         if let Some(rest) = line.strip_prefix("rename from ") {
-            rename_from = Some(
-                rest.trim()
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string(),
-            );
+            rename_from = Some(parse_rename_path(rest, "rename from")?);
         } else if let Some(rest) = line.strip_prefix("rename to ") {
-            rename_to = Some(
-                rest.trim()
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string(),
-            );
+            rename_to = Some(parse_rename_path(rest, "rename to")?);
         }
         idx += 1;
     }
@@ -651,6 +644,12 @@ fn parse_git_file_block(
         new_path = file.new_path;
         hunks = file.hunks;
         idx = next_idx;
+    }
+
+    if old_path.is_empty() || new_path.is_empty() {
+        return Err(PatchParseError::InvalidDiff(
+            "missing file paths in diff file block".into(),
+        ));
     }
 
     old_path = normalize_diff_path(&old_path);
@@ -738,26 +737,26 @@ fn parse_unified_file_block(
     ))
 }
 
-fn parse_diff_git_paths(line: &str) -> Result<(String, String), PatchParseError> {
-    let mut parts = line.split_whitespace();
-    let diff = parts
-        .next()
-        .ok_or_else(|| PatchParseError::InvalidDiff("invalid diff --git header".into()))?;
-    let git = parts
-        .next()
-        .ok_or_else(|| PatchParseError::InvalidDiff("invalid diff --git header".into()))?;
-    if diff != "diff" || git != "--git" {
+fn parse_diff_git_paths(line: &str) -> Result<Option<(String, String)>, PatchParseError> {
+    let parsed = crate::diff::parse_diff_git_paths(line);
+    if parsed.is_some() {
+        return Ok(parsed);
+    }
+
+    // Fail-closed for malformed quoted headers (unterminated quotes / invalid escapes).
+    // For unquoted headers, treat parsing failure as ambiguous and allow `rename from/to` or
+    // unified headers to provide the paths instead.
+    let rest = line
+        .strip_prefix("diff --git ")
+        .unwrap_or_default()
+        .trim_start();
+    if rest.starts_with('"') {
         return Err(PatchParseError::InvalidDiff(
             "invalid diff --git header".into(),
         ));
     }
-    let old = parts.next().ok_or_else(|| {
-        PatchParseError::InvalidDiff("missing old path in diff --git header".into())
-    })?;
-    let new = parts.next().ok_or_else(|| {
-        PatchParseError::InvalidDiff("missing new path in diff --git header".into())
-    })?;
-    Ok((old.to_string(), new.to_string()))
+
+    Ok(None)
 }
 
 fn parse_hunk(
@@ -875,12 +874,105 @@ fn parse_diff_path(line: &str, prefix: &str) -> Result<String, PatchParseError> 
     let rest = line
         .strip_prefix(prefix)
         .ok_or_else(|| PatchParseError::InvalidDiff("invalid file header".into()))?
-        .trim();
-    let token = rest
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| PatchParseError::InvalidDiff("missing file path".into()))?;
+        .trim_start();
+
+    if rest.is_empty() {
+        return Err(PatchParseError::InvalidDiff("missing file path".into()));
+    }
+
+    if rest.starts_with('"') {
+        let (token, _remaining) = crate::diff::parse_diff_token(rest).ok_or_else(|| {
+            PatchParseError::InvalidDiff("invalid file header path".into())
+        })?;
+        return Ok(token);
+    }
+
+    // Unified diff headers delimit the optional timestamp/metadata with a tab. This allows file
+    // paths to contain spaces without requiring quoting.
+    if let Some((before_tab, _after_tab)) = rest.split_once('\t') {
+        let token = before_tab.trim_end();
+        if token.is_empty() {
+            return Err(PatchParseError::InvalidDiff("missing file path".into()));
+        }
+        return Ok(token.to_string());
+    }
+
+    let (token, remaining) = split_first_whitespace_token(rest).ok_or_else(|| {
+        PatchParseError::InvalidDiff("missing file path".into())
+    })?;
+    let remaining = remaining.trim();
+    if !remaining.is_empty() && !looks_like_unified_diff_timestamp(remaining) {
+        return Err(PatchParseError::InvalidDiff(
+            "invalid file header metadata".into(),
+        ));
+    }
+
     Ok(token.to_string())
+}
+
+fn parse_rename_path(input: &str, label: &str) -> Result<String, PatchParseError> {
+    let rest = input.trim();
+    if rest.is_empty() {
+        return Err(PatchParseError::InvalidDiff(format!(
+            "missing path in {label} header"
+        )));
+    }
+
+    if rest.starts_with('"') {
+        let (token, remaining) = crate::diff::parse_diff_token(rest).ok_or_else(|| {
+            PatchParseError::InvalidDiff(format!("invalid {label} header path"))
+        })?;
+        if !remaining.trim().is_empty() {
+            return Err(PatchParseError::InvalidDiff(format!(
+                "unexpected trailing data in {label} header"
+            )));
+        }
+        return Ok(token);
+    }
+
+    Ok(rest.to_string())
+}
+
+fn split_first_whitespace_token(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    if input.is_empty() {
+        return None;
+    }
+
+    let mut end = input.len();
+    for (idx, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            end = idx;
+            break;
+        }
+    }
+
+    let token = &input[..end];
+    let rest = &input[end..];
+    Some((token, rest))
+}
+
+fn looks_like_unified_diff_timestamp(s: &str) -> bool {
+    // Common unified diff timestamp prefix: `YYYY-MM-DD ...`
+    let bytes = s.as_bytes();
+    if bytes.len() < 10 {
+        return false;
+    }
+
+    fn is_digit(b: u8) -> bool {
+        matches!(b, b'0'..=b'9')
+    }
+
+    is_digit(bytes[0])
+        && is_digit(bytes[1])
+        && is_digit(bytes[2])
+        && is_digit(bytes[3])
+        && bytes[4] == b'-'
+        && is_digit(bytes[5])
+        && is_digit(bytes[6])
+        && bytes[7] == b'-'
+        && is_digit(bytes[8])
+        && is_digit(bytes[9])
 }
 
 fn normalize_diff_path(path: &str) -> String {
@@ -1021,5 +1113,137 @@ BROKEN
 
         let err = parse_structured_patch(raw).expect_err("expected failure");
         assert!(matches!(err, PatchParseError::InvalidDiff(_)));
+    }
+
+    #[test]
+    fn parses_quoted_paths_with_spaces() {
+        let raw = r#"diff --git "a/foo bar.txt" "b/foo bar.txt"
+index e69de29..4b825dc 100644
+--- "a/foo bar.txt" 2026-02-10
++++ "b/foo bar.txt" 2026-02-10
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "foo bar.txt".to_string(),
+                    new_path: "foo bar.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_rename_metadata_with_quoted_paths() {
+        let raw = r#"diff --git "a/old name.txt" "b/new name.txt"
+similarity index 100%
+rename from "old name.txt"
+rename to "new name.txt""#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "old name.txt".to_string(),
+                    new_path: "new name.txt".to_string(),
+                    hunks: Vec::new(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_backslash_and_octal_escapes_in_quoted_paths() {
+        let raw = r#"diff --git "a/foo\"bar\\baz\040qux.txt" "b/foo\"bar\\baz\040qux.txt"
+index e69de29..4b825dc 100644
+--- "a/foo\"bar\\baz\040qux.txt"
++++ "b/foo\"bar\\baz\040qux.txt"
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "foo\"bar\\baz qux.txt".to_string(),
+                    new_path: "foo\"bar\\baz qux.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_git_octal_escapes_for_utf8_bytes() {
+        let raw = r#"diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"
+index e69de29..4b825dc 100644
+--- "a/caf\303\251.txt"
++++ "b/caf\303\251.txt"
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "café.txt".to_string(),
+                    new_path: "café.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_unquoted_paths_with_spaces_delimited_by_tab() {
+        let raw = "diff --git a/dir with space/file.txt b/dir with space/file.txt\n\
+index e69de29..4b825dc 100644\n\
+--- a/dir with space/file.txt\t2026-02-10\n\
++++ b/dir with space/file.txt\t2026-02-10\n\
+@@ -0,0 +1,1 @@\n\
++hello";
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "dir with space/file.txt".to_string(),
+                    new_path: "dir with space/file.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
     }
 }
