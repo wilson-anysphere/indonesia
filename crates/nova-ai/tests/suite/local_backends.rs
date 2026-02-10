@@ -1,3 +1,4 @@
+use async_stream::stream;
 use futures::stream::iter;
 use futures::StreamExt;
 use hyper::{
@@ -874,6 +875,71 @@ async fn openai_compatible_stream_parses_multibyte_utf8_split_across_chunks() {
         output.push_str(&item.unwrap());
     }
     assert_eq!(output, "世");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_compatible_stream_timeout_is_idle_based_not_total_duration() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/v1/chat/completions" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        // Send chunks frequently enough to stay under the provider idle timeout,
+        // but allow the total stream duration to exceed it.
+        let chunks = stream! {
+            let parts = [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"B\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"C\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            ];
+
+            for part in parts {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
+            }
+        };
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(chunks))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+
+    let mut config = openai_config(url);
+    config.provider.timeout_ms = 100;
+    let client = AiClient::from_config(&config).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+
+    assert_eq!(output, "ABC");
 
     handle.abort();
 }

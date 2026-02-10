@@ -138,14 +138,21 @@ impl LlmProvider for OpenAiCompatibleProvider {
             stream: true,
         };
 
-        let request_builder = self
-            .authorize(self.client.post(url))
-            .json(&body)
-            .timeout(self.timeout);
+        // NOTE: Do NOT use `RequestBuilder::timeout(...)` for streaming requests.
+        // `reqwest` interprets that value as a *total wall-clock timeout* for the entire response
+        // body, which would cap long-running streams even if the server keeps delivering chunks.
+        //
+        // Instead, we apply `self.timeout` to:
+        // 1) Establishing the response (send + headers), and
+        // 2) Idle time between streamed chunks while reading the body.
+        let request_builder = self.authorize(self.client.post(url)).json(&body);
 
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
-            resp = request_builder.send() => resp.map_err(map_reqwest_error)?,
+            resp = tokio::time::timeout(self.timeout, request_builder.send()) => match resp {
+                Ok(res) => res.map_err(map_reqwest_error)?,
+                Err(_) => return Err(AiError::Timeout),
+            },
         }
         .error_for_status()
         .map_err(map_reqwest_error)?;

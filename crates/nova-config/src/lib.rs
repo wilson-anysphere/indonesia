@@ -1118,7 +1118,14 @@ pub struct AiProviderConfig {
     #[schemars(range(min = 0.0))]
     pub temperature: Option<f32>,
 
-    /// Per-request timeout.
+    /// Per-request timeout (in milliseconds).
+    ///
+    /// Semantics:
+    /// - For non-streaming requests (`chat`), this bounds the total request duration.
+    /// - For streaming requests (`chat_stream`), this is treated as an *idle timeout* while reading
+    ///   the stream (maximum time between chunks) and as a timeout for establishing the response
+    ///   (send + headers). It does **not** cap the total stream duration as long as chunks keep
+    ///   arriving.
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
