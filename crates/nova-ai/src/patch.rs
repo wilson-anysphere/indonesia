@@ -614,6 +614,7 @@ fn parse_git_file_block(
     }
     let mut idx = start_idx + 1;
 
+    let mut paths_already_normalized = false;
     let mut rename_from: Option<String> = None;
     let mut rename_to: Option<String> = None;
 
@@ -644,6 +645,7 @@ fn parse_git_file_block(
         new_path = file.new_path;
         hunks = file.hunks;
         idx = next_idx;
+        paths_already_normalized = true;
     }
 
     if old_path.is_empty() || new_path.is_empty() {
@@ -652,8 +654,10 @@ fn parse_git_file_block(
         ));
     }
 
-    old_path = normalize_diff_path(&old_path);
-    new_path = normalize_diff_path(&new_path);
+    if !paths_already_normalized {
+        old_path = normalize_diff_path(&old_path);
+        new_path = normalize_diff_path(&new_path);
+    }
 
     if hunks.is_empty() && old_path == new_path && old_path != "/dev/null" {
         return Err(PatchParseError::InvalidDiff(format!(
@@ -997,8 +1001,9 @@ fn normalize_diff_path(path: &str) -> String {
     if path == "/dev/null" {
         return path.to_string();
     }
-    path.trim_start_matches("a/")
-        .trim_start_matches("b/")
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
         .to_string()
 }
 
@@ -1088,6 +1093,34 @@ index e69de29..4b825dc 100644
                 }],
             })
         );
+    }
+
+    #[test]
+    fn normalizes_diff_paths_with_real_b_prefix_dir_in_git_headers() {
+        let diff = r#"diff --git a/b/foo.txt b/b/foo.txt
+index e69de29..4b825dc 100644
+--- a/b/foo.txt
++++ b/b/foo.txt
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_unified_diff(diff).expect("parse diff");
+        let file = patch.files.first().expect("expected file patch");
+        assert_eq!(file.old_path, "b/foo.txt");
+        assert_eq!(file.new_path, "b/foo.txt");
+    }
+
+    #[test]
+    fn normalizes_diff_paths_with_real_b_prefix_dir_in_plain_headers() {
+        let diff = r#"--- a/b/foo.txt
++++ b/b/foo.txt
+@@ -0,0 +1,1 @@
++hello"#;
+
+        let patch = parse_unified_diff(diff).expect("parse diff");
+        let file = patch.files.first().expect("expected file patch");
+        assert_eq!(file.old_path, "b/foo.txt");
+        assert_eq!(file.new_path, "b/foo.txt");
     }
 
     #[test]
