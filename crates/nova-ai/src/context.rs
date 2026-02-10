@@ -669,7 +669,13 @@ fn looks_like_path_token(token: &str) -> bool {
         if token.starts_with('/') || token.starts_with("\\\\") {
             return true;
         }
-        if token.contains("..") || token.contains("./") || token.contains(".\\") {
+        if token.contains("..")
+            || token.contains("./")
+            || token.contains(".\\")
+            || token.contains("/.")
+            || token.contains("\\.")
+            || token.starts_with('.')
+        {
             return true;
         }
         if token.as_bytes().windows(3).any(|w| w[1] == b':' && (w[2] == b'\\' || w[2] == b'/')) {
@@ -679,9 +685,14 @@ fn looks_like_path_token(token: &str) -> bool {
         if sep_count >= 2 {
             return true;
         }
-        // Single-segment relative paths that include an extension are still paths
-        // (e.g. `src/Main.java`).
-        if token.contains('.') {
+
+        // Single-segment relative paths that end in a well-known source/doc extension are still
+        // paths (e.g. `src/Main.java`).
+        let last_segment = token
+            .rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(token);
+        if looks_like_file_name(last_segment) {
             return true;
         }
 
