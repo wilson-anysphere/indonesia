@@ -10452,6 +10452,21 @@ pub(crate) fn infer_receiver_type_before_dot(
         return None;
     }
 
+    // Best-effort `this.<field>` / `super.<field>` support for parenthesized receivers like
+    // `(this.foo).<cursor>`.
+    if let Some((qualifier, rest)) = inner.split_once('.') {
+        let qualifier = qualifier.trim();
+        let rest = rest.trim();
+        if (qualifier == "this" || qualifier == "super")
+            && rest.chars().next().is_some_and(is_ident_start)
+            && rest.chars().all(is_ident_continue)
+        {
+            if let Some(field) = analysis.fields.iter().find(|f| f.name == rest) {
+                return Some(field.ty.clone());
+            }
+        }
+    }
+
     if inner.starts_with('"') {
         return Some("java.lang.String".to_string());
     }
@@ -20749,8 +20764,8 @@ class A {
     #[test]
     fn infer_receiver_type_before_dot_infers_stream_for_chained_map_call() {
         let java = r#"
-import java.util.List;
-
+ import java.util.List;
+ 
 class A {
   void m() {
     List<String> people = List.of();
@@ -20779,6 +20794,31 @@ class A {
             base.ends_with("Stream"),
             "expected receiver type to end with `Stream`, got {ty:?}"
         );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_this_field_access_in_parens() {
+        let java = r#"
+class A {
+  String foo;
+
+  void m() {
+    (this.foo).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("(this.foo).")
+            .expect("expected `(this.foo).` in fixture")
+            + "(this.foo)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("String"));
     }
 
     #[test]
