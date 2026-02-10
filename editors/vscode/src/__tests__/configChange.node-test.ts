@@ -28,6 +28,16 @@ test('preserves existing restart triggers (nova.ai.enabled / nova.lsp.* / nova.s
   assert.equal(getNovaConfigChangeEffects(eventFor(['nova.server.args'])).shouldPromptRestartLanguageServer, true);
 });
 
+test('prompts restart when nova.aiCodeActions.enabled changes', () => {
+  const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCodeActions.enabled']));
+  assert.equal(effects.shouldPromptRestartLanguageServer, true);
+});
+
+test('prompts restart when nova.aiCodeReview.enabled changes', () => {
+  const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCodeReview.enabled']));
+  assert.equal(effects.shouldPromptRestartLanguageServer, true);
+});
+
 test('does not prompt restart when nova.server.path changes (auto-restart path)', () => {
   const effects = getNovaConfigChangeEffects(eventFor(['nova.server.path', 'nova.aiCompletions.enabled']));
   assert.equal(effects.serverPathChanged, true);

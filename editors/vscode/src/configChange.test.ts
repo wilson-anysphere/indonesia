@@ -24,6 +24,16 @@ describe('getNovaConfigChangeEffects', () => {
     expect(effects.shouldClearAiCompletionCache).toBe(true);
   });
 
+  it('prompts for language server restart when nova.aiCodeActions.enabled changes', () => {
+    const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCodeActions.enabled']));
+    expect(effects.shouldPromptRestartLanguageServer).toBe(true);
+  });
+
+  it('prompts for language server restart when nova.aiCodeReview.enabled changes', () => {
+    const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCodeReview.enabled']));
+    expect(effects.shouldPromptRestartLanguageServer).toBe(true);
+  });
+
   it('does not prompt for restart when nova.server.path changes (server restarts automatically)', () => {
     const effects = getNovaConfigChangeEffects(eventFor(['nova.server.path', 'nova.aiCompletions.enabled']));
     expect(effects.serverPathChanged).toBe(true);
