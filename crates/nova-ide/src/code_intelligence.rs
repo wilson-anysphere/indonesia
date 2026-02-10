@@ -18064,28 +18064,47 @@ fn infer_receiver(
     offset: usize,
 ) -> (Type, CallKind) {
     fn in_scope_field<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> Option<&'a FieldDecl> {
-        let mut current = enclosing_class(analysis, offset);
+        // Best-effort field lookup for value receivers.
+        //
+        // We must avoid treating *unrelated* fields from other top-level classes as in-scope (which
+        // breaks member-access inference for call chains), but we still want to support nested
+        // classes accessing fields from their enclosing classes.
+        //
+        // To approximate Java name lookup without a full resolver, walk the chain of classes that
+        // lexically enclose `offset` (inner → outer). For each enclosing class, scan its own fields
+        // and then its `extends` chain (within-file only).
+        let mut enclosing: Vec<&ClassDecl> = analysis
+            .classes
+            .iter()
+            .filter(|c| span_contains(c.span, offset))
+            .collect();
+        enclosing.sort_by_key(|c| c.span.len());
+
         let mut seen = HashSet::<Span>::new();
-        while let Some(class) = current {
-            if !seen.insert(class.name_span) {
-                break;
-            }
+        for class in enclosing {
+            let mut current = Some(class);
+            while let Some(class) = current {
+                if !seen.insert(class.name_span) {
+                    break;
+                }
 
-            let field = analysis.fields.iter().find(|field| {
-                field.name == name
-                    && span_within(field.name_span, class.body_span)
-                    && enclosing_class(analysis, field.name_span.start)
-                        .is_some_and(|owner| owner.name_span == class.name_span)
-            });
-            if field.is_some() {
-                return field;
-            }
+                let field = analysis.fields.iter().find(|field| {
+                    field.name == name
+                        && span_within(field.name_span, class.body_span)
+                        && enclosing_class(analysis, field.name_span.start)
+                            .is_some_and(|owner| owner.name_span == class.name_span)
+                });
+                if field.is_some() {
+                    return field;
+                }
 
-            let Some(extends) = class.extends.as_deref() else {
-                break;
-            };
-            current = analysis.classes.iter().find(|c| c.name == extends);
+                let Some(extends) = class.extends.as_deref() else {
+                    break;
+                };
+                current = analysis.classes.iter().find(|c| c.name == extends);
+            }
         }
+
         None
     }
 

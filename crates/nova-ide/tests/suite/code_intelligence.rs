@@ -827,6 +827,30 @@ class Outer {
 }
 
 #[test]
+fn completion_resolves_enclosing_class_field_in_nested_class_member_access() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  String s = "x";
+
+  class Inner {
+    void m() {
+      s.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for enclosing class field; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"
