@@ -91,6 +91,18 @@ pub use provider::{AiProvider, AiProviderError};
 pub use safety::{PatchSafetyConfig, SafetyError};
 pub use workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 
+/// Exposes diff filtering for integration tests.
+///
+/// This is `doc(hidden)` to avoid encouraging external callers to rely on the exact parsing
+/// behavior (it is intentionally lightweight and may evolve).
+#[doc(hidden)]
+pub fn filter_diff_for_excluded_paths_for_tests<F>(diff: &str, is_excluded: F) -> String
+where
+    F: Fn(&std::path::Path) -> bool,
+{
+    diff::filter_diff_for_excluded_paths(diff, is_excluded).text
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::sync::{Mutex, OnceLock};
