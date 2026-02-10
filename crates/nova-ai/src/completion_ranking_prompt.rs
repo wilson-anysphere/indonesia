@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 
-use nova_core::{CompletionContext, CompletionItem};
+use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
+
+pub(crate) const COMPLETION_RANKING_PROMPT_VERSION: &str = "nova_completion_ranking_v1";
 
 /// Deterministic prompt builder for model-backed completion ranking.
 ///
@@ -25,83 +27,98 @@ use nova_core::{CompletionContext, CompletionItem};
 pub struct CompletionRankingPromptBuilder {
     /// Upper bound for the prompt (in UTF-8 bytes). `0` disables truncation.
     ///
-    /// Truncation is applied only to the *code body* portion so that the closing fence is always
-    /// preserved (privacy filter relies on a well-formed fence to anonymize identifiers).
+    /// Truncation is applied only to the *code body* portions so that all closing fences are always
+    /// preserved (privacy filter relies on well-formed fences to anonymize identifiers).
     max_prompt_chars: usize,
+    max_label_chars: usize,
+    max_detail_chars: usize,
+    max_prefix_chars: usize,
+    max_line_chars: usize,
 }
 
 impl CompletionRankingPromptBuilder {
     pub fn new(max_prompt_chars: usize) -> Self {
-        Self { max_prompt_chars }
+        Self {
+            max_prompt_chars,
+            // These defaults are intentionally kept in sync with `LlmCompletionRanker` so the
+            // builder can be used as a standalone prompt generator while still producing the
+            // same prompt shape/limits as the ranker.
+            max_label_chars: 120,
+            max_detail_chars: 200,
+            max_prefix_chars: 80,
+            max_line_chars: 400,
+        }
+    }
+
+    pub fn with_max_label_chars(mut self, max: usize) -> Self {
+        self.max_label_chars = max;
+        self
+    }
+
+    pub fn with_max_detail_chars(mut self, max: usize) -> Self {
+        self.max_detail_chars = max;
+        self
+    }
+
+    pub fn with_max_prefix_chars(mut self, max: usize) -> Self {
+        self.max_prefix_chars = max;
+        self
+    }
+
+    pub fn with_max_line_chars(mut self, max: usize) -> Self {
+        self.max_line_chars = max;
+        self
     }
 
     /// Build a prompt containing:
     /// - The current completion context (prefix + current line)
     /// - The candidate list, with numeric IDs starting at 0
     ///
-    /// All user-derived data is embedded in a fenced block so it can be anonymized/redacted by
+    /// All user-derived data is embedded in fenced blocks so it can be anonymized/redacted by
     /// `PrivacyFilter` in cloud mode.
     pub fn build_prompt(&self, ctx: &CompletionContext, candidates: &[CompletionItem]) -> String {
-        const MAX_CANDIDATE_LABEL_BYTES: usize = 160;
-        const MAX_CANDIDATE_DETAIL_BYTES: usize = 200;
-
-        // Keep formatting stable for caching/tests; keep user-derived content inside the fence.
-        const HEADER: &str = "You are Nova, a Java code completion ranking engine.\n\
-Given the context and the completion candidates below, rank the candidates by relevance.\n\
-Return JSON only in the form: {\"ranking\":[0,1,2]}.\n\n\
-```java\n";
-        // Always put the closing fence on its own line (preceded by a newline) so that a payload
-        // ending in backticks cannot accidentally form a fence boundary by spanning the join.
-        const FOOTER: &str = "\n```\n";
-
-        let mut body = String::new();
-
-        body.push_str("PREFIX:\n");
-        body.push_str(escape_markdown_fence_payload(&ctx.prefix).as_ref());
-        body.push('\n');
-
-        body.push_str("LINE:\n");
-        body.push_str(escape_markdown_fence_payload(&ctx.line_text).as_ref());
-        body.push('\n');
-
-        body.push_str("CANDIDATES:\n");
-        for (id, item) in candidates.iter().enumerate() {
-            body.push_str(&id.to_string());
-            body.push_str(": ");
-            let mut label = escape_markdown_fence_payload(&item.label).into_owned();
-            truncate_utf8_boundary(&mut label, MAX_CANDIDATE_LABEL_BYTES);
-            body.push_str(&label);
-
-            if let Some(detail) = item
-                .detail
-                .as_deref()
-                .map(str::trim)
-                .filter(|detail| !detail.is_empty())
-                // Avoid sending file paths in `.detail` (some LSP servers include locations).
-                .filter(|detail| !(detail.contains('/') || detail.contains('\\')))
-            {
-                body.push_str(" — ");
-                let mut detail = escape_markdown_fence_payload(detail).into_owned();
-                truncate_utf8_boundary(&mut detail, MAX_CANDIDATE_DETAIL_BYTES);
-                body.push_str(&detail);
-            }
-            body.push('\n');
-        }
+        let mut prefix = sanitize_code_block(&ctx.prefix, self.max_prefix_chars);
+        let mut line_text = sanitize_code_block(&ctx.line_text, self.max_line_chars);
+        let mut candidates_text =
+            sanitize_candidates(candidates, self.max_label_chars, self.max_detail_chars);
 
         if self.max_prompt_chars > 0 {
-            let fixed_len = HEADER.len() + FOOTER.len();
-            if self.max_prompt_chars > fixed_len {
-                let avail = self.max_prompt_chars - fixed_len;
-                if body.len() > avail {
-                    truncate_utf8_boundary(&mut body, avail);
-                }
-            }
+            truncate_prompt_payloads(
+                self.max_prompt_chars,
+                &mut prefix,
+                &mut line_text,
+                &mut candidates_text,
+            );
         }
 
-        let mut out = String::with_capacity(HEADER.len() + body.len() + FOOTER.len());
-        out.push_str(HEADER);
-        out.push_str(&body);
-        out.push_str(FOOTER);
+        let mut out = String::with_capacity(1024);
+        out.push_str(INTRO_ENGINE);
+        out.push_str(INTRO_VERSION_PREFIX);
+        out.push_str(COMPLETION_RANKING_PROMPT_VERSION);
+        out.push_str(INTRO_VERSION_SUFFIX);
+        out.push_str(INTRO_TASK);
+        out.push_str(INTRO_RETURN_JSON_ARRAY);
+        out.push_str(INTRO_EXAMPLE);
+
+        out.push_str(PREFIX_INTRO);
+        out.push_str(&prefix);
+        out.push_str(PREFIX_OUTRO);
+
+        out.push_str(LINE_INTRO);
+        out.push_str(&line_text);
+        out.push_str(LINE_OUTRO);
+
+        out.push_str(CANDIDATES_INTRO);
+        out.push_str(&candidates_text);
+        out.push_str(CANDIDATES_OUTRO);
+
+        out.push_str(OUTRO_RETURN_JSON_ONLY);
+
+        debug_assert!(
+            self.max_prompt_chars == 0 || out.len() <= self.max_prompt_chars,
+            "completion ranking prompt builder must respect max_prompt_chars",
+        );
+
         out
     }
 }
@@ -142,16 +159,190 @@ fn escape_markdown_fence_payload(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-fn truncate_utf8_boundary(text: &mut String, max_bytes: usize) {
-    if max_bytes >= text.len() {
+const INTRO_ENGINE: &str = "You are a Java code completion ranking engine.\n";
+const INTRO_VERSION_PREFIX: &str = "Prompt version: ";
+const INTRO_VERSION_SUFFIX: &str = "\n\n";
+const INTRO_TASK: &str = "Task: rank the candidate completion items from best to worst.\n";
+const INTRO_RETURN_JSON_ARRAY: &str =
+    "Return ONLY a JSON array of candidate IDs (integers) in best-to-worst order.\n";
+const INTRO_EXAMPLE: &str = "Example: [1,0,2]\n\n";
+
+const PREFIX_INTRO: &str = "User prefix:\n```java\n";
+// Always put the closing fence on its own line (preceded by a newline) so that a payload ending in
+// backticks cannot accidentally form a fence boundary by spanning the join.
+const PREFIX_OUTRO: &str = "\n```\n\n";
+
+const LINE_INTRO: &str = "Current line:\n```java\n";
+const LINE_OUTRO: &str = "\n```\n\n";
+
+const CANDIDATES_INTRO: &str = "Candidates:\n```java\n";
+const CANDIDATES_OUTRO: &str = "\n```\n\n";
+
+const OUTRO_RETURN_JSON_ONLY: &str = "Return JSON only. No markdown, no explanation.\n";
+
+fn sanitize_candidates(
+    candidates: &[CompletionItem],
+    max_label_chars: usize,
+    max_detail_chars: usize,
+) -> String {
+    let mut out = String::with_capacity(candidates.len() * 64);
+    for (id, item) in candidates.iter().enumerate() {
+        if id > 0 {
+            out.push('\n');
+        }
+        let label = sanitize_label(&item.label, max_label_chars);
+        let detail = item
+            .detail
+            .as_deref()
+            .and_then(|detail| sanitize_detail(detail, max_detail_chars));
+        // Kind is not sensitive but keep the whole candidate payload within the code fence so
+        // identifier anonymization/redaction can safely apply to labels.
+        out.push_str(&format!(
+            "{id}: {} {label}",
+            completion_kind_label(item.kind)
+        ));
+        if let Some(detail) = detail {
+            out.push_str(" — ");
+            out.push_str(&detail);
+        }
+    }
+    out
+}
+
+fn sanitize_label(label: &str, max_chars: usize) -> String {
+    // Labels are expected to be single-line but be defensive.
+    let out = label.replace(['\n', '\r'], " ");
+    let escaped = escape_markdown_fence_payload(&out);
+    truncate_chars(escaped.as_ref(), max_chars)
+}
+
+fn sanitize_detail(detail: &str, max_chars: usize) -> Option<String> {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return None;
+    }
+
+    // File paths are considered sensitive. Drop detail strings that look like filesystem paths
+    // (LSP servers sometimes include file locations in `.detail`).
+    if detail.contains('/') || detail.contains('\\') {
+        return None;
+    }
+
+    // Details are usually single-line but be defensive.
+    let out = detail.replace(['\n', '\r'], " ");
+    let escaped = escape_markdown_fence_payload(&out);
+    Some(truncate_chars(escaped.as_ref(), max_chars))
+}
+
+fn sanitize_code_block(text: &str, max_chars: usize) -> String {
+    let escaped = escape_markdown_fence_payload(text);
+    truncate_chars(escaped.as_ref(), max_chars)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    text.chars().take(max_chars).collect()
+}
+
+fn completion_kind_label(kind: CompletionItemKind) -> &'static str {
+    match kind {
+        CompletionItemKind::Keyword => "Keyword",
+        CompletionItemKind::Class => "Class",
+        CompletionItemKind::Method => "Method",
+        CompletionItemKind::Field => "Field",
+        CompletionItemKind::Variable => "Variable",
+        CompletionItemKind::Snippet => "Snippet",
+        CompletionItemKind::Other => "Other",
+    }
+}
+
+fn truncate_prompt_payloads(
+    max_prompt_chars: usize,
+    prefix: &mut String,
+    line_text: &mut String,
+    candidates_text: &mut String,
+) {
+    let fixed_len = prompt_fixed_len();
+    if max_prompt_chars <= fixed_len {
+        // No amount of payload truncation can make the prompt fit. Keep the payload as-is so
+        // callers can decide whether to fall back.
         return;
     }
 
-    let mut idx = max_bytes;
-    while idx > 0 && !text.is_char_boundary(idx) {
+    let budget = max_prompt_chars - fixed_len;
+    let payload_len = prefix.len() + line_text.len() + candidates_text.len();
+    if payload_len <= budget {
+        return;
+    }
+
+    let mut overflow = payload_len - budget;
+
+    // Prefer keeping candidates intact; truncate context first. However, keep a small amount of the
+    // current-line context when possible so truncation doesn't completely eliminate the substring
+    // that would have triggered fence-injection escaping (keeps privacy regression tests
+    // meaningful).
+    const MIN_LINE_CONTEXT_BYTES: usize = 20;
+    overflow = truncate_string_by_bytes(line_text, overflow, MIN_LINE_CONTEXT_BYTES);
+    overflow = truncate_string_by_bytes(prefix, overflow, 0);
+    overflow = truncate_string_by_bytes(candidates_text, overflow, 0);
+
+    // If we still overflow (extremely small max prompt), we have to violate our minimums.
+    if overflow > 0 {
+        overflow = truncate_string_by_bytes(line_text, overflow, 0);
+        overflow = truncate_string_by_bytes(prefix, overflow, 0);
+        let _ = truncate_string_by_bytes(candidates_text, overflow, 0);
+    }
+}
+
+fn truncate_string_by_bytes(text: &mut String, overflow: usize, min_bytes: usize) -> usize {
+    if overflow == 0 || text.is_empty() {
+        return overflow;
+    }
+
+    let original_len = text.len();
+    let min_bytes = min_bytes.min(original_len);
+    let mut min_boundary = min_bytes;
+    while min_boundary > 0 && !text.is_char_boundary(min_boundary) {
+        min_boundary -= 1;
+    }
+
+    if original_len <= min_boundary {
+        return overflow;
+    }
+
+    let max_reducible = original_len - min_boundary;
+    let reduce_by = overflow.min(max_reducible);
+
+    let desired_len = original_len - reduce_by;
+    let mut idx = desired_len;
+    while idx > min_boundary && !text.is_char_boundary(idx) {
         idx -= 1;
     }
     text.truncate(idx);
+    let reduced = original_len - text.len();
+    overflow.saturating_sub(reduced)
+}
+
+fn prompt_fixed_len() -> usize {
+    INTRO_ENGINE.len()
+        + INTRO_VERSION_PREFIX.len()
+        + COMPLETION_RANKING_PROMPT_VERSION.len()
+        + INTRO_VERSION_SUFFIX.len()
+        + INTRO_TASK.len()
+        + INTRO_RETURN_JSON_ARRAY.len()
+        + INTRO_EXAMPLE.len()
+        + PREFIX_INTRO.len()
+        + PREFIX_OUTRO.len()
+        + LINE_INTRO.len()
+        + LINE_OUTRO.len()
+        + CANDIDATES_INTRO.len()
+        + CANDIDATES_OUTRO.len()
+        + OUTRO_RETURN_JSON_ONLY.len()
 }
 
 #[cfg(test)]
@@ -208,13 +399,13 @@ mod tests {
             "sanitized prompt must not leak identifiers in cloud mode: {sanitized}"
         );
 
-        // Fence sanity: our prompt has exactly one fenced block; escaping ensures user content does
-        // not accidentally create additional fences.
+        // Fence sanity: our prompt has 3 fenced blocks (prefix/current line/candidates); escaping
+        // ensures user content does not accidentally create additional fences.
         assert!(sanitized.contains("```java\n"), "{sanitized}");
         assert_eq!(
             sanitized.match_indices("```").count(),
-            2,
-            "expected one opening and one closing fence: {sanitized}"
+            6,
+            "expected one opening+closing fence per section: {sanitized}"
         );
 
         // Candidate IDs are protocol-critical; they must remain stable after sanitization.
@@ -241,8 +432,8 @@ mod tests {
         );
         assert!(prompt.contains(secret), "secret should still be present pre-sanitize");
         assert!(
-            prompt.contains("\n```\n"),
-            "prompt should always contain a closing fence even when truncated: {prompt}"
+            prompt.match_indices("\n```\n").count() >= 3,
+            "prompt should always contain closing fences even when truncated: {prompt}"
         );
 
         let cfg = AiPrivacyConfig {

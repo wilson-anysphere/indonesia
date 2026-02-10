@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,6 +11,7 @@ use nova_metrics::MetricsRegistry;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::completion_ranking_prompt::CompletionRankingPromptBuilder;
 use crate::privacy::redact_file_paths;
 use crate::util;
 use crate::{ChatMessage, ChatRequest, LlmClient};
@@ -96,8 +96,6 @@ impl CompletionRanker for BaselineCompletionRanker {
     }
 }
 
-const COMPLETION_RANKING_PROMPT_VERSION: &str = "nova_completion_ranking_v1";
-
 /// LLM-backed completion ranker.
 ///
 /// This is designed to be cancellation friendly: dropping the returned future
@@ -165,53 +163,18 @@ impl LlmCompletionRanker {
     }
 
     fn build_prompt(&self, ctx: &CompletionContext, candidates: &[CompletionItem]) -> Option<String> {
-        let prefix = sanitize_code_block(&ctx.prefix, self.max_prefix_chars);
-        let line_text = sanitize_code_block(&ctx.line_text, self.max_line_chars);
+        let prompt = CompletionRankingPromptBuilder::new(self.max_prompt_chars)
+            .with_max_label_chars(self.max_label_chars)
+            .with_max_detail_chars(self.max_detail_chars)
+            .with_max_prefix_chars(self.max_prefix_chars)
+            .with_max_line_chars(self.max_line_chars)
+            .build_prompt(ctx, candidates);
 
-        let mut out = String::with_capacity(1024);
-        out.push_str("You are a Java code completion ranking engine.\n");
-        out.push_str("Prompt version: ");
-        out.push_str(COMPLETION_RANKING_PROMPT_VERSION);
-        out.push_str("\n\n");
-        out.push_str("Task: rank the candidate completion items from best to worst.\n");
-        out.push_str(
-            "Return ONLY a JSON array of candidate IDs (integers) in best-to-worst order.\n",
-        );
-        out.push_str("Example: [1,0,2]\n\n");
-
-        out.push_str("User prefix:\n```java\n");
-        out.push_str(&prefix);
-        out.push_str("\n```\n\n");
-
-        out.push_str("Current line:\n```java\n");
-        out.push_str(&line_text);
-        out.push_str("\n```\n\n");
-
-        out.push_str("Candidates:\n```java\n");
-        for (id, item) in candidates.iter().enumerate() {
-            let label = sanitize_label(&item.label, self.max_label_chars);
-            let detail = item
-                .detail
-                .as_deref()
-                .and_then(|detail| sanitize_detail(detail, self.max_detail_chars));
-            // Kind is not sensitive but keep the whole candidate payload within the code fence so
-            // identifier anonymization/redaction can safely apply to labels.
-            out.push_str(&format!("{id}: {} {label}", completion_kind_label(item.kind)));
-            if let Some(detail) = detail {
-                out.push_str(" — ");
-                out.push_str(&detail);
-            }
-            out.push('\n');
-        }
-        out.push_str("```\n\n");
-
-        out.push_str("Return JSON only. No markdown, no explanation.\n");
-
-        if out.len() > self.max_prompt_chars {
+        if self.max_prompt_chars > 0 && prompt.len() > self.max_prompt_chars {
             return None;
         }
 
-        Some(out)
+        Some(prompt)
     }
 }
 
@@ -313,104 +276,8 @@ impl CompletionRanker for LlmCompletionRanker {
     }
 }
 
-fn completion_kind_label(kind: CompletionItemKind) -> &'static str {
-    match kind {
-        CompletionItemKind::Keyword => "Keyword",
-        CompletionItemKind::Class => "Class",
-        CompletionItemKind::Method => "Method",
-        CompletionItemKind::Field => "Field",
-        CompletionItemKind::Variable => "Variable",
-        CompletionItemKind::Snippet => "Snippet",
-        CompletionItemKind::Other => "Other",
-    }
-}
-
-fn sanitize_label(label: &str, max_chars: usize) -> String {
-    // Labels are expected to be single-line but be defensive.
-    let out = label.replace(['\n', '\r'], " ");
-    let escaped = escape_markdown_fence_payload(&out);
-    truncate_chars(escaped.as_ref(), max_chars)
-}
-
-fn sanitize_detail(detail: &str, max_chars: usize) -> Option<String> {
-    let detail = detail.trim();
-    if detail.is_empty() {
-        return None;
-    }
-
-    // File paths are considered sensitive. Drop detail strings that look like filesystem paths
-    // (LSP servers sometimes include file locations in `.detail`).
-    if detail.contains('/') || detail.contains('\\') {
-        return None;
-    }
-
-    // Details are usually single-line but be defensive.
-    let out = detail.replace(['\n', '\r'], " ");
-    let escaped = escape_markdown_fence_payload(&out);
-    Some(truncate_chars(escaped.as_ref(), max_chars))
-}
-
-fn sanitize_code_block(text: &str, max_chars: usize) -> String {
-    let escaped = escape_markdown_fence_payload(text);
-    truncate_chars(escaped.as_ref(), max_chars)
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    text.chars().take(max_chars).collect()
-}
-
-/// Escape user-derived text that is embedded in a Markdown fenced code block.
-///
-/// ## Why this exists (privacy hardening)
-///
-/// `AiClient` applies `PrivacyFilter::sanitize_prompt_text` before sending prompts to cloud
-/// providers. The filter uses a deliberately tiny Markdown fence parser that treats **any**
-/// occurrence of the substring `"```"` as a fence boundary.
-///
-/// If completion context (prefix/current line) or candidate labels contain `"```"`, the sanitizer
-/// can terminate the fence early and treat the remainder as plain text. In cloud mode, plain text
-/// is not identifier-anonymized, which can leak raw project identifiers.
-///
-/// This helper guarantees the returned string contains **no literal `"```"` substring**, even for
-/// longer runs like `````` (5+ backticks), by inserting a backslash before any backtick that would
-/// otherwise form 3 consecutive backticks.
-fn escape_markdown_fence_payload(text: &str) -> Cow<'_, str> {
-    // Fast path: no fence substring means we can borrow.
-    if !text.contains("```") {
-        return Cow::Borrowed(text);
-    }
-
-    let mut out = String::with_capacity(text.len() + text.len() / 2);
-    let mut backticks = 0usize;
-
-    for ch in text.chars() {
-        if ch == '`' {
-            if backticks == 2 {
-                // Break the run before we would emit a third consecutive '`'.
-                out.push('\\');
-                backticks = 0;
-            }
-            out.push('`');
-            backticks += 1;
-        } else {
-            out.push(ch);
-            backticks = 0;
-        }
-    }
-
-    debug_assert!(
-        !out.contains("```"),
-        "escape_markdown_fence_payload must remove all triple backticks"
-    );
-
-    Cow::Owned(out)
-}
+// Prompt building/escaping/truncation helpers live in `completion_ranking_prompt.rs` so we have a
+// single source of truth for privacy hardening.
 
 fn parse_ranked_ids(text: &str, candidate_count: usize) -> Option<Vec<usize>> {
     let value = extract_first_json_array(text)?;
@@ -563,6 +430,7 @@ pub async fn maybe_rank_completions<R: CompletionRanker>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completion_ranking_prompt::COMPLETION_RANKING_PROMPT_VERSION;
     use crate::llm_privacy::PrivacyFilter;
     use crate::{AiError, AiStream};
     use nova_config::AiPrivacyConfig;
@@ -1026,5 +894,43 @@ mod tests {
             block.lines().any(|line| line.starts_with("1:")),
             "expected candidate 1 to be present after sanitization\n{block}"
         );
+    }
+
+    #[test]
+    fn completion_ranking_prompt_builder_matches_llm_ranker_prompt() {
+        let secret = "SecretService";
+        let injected = format!("`````{secret}");
+        let ctx = CompletionContext::new(
+            format!("my{injected}Prefix"),
+            format!("var x = 0; {injected} x = null; {}", "x".repeat(8_000)),
+        );
+
+        let candidates = vec![
+            CompletionItem::new(format!("my{injected}Method"), CompletionItemKind::Method),
+            CompletionItem::new(format!("my{injected}Field"), CompletionItemKind::Method),
+        ];
+
+        let llm = Arc::new(MockLlm::new("[0]"));
+        let mut ranker = LlmCompletionRanker::new(llm);
+        // Force truncation so we cover both the escape and prompt-size enforcement paths.
+        ranker.max_prompt_chars = 800;
+
+        let from_ranker = ranker
+            .build_prompt(&ctx, &candidates)
+            .expect("prompt should be buildable");
+        assert!(
+            from_ranker.len() <= ranker.max_prompt_chars,
+            "ranker prompt should respect max_prompt_chars (got {} > {})",
+            from_ranker.len(),
+            ranker.max_prompt_chars
+        );
+
+        let from_builder = CompletionRankingPromptBuilder::new(ranker.max_prompt_chars)
+            .with_max_label_chars(ranker.max_label_chars)
+            .with_max_detail_chars(ranker.max_detail_chars)
+            .with_max_prefix_chars(ranker.max_prefix_chars)
+            .with_max_line_chars(ranker.max_line_chars)
+            .build_prompt(&ctx, &candidates);
+        assert_eq!(from_ranker, from_builder);
     }
 }
