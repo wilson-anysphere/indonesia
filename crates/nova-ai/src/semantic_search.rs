@@ -657,7 +657,17 @@ mod embeddings {
         }
 
         fn sanitize_text(&self, session: &mut SanitizationSession, text: &str) -> String {
-            let sanitized = self.privacy.sanitize_code_text(session, text);
+            let sanitized = if text.contains('\n') {
+                // EmbeddingSemanticSearch document inputs always include path + snippet metadata
+                // separated by newlines. Treat multi-line inputs as code-like documents so identifier
+                // anonymization applies consistently.
+                self.privacy.sanitize_code_text(session, text)
+            } else {
+                // Search queries are natural-language by default. Preserve their terms (avoid
+                // anonymizing every word) while still applying redact_patterns and fenced-code
+                // sanitization.
+                self.privacy.sanitize_prompt_text(session, text)
+            };
             if self.redact_paths {
                 redact_file_paths(&sanitized)
             } else {

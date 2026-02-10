@@ -90,7 +90,12 @@ async fn provider_embeddings_are_cached_on_disk() {
 fn provider_semantic_search_query_embeddings_are_cached_on_disk() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/embeddings");
+        when.method(POST)
+            .path("/v1/embeddings")
+            .json_body(json!({
+                "model": "test-embedder",
+                "input": ["hello world"],
+            }));
         then.status(200).json_body(json!({
             "data": [{
                 "embedding": [0.25, 0.5, 0.75],
@@ -115,6 +120,7 @@ fn provider_semantic_search_query_embeddings_are_cached_on_disk() {
     config.provider.url = Url::parse(&server.base_url()).expect("base url");
     config.provider.model = "test-embedder".to_string();
     config.provider.timeout_ms = 2_000;
+    config.privacy.local_only = false;
 
     let search = semantic_search_from_config(&config).expect("semantic search should build");
     assert!(search.search("hello world").is_empty());
