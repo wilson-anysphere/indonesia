@@ -151,3 +151,68 @@ fn provider_embedder_chunks_openai_compatible_batches_when_configured() {
     query.assert_hits(1);
     fallback.assert_hits(0);
 }
+
+#[test]
+fn provider_embedder_respects_openai_embedding_indices() {
+    let server = MockServer::start();
+
+    // Indexing a Java file yields multiple extracted docs (type + method). Return the embeddings
+    // out-of-order to ensure the parser respects `index` fields rather than response ordering.
+    let index_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains("\"input\":[")
+            .body_contains("kind: type")
+            .body_contains("kind: method");
+        then.status(200).json_body(json!({
+            "data": [
+                { "index": 1, "embedding": [0.0, 1.0] },
+                { "index": 0, "embedding": [1.0, 0.0] }
+            ]
+        }));
+    });
+
+    let query_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").json_body(json!({
+            "model": "text-embedding-3-small",
+            "input": ["QUERY"],
+        }));
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [0.0, 1.0] }]
+        }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
+        r#"
+            package com.example;
+
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    )]);
+
+    let mut cfg = nova_config::AiConfig::default();
+    cfg.enabled = true;
+    cfg.features.semantic_search = true;
+    cfg.embeddings.enabled = true;
+    cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.embeddings.model = Some("text-embedding-3-small".to_string());
+    cfg.embeddings.batch_size = 16;
+    cfg.provider.kind = AiProviderKind::OpenAiCompatible;
+    cfg.provider.url = Url::parse(&format!("{}/v1", server.base_url())).unwrap();
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_project(&db);
+
+    let results = search.search("QUERY");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].kind, "method");
+
+    index_mock.assert_hits(1);
+    query_mock.assert_hits(1);
+}
