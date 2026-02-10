@@ -74,6 +74,8 @@ pub fn redact_suspicious_literals(code: &str, cfg: &RedactionConfig) -> String {
 }
 
 pub(crate) fn redact_file_paths(text: &str) -> String {
+    use std::borrow::Cow;
+
     // `file://` URIs (both Unix and Windows forms).
     //
     // We keep this regex intentionally permissive and redact the full URI token to avoid leaking
@@ -128,11 +130,36 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
             .expect("valid windows path regex")
     });
 
-    let out = FILE_URI_RE.replace_all(text, "[PATH]").into_owned();
-    let out = WINDOWS_DEVICE_PATH_RE.replace_all(&out, "[PATH]").into_owned();
-    let out = WINDOWS_UNC_PATH_RE.replace_all(&out, "[PATH]").into_owned();
-    let out = UNIX_PATH_RE.replace_all(&out, "[PATH]").into_owned();
-    WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
+    // This function is on the prompt-building hot path. Use `Cow` so we only allocate when a
+    // replacement actually occurs, rather than allocating once per regex stage.
+    let mut out = Cow::Borrowed(text);
+
+    let replaced = FILE_URI_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = WINDOWS_DEVICE_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = WINDOWS_UNC_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = UNIX_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = WINDOWS_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    out.into_owned()
 }
 
 #[cfg(test)]
