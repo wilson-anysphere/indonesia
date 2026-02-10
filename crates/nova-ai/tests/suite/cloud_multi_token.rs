@@ -1,11 +1,12 @@
 use httpmock::prelude::*;
 use nova_ai::{
-    AiClient, AiError, AiStream, ChatRequest, CloudMultiTokenCompletionProvider,
+    AdditionalEdit, AiClient, AiError, AiStream, ChatRequest, CloudMultiTokenCompletionProvider,
     CompletionContextBuilder, LlmClient, MultiTokenCompletionContext, MultiTokenCompletionProvider,
     MultiTokenCompletionRequest, MultiTokenInsertTextFormat, PrivacyMode, RedactionConfig,
 };
 use nova_config::{AiConfig, AiProviderKind};
 use serde_json::json;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +47,44 @@ fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider
             include_file_paths: false,
             ..PrivacyMode::default()
         })
+}
+
+fn extract_first_section_bullet(prompt: &str, section_header: &str) -> String {
+    let mut lines = prompt.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != section_header {
+            continue;
+        }
+
+        for line in lines.by_ref() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("- ") {
+                let value = value.trim();
+                if value.is_empty() {
+                    continue;
+                }
+                return value.to_string();
+            }
+
+            // Reached a different section before finding a bullet.
+            if line.ends_with(':') {
+                break;
+            }
+        }
+
+        break;
+    }
+
+    panic!("missing bullet under section {section_header:?}\n{prompt}");
+}
+
+#[derive(Default)]
+struct AnonymizationRoundTripLlm {
+    calls: AtomicUsize,
+    prompt: std::sync::Mutex<Option<String>>,
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -89,46 +128,38 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn anonymizes_prompt_and_deanonymizes_completion_when_identifier_anonymization_is_enabled() {
-    let secret = "SecretIdentifier";
-    let llm = Arc::new(PromptEchoLlm::default());
-
-    let provider = CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(
-        PrivacyMode {
+async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymization() {
+    let llm = Arc::new(AnonymizationRoundTripLlm::default());
+    let provider =
+        CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(PrivacyMode {
             anonymize_identifiers: true,
             include_file_paths: false,
             ..PrivacyMode::default()
-        },
-    );
+        });
 
     let ctx = MultiTokenCompletionContext {
-        receiver_type: Some(secret.into()),
-        expected_type: Some(secret.into()),
-        surrounding_code: format!("{secret}."),
-        available_methods: vec![secret.into()],
-        importable_paths: vec![format!("java.util.{secret}")],
+        receiver_type: Some("java.util.Optional<String>".into()),
+        expected_type: Some("java.lang.String".into()),
+        surrounding_code: "System.out.".into(),
+        available_methods: vec!["getSecretToken".into(), "filter".into()],
+        importable_paths: vec!["com.example.SecretTokenProvider".into()],
     };
-    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 3);
 
     let out = provider
         .complete_multi_token(MultiTokenCompletionRequest {
             prompt,
-            max_items: 1,
+            max_items: 3,
             timeout: Duration::from_secs(1),
             cancel: CancellationToken::new(),
         })
         .await
         .expect("provider call succeeds");
 
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].label, secret);
-    assert_eq!(out[0].insert_text, secret);
-    assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
     assert_eq!(
-        out[0].additional_edits,
-        vec![nova_ai::AdditionalEdit::AddImport {
-            path: format!("java.util.{secret}")
-        }]
+        llm.calls.load(Ordering::SeqCst),
+        1,
+        "expected an LLM call when anonymization is enabled"
     );
 
     let captured = llm
@@ -138,53 +169,50 @@ async fn anonymizes_prompt_and_deanonymizes_completion_when_identifier_anonymiza
         .clone()
         .expect("captured prompt");
     assert!(
-        !captured.contains(secret),
-        "expected prompt to be anonymized; leaked identifier: {captured}"
+        !captured.contains("getSecretToken"),
+        "prompt should not contain raw method identifier\n{captured}"
     );
     assert!(
-        captured.contains("Receiver type: id_0"),
-        "expected receiver type to be anonymized: {captured}"
+        !captured.contains("com.example.SecretTokenProvider"),
+        "prompt should not contain raw import identifier\n{captured}"
     );
     assert!(
-        captured.contains("Expected type: id_0"),
-        "expected expected type to be anonymized: {captured}"
+        captured.contains("id_"),
+        "expected anonymized id_ placeholders in prompt\n{captured}"
+    );
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].insert_text, "getSecretToken()");
+    assert_eq!(
+        out[0].additional_edits,
+        vec![AdditionalEdit::AddImport {
+            path: "com.example.SecretTokenProvider".to_string()
+        }]
     );
     assert!(
-        captured.contains("- id_0"),
-        "expected available method to be anonymized: {captured}"
-    );
-    assert!(
-        captured.contains("- java.util.id_0"),
-        "expected importable symbol to be anonymized: {captured}"
-    );
-    assert!(
-        captured.contains("```java\nid_0.\n```"),
-        "expected surrounding code to be anonymized: {captured}"
+        !out[0].insert_text.contains("id_"),
+        "expected insert_text to be de-anonymized\n{:?}",
+        out[0]
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reapplies_clamps_after_deanonymization() {
-    let long_secret = "SecretIdentifierWithAVeryLongNameThatShouldBeClamped_".repeat(4);
-    assert!(long_secret.chars().count() > 120);
-
-    let llm = Arc::new(PromptEchoLlm::default());
-    let provider = CloudMultiTokenCompletionProvider::new(llm).with_privacy_mode(PrivacyMode {
-        anonymize_identifiers: true,
-        include_file_paths: false,
-        ..PrivacyMode::default()
-    });
-
-    // Force a tiny insert_text clamp so the anonymized completion ("id_0") fits, but the
-    // de-anonymized completion would exceed the limit unless we clamp again.
-    let provider = provider.with_max_insert_text_chars(16);
+async fn cloud_multi_token_clamps_after_deanonymization() {
+    let llm = Arc::new(AnonymizationRoundTripLlm::default());
+    let provider = CloudMultiTokenCompletionProvider::new(llm)
+        .with_max_insert_text_chars(8)
+        .with_privacy_mode(PrivacyMode {
+            anonymize_identifiers: true,
+            include_file_paths: false,
+            ..PrivacyMode::default()
+        });
 
     let ctx = MultiTokenCompletionContext {
-        receiver_type: Some(long_secret.clone()),
-        expected_type: Some(long_secret.clone()),
-        surrounding_code: format!("{long_secret}."),
-        available_methods: vec![long_secret.clone()],
-        importable_paths: vec![format!("java.util.{long_secret}")],
+        receiver_type: Some("java.util.Optional<String>".into()),
+        expected_type: Some("java.lang.String".into()),
+        surrounding_code: "System.out.".into(),
+        available_methods: vec!["getSecretToken".into()],
+        importable_paths: vec!["com.example.SecretTokenProvider".into()],
     };
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
 
@@ -200,22 +228,15 @@ async fn reapplies_clamps_after_deanonymization() {
 
     assert_eq!(out.len(), 1);
     assert!(
-        out[0].label.chars().count() <= 120,
-        "label should be clamped after de-anonymization"
+        out[0].insert_text.starts_with("get"),
+        "expected insert_text to be de-anonymized\n{:?}",
+        out[0]
     );
     assert!(
-        out[0].insert_text.chars().count() <= 16,
-        "insert_text should be clamped after de-anonymization"
-    );
-    assert!(
-        !out[0].label.contains("id_"),
-        "expected label to be de-anonymized; got: {:?}",
-        out[0].label
-    );
-    assert!(
-        !out[0].insert_text.contains("id_"),
-        "expected insert_text to be de-anonymized; got: {:?}",
-        out[0].insert_text
+        out[0].insert_text.chars().count() <= 8,
+        "expected insert_text to be clamped after deanonymization (got {})\n{:?}",
+        out[0].insert_text.chars().count(),
+        out[0]
     );
 }
 
@@ -310,28 +331,56 @@ impl LlmClient for CapturingLlm {
     }
 }
 
-#[derive(Default)]
-struct PromptEchoLlm {
-    prompt: std::sync::Mutex<Option<String>>,
-}
-
 #[async_trait::async_trait]
-impl LlmClient for PromptEchoLlm {
+impl LlmClient for AnonymizationRoundTripLlm {
     async fn chat(
         &self,
         request: ChatRequest,
         _cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let content = request
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let prompt = request
             .messages
             .first()
             .map(|msg| msg.content.clone())
             .unwrap_or_default();
-        *self.prompt.lock().expect("prompt mutex") = Some(content);
 
-        // The prompt is anonymized in privacy mode, so we can safely return placeholders and let
-        // the provider de-anonymize before returning to the IDE.
-        Ok(r#"{"completions":[{"label":"id_0","insert_text":"id_0","format":"plain","additional_edits":[{"add_import":"java.util.id_0"}],"confidence":0.5}]}"#.to_string())
+        assert!(
+            !prompt.contains("getSecretToken"),
+            "expected prompt to not leak raw method name\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("com.example.SecretTokenProvider"),
+            "expected prompt to not leak raw import path\n{prompt}"
+        );
+        assert!(
+            prompt.contains("id_"),
+            "expected prompt to contain anonymized placeholders\n{prompt}"
+        );
+
+        let method_token = extract_first_section_bullet(&prompt, "Available methods:");
+        let import_token = extract_first_section_bullet(&prompt, "Importable symbols:");
+        assert!(
+            method_token.contains("id_"),
+            "expected available method to be anonymized\n{prompt}"
+        );
+        assert!(
+            import_token.contains("id_"),
+            "expected import path to be anonymized\n{prompt}"
+        );
+
+        *self.prompt.lock().expect("prompt mutex") = Some(prompt);
+
+        Ok(json!({
+            "completions": [{
+                "label": "anon_round_trip",
+                "insert_text": format!("{method_token}()"),
+                "format": "plain",
+                "additional_edits": [{"add_import": import_token}],
+                "confidence": 1.0,
+            }]
+        })
+        .to_string())
     }
 
     async fn chat_stream(
