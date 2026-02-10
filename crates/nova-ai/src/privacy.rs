@@ -130,6 +130,21 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         Regex::new(r#"(?m)(?P<path>~[A-Za-z0-9._-]*/[^\r\n"'<>)\]}]+)"#)
             .expect("valid tilde path regex")
     });
+
+    // Unix paths where the slash separators are JSON-escaped as `\/`.
+    //
+    // Some JSON serializers (or layers that double-encode strings) emit absolute paths like:
+    // - "\\/home\\/alice\\/project\\/secret.txt"
+    // - "\\/Users\\/alice\\/My Project\\/secret.txt"
+    //
+    // This regex redacts the escaped representation to avoid leaking path metadata even when `/`
+    // is not emitted literally.
+    static ESCAPED_UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)(?P<path>\\/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*)\\/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*)(?:\\/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*))*)",
+        )
+        .expect("valid escaped unix path regex")
+    });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Allow spaces inside directory segments (common in macOS/Windows-y projects), but keep the
@@ -224,6 +239,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     }
 
     let replaced = TILDE_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = ESCAPED_UNIX_PATH_RE.replace_all(out.as_ref(), "[PATH]");
     if let Cow::Owned(s) = replaced {
         out = Cow::Owned(s);
     }
@@ -368,6 +388,15 @@ mod tests {
         assert!(!out.contains("vscode-remote://"), "{out}");
         assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
         assert!(!out.contains("ssh-remote+host"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_json_escaped_unix_paths() {
+        let prompt = r#"opening \/home\/alice\/project\/secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"\/home\/alice\/project\/secret.txt"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
     }
 
     #[test]
