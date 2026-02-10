@@ -6,6 +6,7 @@ use nova_ai::{
 };
 use nova_config::{AiEmbeddingsBackend, AiProviderKind};
 use serde_json::json;
+use tempfile::tempdir;
 use std::time::Duration;
 use url::Url;
 
@@ -64,6 +65,7 @@ fn openai_compatible_embed_batch_chunks_by_configured_batch_size() {
 #[test]
 fn provider_embedder_chunks_openai_compatible_batches_when_configured() {
     let server = MockServer::start();
+    let model_dir = tempdir().expect("tempdir");
 
     // If the provider embedder does not chunk, all extracted docs will be sent in one request,
     // which contains both method markers.
@@ -137,6 +139,7 @@ fn provider_embedder_chunks_openai_compatible_batches_when_configured() {
     cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
     cfg.embeddings.model = Some("text-embedding-3-small".to_string());
     cfg.embeddings.batch_size = 2;
+    cfg.embeddings.model_dir = model_dir.path().to_path_buf();
     cfg.provider.kind = AiProviderKind::OpenAiCompatible;
     cfg.provider.url = Url::parse(&format!("{}/v1", server.base_url())).unwrap();
 
