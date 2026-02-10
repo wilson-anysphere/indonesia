@@ -1042,6 +1042,8 @@ pub enum AiProviderKind {
     /// Requests are sent by POSTing to `ai.provider.url` as configured (it is treated as a full
     /// endpoint, not a base URL).
     ///
+    /// Optional auth: if `ai.api_key` is set, Nova sends `Authorization: Bearer <key>`.
+    ///
     /// Non-streaming request body:
     /// `{ "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
     ///

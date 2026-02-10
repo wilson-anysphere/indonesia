@@ -908,6 +908,55 @@ async fn http_provider_streaming_falls_back_to_json_body_when_response_is_not_ss
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn http_provider_sends_authorization_header_when_api_key_is_set() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/complete" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let auth = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .expect("authorization header");
+        assert_eq!(
+            auth.to_str().expect("authorization header utf8"),
+            "Bearer test-key"
+        );
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        Response::new(Body::from(r#"{"completion":"ok"}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}/complete")).unwrap();
+    let mut config = http_config(url);
+    config.api_key = Some("test-key".to_string());
+
+    let client = AiClient::from_config(&config).unwrap();
+    let content = client
+        .chat(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(content, "ok");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_stream_parses_multibyte_utf8_split_across_chunks() {
     let handler = move |req: Request<Body>| async move {
         if req.uri().path() != "/v1/chat/completions" {

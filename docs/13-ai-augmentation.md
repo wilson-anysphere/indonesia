@@ -521,6 +521,8 @@ url = "http://localhost:1234/complete"
 model = "my-model"
 ```
 
+If `ai.api_key` is set, Nova sends `Authorization: Bearer <key>` on HTTP provider requests.
+
 - `chat()` sends a single JSON request body and expects a single JSON response body:
 
   ```
