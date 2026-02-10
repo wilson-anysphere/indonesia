@@ -553,6 +553,75 @@ async fn http_provider_chat_stream_supports_sse() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn http_provider_chat_stream_timeout_is_idle_based_not_total_duration() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/complete" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+        let json: Value = serde_json::from_slice(&bytes).expect("parse json");
+        assert_eq!(json["stream"], true);
+
+        // Send chunks frequently enough to stay under the provider idle timeout,
+        // but allow the total stream duration to exceed it.
+        let body_stream = async_stream::stream! {
+            let parts = [
+                "data: {\"completion\":\"A\"}\n\n",
+                "data: {\"completion\":\"B\"}\n\n",
+                "data: {\"completion\":\"C\"}\n\n",
+                "data: [DONE]\n\n",
+            ];
+
+            for part in parts {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
+            }
+        };
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(body_stream))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let mut cfg = base_config(
+        AiProviderKind::Http,
+        Url::parse(&format!("http://{addr}/complete")).unwrap(),
+        "test-model",
+    );
+    cfg.provider.timeout_ms = 100;
+
+    let client = AiClient::from_config(&cfg).unwrap();
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+
+    assert_eq!(output, "ABC");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn http_provider_chat_stream_falls_back_to_json() {
     let handler = move |req: Request<Body>| async move {
         if req.uri().path() != "/complete" {
