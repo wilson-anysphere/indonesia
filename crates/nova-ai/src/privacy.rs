@@ -103,7 +103,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     static WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Require 2+ characters for the server/share segments to avoid accidentally matching common
         // escape sequences in code (e.g. `\\n\\t`).
-        Regex::new(r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$@+-]{2,}\\+[A-Za-z0-9._$@+-]{2,}(?:\\+[A-Za-z0-9._$@+()-]+(?: [A-Za-z0-9._$@+()-]+)*)*)")
+        Regex::new(r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$@+-]{2,}\\+[A-Za-z0-9._$@+-]{2,}(?:\\+[A-Za-z0-9._$@+()-]+(?: [A-Za-z0-9._$@+()-]+)*)*\\*)")
             .expect("valid windows UNC path regex")
     });
 
@@ -144,7 +144,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // Also match the forward-slash form (`C:/Users/alice/file.txt`) which is common in some
         // toolchains and cross-platform logs.
         Regex::new(
-            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*[A-Za-z0-9._$@+()\\-]+)",
+            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*[A-Za-z0-9._$@+()\\-]+(?:[\\/]+)?)",
         )
             .expect("valid windows path regex")
     });
@@ -155,7 +155,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // trailing prose after the path token.
     static WINDOWS_PATH_FILE_WITH_SPACES_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*\.[A-Za-z0-9]{1,16}))",
+            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*\.[A-Za-z0-9]{1,16})(?:[\\/]+)?)",
         )
         .expect("valid windows path-with-spaces regex")
     });
@@ -299,6 +299,15 @@ mod tests {
     }
 
     #[test]
+    fn redact_file_paths_rewrites_windows_absolute_paths_with_trailing_separator() {
+        let prompt = r#"opening C:\Users\alice\"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"C:\Users\alice\"), "{out}");
+        assert!(!out.contains("alice"), "{out}");
+    }
+
+    #[test]
     fn redact_file_paths_rewrites_windows_absolute_paths_with_forward_slashes() {
         let prompt = r#"log("opening C:/Users/alice/secret.txt")"#;
         let out = redact_file_paths(prompt);
@@ -351,6 +360,16 @@ mod tests {
         assert!(!out.contains("server123"), "{out}");
         assert!(!out.contains("share456"), "{out}");
         assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unc_paths_with_trailing_separator() {
+        let prompt = r#"opening \\server123\share456\"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"\\server123\share456\"), "{out}");
+        assert!(!out.contains("server123"), "{out}");
+        assert!(!out.contains("share456"), "{out}");
     }
 
     #[test]
