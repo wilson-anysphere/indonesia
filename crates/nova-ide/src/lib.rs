@@ -135,7 +135,7 @@ pub fn __quick_fixes_for_diagnostics(
     crate::quick_fix::quick_fixes_for_diagnostics(uri, source, selection, diagnostics)
 }
 
-#[cfg(feature = "ai")]
+#[cfg(any(feature = "ai", test))]
 mod ai_completion_context;
 #[cfg(feature = "ai")]
 mod config;

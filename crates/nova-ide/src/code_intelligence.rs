@@ -18643,7 +18643,7 @@ struct CallExpr {
     close_paren: usize,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 struct Analysis {
     classes: Vec<ClassDecl>,
     methods: Vec<MethodDecl>,
@@ -18653,25 +18653,52 @@ struct Analysis {
     tokens: Vec<Token>,
 }
 
-#[cfg(feature = "ai")]
+#[cfg(any(feature = "ai", test))]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CompletionContextAnalysis {
     pub vars: Vec<(String, String)>,
     pub fields: Vec<(String, String)>,
     pub methods: Vec<String>,
+    analysis: Analysis,
 }
 
-#[cfg(feature = "ai")]
+#[cfg(any(feature = "ai", test))]
 pub(crate) fn analyze_for_completion_context(text: &str) -> CompletionContextAnalysis {
     let analysis = analyze(text);
+    let vars = analysis
+        .vars
+        .iter()
+        .map(|v| (v.name.clone(), v.ty.clone()))
+        .collect();
+    let fields = analysis
+        .fields
+        .iter()
+        .map(|field| (field.name.clone(), field.ty.clone()))
+        .collect();
+    let methods = analysis
+        .methods
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
     CompletionContextAnalysis {
-        vars: analysis.vars.into_iter().map(|v| (v.name, v.ty)).collect(),
-        fields: analysis
-            .fields
-            .into_iter()
-            .map(|field| (field.name, field.ty))
-            .collect(),
-        methods: analysis.methods.into_iter().map(|m| m.name).collect(),
+        vars,
+        fields,
+        methods,
+        analysis,
+    }
+}
+
+#[cfg(any(feature = "ai", test))]
+impl CompletionContextAnalysis {
+    pub(crate) fn expected_type_at_offset(&self, text: &str, offset: usize) -> Option<String> {
+        let (prefix_start, _) = identifier_prefix(text, offset);
+        let enclosing_method = self
+            .analysis
+            .methods
+            .iter()
+            .find(|m| span_contains(m.body_span, prefix_start));
+        let in_scope = in_scope_types(&self.analysis, enclosing_method, offset);
+        infer_expected_type(&self.analysis, offset, prefix_start, &in_scope)
     }
 }
 
@@ -18840,55 +18867,58 @@ fn analyze(text: &str) -> Analysis {
                 }
             }
 
-            if j + 2 < scope.close_idx {
-                let ret = &tokens[j];
-                let name = &tokens[j + 1];
-                let l_paren = &tokens[j + 2];
-                if ret.kind == TokenKind::Ident
-                    && name.kind == TokenKind::Ident
-                    && l_paren.kind == TokenKind::Symbol('(')
-                {
-                    // Guard against common false positives inside field initializers / expressions,
-                    // e.g. `new Foo() { ... }` (anonymous class bodies).
-                    if ret.text == "new" {
+            if let Some((ret_ty, name_idx)) = parse_decl_type(&tokens, j, scope.close_idx) {
+                let (Some(name), Some(l_paren)) = (tokens.get(name_idx), tokens.get(name_idx + 1))
+                else {
+                    i += 1;
+                    continue;
+                };
+
+                if name.kind != TokenKind::Ident || l_paren.kind != TokenKind::Symbol('(') {
+                    i += 1;
+                    continue;
+                }
+
+                // Guard against common false positives inside field initializers / expressions,
+                // e.g. `new Foo() { ... }` (anonymous class bodies).
+                if ret_ty == "new" {
+                    i += 1;
+                    continue;
+                }
+
+                let (r_paren_idx, close_paren) = match find_matching_paren(&tokens, name_idx + 1) {
+                    Some(v) => v,
+                    None => {
                         i += 1;
                         continue;
                     }
+                };
 
-                    let (r_paren_idx, close_paren) = match find_matching_paren(&tokens, j + 2) {
-                        Some(v) => v,
-                        None => {
-                            i += 1;
+                if r_paren_idx + 1 < scope.close_idx
+                    && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
+                {
+                    let params = parse_params(&tokens[(name_idx + 2)..r_paren_idx]);
+                    if let Some((body_end_idx, body_span)) =
+                        find_matching_brace(&tokens, r_paren_idx + 1)
+                    {
+                        // Ensure we didn't accidentally consume the type body's closing brace
+                        // (which would desync the scope stack).
+                        if body_end_idx < scope.close_idx {
+                            analysis.methods.push(MethodDecl {
+                                ret_ty,
+                                name: name.text.clone(),
+                                name_span: name.span,
+                                params,
+                                body_span,
+                            });
+                            let _ = close_paren;
+                            // Skip method body for performance.
+                            i = body_end_idx + 1;
                             continue;
                         }
-                    };
-
-                    if r_paren_idx + 1 < scope.close_idx
-                        && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
-                    {
-                        let params = parse_params(&tokens[(j + 3)..r_paren_idx]);
-                        if let Some((body_end_idx, body_span)) =
-                            find_matching_brace(&tokens, r_paren_idx + 1)
-                        {
-                            // Ensure we didn't accidentally consume the type body's closing brace
-                            // (which would desync the scope stack).
-                            if body_end_idx < scope.close_idx {
-                                analysis.methods.push(MethodDecl {
-                                    ret_ty: ret.text.clone(),
-                                    name: name.text.clone(),
-                                    name_span: name.span,
-                                    params,
-                                    body_span,
-                                });
-                                let _ = close_paren;
-                                // Skip method body for performance.
-                                i = body_end_idx + 1;
-                                continue;
-                            }
-                        }
                     }
-                    let _ = close_paren;
                 }
+                let _ = close_paren;
             }
         }
 
@@ -18909,40 +18939,23 @@ fn analyze(text: &str) -> Analysis {
                 }
                 break;
             }
-            if let Some(ty_tok) = tokens.get(j) {
-                if ty_tok.kind == TokenKind::Ident {
-                    // Support `T[] name` field declarations (`[]` are separate tokens).
-                    let mut k = j + 1;
-                    let mut dims = 0usize;
-                    while k + 1 < tokens.len()
-                        && tokens[k].kind == TokenKind::Symbol('[')
-                        && tokens[k + 1].kind == TokenKind::Symbol(']')
+            if let Some((ty, k)) = parse_decl_type(&tokens, j, tokens.len()) {
+                if k + 1 < tokens.len() {
+                    let name_tok = &tokens[k];
+                    let next = &tokens[k + 1];
+                    if name_tok.kind == TokenKind::Ident
+                        && matches!(next.kind, TokenKind::Symbol(';') | TokenKind::Symbol('='))
                     {
-                        dims += 1;
-                        k += 2;
-                    }
-
-                    if k + 1 < tokens.len() {
-                        let name_tok = &tokens[k];
-                        let next = &tokens[k + 1];
-                        if name_tok.kind == TokenKind::Ident
-                            && matches!(next.kind, TokenKind::Symbol(';') | TokenKind::Symbol('='))
-                        {
-                            let mut ty = ty_tok.text.clone();
-                            for _ in 0..dims {
-                                ty.push_str("[]");
-                            }
-                            analysis.fields.push(FieldDecl {
-                                name: name_tok.text.clone(),
-                                name_span: name_tok.span,
-                                ty,
-                            });
-                            i = k + 2;
-                            continue;
-                        }
+                        analysis.fields.push(FieldDecl {
+                            name: name_tok.text.clone(),
+                            name_span: name_tok.span,
+                            ty,
+                        });
+                        i = k + 2;
+                        continue;
                     }
                 }
-            }
+            };
         }
 
         match tokens[i].kind {
@@ -18966,7 +18979,7 @@ fn analyze(text: &str) -> Analysis {
         //
         // Best-effort support:
         // - Qualified type names: `java.util.List xs = ...`
-        // - Generic types: `List<String> xs = ...` (we ignore the type arguments here)
+        // - Generic types: `List<String> xs = ...`
         // - Array suffix on the type: `String[] xs = ...`
         //
         // This powers completions like `xs.if` / `xs.nn` / postfix templates without requiring
@@ -19011,25 +19024,27 @@ fn analyze(text: &str) -> Analysis {
                 j += 2;
             }
 
-            // Skip generics `<...>` to find the variable name token.
+            // Parse generics `<...>` (best-effort, including nested generics) to find the
+            // variable name token.
             if body_tokens
                 .get(j)
                 .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
             {
                 let mut depth = 0i32;
                 while j < body_tokens.len() {
-                    match body_tokens[j].kind {
+                    let tok = body_tokens[j];
+                    match tok.kind {
                         TokenKind::Symbol('<') => depth += 1,
                         TokenKind::Symbol('>') => {
                             depth -= 1;
-                            if depth == 0 {
-                                j += 1;
-                                break;
-                            }
                         }
                         _ => {}
                     }
+                    ty.push_str(&tok.text);
                     j += 1;
+                    if depth == 0 {
+                        break;
+                    }
                 }
             }
 
@@ -19644,6 +19659,56 @@ fn skip_type_params(tokens: &[Token], start_idx: usize) -> usize {
     }
 
     i
+}
+
+fn parse_decl_type(tokens: &[Token], start_idx: usize, limit: usize) -> Option<(String, usize)> {
+    let limit = limit.min(tokens.len());
+    let first = tokens.get(start_idx)?;
+    if first.kind != TokenKind::Ident {
+        return None;
+    }
+
+    let mut ty = first.text.clone();
+    let mut i = start_idx + 1;
+
+    // Qualified type names: `java.util.List`.
+    while i + 1 < limit
+        && tokens[i].kind == TokenKind::Symbol('.')
+        && tokens[i + 1].kind == TokenKind::Ident
+    {
+        ty.push('.');
+        ty.push_str(&tokens[i + 1].text);
+        i += 2;
+    }
+
+    // Generic type arguments: `List<String>`, `Map<K, V>`.
+    if i < limit && tokens[i].kind == TokenKind::Symbol('<') {
+        let mut depth = 0i32;
+        while i < limit {
+            let tok = &tokens[i];
+            match tok.kind {
+                TokenKind::Symbol('<') => depth += 1,
+                TokenKind::Symbol('>') => depth -= 1,
+                _ => {}
+            }
+            ty.push_str(&tok.text);
+            i += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    }
+
+    // Array suffixes: `Type[]`.
+    while i + 1 < limit
+        && tokens[i].kind == TokenKind::Symbol('[')
+        && tokens[i + 1].kind == TokenKind::Symbol(']')
+    {
+        ty.push_str("[]");
+        i += 2;
+    }
+
+    Some((ty, i))
 }
 
 fn parse_params(tokens: &[Token]) -> Vec<ParamDecl> {

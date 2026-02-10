@@ -56,6 +56,10 @@ pub fn multi_token_completion_context(
 
     let analysis = analyze_for_completion_context(text);
 
+    let (prefix_start, _) = identifier_prefix(text, offset);
+    let before = skip_whitespace_backwards(text, prefix_start);
+    let after_dot = before > 0 && text.as_bytes().get(before - 1) == Some(&b'.');
+
     let (_, receiver_type) = receiver_at_offset(text, offset, &analysis);
     let available_methods = normalize_completion_items(available_methods_for_receiver(
         receiver_type.as_deref(),
@@ -69,7 +73,9 @@ pub fn multi_token_completion_context(
 
     MultiTokenCompletionContext {
         receiver_type,
-        expected_type: None,
+        expected_type: after_dot
+            .then(|| analysis.expected_type_at_offset(text, offset))
+            .flatten(),
         surrounding_code,
         available_methods,
         importable_paths,
@@ -172,7 +178,7 @@ fn available_methods_for_receiver(
     receiver_type: Option<&str>,
     analysis: &CompletionContextAnalysis,
 ) -> Vec<String> {
-    match receiver_type {
+    match receiver_type.and_then(simple_type_name) {
         Some("String") => STRING_MEMBER_METHODS
             .iter()
             .map(|(name, _)| (*name).to_string())
@@ -202,10 +208,15 @@ fn normalize_importable_paths(mut items: Vec<String>) -> Vec<String> {
 }
 
 fn importable_paths_for_receiver(receiver_type: Option<&str>) -> Vec<String> {
-    match receiver_type {
+    match receiver_type.and_then(simple_type_name) {
         Some("Stream") => vec!["java.util.stream.Collectors".to_string()],
         _ => Vec::new(),
     }
+}
+
+fn simple_type_name(ty: &str) -> Option<&str> {
+    let erased = ty.split('<').next().unwrap_or(ty);
+    Some(erased.rsplit('.').next().unwrap_or(erased).trim())
 }
 
 fn surrounding_code_window(
@@ -223,4 +234,70 @@ fn surrounding_code_window(
         .min(offset.min(text.len()));
     let end_offset = offset.min(text.len());
     text.get(start_offset..end_offset).unwrap_or("").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_db::InMemoryFileStore;
+
+    fn fixture_position(source_with_cursor: &str) -> (String, Position) {
+        let marker = "<cursor>";
+        let offset = source_with_cursor
+            .find(marker)
+            .expect("fixture should contain <cursor> marker");
+
+        let mut source = source_with_cursor.to_string();
+        source.replace_range(offset..offset + marker.len(), "");
+
+        let index = LineIndex::new(&source);
+        let offset_u32 = u32::try_from(offset).expect("offset should fit in u32");
+        let pos = index.position(&source, TextSize::from(offset_u32));
+        (source, Position::new(pos.line, pos.character))
+    }
+
+    #[test]
+    fn expected_type_infers_variable_declaration_assignment() {
+        let (source, position) = fixture_position(
+            r#"
+import java.util.List;
+
+class Test {
+    void f(List<String> people) {
+        List<String> out = people.stream().<cursor>
+    }
+}
+"#,
+        );
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
+        db.set_file_text(file, source);
+
+        let ctx = multi_token_completion_context(&db, file, position);
+        assert_eq!(ctx.expected_type.as_deref(), Some("List<String>"));
+    }
+
+    #[test]
+    fn expected_type_infers_return_statement() {
+        let (source, position) = fixture_position(
+            r#"
+import java.util.List;
+
+class Test {
+    List<String> f(List<String> people) {
+        return people.stream().<cursor>
+    }
+}
+"#,
+        );
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
+        db.set_file_text(file, source);
+
+        let ctx = multi_token_completion_context(&db, file, position);
+        assert_eq!(ctx.expected_type.as_deref(), Some("List<String>"));
+    }
 }
