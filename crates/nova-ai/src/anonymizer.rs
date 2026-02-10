@@ -692,13 +692,24 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "forEach"
             | "findFirst"
             | "findAny"
+            | "anyMatch"
+            | "allMatch"
+            | "noneMatch"
             | "count"
+            | "peek"
+            | "reduce"
+            | "max"
+            | "min"
+            | "toArray"
             // java.util.stream.Collectors
             | "toList"
             | "toSet"
             | "toMap"
             | "joining"
             | "groupingBy"
+            | "mapping"
+            | "collectingAndThen"
+            | "partitioningBy"
             // java.lang.String
             | "length"
             | "substring"
@@ -707,6 +718,10 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "trim"
             | "startsWith"
             | "endsWith"
+            | "replace"
+            | "split"
+            | "isBlank"
+            | "strip"
             | "toLowerCase"
             | "toUpperCase"
             // java.lang.Object
@@ -728,6 +743,8 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "remove"
             | "contains"
             | "containsKey"
+            | "getOrDefault"
+            | "computeIfAbsent"
             | "size"
             | "asList"
     )
@@ -847,15 +864,34 @@ mod tests {
         let code = r#"
 class Example {
     void run(List<String> items) {
-        items.stream().filter(s -> !s.isEmpty()).map(String::trim).flatMap(s -> s.stream()).distinct().sorted().limit(10).skip(1).collect(Collectors.toList());
+        items.stream()
+            .filter(s -> !s.isEmpty())
+            .map(String::trim)
+            .flatMap(s -> s.stream())
+            .distinct()
+            .sorted()
+            .limit(10)
+            .skip(1)
+            .peek(System.out::println)
+            .collect(Collectors.toList());
         items.stream().forEach(System.out::println);
         items.stream().findFirst();
         items.stream().findAny();
+        items.stream().anyMatch(s -> s.isEmpty());
+        items.stream().allMatch(s -> !s.isEmpty());
+        items.stream().noneMatch(s -> s.isEmpty());
         items.stream().count();
+        items.stream().reduce((a, b) -> a);
+        items.stream().max(String::compareTo);
+        items.stream().min(String::compareTo);
+        items.stream().toArray();
         items.stream().collect(Collectors.toSet());
         items.stream().collect(Collectors.toMap(x -> x, x -> x));
         items.stream().collect(Collectors.joining(","));
         items.stream().collect(Collectors.groupingBy(x -> x));
+        items.stream().collect(Collectors.partitioningBy(x -> true));
+        items.stream().collect(Collectors.mapping(x -> x, Collectors.toList()));
+        items.stream().collect(Collectors.collectingAndThen(Collectors.toList(), x -> x));
 
         int len = "abc".length();
         String sub = "abc".substring(1);
@@ -863,6 +899,11 @@ class Example {
         boolean hasPrefix = "abc".startsWith("a");
         boolean hasSuffix = "abc".endsWith("c");
         String norm = " Abc ".trim().toLowerCase().toUpperCase();
+        boolean hasMid = "abc".contains("b");
+        "abc".replace("a", "b");
+        "a,b".split(",");
+        "   ".isBlank();
+        " abc ".strip();
         String s = items.toString();
         boolean eq = "abc".equals("def");
         int h = items.hashCode();
@@ -876,6 +917,8 @@ class Example {
         Map<String, String> m = new HashMap<>();
         m.put("a", "b");
         m.get("a");
+        m.getOrDefault("a", "b");
+        m.computeIfAbsent("a", k -> "b");
         m.containsKey("a");
         m.remove("a");
 
@@ -920,10 +963,18 @@ class Example {
         assert!(out.contains(".sorted("), "{out}");
         assert!(out.contains(".limit("), "{out}");
         assert!(out.contains(".skip("), "{out}");
+        assert!(out.contains(".peek("), "{out}");
         assert!(out.contains(".forEach("), "{out}");
         assert!(out.contains(".findFirst("), "{out}");
         assert!(out.contains(".findAny("), "{out}");
+        assert!(out.contains(".anyMatch("), "{out}");
+        assert!(out.contains(".allMatch("), "{out}");
+        assert!(out.contains(".noneMatch("), "{out}");
         assert!(out.contains(".count("), "{out}");
+        assert!(out.contains(".reduce("), "{out}");
+        assert!(out.contains(".max("), "{out}");
+        assert!(out.contains(".min("), "{out}");
+        assert!(out.contains(".toArray("), "{out}");
 
         // Collectors.
         assert!(out.contains("Collectors.toList"), "{out}");
@@ -931,6 +982,9 @@ class Example {
         assert!(out.contains("Collectors.toMap"), "{out}");
         assert!(out.contains("Collectors.joining"), "{out}");
         assert!(out.contains("Collectors.groupingBy"), "{out}");
+        assert!(out.contains("Collectors.partitioningBy"), "{out}");
+        assert!(out.contains("Collectors.mapping"), "{out}");
+        assert!(out.contains("Collectors.collectingAndThen"), "{out}");
 
         // String methods.
         assert!(out.contains(".length("), "{out}");
@@ -940,6 +994,11 @@ class Example {
         assert!(out.contains(".trim("), "{out}");
         assert!(out.contains(".startsWith("), "{out}");
         assert!(out.contains(".endsWith("), "{out}");
+        assert!(out.contains(".contains("), "{out}");
+        assert!(out.contains(".replace("), "{out}");
+        assert!(out.contains(".split("), "{out}");
+        assert!(out.contains(".isBlank("), "{out}");
+        assert!(out.contains(".strip("), "{out}");
         assert!(out.contains(".toLowerCase("), "{out}");
         assert!(out.contains(".toUpperCase("), "{out}");
 
@@ -956,6 +1015,8 @@ class Example {
         assert!(out.contains(".get("), "{out}");
         assert!(out.contains(".put("), "{out}");
         assert!(out.contains(".containsKey("), "{out}");
+        assert!(out.contains(".getOrDefault("), "{out}");
+        assert!(out.contains(".computeIfAbsent("), "{out}");
         assert!(out.contains("Arrays.asList"), "{out}");
 
         // Optional methods.
