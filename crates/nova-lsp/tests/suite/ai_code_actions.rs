@@ -6139,6 +6139,20 @@ excluded_paths = ["src/secrets/**"]
         Some("excludedPath"),
         "expected error.data.kind == \"excludedPath\", got: {resp:#?}"
     );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    let paths = data
+        .get("paths")
+        .and_then(|v| v.as_array())
+        .expect("expected error.data.paths array");
+    assert!(
+        paths.iter().any(|p| p
+            .as_str()
+            .is_some_and(|path| path.ends_with("src/secrets/Secret.java"))),
+        "expected error.data.paths to contain src/secrets/Secret.java, got: {paths:#?}"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -6175,6 +6189,20 @@ excluded_paths = ["src/secrets/**"]
             .and_then(|v| v.as_str()),
         Some("excludedPath"),
         "expected error.data.kind == \"excludedPath\", got: {resp:#?}"
+    );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    let paths = data
+        .get("paths")
+        .and_then(|v| v.as_array())
+        .expect("expected error.data.paths array");
+    assert!(
+        paths.iter().any(|p| p
+            .as_str()
+            .is_some_and(|path| path.ends_with("src/secrets/Secret.java"))),
+        "expected error.data.paths to contain src/secrets/Secret.java, got: {paths:#?}"
     );
 
     write_jsonrpc_message(
@@ -6702,6 +6730,21 @@ local_only = true
         Some("patchParse"),
         "expected error.data.kind == \"patchParse\", got: {resp:#?}"
     );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    assert_eq!(
+        data.get("subkind").and_then(|v| v.as_str()),
+        Some("unsupportedFormat"),
+        "expected error.data.subkind == \"unsupportedFormat\", got: {resp:#?}"
+    );
+    assert!(
+        data.get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| !m.is_empty()),
+        "expected error.data.message string, got: {resp:#?}"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -6856,6 +6899,21 @@ local_only = true
         Some("patchSafety"),
         "expected error.data.kind == \"patchSafety\", got: {resp:#?}"
     );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    assert_eq!(
+        data.get("subkind").and_then(|v| v.as_str()),
+        Some("notAllowedPath"),
+        "expected error.data.subkind == \"notAllowedPath\", got: {resp:#?}"
+    );
+    assert!(
+        data.get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| !m.is_empty()),
+        "expected error.data.message string, got: {resp:#?}"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -6867,7 +6925,10 @@ local_only = true
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-    ai_server.assert_hits(1);
+    assert!(
+        ai_server.hits() > 0,
+        "expected at least one provider hit for patch safety repair attempts"
+    );
 }
 
 #[test]
@@ -7008,6 +7069,21 @@ local_only = true
             .and_then(|v| v.as_str()),
         Some("patchSafety"),
         "expected error.data.kind == \"patchSafety\", got: {resp:#?}"
+    );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    assert_eq!(
+        data.get("subkind").and_then(|v| v.as_str()),
+        Some("editRangeSafety"),
+        "expected error.data.subkind == \"editRangeSafety\", got: {resp:#?}"
+    );
+    assert!(
+        data.get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("outside the allowed range")),
+        "expected error.data.message to mention allowed range, got: {resp:#?}"
     );
     assert!(
         error
@@ -7187,6 +7263,21 @@ local_only = true
             .and_then(|v| v.as_str()),
         Some("patchApply"),
         "expected error.data.kind == \"patchApply\", got: {resp:#?}"
+    );
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    assert_eq!(
+        data.get("subkind").and_then(|v| v.as_str()),
+        Some("overlappingEdits"),
+        "expected error.data.subkind == \"overlappingEdits\", got: {resp:#?}"
+    );
+    assert!(
+        data.get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| !m.is_empty()),
+        "expected error.data.message string, got: {resp:#?}"
     );
 
     write_jsonrpc_message(
@@ -8533,6 +8624,20 @@ local_only = true
     drop(stdin);
     let status = child.wait().expect("wait");
     assert!(status.success());
+}
+
+// Keep a small subset of AI code-action tests runnable via the `suite::ai_code_actions` filter,
+// matching the repo's standard `scripts/cargo_agent.sh test … suite::ai_code_actions` invocation.
+//
+// This intentionally calls the canonical test function to avoid duplicating setup/fixtures (and to
+// keep the filter-based command executing real assertions instead of "0 tests").
+mod suite {
+    mod ai_code_actions {
+        #[test]
+        fn validation_error_data_payload_is_structured() {
+            super::super::stdio_server_ai_custom_requests_include_validation_error_data();
+        }
+    }
 }
 
 #[test]

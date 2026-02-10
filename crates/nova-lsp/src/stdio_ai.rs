@@ -123,6 +123,24 @@ fn validation_severity_string(severity: &impl std::fmt::Debug) -> String {
   format!("{severity:?}").to_lowercase()
 }
 
+fn excluded_paths_error_data(mut paths: Vec<String>) -> serde_json::Value {
+  let total = paths.len();
+  paths.sort();
+  paths.truncate(AI_ERROR_DATA_MAX_PATHS);
+  let truncated = total > paths.len();
+  let paths: Vec<String> = paths
+    .into_iter()
+    .map(|p| truncate_json_string(&p, AI_ERROR_DATA_MAX_STRING_BYTES))
+    .collect();
+
+  json!({
+    "kind": AI_ERROR_KIND_EXCLUDED_PATH,
+    "paths": paths,
+    "pathsTotal": total,
+    "pathsTruncated": truncated,
+  })
+}
+
 const AI_POLICY_CLOUD_EDITS_DISABLED: &str = "cloudEditsDisabled";
 const AI_POLICY_CLOUD_EDITS_WITH_ANONYMIZATION_ENABLED: &str =
   "cloudEditsWithAnonymizationEnabled";
@@ -195,24 +213,10 @@ fn code_generation_error(code: i32, err: nova_ai_codegen::CodeGenerationError) -
 Those files must never be sent to an LLM. Remove them from the workspace snapshot or update ai.privacy.excluded_paths.",
       );
 
-      let mut capped_paths = paths;
-      capped_paths.sort();
-      capped_paths.truncate(AI_ERROR_DATA_MAX_PATHS);
-      let capped_paths: Vec<String> = capped_paths
-        .into_iter()
-        .map(|p| truncate_json_string(&p, AI_ERROR_DATA_MAX_STRING_BYTES))
-        .collect();
-      let capped_paths_len = capped_paths.len();
-
       rpc_error_with_data(
         -32600,
         message,
-        json!({
-          "kind": AI_ERROR_KIND_EXCLUDED_PATH,
-          "paths": capped_paths,
-          "pathsTotal": total,
-          "pathsTruncated": total > capped_paths_len,
-        }),
+        excluded_paths_error_data(paths),
       )
     }
     E::Provider(provider) => prompt_completion_error(code, provider),
@@ -881,10 +885,10 @@ pub(super) fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
 
   // Enforce excluded_paths *before* building prompts or calling the model.
   if ai.is_excluded_path(&abs_path) {
-    return Err(rpc_error_with_kind(
+    return Err(rpc_error_with_data(
       -32600,
       "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
-      AI_ERROR_KIND_EXCLUDED_PATH,
+      excluded_paths_error_data(vec![file_rel.clone()]),
     ));
   }
 
@@ -1011,10 +1015,10 @@ pub(super) fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
 
   // Enforce excluded_paths *before* building prompts or calling the model.
   if ai.is_excluded_path(&abs_path) {
-    return Err(rpc_error_with_kind(
+    return Err(rpc_error_with_data(
       -32600,
       "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
-      AI_ERROR_KIND_EXCLUDED_PATH,
+      excluded_paths_error_data(vec![file_rel.clone()]),
     ));
   }
 
