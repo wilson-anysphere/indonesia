@@ -1258,6 +1258,26 @@ rename to dir with space/new name.txt"#;
     }
 
     #[test]
+    fn parses_rename_metadata_with_octal_escapes_in_quoted_paths() {
+        let raw = r#"diff --git "a/caf\303\251 old.txt" "b/caf\303\251 new.txt"
+similarity index 100%
+rename from "caf\303\251 old.txt"
+rename to "caf\303\251 new.txt""#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "café old.txt".to_string(),
+                    new_path: "café new.txt".to_string(),
+                    hunks: Vec::new(),
+                }],
+            })
+        );
+    }
+
+    #[test]
     fn parses_backslash_and_octal_escapes_in_quoted_paths() {
         let raw = r#"diff --git "a/foo\"bar\\baz\040qux.txt" "b/foo\"bar\\baz\040qux.txt"
 index e69de29..4b825dc 100644
