@@ -562,7 +562,12 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
             continue;
         }
 
+        if tok.len() < 2 {
+            continue;
+        }
+
         let keep_short = tok.bytes().any(|b| (b as char).is_ascii_uppercase());
+        let keep_short = keep_short && tok.len() >= 2;
         if tok.len() < 3 && !keep_short {
             continue;
         }
@@ -727,7 +732,12 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
 
+        if tok.len() < 2 {
+            continue;
+        }
+
         let keep_short = tok.bytes().any(|b| b.is_ascii_uppercase());
+        let keep_short = keep_short && tok.len() >= 2;
         if tok.len() < 3 && !keep_short {
             continue;
         }

@@ -313,3 +313,42 @@ fn related_code_query_ignores_java_text_blocks() {
         "expected query to retain identifier tokens, got: {query}"
     );
 }
+
+#[test]
+fn related_code_query_drops_single_letter_type_params() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = r#"
+        public <T> T map(T value) {
+            return mapper.map(value);
+        }
+    "#;
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.split_whitespace().any(|tok| tok == "T"),
+        "expected query to exclude generic type parameter `T`, got: {query}"
+    );
+    assert!(
+        query.contains("mapper") || query.contains("map"),
+        "expected query to retain identifier tokens, got: {query}"
+    );
+}
