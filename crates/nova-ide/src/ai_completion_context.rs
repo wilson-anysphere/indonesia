@@ -92,18 +92,13 @@ fn receiver_at_offset(
             // back to lexical inference.
             let trimmed = ty.trim();
             let receiver_trimmed = receiver.trim();
-            let is_suspicious_lowercase_type_ref = kind == CallKind::Static
-                && trimmed == receiver_trimmed
-                && receiver_trimmed
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| ch.is_ascii_lowercase());
+            let is_unresolved_type_ref = kind == CallKind::Static && trimmed == receiver_trimmed;
 
             if !trimmed.starts_with("this.") && !trimmed.starts_with("super.") {
-                if is_suspicious_lowercase_type_ref {
+                if is_unresolved_type_ref {
                     // Best-effort recovery for `foo().bar.<cursor>`: `receiver_before_dot` only
-                    // captures `bar`, and semantic inference may interpret that as a (lowercase)
-                    // type reference. If the segment directly before `bar` ends with a call (`)`),
+                    // captures `bar`, and semantic inference may interpret that as a type
+                    // reference. If the segment directly before `bar` ends with a call (`)`),
                     // try to interpret this as a field access on the call's return type.
                     if let Some(field_ty) = call_chain_field_access_type(db, file, text, dot_offset)
                     {
