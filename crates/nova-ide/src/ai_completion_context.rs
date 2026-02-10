@@ -84,7 +84,16 @@ fn receiver_at_offset(
         if let Some((ty, kind)) =
             infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
         {
-            return (Some(receiver), Some(ty), Some(kind));
+            // Guard against the semantic inference helper treating `this.foo` / `super.foo` as a
+            // type reference and returning it verbatim as the "type". This can happen when the
+            // dotted-chain resolution logic fails (or the receiver contains whitespace).
+            //
+            // In that case, prefer the lightweight lexical inference which consults the
+            // completion-context analysis fields.
+            let trimmed = ty.trim();
+            if !trimmed.starts_with("this.") && !trimmed.starts_with("super.") {
+                return (Some(receiver), Some(ty), Some(kind));
+            }
         }
 
         let ty = infer_receiver_type_lexical(receiver.as_str(), analysis);
@@ -101,12 +110,8 @@ fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnaly
     }
 
     let receiver = receiver.trim();
-    if let Some(field) = receiver
-        .strip_prefix("this.")
-        .or_else(|| receiver.strip_prefix("super."))
-        .and_then(|suffix| suffix.rsplit('.').next())
-        .filter(|ident| is_valid_identifier_token(ident))
-    {
+    if let Some(field) = this_or_super_field_access(receiver) {
+        let field = field.trim();
         if let Some((_, ty)) = analysis.fields.iter().find(|(name, _)| name == field) {
             return Some(ty.clone());
         }
@@ -124,6 +129,25 @@ fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnaly
                 .find(|(name, _)| name == receiver)
                 .map(|(_, ty)| ty.clone())
         })
+}
+
+fn this_or_super_field_access(receiver: &str) -> Option<&str> {
+    let receiver = receiver.trim();
+    let (qualifier, suffix) = receiver.split_once('.')?;
+    let qualifier = qualifier.trim();
+    if qualifier != "this" && qualifier != "super" {
+        return None;
+    }
+
+    // Only treat `this.<ident>` / `super.<ident>` as a field access. Avoid attempting to infer
+    // deeper chains like `this.foo.bar`, since we don't know the type of `foo` in the lexical path
+    // and would risk returning an unrelated field type.
+    let suffix = suffix.trim();
+    if suffix.is_empty() || suffix.contains('.') {
+        return None;
+    }
+
+    is_valid_identifier_token(suffix).then_some(suffix)
 }
 
 fn is_valid_identifier_token(ident: &str) -> bool {
@@ -319,6 +343,29 @@ class Test {
 
     void f() {
         this.foo.<cursor>
+    }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn receiver_type_infers_this_field_access_with_whitespace() {
+        let ctx = ctx_for(
+            r#"
+class Test {
+    String foo;
+
+    void f() {
+        this . foo.<cursor>
     }
 }
 "#,
