@@ -9611,14 +9611,99 @@ fn completion_type_store(
     db: &dyn Database,
     file: FileId,
 ) -> (TypeStore, Option<Arc<completion_cache::CompletionEnv>>) {
+    fn ensure_minimal_completion_jdk(types: &mut TypeStore) {
+        // When JDK discovery is disabled (the default for debug/test builds), we only have Nova's
+        // minimal, dependency-free JDK type model. Seed a few extra stubs that are useful for IDE
+        // features without requiring full JDK indexing.
+        //
+        // Keep this intentionally small and deterministic.
+        if JDK_INDEX.as_ref().is_some() {
+            return;
+        }
+
+        // `java.util.stream.Stream` is common in modern Java code. The return type is often
+        // inferred from call chains like `people.stream()`, but the simple display name `Stream`
+        // isn't implicitly imported. Provide a minimal stub so member completion and AI context
+        // building can enumerate common methods even in dependency-free mode.
+        let stream_name = "java.util.stream.Stream";
+        let stream_id = types.class_id(stream_name).unwrap_or_else(|| {
+            types.add_class(nova_types::ClassDef {
+                name: stream_name.to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            })
+        });
+
+        if types
+            .class(stream_id)
+            .is_some_and(|class_def| class_def.methods.is_empty())
+        {
+            let stream_ty = Type::class(stream_id, vec![]);
+            let object_ty = Type::class(types.well_known().object, vec![]);
+
+            let predicate_ty = types
+                .class_id("java.util.function.Predicate")
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named("Predicate".to_string()));
+            let function_ty = types
+                .class_id("java.util.function.Function")
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named("Function".to_string()));
+
+            let methods = vec![
+                MethodDef {
+                    name: "filter".to_string(),
+                    type_params: vec![],
+                    params: vec![predicate_ty],
+                    return_type: stream_ty.clone(),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                },
+                MethodDef {
+                    name: "map".to_string(),
+                    type_params: vec![],
+                    params: vec![function_ty],
+                    return_type: stream_ty.clone(),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                },
+                MethodDef {
+                    name: "collect".to_string(),
+                    type_params: vec![],
+                    // Keep the parameter type loose: the full `Collector` model isn't present in
+                    // Nova's minimal JDK.
+                    params: vec![Type::Named("Collector".to_string())],
+                    return_type: object_ty,
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                },
+            ];
+
+            if let Some(class_def) = types.class_mut(stream_id) {
+                merge_method_defs(&mut class_def.methods, methods);
+            }
+        }
+    }
+
     // Prefer the cached completion environment so we don't rebuild the expensive workspace type
     // store on every completion request.
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
-        return (env.types().clone(), Some(env));
+        let mut types = env.types().clone();
+        ensure_minimal_completion_jdk(&mut types);
+        return (types, Some(env));
     }
 
     // Fallback for virtual buffers without a known root/path.
     let mut store = TypeStore::with_minimal_jdk();
+    ensure_minimal_completion_jdk(&mut store);
     let mut provider = SourceTypeProvider::new();
     let file_path = db
         .file_path(file)
@@ -10160,9 +10245,24 @@ fn member_completions_for_receiver_type(
     let (mut types, env) = completion_type_store(db, file);
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
-    let receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
+    let mut receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return Vec::new();
+    }
+
+    // `infer_call_return_type` formats types for display, which drops package qualifiers. For
+    // receiver-type strings produced by call-chain inference we still want semantic member
+    // completion even when the file hasn't imported the returned type. This is primarily useful
+    // for JDK call chains like `people.stream().<cursor>` where the type is `java.util.stream.Stream`
+    // even though the name `Stream` is not implicitly imported.
+    if class_id_of_type(&mut types, &receiver_ty).is_none() {
+        if matches!(&receiver_ty, Type::Named(name) if name == "Stream") {
+            let stream_ty =
+                parse_source_type_in_context(&mut types, &file_ctx, "java.util.stream.Stream");
+            if class_id_of_type(&mut types, &stream_ty).is_some() {
+                receiver_ty = stream_ty;
+            }
+        }
     }
 
     let receiver_ty = maybe_load_external_type_for_member_completion(
@@ -10233,6 +10333,26 @@ fn member_completions_for_receiver_type(
     items
 }
 
+pub(crate) fn member_method_names_for_receiver_type(
+    db: &dyn Database,
+    file: FileId,
+    receiver_type: &str,
+) -> Vec<String> {
+    if receiver_type.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let items = member_completions_for_receiver_type(db, file, receiver_type, "");
+    let mut seen = BTreeSet::new();
+    for item in items {
+        if item.kind == Some(CompletionItemKind::METHOD) {
+            seen.insert(item.label);
+        }
+    }
+
+    seen.into_iter().collect()
+}
+
 fn static_member_names(types: &mut TypeStore, receiver_ty: &Type) -> HashSet<String> {
     let class_id = match receiver_ty {
         Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
@@ -10266,7 +10386,7 @@ fn static_member_names(types: &mut TypeStore, receiver_ty: &Type) -> HashSet<Str
     out
 }
 
-fn infer_receiver_type_before_dot(
+pub(crate) fn infer_receiver_type_before_dot(
     db: &dyn Database,
     file: FileId,
     dot_offset: usize,
@@ -20079,13 +20199,63 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let prompt = nova_ai::CompletionRankingPromptBuilder::new(0).build_prompt(&ctx, &candidates);
+        let prompt =
+            nova_ai::CompletionRankingPromptBuilder::new(0).build_prompt(&ctx, &candidates);
         assert!(prompt.contains("print(String value)"), "{prompt}");
         assert!(prompt.contains("print(int v)"), "{prompt}");
         assert!(
             !prompt.contains("/home/alice/project/Foo.java"),
             "expected prompt to omit file paths from candidate detail: {prompt}"
         );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_stream_from_local_var_call_chain() {
+        let java = r#"
+import java.util.List;
+
+class A {
+  void m() {
+    List<String> people = List.of();
+    people.stream().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("stream().")
+            .expect("expected `stream().` in fixture")
+            + "stream()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("Stream"));
+    }
+
+    #[test]
+    fn member_method_names_for_receiver_type_includes_minimal_jdk_methods() {
+        let java = "class A {}".to_string();
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java);
+
+        let string_methods = member_method_names_for_receiver_type(&db, file, "String");
+        assert!(
+            string_methods.iter().any(|m| m == "length"),
+            "expected String methods to include length; got {string_methods:?}"
+        );
+
+        let stream_methods = member_method_names_for_receiver_type(&db, file, "Stream");
+        for method in ["filter", "map", "collect"] {
+            assert!(
+                stream_methods.iter().any(|m| m == method),
+                "expected Stream methods to include {method}; got {stream_methods:?}"
+            );
+        }
     }
 
     #[test]
