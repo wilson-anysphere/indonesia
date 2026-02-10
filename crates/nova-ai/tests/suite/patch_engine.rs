@@ -141,6 +141,29 @@ fn unified_diff_preserves_trailing_newline() {
 }
 
 #[test]
+fn unified_diff_normalizes_git_prefix_without_stripping_real_b_dir() {
+    let ws = VirtualWorkspace::new(vec![("b/foo.txt".to_string(), "old\n".to_string())]);
+
+    let diff = r#"--- a/b/foo.txt
++++ b/b/foo.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let Patch::UnifiedDiff(diff) = &patch else {
+        panic!("expected unified diff patch");
+    };
+    assert_eq!(diff.files.len(), 1);
+    assert_eq!(diff.files[0].old_path, "b/foo.txt");
+    assert_eq!(diff.files[0].new_path, "b/foo.txt");
+
+    let applied = ws.apply_patch(&patch).expect("apply diff");
+    assert_eq!(applied.workspace.get("b/foo.txt").unwrap(), "new\n");
+}
+
+#[test]
 fn unified_diff_rename_and_delete_are_supported() {
     let ws = VirtualWorkspace::new(vec![
         ("Old.java".to_string(), "class Old {}\n".to_string()),
