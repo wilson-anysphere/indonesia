@@ -644,12 +644,34 @@ fn parse_git_file_block(
         idx += 1;
     }
 
-    if let (Some(from), Some(to)) = (rename_from, rename_to) {
-        if !from.is_empty() && !to.is_empty() && (old_path.is_empty() || new_path.is_empty()) {
-            // `rename from/to` paths are already real repo paths (git does not prefix them with
-            // `a/`/`b/`). Only use them as a fallback when the `diff --git` header was ambiguous.
-            old_path = from;
-            new_path = to;
+    if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
+        if !from.is_empty() && !to.is_empty() {
+            // `rename from/to` paths are already repo-relative (git does not prefix them with
+            // `a/`/`b/`). Treat them as authoritative for the file operation, but validate that
+            // they are consistent with the `diff --git` header when the header was parseable.
+            //
+            // This is important for `git diff --no-prefix` output: a real rename from `a/foo` to
+            // `b/foo` would otherwise look like a normal git-prefixed `a/foo` → `b/foo` header
+            // and get incorrectly normalized to `foo` → `foo`.
+            if !old_path.is_empty() || !new_path.is_empty() {
+                if old_path == *from && new_path == *to {
+                    strip_git_prefixes = Some(false);
+                } else if normalize_diff_path(&old_path) == *from
+                    && normalize_diff_path(&new_path) == *to
+                {
+                    strip_git_prefixes = Some(true);
+                } else if old_path.is_empty() || new_path.is_empty() {
+                    // If the `diff --git` header was ambiguous (unquoted whitespace), fall back to
+                    // the rename metadata without additional validation.
+                } else {
+                    return Err(PatchParseError::InvalidDiff(
+                        "rename headers did not match diff --git paths".into(),
+                    ));
+                }
+            }
+
+            old_path = from.clone();
+            new_path = to.clone();
             paths_already_normalized = true;
         }
     }
@@ -1279,9 +1301,9 @@ index e69de29..4b825dc 100644
     #[test]
     fn parses_rename_metadata_for_paths_starting_with_b_directory() {
         let raw = r#"diff --git a/b/foo.txt b/b/bar.txt
- similarity index 100%
- rename from b/foo.txt
- rename to b/bar.txt"#;
+similarity index 100%
+rename from b/foo.txt
+rename to b/bar.txt"#;
 
         let patch = parse_structured_patch(raw).expect("parse patch");
         assert_eq!(
@@ -1350,6 +1372,28 @@ rename to "caf\303\251 new.txt""#;
                 files: vec![UnifiedDiffFile {
                     old_path: "café old.txt".to_string(),
                     new_path: "café new.txt".to_string(),
+                    hunks: Vec::new(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_no_prefix_rename_metadata_with_real_a_and_b_directories() {
+        // `git diff --no-prefix` can emit rename-only diffs where the real paths start with `a/`
+        // and `b/`. These must not be treated as synthetic git prefixes.
+        let raw = r#"diff --git a/foo.txt b/foo.txt
+similarity index 100%
+rename from a/foo.txt
+rename to b/foo.txt"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "a/foo.txt".to_string(),
+                    new_path: "b/foo.txt".to_string(),
                     hunks: Vec::new(),
                 }],
             })

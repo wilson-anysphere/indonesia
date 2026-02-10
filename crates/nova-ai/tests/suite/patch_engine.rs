@@ -198,6 +198,29 @@ index 1234567..0000000
 }
 
 #[test]
+fn unified_diff_rename_no_prefix_preserves_real_a_b_directories() {
+    let ws = VirtualWorkspace::new(vec![(
+        "a/Foo.java".to_string(),
+        "class Foo {}\n".to_string(),
+    )]);
+
+    let rename = r#"diff --git a/Foo.java b/Foo.java
+similarity index 100%
+rename from a/Foo.java
+rename to b/Foo.java
+"#;
+
+    let patch = parse_structured_patch(rename).expect("parse rename diff");
+    let applied = ws.apply_patch(&patch).expect("apply rename");
+
+    assert!(applied.workspace.get("a/Foo.java").is_none());
+    assert_eq!(
+        applied.workspace.get("b/Foo.java").unwrap(),
+        "class Foo {}\n"
+    );
+}
+
+#[test]
 fn unified_diff_applies_to_paths_starting_with_b_directory_with_git_headers() {
     let ws = VirtualWorkspace::new(vec![("b/foo.txt".to_string(), "a\n".to_string())]);
 
