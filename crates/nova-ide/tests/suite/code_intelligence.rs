@@ -1271,13 +1271,43 @@ class Main {
 fn completion_qualified_type_name_is_not_confused_by_out_of_scope_locals() {
     let (db, file, pos) = fixture(
         r#"
-import java.util.Map;
+ import java.util.Map;
 
 class Main {
   void m() {
     if (true) {
       Map Map = null;
     }
+    Map.En<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected completion list to contain nested type Map.Entry; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"size"),
+        "expected type receiver completion not to include Map.size instance method; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_qualified_type_name_is_not_confused_by_other_class_fields() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.Map;
+
+class Other {
+  Map Map;
+}
+
+class Main {
+  void m() {
     Map.En<|>
   }
 }

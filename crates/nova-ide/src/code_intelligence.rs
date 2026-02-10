@@ -17986,6 +17986,42 @@ fn semantic_call_for_inlay(
 }
 
 fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize) -> bool {
+    fn in_scope_field(analysis: &Analysis, name: &str, offset: usize) -> bool {
+        let mut enclosing: Vec<&ClassDecl> = analysis
+            .classes
+            .iter()
+            .filter(|c| span_contains(c.span, offset))
+            .collect();
+        enclosing.sort_by_key(|c| c.span.len());
+
+        let mut seen = HashSet::<Span>::new();
+        for class in enclosing {
+            let mut current = Some(class);
+            while let Some(class) = current {
+                if !seen.insert(class.name_span) {
+                    break;
+                }
+
+                let field = analysis.fields.iter().any(|field| {
+                    field.name == name
+                        && span_within(field.name_span, class.body_span)
+                        && enclosing_class(analysis, field.name_span.start)
+                            .is_some_and(|owner| owner.name_span == class.name_span)
+                });
+                if field {
+                    return true;
+                }
+
+                let Some(extends) = class.extends.as_deref() else {
+                    break;
+                };
+                current = analysis.classes.iter().find(|c| c.name == extends);
+            }
+        }
+
+        false
+    }
+
     let receiver = receiver.trim();
     if receiver.is_empty() {
         return false;
@@ -18024,7 +18060,7 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
         }
     }
 
-    analysis.fields.iter().any(|f| f.name == receiver)
+    in_scope_field(analysis, receiver, offset)
 }
 
 fn in_scope_local_var<'a>(
