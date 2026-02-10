@@ -1236,14 +1236,32 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
         }
 
         if self.embed_endpoint.load(Ordering::Acquire) != 2 {
-            let first = with_retry(
+            let first = match with_retry(
                 "ollama",
                 remaining,
                 &self.retry,
                 &cancel,
                 |timeout| self.embed_via_embed_endpoint(first_chunk, timeout),
             )
-            .await?;
+            .await
+            {
+                Ok(first) => first,
+                Err(err) => {
+                    if matches!(err, AiError::Cancelled | AiError::Timeout) {
+                        return Err(err);
+                    }
+
+                    tracing::warn!(
+                        target = "nova.ai",
+                        ?err,
+                        "Ollama /api/embed failed; falling back to /api/embeddings"
+                    );
+
+                    return self
+                        .embed_via_legacy_endpoint(input, &cancel, operation_start, &self.retry)
+                        .await;
+                }
+            };
 
             match (self.embed_endpoint.load(Ordering::Acquire), first) {
                 // Still unknown and Ollama returned 404: cache "unsupported" and fall back.
@@ -1262,7 +1280,8 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
                     let mut out = Vec::with_capacity(input.len());
                     out.extend(embeddings);
 
-                    for chunk in chunks {
+                    let mut chunks = chunks;
+                    while let Some(chunk) = chunks.next() {
                         if cancel.is_cancelled() {
                             return Err(AiError::Cancelled);
                         }
@@ -1272,18 +1291,57 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
                             return Err(AiError::Timeout);
                         }
 
-                        let Some(embeddings) = with_retry(
+                        let embeddings = match with_retry(
                             "ollama",
                             remaining,
                             &self.retry,
                             &cancel,
                             |timeout| self.embed_via_embed_endpoint(chunk, timeout),
                         )
-                        .await?
-                        else {
-                            return Err(AiError::UnexpectedResponse(
-                                "ollama /api/embed returned 404 after a successful request".into(),
-                            ));
+                        .await
+                        {
+                            Ok(Some(embeddings)) => embeddings,
+                            Ok(None) => {
+                                return Err(AiError::UnexpectedResponse(
+                                    "ollama /api/embed returned 404 after a successful request"
+                                        .into(),
+                                ));
+                            }
+                            Err(err) => {
+                                if matches!(err, AiError::Cancelled | AiError::Timeout) {
+                                    return Err(err);
+                                }
+
+                                tracing::warn!(
+                                    target = "nova.ai",
+                                    ?err,
+                                    "Ollama /api/embed failed; falling back to /api/embeddings"
+                                );
+
+                                out.extend(
+                                    self.embed_via_legacy_endpoint(
+                                        chunk,
+                                        &cancel,
+                                        operation_start,
+                                        &self.retry,
+                                    )
+                                    .await?,
+                                );
+
+                                while let Some(chunk) = chunks.next() {
+                                    out.extend(
+                                        self.embed_via_legacy_endpoint(
+                                            chunk,
+                                            &cancel,
+                                            operation_start,
+                                            &self.retry,
+                                        )
+                                        .await?,
+                                    );
+                                }
+
+                                return Ok(out);
+                            }
                         };
                         out.extend(embeddings);
                     }
