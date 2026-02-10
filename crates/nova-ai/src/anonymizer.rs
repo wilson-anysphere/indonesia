@@ -92,7 +92,6 @@ impl CodeAnonymizer {
     ///
     /// See [`Self::identifier_map`] for important privacy notes: the mapping is **request-scoped**
     /// and must not be reused across requests.
-    #[cfg(test)]
     pub(crate) fn into_identifier_map(self) -> HashMap<String, String> {
         self.name_map
     }
