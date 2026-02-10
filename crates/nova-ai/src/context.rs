@@ -737,6 +737,19 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if tok.is_empty() {
             continue;
         }
+        if tok
+            .bytes()
+            .all(|b| b == b'_' || b == b'$' || b.is_ascii_digit())
+        {
+            // Purely numeric / underscore / dollar tokens are very low signal and tend to produce
+            // noisy trigram matches.
+            continue;
+        }
+
+        let keep_short = tok.bytes().any(|b| b.is_ascii_uppercase());
+        if tok.len() < 3 && !keep_short {
+            continue;
+        }
 
         // Avoid leaking file paths (absolute or relative) via the query text.
         if tok.contains('/') || tok.contains('\\') {
