@@ -81,6 +81,60 @@ fn extract_first_section_bullet(prompt: &str, section_header: &str) -> String {
     panic!("missing bullet under section {section_header:?}\n{prompt}");
 }
 
+fn extract_prefixed_value(prompt: &str, prefix: &str) -> String {
+    for line in prompt.lines() {
+        if let Some(value) = line.strip_prefix(prefix) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    panic!("missing line with prefix {prefix:?}\n{prompt}");
+}
+
+fn extract_first_code_block_line(prompt: &str, fence: &str) -> String {
+    let mut lines = prompt.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() == fence {
+            let Some(body_line) = lines.next() else {
+                break;
+            };
+            return body_line.trim().to_string();
+        }
+    }
+    panic!("missing fenced code block {fence:?}\n{prompt}");
+}
+
+fn extract_first_identifier_token(text: &str) -> String {
+    fn is_ident_start(c: char) -> bool {
+        c == '_' || c == '$' || c.is_ascii_alphabetic()
+    }
+
+    fn is_ident_continue(c: char) -> bool {
+        is_ident_start(c) || c.is_ascii_digit()
+    }
+
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if !is_ident_start(ch) {
+            continue;
+        }
+        let mut ident = String::new();
+        ident.push(ch);
+        while let Some(&next) = chars.peek() {
+            if is_ident_continue(next) {
+                ident.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        return ident;
+    }
+    panic!("missing identifier token in {text:?}");
+}
+
 #[derive(Default)]
 struct AnonymizationRoundTripLlm {
     calls: AtomicUsize,
@@ -138,9 +192,9 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
         });
 
     let ctx = MultiTokenCompletionContext {
-        receiver_type: Some("java.util.Optional<String>".into()),
-        expected_type: Some("java.lang.String".into()),
-        surrounding_code: "System.out.".into(),
+        receiver_type: Some("SecretReceiver".into()),
+        expected_type: Some("SecretExpected".into()),
+        surrounding_code: "SecretVar.".into(),
         available_methods: vec!["getSecretToken".into(), "filter".into()],
         importable_paths: vec!["com.example.SecretTokenProvider".into()],
     };
@@ -186,7 +240,8 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
     );
 
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].insert_text, "getSecretToken()");
+    assert_eq!(out[0].label, "SecretReceiver -> SecretExpected");
+    assert_eq!(out[0].insert_text, "getSecretToken(SecretVar)");
     assert_eq!(
         out[0].additional_edits,
         vec![AdditionalEdit::AddImport {
@@ -196,6 +251,11 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
     assert!(
         !out[0].insert_text.contains("id_"),
         "expected insert_text to be de-anonymized\n{:?}",
+        out[0]
+    );
+    assert!(
+        !out[0].label.contains("id_"),
+        "expected label to be de-anonymized\n{:?}",
         out[0]
     );
 }
@@ -464,12 +524,28 @@ impl LlmClient for AnonymizationRoundTripLlm {
             "expected prompt to not leak raw import path\n{prompt}"
         );
         assert!(
+            !prompt.contains("SecretReceiver"),
+            "expected prompt to not leak raw receiver type identifier\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("SecretExpected"),
+            "expected prompt to not leak raw expected type identifier\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("SecretVar"),
+            "expected prompt to not leak raw surrounding code identifier\n{prompt}"
+        );
+        assert!(
             prompt.contains("id_"),
             "expected prompt to contain anonymized placeholders\n{prompt}"
         );
 
+        let receiver_token = extract_prefixed_value(&prompt, "Receiver type: ");
+        let expected_token = extract_prefixed_value(&prompt, "Expected type: ");
         let method_token = extract_first_section_bullet(&prompt, "Available methods:");
         let import_token = extract_first_section_bullet(&prompt, "Importable symbols:");
+        let code_line = extract_first_code_block_line(&prompt, "```java");
+        let code_token = extract_first_identifier_token(&code_line);
         assert!(
             method_token.contains("id_"),
             "expected available method to be anonymized\n{prompt}"
@@ -483,8 +559,8 @@ impl LlmClient for AnonymizationRoundTripLlm {
 
         Ok(json!({
             "completions": [{
-                "label": "anon_round_trip",
-                "insert_text": format!("{method_token}()"),
+                "label": format!("{receiver_token} -> {expected_token}"),
+                "insert_text": format!("{method_token}({code_token})"),
                 "format": "plain",
                 "additional_edits": [{"add_import": import_token}],
                 "confidence": 1.0,
