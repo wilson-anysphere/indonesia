@@ -585,6 +585,7 @@ backend.
 
 - `ai/semantic_search/index_file` — semantic-search file updates (one per `index_file()` call)
 - `ai/semantic_search/search` — semantic-search query execution (one per `search()` call)
+- `ai/semantic_search/finalize_indexing` — bulk indexing finalization (for example: rebuilding the embedding ANN index)
 
 When semantic search is backed by embeddings, failures to compute embeddings are reflected on these
 same metrics:
