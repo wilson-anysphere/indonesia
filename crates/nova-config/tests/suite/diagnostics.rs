@@ -184,8 +184,8 @@ url = "https://user:pass@example.com/path?key={secret}&other=1"
                 "expected url to redact ?key= query param: {url}"
             );
             assert!(
-                url.contains("other=1"),
-                "expected url to preserve non-sensitive query params: {url}"
+                url.contains("other=<redacted>"),
+                "expected url to redact query param values even for unknown keys: {url}"
             );
         }
         other => panic!("expected AiLocalOnlyUrlNotLocal error, got {other:?}"),

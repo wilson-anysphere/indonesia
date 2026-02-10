@@ -1217,34 +1217,26 @@ pub(crate) fn sanitize_url_for_debug(url: &Url) -> String {
     if url.query().is_some() {
         out.push('?');
         let mut first = true;
-        for (k, v) in url.query_pairs() {
+        for (k, _v) in url.query_pairs() {
             if !first {
                 out.push('&');
             }
             first = false;
             out.push_str(&k);
             out.push('=');
-            if is_sensitive_url_param(&k) {
-                out.push_str(REDACTION);
-            } else {
-                out.push_str(&v);
-            }
+            // Be conservative: query parameters often encode credentials (including unknown keys).
+            // Always redact values in debug output so configs can be safely included in bug reports.
+            out.push_str(REDACTION);
         }
     }
 
-    if let Some(fragment) = url.fragment() {
+    if url.fragment().is_some() {
         out.push('#');
-        out.push_str(fragment);
+        // URL fragments can also contain secrets (e.g. single-page-app tokens). Redact.
+        out.push_str(REDACTION);
     }
 
     out
-}
-
-fn is_sensitive_url_param(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
-    )
 }
 
 fn default_provider_url() -> Url {
