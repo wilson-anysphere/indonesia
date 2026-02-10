@@ -481,7 +481,6 @@ fn parse_diff_git_paths_with_unquoted_spaces(rest: &str) -> Option<(String, Stri
 /// Supports:
 /// - unquoted tokens delimited by ASCII whitespace
 /// - double-quoted tokens with C-style backslash escapes (a best-effort subset of git's quoting rules)
-/// - backslash escapes in unquoted tokens (to support `\040`, `\t`, and escaped spaces)
 fn parse_diff_token(input: &str) -> Option<(String, &str)> {
     let input = input.trim_start();
     if input.is_empty() {
@@ -497,10 +496,20 @@ fn parse_diff_token(input: &str) -> Option<(String, &str)> {
         return Some((out, remaining));
     }
 
-    let (bytes, consumed) = parse_git_c_style_bytes(input, |ch| ch.is_whitespace())?;
-    let out = String::from_utf8(bytes).ok()?;
-    let remaining = &input[consumed..];
-    Some((out, remaining))
+    // For unquoted tokens, git does not apply C-style unescaping; treat backslashes as literal
+    // characters. This is important for `core.quotePath=false`, where git may emit literal
+    // backslashes in paths.
+    let mut end = input.len();
+    for (idx, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            end = idx;
+            break;
+        }
+    }
+
+    let token = input[..end].to_string();
+    let remaining = &input[end..];
+    Some((token, remaining))
 }
 
 fn is_git_section_header_line(line: &str) -> bool {
