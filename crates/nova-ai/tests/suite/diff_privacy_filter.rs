@@ -240,6 +240,67 @@ index 2222222..3333333 100644
 }
 
 #[test]
+fn git_diff_binary_files_line_with_and_in_path_is_filtered() {
+    let excluded_path = "src/a and b.bin";
+
+    let excluded_section = r#"diff --git src/a and b.bin src/a and b.bin
+index cec215b..ee58f53 100644
+Binary files src/a and b.bin and src/a and b.bin differ
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 19; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("a and b.bin"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
+fn git_diff_binary_files_line_with_dev_null_and_and_in_path_is_filtered() {
+    let excluded_path = "src/a and b.bin";
+
+    let excluded_section = r#"diff --git src/a and b.bin src/a and b.bin
+new file mode 100644
+index 0000000..cec215b
+Binary files /dev/null and src/a and b.bin differ
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 20; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("a and b.bin"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_no_prefix_paths_starting_with_a_are_not_stripped_for_exclusion_matching() {
     // When using `git diff --no-prefix`, paths are not prefixed with `a/` and `b/`. If the real
     // path itself starts with `a/`, we must not treat it as a pseudo prefix for exclusion checks.

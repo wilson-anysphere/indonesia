@@ -313,17 +313,46 @@ fn parse_git_binary_files_line(line: &str) -> Result<Option<(String, String)>, D
         }
         (old, new)
     } else {
-        // Require exactly one delimiter to avoid ambiguous parsing when paths contain " and ".
-        if rest.matches(" and ").count() != 1 {
-            return Err(DiffParseError::InvalidHeader);
-        }
-        let (old_raw, new_raw) = rest
-            .split_once(" and ")
-            .ok_or(DiffParseError::InvalidHeader)?;
+        // Special-cases for `/dev/null` so we can handle paths that contain the ` and ` delimiter.
+        if let Some(new_raw) = rest.strip_prefix("/dev/null and ") {
+            let old = "/dev/null".to_string();
+            let new = parse_git_binary_path_token(new_raw)?;
+            (old, new)
+        } else if let Some(old_raw) = rest.strip_suffix(" and /dev/null") {
+            let old = parse_git_binary_path_token(old_raw)?;
+            let new = "/dev/null".to_string();
+            (old, new)
+        } else if rest.matches(" and ").count() == 1 {
+            let (old_raw, new_raw) = rest
+                .split_once(" and ")
+                .ok_or(DiffParseError::InvalidHeader)?;
 
-        let old = parse_git_binary_path_token(old_raw)?;
-        let new = parse_git_binary_path_token(new_raw)?;
-        (old, new)
+            let old = parse_git_binary_path_token(old_raw)?;
+            let new = parse_git_binary_path_token(new_raw)?;
+            (old, new)
+        } else {
+            // Best-effort: handle modified files where `<old> == <new>` even if the path contains
+            // ` and ` as a literal substring (git does not quote spaces for this line format).
+            let mut candidates = Vec::<(String, String)>::new();
+            for (pos, _) in rest.match_indices(" and ") {
+                let old_raw = rest[..pos].trim_end();
+                let new_raw = rest[pos + " and ".len()..].trim_start();
+                if old_raw.is_empty() || new_raw.is_empty() {
+                    continue;
+                }
+                let old = parse_git_binary_path_token(old_raw)?;
+                let new = parse_git_binary_path_token(new_raw)?;
+                if old == new {
+                    candidates.push((old, new));
+                }
+            }
+
+            if candidates.len() == 1 {
+                candidates.remove(0)
+            } else {
+                return Err(DiffParseError::InvalidHeader);
+            }
+        }
     };
 
     if old.is_empty() || new.is_empty() {
