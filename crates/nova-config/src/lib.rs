@@ -1359,7 +1359,7 @@ fn default_in_process_llama_top_p() -> f32 {
     0.95
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AiPrivacyConfig {
     /// If true, Nova will not use any cloud providers. This is the recommended
@@ -1441,6 +1441,26 @@ pub struct AiPrivacyConfig {
     /// additional opt-in to avoid accidental leakage.
     #[serde(default)]
     pub allow_code_edits_without_anonymization: bool,
+}
+
+impl fmt::Debug for AiPrivacyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AiPrivacyConfig")
+            .field("local_only", &self.local_only)
+            .field("include_file_paths", &self.include_file_paths)
+            .field("anonymize_identifiers", &self.anonymize_identifiers)
+            .field("redact_sensitive_strings", &self.redact_sensitive_strings)
+            .field("redact_numeric_literals", &self.redact_numeric_literals)
+            .field("strip_or_redact_comments", &self.strip_or_redact_comments)
+            .field("excluded_paths_count", &self.excluded_paths.len())
+            .field("redact_patterns_count", &self.redact_patterns.len())
+            .field("allow_cloud_code_edits", &self.allow_cloud_code_edits)
+            .field(
+                "allow_code_edits_without_anonymization",
+                &self.allow_code_edits_without_anonymization,
+            )
+            .finish()
+    }
 }
 
 fn default_local_only() -> bool {
@@ -2244,6 +2264,25 @@ mod tests {
         assert!(
             output.contains("api_key_present"),
             "AiConfig debug output should include api_key presence indicator: {output}"
+        );
+    }
+
+    #[test]
+    fn ai_privacy_config_debug_does_not_expose_redact_patterns() {
+        let secret = "super-secret-pattern";
+        let config = AiPrivacyConfig {
+            redact_patterns: vec![secret.to_string()],
+            ..Default::default()
+        };
+
+        let output = format!("{config:?}");
+        assert!(
+            !output.contains(secret),
+            "AiPrivacyConfig debug output leaked redact_patterns: {output}"
+        );
+        assert!(
+            output.contains("redact_patterns_count"),
+            "AiPrivacyConfig debug output should include redact_patterns_count: {output}"
         );
     }
 

@@ -733,9 +733,30 @@ fn validate_ai_privacy_patterns(config: &NovaConfig, out: &mut ValidationDiagnos
         if let Err(err) = regex::Regex::new(pattern) {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: format!("ai.privacy.redact_patterns[{idx}]"),
-                message: format!("invalid regex: {err}"),
+                // Avoid echoing the raw pattern back into diagnostics: users may add secrets to
+                // `redact_patterns` and share config diagnostics/logs.
+                message: format!("invalid regex: {}", summarize_regex_error(&err)),
             });
         }
+    }
+}
+
+fn summarize_regex_error(err: &regex::Error) -> String {
+    match err {
+        regex::Error::Syntax(message) => message
+            .lines()
+            .rev()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("error:")
+                    .map(|rest| rest.trim())
+                    .filter(|rest| !rest.is_empty())
+            })
+            .unwrap_or_else(|| message.trim())
+            .to_string(),
+        regex::Error::CompiledTooBig(size) => format!("compiled regex too big ({size} bytes)"),
+        _ => "unknown error".to_string(),
     }
 }
 

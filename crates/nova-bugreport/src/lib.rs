@@ -825,6 +825,7 @@ fn is_secret_key(key: &str) -> bool {
         || key.contains("token")
         || key.contains("api_key")
         || key.contains("apikey")
+        || key.contains("redact_patterns")
         || key.contains("authorization")
 }
 
@@ -837,6 +838,7 @@ mod tests {
         let mut config = NovaConfig::default();
         config.ai.enabled = true;
         config.ai.api_key = Some("SUPER-SECRET".to_owned());
+        config.ai.privacy.redact_patterns = vec!["ANOTHER-SUPER-SECRET".to_owned()];
 
         let buffer = LogBuffer::new(10);
         buffer.push_line("hello world".to_owned());
@@ -864,6 +866,10 @@ mod tests {
         let contents =
             std::fs::read_to_string(bundle.path().join("config.json")).expect("config read failed");
         assert!(!contents.contains("SUPER-SECRET"));
+        assert!(
+            !contents.contains("ANOTHER-SUPER-SECRET"),
+            "expected bug report config snapshot to redact ai.privacy.redact_patterns values"
+        );
         assert!(contents.contains("<redacted>"));
     }
 
