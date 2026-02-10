@@ -1,4 +1,5 @@
 use crate::semantic_search::Embedder;
+use crate::http::map_reqwest_error;
 use crate::AiError;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -76,10 +77,12 @@ impl AzureOpenAiEmbedder {
             .post(url)
             .json(&body)
             .timeout(self.timeout)
-            .send()?
-            .error_for_status()?;
+            .send()
+            .map_err(map_reqwest_error)?
+            .error_for_status()
+            .map_err(map_reqwest_error)?;
 
-        let parsed: OpenAiEmbeddingsResponse = response.json()?;
+        let parsed: OpenAiEmbeddingsResponse = response.json().map_err(map_reqwest_error)?;
         parse_openai_embeddings(parsed, input.len())
     }
 }
@@ -151,4 +154,3 @@ fn parse_openai_embeddings(
         })
         .collect()
 }
-

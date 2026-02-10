@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::client::validate_local_only_url;
+use crate::http::map_reqwest_error;
 use crate::llm_privacy::PrivacyFilter;
 use crate::privacy::redact_file_paths;
 use crate::AiError;
@@ -835,9 +836,11 @@ impl AzureOpenAiEmbeddingsClient {
             .json(&body)
             .timeout(timeout)
             .send()
-            .await?
-            .error_for_status()?;
-        let parsed: OpenAiEmbeddingsResponse = response.json().await?;
+            .await
+            .map_err(map_reqwest_error)?
+            .error_for_status()
+            .map_err(map_reqwest_error)?;
+        let parsed: OpenAiEmbeddingsResponse = response.json().await.map_err(map_reqwest_error)?;
         parse_openai_embeddings(parsed, input.len())
     }
 }
@@ -962,8 +965,13 @@ impl OpenAiCompatibleEmbeddingsClient {
             request = request.bearer_auth(key);
         }
 
-        let response = request.send().await?.error_for_status()?;
-        let parsed: OpenAiEmbeddingsResponse = response.json().await?;
+        let response = request
+            .send()
+            .await
+            .map_err(map_reqwest_error)?
+            .error_for_status()
+            .map_err(map_reqwest_error)?;
+        let parsed: OpenAiEmbeddingsResponse = response.json().await.map_err(map_reqwest_error)?;
         parse_openai_embeddings(parsed, input.len())
     }
 }
@@ -1119,14 +1127,17 @@ impl OllamaEmbeddingsClient {
             .json(&body)
             .timeout(timeout)
             .send()
-            .await?;
+            .await
+            .map_err(map_reqwest_error)?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
 
-        let response = response.error_for_status()?;
-        let parsed: OllamaEmbedResponse = response.json().await?;
+        let response = response
+            .error_for_status()
+            .map_err(map_reqwest_error)?;
+        let parsed: OllamaEmbedResponse = response.json().await.map_err(map_reqwest_error)?;
         let embeddings = parsed.into_embeddings().ok_or_else(|| {
             AiError::UnexpectedResponse("missing `embeddings` in Ollama /api/embed response".into())
         })?;
@@ -1186,10 +1197,13 @@ impl OllamaEmbeddingsClient {
                             .json(&body)
                             .timeout(timeout)
                             .send()
-                            .await?
-                            .error_for_status()?;
+                            .await
+                            .map_err(map_reqwest_error)?
+                            .error_for_status()
+                            .map_err(map_reqwest_error)?;
 
-                        let parsed: OllamaEmbeddingsResponse = response.json().await?;
+                        let parsed: OllamaEmbeddingsResponse =
+                            response.json().await.map_err(map_reqwest_error)?;
                         if parsed.embedding.is_empty() {
                             return Err(AiError::UnexpectedResponse(
                                 "missing `embedding` in Ollama /api/embeddings response".into(),

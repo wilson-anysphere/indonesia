@@ -1,4 +1,5 @@
 use crate::semantic_search::Embedder;
+use crate::http::map_reqwest_error;
 use crate::AiError;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -76,14 +77,17 @@ impl OllamaEmbedder {
             .post(url)
             .json(&body)
             .timeout(self.timeout)
-            .send()?;
+            .send()
+            .map_err(map_reqwest_error)?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
 
-        let response = response.error_for_status()?;
+        let response = response
+            .error_for_status()
+            .map_err(map_reqwest_error)?;
 
-        let parsed: OllamaEmbedResponse = response.json()?;
+        let parsed: OllamaEmbedResponse = response.json().map_err(map_reqwest_error)?;
         if let Some(embeddings) = parsed.embeddings {
             if embeddings.len() != input.len() {
                 return Err(AiError::UnexpectedResponse(format!(
@@ -138,10 +142,12 @@ impl OllamaEmbedder {
                 .post(url.clone())
                 .json(&body)
                 .timeout(self.timeout)
-                .send()?
-                .error_for_status()?;
+                .send()
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let parsed: OllamaLegacyEmbedResponse = response.json()?;
+            let parsed: OllamaLegacyEmbedResponse = response.json().map_err(map_reqwest_error)?;
             if parsed.embedding.is_empty() {
                 return Err(AiError::UnexpectedResponse(
                     "missing `embedding` in Ollama /api/embeddings response".into(),

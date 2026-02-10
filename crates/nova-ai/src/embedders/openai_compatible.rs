@@ -1,4 +1,5 @@
 use crate::semantic_search::Embedder;
+use crate::http::map_reqwest_error;
 use crate::AiError;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
@@ -75,14 +76,6 @@ impl OpenAiCompatibleEmbedder {
         }
     }
 
-    fn map_reqwest_error(err: reqwest::Error) -> AiError {
-        if err.is_timeout() {
-            AiError::Timeout
-        } else {
-            AiError::from(err)
-        }
-    }
-
     fn embed_request(&self, input: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
         if input.is_empty() {
             return Ok(Vec::new());
@@ -101,11 +94,11 @@ impl OpenAiCompatibleEmbedder {
             // reqwest semantics change.
             .timeout(self.timeout)
             .send()
-            .map_err(Self::map_reqwest_error)?
+            .map_err(map_reqwest_error)?
             .error_for_status()
-            .map_err(Self::map_reqwest_error)?;
+            .map_err(map_reqwest_error)?;
 
-        let bytes = response.bytes().map_err(Self::map_reqwest_error)?;
+        let bytes = response.bytes().map_err(map_reqwest_error)?;
         let parsed: OpenAiEmbeddingResponse = serde_json::from_slice(&bytes)?;
         parse_openai_embeddings(parsed, input.len())
     }

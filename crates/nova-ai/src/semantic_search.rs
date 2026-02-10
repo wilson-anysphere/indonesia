@@ -467,6 +467,7 @@ mod embeddings {
     use crate::embeddings::disk_cache::{
         DiskEmbeddingCache, EmbeddingCacheKey as DiskCacheKey, DISK_CACHE_NAMESPACE_V1,
     };
+    use crate::http::map_reqwest_error;
     use crate::llm_privacy::{PrivacyFilter, SanitizationSession};
     use crate::privacy::redact_file_paths;
     use crate::AiError;
@@ -786,8 +787,12 @@ mod embeddings {
                 request = request.bearer_auth(key);
             }
 
-            let response = request.send()?.error_for_status()?;
-            let parsed: OpenAiEmbeddingResponse = response.json()?;
+            let response = request
+                .send()
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
+            let parsed: OpenAiEmbeddingResponse = response.json().map_err(map_reqwest_error)?;
             parse_openai_embeddings(parsed, inputs.len())
         }
 
@@ -817,10 +822,12 @@ mod embeddings {
                 .post(url)
                 .header("api-key", api_key)
                 .json(&body)
-                .send()?
-                .error_for_status()?;
+                .send()
+                .map_err(map_reqwest_error)?
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
 
-            let parsed: OpenAiEmbeddingResponse = response.json()?;
+            let parsed: OpenAiEmbeddingResponse = response.json().map_err(map_reqwest_error)?;
             parse_openai_embeddings(parsed, inputs.len())
         }
 
@@ -864,13 +871,20 @@ mod embeddings {
                 input,
             };
 
-            let response = self.client.post(url).json(&body).send()?;
+            let response = self
+                .client
+                .post(url)
+                .json(&body)
+                .send()
+                .map_err(map_reqwest_error)?;
             if response.status() == StatusCode::NOT_FOUND {
                 return Ok(None);
             }
 
-            let response = response.error_for_status()?;
-            let parsed: OllamaEmbedResponse = response.json()?;
+            let response = response
+                .error_for_status()
+                .map_err(map_reqwest_error)?;
+            let parsed: OllamaEmbedResponse = response.json().map_err(map_reqwest_error)?;
             let embeddings = parsed.into_embeddings().ok_or_else(|| {
                 AiError::UnexpectedResponse(
                     "missing `embeddings` in Ollama /api/embed response".into(),
@@ -911,9 +925,11 @@ mod embeddings {
                     .client
                     .post(url.clone())
                     .json(&body)
-                    .send()?
-                    .error_for_status()?;
-                let parsed: OllamaEmbeddingResponse = response.json()?;
+                    .send()
+                    .map_err(map_reqwest_error)?
+                    .error_for_status()
+                    .map_err(map_reqwest_error)?;
+                let parsed: OllamaEmbeddingResponse = response.json().map_err(map_reqwest_error)?;
 
                 if parsed.embedding.is_empty() {
                     return Err(AiError::UnexpectedResponse(
