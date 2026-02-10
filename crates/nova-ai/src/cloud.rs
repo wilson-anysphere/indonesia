@@ -148,12 +148,13 @@ impl LlmProvider for AnthropicProvider {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
             resp = tokio::time::timeout(self.timeout, request_builder.send()) => {
                 match resp {
-                    Ok(res) => res?,
+                    Ok(res) => res.map_err(map_reqwest_error)?,
                     Err(_) => return Err(AiError::Timeout),
                 }
             }
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         let mut bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
@@ -358,12 +359,13 @@ impl LlmProvider for GeminiProvider {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
             resp = tokio::time::timeout(self.timeout, request_builder.send()) => {
                 match resp {
-                    Ok(res) => res?,
+                    Ok(res) => res.map_err(map_reqwest_error)?,
                     Err(_) => return Err(AiError::Timeout),
                 }
             }
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         let is_sse = content_type_is_event_stream(response.headers());
         let mut bytes_stream = response.bytes_stream();
@@ -676,12 +678,13 @@ impl LlmProvider for AzureOpenAiProvider {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
             resp = tokio::time::timeout(self.timeout, request_builder.send()) => {
                 match resp {
-                    Ok(res) => res?,
+                    Ok(res) => res.map_err(map_reqwest_error)?,
                     Err(_) => return Err(AiError::Timeout),
                 }
             }
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         let mut bytes_stream = response.bytes_stream();
         let timeout = self.timeout;
@@ -855,12 +858,13 @@ impl LlmProvider for HttpProvider {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
             resp = tokio::time::timeout(self.timeout, request_builder.send()) => {
                 match resp {
-                    Ok(res) => res?,
+                    Ok(res) => res.map_err(map_reqwest_error)?,
                     Err(_) => return Err(AiError::Timeout),
                 }
             }
         }
-        .error_for_status()?;
+        .error_for_status()
+        .map_err(map_reqwest_error)?;
 
         // If the endpoint doesn't support SSE, fall back to a standard JSON response.
         if !content_type_is_event_stream(response.headers()) {
