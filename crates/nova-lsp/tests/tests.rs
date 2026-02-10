@@ -57,8 +57,6 @@ mod mapstruct_diagnostics;
 mod mapstruct_goto_definition;
 #[path = "suite/mapstruct_implementation.rs"]
 mod mapstruct_implementation;
-#[path = "suite/metrics.rs"]
-mod metrics;
 #[path = "suite/micronaut_extensions.rs"]
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
@@ -186,6 +184,8 @@ mod suite {
     mod stdio_ai_temperature_env;
     #[path = "stdio_codelens.rs"]
     mod stdio_codelens;
+    #[path = "metrics.rs"]
+    mod metrics;
 }
 
 #[test]
