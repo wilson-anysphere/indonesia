@@ -255,48 +255,85 @@ where
     FCode: FnMut(&str) -> String,
     FPlain: FnMut(&str) -> String,
 {
-    // We implement a tiny parser instead of pulling in a Markdown crate. The
-    // rules are deliberately simple:
-    // - A fence starts at "```" and ends at the next "```".
-    // - The first line after the opening fence is treated as the info string
-    //   (language tag) and is preserved verbatim.
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+    // We implement a tiny parser instead of pulling in a Markdown crate.
+    //
+    // The goal is *privacy*, not full Markdown compliance. The rules are deliberately small and
+    // biased toward fail-closed behavior:
+    // - We only recognize backtick fences (```) and only when they appear at the start of a line
+    //   (after optional indentation).
+    // - Fence length is dynamic (3+ backticks) and the closing fence must have at least the opening
+    //   fence length.
+    // - A closing fence must contain only optional whitespace after the backtick run.
+    // - Unterminated fences treat the remainder of the prompt as code (fail-closed) so identifier
+    //   anonymization cannot be bypassed by omitting a closing delimiter.
+    fn fence_run(line: &str) -> Option<(usize, &str)> {
+        // `line` may include '\n'; ignore line endings for parsing.
+        let trimmed = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
 
-    while let Some(start) = rest.find("```") {
-        let (prefix, after_start) = rest.split_at(start);
-        out.push_str(&sanitize_plain(prefix));
-
-        // Skip the opening fence.
-        let mut after_start = &after_start[3..];
-
-        // Preserve the info string line (up to and including newline if present).
-        if let Some(info_end) = after_start.find('\n') {
-            let (info_line, after_info) = after_start.split_at(info_end + 1);
-            out.push_str("```");
-            out.push_str(info_line);
-            after_start = after_info;
-        } else {
-            // No newline => fence with no body.
-            out.push_str("```");
-            out.push_str(after_start);
-            return out;
+        let bytes = trimmed.as_bytes();
+        let mut idx = 0usize;
+        while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
+            idx += 1;
+        }
+        if idx >= bytes.len() || bytes[idx] != b'`' {
+            return None;
         }
 
-        // Find closing fence.
-        if let Some(end) = after_start.find("```") {
-            let (code_body, after_code) = after_start.split_at(end);
-            out.push_str(&sanitize_code(code_body));
-            out.push_str("```");
-            rest = &after_code[3..];
-        } else {
-            // Unterminated fence: treat remainder as plain text.
-            out.push_str(&sanitize_plain(after_start));
-            return out;
+        let mut run = 0usize;
+        while idx + run < bytes.len() && bytes[idx + run] == b'`' {
+            run += 1;
+        }
+        if run < 3 {
+            return None;
+        }
+
+        Some((run, &trimmed[idx + run..]))
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    let mut fence_len = 0usize;
+    let mut segment_start = 0usize;
+    let mut offset = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        let line_end = offset + line.len();
+        offset = line_end;
+
+        let Some((run, after_run)) = fence_run(line) else {
+            continue;
+        };
+
+        if !in_fence {
+            // Opening fence.
+            out.push_str(&sanitize_plain(&text[segment_start..line_start]));
+            out.push_str(line);
+            in_fence = true;
+            fence_len = run;
+            segment_start = line_end;
+            continue;
+        }
+
+        // Closing fence candidate; only close if the delimiter is at least as long as the opening
+        // fence and the remainder is whitespace-only.
+        if run >= fence_len && after_run.chars().all(|ch| ch == ' ' || ch == '\t') {
+            out.push_str(&sanitize_code(&text[segment_start..line_start]));
+            out.push_str(line);
+            in_fence = false;
+            fence_len = 0;
+            segment_start = line_end;
         }
     }
 
-    out.push_str(&sanitize_plain(rest));
+    let tail = &text[segment_start..];
+    if in_fence {
+        out.push_str(&sanitize_code(tail));
+    } else {
+        out.push_str(&sanitize_plain(tail));
+    }
+
     out
 }
 
@@ -548,5 +585,110 @@ class Foo {
             !matcher.is_match(&leading_parent),
             "{leading_parent:?} should not match secret/**"
         );
+    }
+
+    #[test]
+    fn sanitize_prompt_text_anonymizes_indented_code_fences() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let prompt = format!(
+            "Intro\n    ```java\n    class {secret} {{ {secret} svc; }}\n    ```\nOutro\n"
+        );
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("id_"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_prompt_text_anonymizes_fences_with_info_string_whitespace() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let prompt = format!("Before\n```   java   \nclass {secret} {{}}\n```\nAfter\n");
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("```   java"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_prompt_text_anonymizes_multiple_fenced_blocks_in_one_prompt() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let prompt = format!(
+            "Block1\n```java\nclass {secret} {{}}\n```\nBlock2\n```java\n{secret} svc;\n```\n"
+        );
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(!out.contains(secret), "{out}");
+        // Ensure we still have two fenced blocks in the sanitized output.
+        assert_eq!(
+            out.match_indices("```").count(),
+            4,
+            "expected two opening and two closing fences: {out}"
+        );
+    }
+
+    #[test]
+    fn sanitize_prompt_text_treats_unclosed_fence_as_code_fail_closed() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let prompt = format!("Start\n```java\nclass {secret} {{}}\n{secret} svc;\n");
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("```java"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_prompt_text_does_not_close_fence_on_backticks_inside_code() {
+        // A naive parser that searches for the substring "```" can incorrectly terminate a fence
+        // when the code body contains triple-backtick sequences (e.g., in string literals), causing
+        // subsequent identifiers to be treated as plain text in cloud mode.
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let prompt = format!(
+            "Start\n```java\nclass Foo {{\n  String s = \"```\";\n  {secret} svc;\n}}\n```\nEnd\n"
+        );
+        let out = filter.sanitize_prompt_text(&mut session, &prompt);
+
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("```java"), "{out}");
+        assert!(out.contains("\n```\n"), "{out}");
     }
 }

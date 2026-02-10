@@ -7,13 +7,16 @@ use nova_core::{CompletionContext, CompletionItem};
 /// ## Privacy note: markdown fence injection hardening
 ///
 /// `AiClient` sanitizes prompts in cloud mode via `PrivacyFilter::sanitize_prompt_text`, which
-/// uses a deliberately tiny Markdown parser:
-/// - It treats **any** occurrence of the substring `"```"` as a fence boundary.
+/// uses a deliberately tiny Markdown fence parser:
+/// - It recognizes backtick fences with 3+ backticks (```) only when they appear at the start of a
+///   line (after optional indentation).
+/// - Closing fences must also be line-start and contain only optional whitespace after the backtick
+///   run.
 ///
-/// If user-derived content (current line, prefix, candidate labels, etc) contains `"```"` inside a
-/// fenced block, the sanitizer can accidentally "close" the fence early and treat the remainder as
-/// plain text. In cloud mode, plain text is **not** identifier-anonymized, which can leak raw
-/// project identifiers.
+/// If user-derived content (current line, prefix, candidate labels, etc) contains a line that looks
+/// like a fence delimiter (e.g. starts with ```` ``` ````), the sanitizer can "close" the fence
+/// early and treat the remainder as plain text. In cloud mode, plain text is **not**
+/// identifier-anonymized, which can leak raw project identifiers.
 ///
 /// To prevent this, all user-derived strings that are embedded inside fenced blocks are passed
 /// through `escape_markdown_fence_payload`, which guarantees the payload contains **no literal
@@ -237,4 +240,3 @@ mod tests {
         );
     }
 }
-
