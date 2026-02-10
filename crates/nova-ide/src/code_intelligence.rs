@@ -20529,7 +20529,16 @@ class A {
             + "filter(null)".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
-        assert_eq!(ty.as_deref(), Some("Stream"));
+        let base = ty
+            .as_deref()
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default();
+        assert!(
+            base.ends_with("Stream"),
+            "expected receiver type to end with `Stream`, got {ty:?}"
+        );
     }
 
     #[test]

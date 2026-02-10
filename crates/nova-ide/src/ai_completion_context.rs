@@ -79,6 +79,14 @@ fn receiver_at_offset(
     let dot_offset = before - 1;
     let receiver = receiver_before_dot(text, dot_offset);
     if !receiver.is_empty() {
+        // `infer_receiver_type_for_member_access` currently treats `this.foo` / `super.foo` as
+        // type references (yielding `this.foo` as the "type"). Prefer lexical inference so we can
+        // recover field types from the lightweight completion-context analysis.
+        if receiver.starts_with("this.") || receiver.starts_with("super.") {
+            let ty = infer_receiver_type_lexical(receiver.as_str(), analysis);
+            return (Some(receiver), ty);
+        }
+
         let ty = infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
             .or_else(|| infer_receiver_type_lexical(receiver.as_str(), analysis));
         return (Some(receiver), ty);
@@ -93,6 +101,18 @@ fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnaly
         return Some("java.lang.String".to_string());
     }
 
+    let receiver = receiver.trim();
+    if let Some(field) = receiver
+        .strip_prefix("this.")
+        .or_else(|| receiver.strip_prefix("super."))
+        .and_then(|suffix| suffix.rsplit('.').next())
+        .filter(|ident| is_valid_identifier_token(ident))
+    {
+        if let Some((_, ty)) = analysis.fields.iter().find(|(name, _)| name == field) {
+            return Some(ty.clone());
+        }
+    }
+
     analysis
         .vars
         .iter()
@@ -105,6 +125,19 @@ fn infer_receiver_type_lexical(receiver: &str, analysis: &CompletionContextAnaly
                 .find(|(name, _)| name == receiver)
                 .map(|(_, ty)| ty.clone())
         })
+}
+
+fn is_valid_identifier_token(ident: &str) -> bool {
+    let mut chars = ident.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !matches!(first, 'a'..='z' | 'A'..='Z' | '_' | '$') {
+        return false;
+    }
+
+    chars.all(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '$'))
 }
 
 fn available_methods_for_receiver(
@@ -255,6 +288,29 @@ class A {
     }
 
     #[test]
+    fn receiver_type_infers_this_field_access() {
+        let ctx = ctx_for(
+            r#"
+class Test {
+    String foo;
+
+    void f() {
+        this.foo.<cursor>
+    }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn stream_call_chain_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
@@ -284,4 +340,3 @@ class A {
             .any(|path| path == "java.util.stream.Collectors"));
     }
 }
-
