@@ -103,7 +103,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     static WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Require 2+ characters for the server/share segments to avoid accidentally matching common
         // escape sequences in code (e.g. `\\n\\t`).
-        Regex::new(r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$-]{2,}\\+[A-Za-z0-9._$-]{2,}(?:\\+[A-Za-z0-9._$()-]+(?: [A-Za-z0-9._$()-]+)*)*)")
+        Regex::new(r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$@+-]{2,}\\+[A-Za-z0-9._$@+-]{2,}(?:\\+[A-Za-z0-9._$@+()-]+(?: [A-Za-z0-9._$@+()-]+)*)*)")
             .expect("valid windows UNC path regex")
     });
 
@@ -120,7 +120,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // final path segment space-free so we don't greedily consume non-path prose following the
         // path token.
         Regex::new(
-            r"(?m)(?P<path>/(?:[A-Za-z0-9._()\\-]+(?: [A-Za-z0-9._()\\-]+)*/)+[A-Za-z0-9._()\\-]+)",
+            r"(?m)(?P<path>/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*/)+[A-Za-z0-9._@$+()\\-]+)",
         )
             .expect("valid unix path regex")
     });
@@ -131,7 +131,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // safely include spaces without accidentally consuming trailing prose (e.g. `/Users/a/b is`).
     static UNIX_PATH_FILE_WITH_SPACES_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?m)(?P<path>/(?:[A-Za-z0-9._()\\-]+(?: [A-Za-z0-9._()\\-]+)*/)+[A-Za-z0-9._()\\-]+(?: [A-Za-z0-9._()\\-]+)*\.[A-Za-z0-9]{1,16})",
+            r"(?m)(?P<path>/(?:[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*/)+[A-Za-z0-9._@$+()\\-]+(?: [A-Za-z0-9._@$+()\\-]+)*\.[A-Za-z0-9]{1,16})",
         )
         .expect("valid unix path-with-spaces regex")
     });
@@ -144,7 +144,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // Also match the forward-slash form (`C:/Users/alice/file.txt`) which is common in some
         // toolchains and cross-platform logs.
         Regex::new(
-            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$()\\-]+(?: [A-Za-z0-9._$()\\-]+)*[\\/]+)*[A-Za-z0-9._$()\\-]+)",
+            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*[A-Za-z0-9._$@+()\\-]+)",
         )
             .expect("valid windows path regex")
     });
@@ -155,7 +155,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // trailing prose after the path token.
     static WINDOWS_PATH_FILE_WITH_SPACES_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$()\\-]+(?: [A-Za-z0-9._$()\\-]+)*[\\/]+)*(?:[A-Za-z0-9._$()\\-]+(?: [A-Za-z0-9._$()\\-]+)*\.[A-Za-z0-9]{1,16}))",
+            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*[\\/]+)*(?:[A-Za-z0-9._$@+()\\-]+(?: [A-Za-z0-9._$@+()\\-]+)*\.[A-Za-z0-9]{1,16}))",
         )
         .expect("valid windows path-with-spaces regex")
     });
@@ -415,6 +415,17 @@ mod tests {
         assert!(!out.contains("My Project"), "{out}");
         assert!(!out.contains("secret file.txt"), "{out}");
         assert!(!out.contains("file.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_paths_with_at_scope_segments() {
+        let prompt = r#"unix: /home/alice/project/node_modules/@types/react/index.d.ts
+windows: C:\Users\alice\project\node_modules\@types\react\index.d.ts"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("@types"), "{out}");
+        assert!(!out.contains("react/index.d.ts"), "{out}");
+        assert!(!out.contains(r"\\@types\\react\\index.d.ts"), "{out}");
     }
 
     #[test]
