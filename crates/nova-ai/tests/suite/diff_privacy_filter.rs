@@ -176,6 +176,40 @@ index 4444444,5555555..6666666
 }
 
 #[test]
+fn git_diff_combined_cc_header_does_not_strip_a_prefix_from_real_paths() {
+    let excluded_path = "a/src/secrets/merge.txt";
+
+    let excluded_section = r#"diff --cc a/src/secrets/merge.txt
+index 1111111,2222222..3333333
+--- a/a/src/secrets/merge.txt
++++ b/a/src/secrets/merge.txt
+@@@ -1,1 -1,1 +1,1 @@@
+-OLD
++MERGE_SECRET
+"#;
+
+    let allowed_section = r#"diff --cc src/Ok.java
+index 4444444,5555555..6666666
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@@ -1,1 -1,1 +1,1 @@@
+-class Ok {}
++class Ok { int x = 3; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("MERGE_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_combined_diff_combined_header_is_supported() {
     let excluded_path = "src/secrets/combined.txt";
 

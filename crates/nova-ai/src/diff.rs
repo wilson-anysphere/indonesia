@@ -106,8 +106,8 @@ where
         let raw_paths = parse_diff_section_paths(header).ok_or(DiffParseError::InvalidHeader)?;
         let mut any_path = false;
         let mut excluded = false;
-        for raw in raw_paths {
-            let path = normalize_diff_path(&raw);
+        for raw in raw_paths.paths {
+            let path = normalize_diff_path(&raw, raw_paths.strip_a_b_prefix);
             if let Some(path) = path.as_deref() {
                 any_path = true;
                 if is_excluded(path) {
@@ -179,8 +179,8 @@ where
         let new_raw =
             parse_file_header_path(new_header, "+++ ").ok_or(DiffParseError::InvalidHeader)?;
 
-        let old_path = normalize_diff_path(&old_raw);
-        let new_path = normalize_diff_path(&new_raw);
+        let old_path = normalize_diff_path(&old_raw, true);
+        let new_path = normalize_diff_path(&new_raw, true);
         if old_path.is_none() && new_path.is_none() {
             return Err(DiffParseError::InvalidHeader);
         }
@@ -229,16 +229,19 @@ where
     old_path.is_some_and(is_excluded) || new_path.is_some_and(is_excluded)
 }
 
-fn normalize_diff_path(raw: &str) -> Option<PathBuf> {
+fn normalize_diff_path(raw: &str, strip_a_b_prefix: bool) -> Option<PathBuf> {
     let raw = raw.trim();
     if raw == "/dev/null" {
         return None;
     }
 
-    let trimmed = raw
-        .strip_prefix("a/")
-        .or_else(|| raw.strip_prefix("b/"))
-        .unwrap_or(raw);
+    let trimmed = if strip_a_b_prefix {
+        raw.strip_prefix("a/")
+            .or_else(|| raw.strip_prefix("b/"))
+            .unwrap_or(raw)
+    } else {
+        raw
+    };
 
     if trimmed.is_empty() {
         return None;
@@ -336,7 +339,13 @@ fn split_first_whitespace_token(input: &str) -> Option<(&str, &str)> {
     Some((token, rest))
 }
 
-fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
+#[derive(Debug, Clone)]
+struct DiffSectionPaths {
+    paths: Vec<String>,
+    strip_a_b_prefix: bool,
+}
+
+fn parse_diff_section_paths(line: &str) -> Option<DiffSectionPaths> {
     if let Some(rest) = line.strip_prefix("diff --git ") {
         let rest = rest.trim_end_matches(&['\r', '\n'][..]);
 
@@ -344,7 +353,10 @@ fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
         if let Some((old, rest)) = parse_diff_token(rest) {
             if let Some((new, rest)) = parse_diff_token(rest) {
                 if rest.trim().is_empty() {
-                    return Some(vec![old, new]);
+                    return Some(DiffSectionPaths {
+                        paths: vec![old, new],
+                        strip_a_b_prefix: true,
+                    });
                 }
             }
         }
@@ -353,7 +365,10 @@ fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
         // and are therefore not safely tokenizable by whitespace. This is best-effort and errs
         // on the side of failing closed if ambiguous.
         let (old, new) = parse_diff_git_paths_with_unquoted_spaces(rest)?;
-        return Some(vec![old, new]);
+        return Some(DiffSectionPaths {
+            paths: vec![old, new],
+            strip_a_b_prefix: true,
+        });
     }
 
     if let Some(rest) = line.strip_prefix("diff --cc ") {
@@ -364,13 +379,19 @@ fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
             if !remaining.trim().is_empty() {
                 return None;
             }
-            return Some(vec![path]);
+            return Some(DiffSectionPaths {
+                paths: vec![path],
+                strip_a_b_prefix: false,
+            });
         }
 
         if rest.is_empty() {
             return None;
         }
-        return Some(vec![rest.to_string()]);
+        return Some(DiffSectionPaths {
+            paths: vec![rest.to_string()],
+            strip_a_b_prefix: false,
+        });
     }
 
     if let Some(rest) = line.strip_prefix("diff --combined ") {
@@ -381,13 +402,19 @@ fn parse_diff_section_paths(line: &str) -> Option<Vec<String>> {
             if !remaining.trim().is_empty() {
                 return None;
             }
-            return Some(vec![path]);
+            return Some(DiffSectionPaths {
+                paths: vec![path],
+                strip_a_b_prefix: false,
+            });
         }
 
         if rest.is_empty() {
             return None;
         }
-        return Some(vec![rest.to_string()]);
+        return Some(DiffSectionPaths {
+            paths: vec![rest.to_string()],
+            strip_a_b_prefix: false,
+        });
     }
 
     None
