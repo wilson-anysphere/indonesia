@@ -677,20 +677,28 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "map"
             | "flatMap"
             | "collect"
+            | "distinct"
             | "sorted"
+            | "limit"
+            | "skip"
             | "forEach"
             | "findFirst"
             | "findAny"
+            | "count"
             // java.util.stream.Collectors
             | "toList"
             | "toSet"
+            | "toMap"
             | "joining"
+            | "groupingBy"
             // java.lang.String
             | "length"
             | "substring"
             | "charAt"
             | "isEmpty"
             | "trim"
+            | "startsWith"
+            | "endsWith"
             | "toLowerCase"
             | "toUpperCase"
     )
@@ -810,16 +818,21 @@ mod tests {
         let code = r#"
 class Example {
     void run(List<String> items) {
-        items.stream().filter(s -> !s.isEmpty()).map(String::trim).flatMap(s -> s.stream()).sorted().collect(Collectors.toList());
+        items.stream().filter(s -> !s.isEmpty()).map(String::trim).flatMap(s -> s.stream()).distinct().sorted().limit(10).skip(1).collect(Collectors.toList());
         items.stream().forEach(System.out::println);
         items.stream().findFirst();
         items.stream().findAny();
+        items.stream().count();
         items.stream().collect(Collectors.toSet());
+        items.stream().collect(Collectors.toMap(x -> x, x -> x));
         items.stream().collect(Collectors.joining(","));
+        items.stream().collect(Collectors.groupingBy(x -> x));
 
         int len = "abc".length();
         String sub = "abc".substring(1);
         char ch = "abc".charAt(0);
+        boolean hasPrefix = "abc".startsWith("a");
+        boolean hasSuffix = "abc".endsWith("c");
         String norm = " Abc ".trim().toLowerCase().toUpperCase();
     }
 }
@@ -842,15 +855,21 @@ class Example {
         assert!(out.contains(".map("), "{out}");
         assert!(out.contains(".flatMap("), "{out}");
         assert!(out.contains(".collect("), "{out}");
+        assert!(out.contains(".distinct("), "{out}");
         assert!(out.contains(".sorted("), "{out}");
+        assert!(out.contains(".limit("), "{out}");
+        assert!(out.contains(".skip("), "{out}");
         assert!(out.contains(".forEach("), "{out}");
         assert!(out.contains(".findFirst("), "{out}");
         assert!(out.contains(".findAny("), "{out}");
+        assert!(out.contains(".count("), "{out}");
 
         // Collectors.
         assert!(out.contains("Collectors.toList"), "{out}");
         assert!(out.contains("Collectors.toSet"), "{out}");
+        assert!(out.contains("Collectors.toMap"), "{out}");
         assert!(out.contains("Collectors.joining"), "{out}");
+        assert!(out.contains("Collectors.groupingBy"), "{out}");
 
         // String methods.
         assert!(out.contains(".length("), "{out}");
@@ -858,6 +877,8 @@ class Example {
         assert!(out.contains(".charAt("), "{out}");
         assert!(out.contains(".isEmpty("), "{out}");
         assert!(out.contains(".trim("), "{out}");
+        assert!(out.contains(".startsWith("), "{out}");
+        assert!(out.contains(".endsWith("), "{out}");
         assert!(out.contains(".toLowerCase("), "{out}");
         assert!(out.contains(".toUpperCase("), "{out}");
     }
