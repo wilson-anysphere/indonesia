@@ -864,23 +864,30 @@ fn semantic_query_token_score(tok: &str) -> i32 {
     let len = tok.len() as i32;
     let mut score = len;
 
-    let mut bytes = tok.bytes();
+    let bytes = tok.as_bytes();
     let starts_upper = bytes
-        .next()
-        .map(|b| (b as char).is_ascii_uppercase())
-        .unwrap_or(false);
-    let has_upper = tok
-        .bytes()
-        .any(|b| (b as char).is_ascii_uppercase());
+        .first()
+        .is_some_and(|b| b.is_ascii_uppercase());
+    let has_lower = bytes.iter().any(|b| b.is_ascii_lowercase());
+    let has_upper = bytes.iter().any(|b| b.is_ascii_uppercase());
+    let internal_upper = bytes.iter().skip(1).any(|b| b.is_ascii_uppercase());
 
-    if has_upper {
-        score += 20;
-    }
-    if starts_upper {
-        score += 10;
+    // Prefer CamelCase/PascalCase tokens with internal word boundaries; they are usually more
+    // specific than ubiquitous types like `String`.
+    if internal_upper && has_lower {
+        score += 25;
+    } else if starts_upper && has_lower {
+        score += 5;
+    } else if has_upper && !has_lower {
+        // Acronyms / constants (e.g. `URL`, `MAX_VALUE`) are often low-signal; keep a small boost
+        // so they don't dominate the query.
+        score += 8;
     }
     if tok.contains('_') {
         score += 3;
+    }
+    if bytes.iter().any(|b| b.is_ascii_digit()) {
+        score += 2;
     }
 
     score
