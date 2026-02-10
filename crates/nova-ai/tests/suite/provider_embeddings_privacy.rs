@@ -205,6 +205,57 @@ fn provider_embeddings_redact_absolute_paths_in_cloud_mode_openai_compatible() {
 }
 
 #[test]
+fn provider_embeddings_include_file_paths_opt_in_allows_absolute_paths_in_cloud_mode_openai_compatible() {
+    let server = MockServer::start();
+
+    let dir = tempdir().expect("tempdir");
+    let dir = dir.path().canonicalize().expect("canonicalize tempdir");
+    let abs_path = dir.join("src").join("example.txt");
+    let abs_path_str = abs_path.to_string_lossy().to_string();
+    let abs_path_in_body = json_string_contents(&abs_path_str);
+
+    let redacted = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").body_contains("[PATH]");
+        then.status(500).json_body(json!({
+            "error": "path should not be redacted when ai.privacy.include_file_paths=true"
+        }));
+    });
+
+    let unredacted = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains(&abs_path_in_body);
+        then.status(200).json_body(json!({
+            "data": [{"embedding": [1.0, 0.0, 0.0], "index": 0}],
+        }));
+    });
+
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.features.semantic_search = true;
+    cfg.embeddings.enabled = true;
+    cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.provider.kind = AiProviderKind::OpenAiCompatible;
+    cfg.provider.url = Url::parse(&server.base_url()).unwrap();
+    cfg.provider.model = "test-embed-model".to_string();
+
+    cfg.privacy.local_only = false;
+    cfg.privacy.include_file_paths = true;
+    cfg.privacy.anonymize_identifiers = Some(false);
+    cfg.privacy.redact_sensitive_strings = Some(false);
+    cfg.privacy.redact_numeric_literals = Some(false);
+    cfg.privacy.strip_or_redact_comments = Some(false);
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_file(abs_path.clone(), "hello world".to_string());
+    let _results = search.search(&format!("find refs in {abs_path_str}"));
+
+    redacted.assert_hits(0);
+    // One embed call for indexing + one for query.
+    unredacted.assert_hits(2);
+}
+
+#[test]
 fn provider_embeddings_redact_absolute_paths_in_cloud_mode_ollama() {
     let server = MockServer::start();
 
@@ -310,6 +361,65 @@ async fn provider_embeddings_client_redacts_absolute_paths_in_cloud_mode_openai_
 
     leaky.assert_hits(0);
     redacted.assert_hits(1);
+    assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_embeddings_client_include_file_paths_opt_in_allows_absolute_paths_in_cloud_mode_openai_compatible(
+) {
+    let server = MockServer::start();
+
+    let dir = tempdir().expect("tempdir");
+    let dir = dir.path().canonicalize().expect("canonicalize tempdir");
+    let abs_path = dir.join("src").join("example.txt");
+    let abs_path_str = abs_path.to_string_lossy().to_string();
+    let abs_path_in_body = json_string_contents(&abs_path_str);
+
+    let redacted = server.mock(|when, then| {
+        when.method(POST).path("/v1/embeddings").body_contains("[PATH]");
+        then.status(500)
+            .json_body(json!({"error": "path was redacted unexpectedly"}));
+    });
+
+    let unredacted = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/embeddings")
+            .body_contains(&abs_path_in_body);
+        then.status(200).json_body(json!({
+            "data": [{
+                "embedding": [1.0, 2.0, 3.0],
+                "index": 0
+            }]
+        }));
+    });
+
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.embeddings.enabled = true;
+    cfg.embeddings.backend = AiEmbeddingsBackend::Provider;
+    cfg.provider.kind = AiProviderKind::OpenAiCompatible;
+    cfg.provider.url = Url::parse(&server.base_url()).unwrap();
+    cfg.provider.model = "test-embed-model".to_string();
+
+    cfg.privacy.local_only = false;
+    cfg.privacy.include_file_paths = true;
+    cfg.privacy.anonymize_identifiers = Some(false);
+    cfg.privacy.redact_sensitive_strings = Some(false);
+    cfg.privacy.redact_numeric_literals = Some(false);
+    cfg.privacy.strip_or_redact_comments = Some(false);
+
+    let client = embeddings_client_from_config(&cfg).expect("embeddings client");
+    let out = client
+        .embed(
+            &[format!("find refs in {abs_path_str}").to_string()],
+            EmbeddingInputKind::Query,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("embed");
+
+    redacted.assert_hits(0);
+    unredacted.assert_hits(1);
     assert_eq!(out, vec![vec![1.0, 2.0, 3.0]]);
 }
 

@@ -1142,7 +1142,7 @@ mod embeddings {
         let disk_cache = DiskEmbeddingCache::new(config.embeddings.model_dir.clone())
             .map(Arc::new)
             .ok();
-        let redact_paths = !config.privacy.local_only;
+        let redact_paths = !config.privacy.local_only && !config.privacy.include_file_paths;
         let privacy = match PrivacyFilter::new(&config.privacy) {
             Ok(filter) => Arc::new(filter),
             Err(err) => {

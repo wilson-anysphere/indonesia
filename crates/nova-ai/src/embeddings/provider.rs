@@ -189,7 +189,7 @@ pub(super) fn provider_embeddings_client_from_config(
         .unwrap_or_else(|| config.provider.model.clone());
     let batch_size = config.embeddings.batch_size.max(1);
     let retry = retry_config_from_provider_config(config);
-    let redact_paths = !config.privacy.local_only;
+    let redact_paths = !config.privacy.local_only && !config.privacy.include_file_paths;
 
     let privacy = Arc::new(PrivacyFilter::new(&config.privacy)?);
 
