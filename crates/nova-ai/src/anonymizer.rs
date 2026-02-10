@@ -679,7 +679,7 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "println"
             | "printf"
             | "format"
-            // Common JDK method identifiers that are ubiquitous in completion prompts.
+            // Common JDK method/type identifiers that are ubiquitous in completion prompts.
             // Keeping these intact improves readability of anonymized cloud prompts.
             //
             // java.util.stream.Stream (method chaining)
