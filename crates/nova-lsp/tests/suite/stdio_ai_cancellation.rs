@@ -130,6 +130,8 @@ fn spawn_stdio_server(config_path: &std::path::Path) -> (std::process::Child, Ch
         .env_remove("NOVA_AI_AUDIT_LOGGING")
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
         .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
