@@ -1247,6 +1247,17 @@ class Example {
     }
 
     #[test]
+    fn rewrites_only_placeholder_segment_in_qualified_name() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Secret".to_string());
+
+        let code = "java.util.id_0";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "java.util.Secret");
+    }
+
+    #[test]
     fn avoids_substring_collisions() {
         let mut reverse = HashMap::new();
         reverse.insert("id_1".to_string(), "Foo".to_string());
