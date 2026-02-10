@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
@@ -16,8 +17,27 @@ use nova_db::Database;
 use nova_db::{FileId, ProjectId, SalsaDatabase, SalsaDbView};
 use nova_format::FormatConfig;
 use nova_jdk::JdkIndex;
+use nova_metrics::MetricsRegistry;
 use nova_types::{Diagnostic as NovaDiagnostic, Severity as NovaSeverity};
 use thiserror::Error;
+
+const AI_CODEGEN_BUILD_PROMPT_METRIC: &str = "ai/codegen/build_prompt";
+const AI_CODEGEN_MODEL_CALL_METRIC: &str = "ai/codegen/model_call";
+const AI_CODEGEN_PARSE_PATCH_METRIC: &str = "ai/codegen/parse_patch";
+const AI_CODEGEN_APPLY_PATCH_METRIC: &str = "ai/codegen/apply_patch";
+const AI_CODEGEN_FORMAT_METRIC: &str = "ai/codegen/format";
+const AI_CODEGEN_VALIDATE_METRIC: &str = "ai/codegen/validate";
+const AI_CODEGEN_REPAIR_ATTEMPT_METRIC: &str = "ai/codegen/repair_attempt";
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    pub(crate) fn metrics_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ValidationConfig {
@@ -271,6 +291,7 @@ pub async fn generate_patch(
         validate_edit_range_safety_config(workspace, edit_range_safety)?;
     }
 
+    let metrics = MetricsRegistry::global();
     let mut attempt = 0usize;
     let mut feedback: Option<ErrorFeedback> = None;
 
@@ -286,11 +307,19 @@ pub async fn generate_patch(
                 message: format!("Attempt {}", attempt + 1),
             });
         }
+
+        if attempt > 0 {
+            // Record the fact that we had to loop (i.e. the initial model output was not usable).
+            // This is recorded as a counter-only metric (request_count).
+            metrics.record_request(AI_CODEGEN_REPAIR_ATTEMPT_METRIC, Duration::from_micros(1));
+        }
         if cancel.is_cancelled() {
             return Err(CodeGenerationError::Cancelled);
         }
 
+        let build_prompt_start = Instant::now();
         let prompt = build_prompt(base_prompt, config, feedback.as_ref());
+        metrics.record_request(AI_CODEGEN_BUILD_PROMPT_METRIC, build_prompt_start.elapsed());
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
                 stage: CodegenProgressStage::BuildingPrompt,
@@ -307,7 +336,10 @@ pub async fn generate_patch(
             return Err(CodeGenerationError::Cancelled);
         }
 
-        let response = match provider.complete(&prompt, cancel).await {
+        let model_call_start = Instant::now();
+        let response_result = provider.complete(&prompt, cancel).await;
+        metrics.record_request(AI_CODEGEN_MODEL_CALL_METRIC, model_call_start.elapsed());
+        let response = match response_result {
             Ok(response) => response,
             Err(PromptCompletionError::Cancelled) => return Err(CodeGenerationError::Cancelled),
             Err(err) => return Err(err.into()),
@@ -324,9 +356,11 @@ pub async fn generate_patch(
             });
         }
 
+        let parse_patch_start = Instant::now();
         let patch = match parse_structured_patch(&response) {
             Ok(patch) => patch,
             Err(err) => {
+                metrics.record_request(AI_CODEGEN_PARSE_PATCH_METRIC, parse_patch_start.elapsed());
                 if config.allow_repair && attempt < config.max_repair_attempts {
                     feedback = Some(ErrorFeedback::PatchFormat(err.to_string()));
                     attempt += 1;
@@ -337,6 +371,7 @@ pub async fn generate_patch(
         };
 
         if let Err(err) = enforce_patch_safety(&patch, workspace, &config.safety) {
+            metrics.record_request(AI_CODEGEN_PARSE_PATCH_METRIC, parse_patch_start.elapsed());
             if config.allow_repair && attempt < config.max_repair_attempts {
                 feedback = Some(ErrorFeedback::SafetyViolation(format!(
                     "{err}\nPlease adjust the patch to comply with the safety limits listed above."
@@ -349,6 +384,7 @@ pub async fn generate_patch(
 
         if let Some(safety) = &config.edit_range_safety {
             if let Err(message) = enforce_edit_range_safety_patch_intent(&patch, safety) {
+                metrics.record_request(AI_CODEGEN_PARSE_PATCH_METRIC, parse_patch_start.elapsed());
                 if config.allow_repair && attempt < config.max_repair_attempts {
                     feedback = Some(ErrorFeedback::EditRangeSafety(message));
                     attempt += 1;
@@ -357,6 +393,8 @@ pub async fn generate_patch(
                 return Err(CodeGenerationError::EditRangeSafety(message));
             }
         }
+
+        metrics.record_request(AI_CODEGEN_PARSE_PATCH_METRIC, parse_patch_start.elapsed());
 
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
@@ -370,6 +408,7 @@ pub async fn generate_patch(
             return Err(CodeGenerationError::Cancelled);
         }
 
+        let apply_patch_start = Instant::now();
         let applied = match workspace.apply_patch_with_config(
             &patch,
             &PatchApplyConfig {
@@ -378,6 +417,7 @@ pub async fn generate_patch(
         ) {
             Ok(applied) => applied,
             Err(err) => {
+                metrics.record_request(AI_CODEGEN_APPLY_PATCH_METRIC, apply_patch_start.elapsed());
                 if config.allow_repair && attempt < config.max_repair_attempts {
                     feedback = Some(ErrorFeedback::PatchApply(err.to_string()));
                     attempt += 1;
@@ -390,6 +430,7 @@ pub async fn generate_patch(
         if let Some(safety) = &config.edit_range_safety {
             if let Err(message) = enforce_edit_range_safety_pre_format(workspace, &applied, safety)
             {
+                metrics.record_request(AI_CODEGEN_APPLY_PATCH_METRIC, apply_patch_start.elapsed());
                 if config.allow_repair && attempt < config.max_repair_attempts {
                     feedback = Some(ErrorFeedback::EditRangeSafety(message));
                     attempt += 1;
@@ -399,6 +440,8 @@ pub async fn generate_patch(
             }
         }
 
+        metrics.record_request(AI_CODEGEN_APPLY_PATCH_METRIC, apply_patch_start.elapsed());
+
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
                 stage: CodegenProgressStage::Formatting,
@@ -407,10 +450,12 @@ pub async fn generate_patch(
             });
         }
 
+        let format_start = Instant::now();
         let formatted_workspace = format_workspace(&applied, config);
 
         if config.safety.no_new_imports {
             if let Err(err) = enforce_no_new_imports(workspace, &formatted_workspace, &applied) {
+                metrics.record_request(AI_CODEGEN_FORMAT_METRIC, format_start.elapsed());
                 if config.allow_repair && attempt < config.max_repair_attempts {
                     feedback = Some(ErrorFeedback::SafetyViolation(format!(
                         "{err}\nRemove the new imports (or use fully-qualified names / existing imports) and try again."
@@ -421,6 +466,7 @@ pub async fn generate_patch(
                 return Err(err.into());
             }
         }
+        metrics.record_request(AI_CODEGEN_FORMAT_METRIC, format_start.elapsed());
 
         if let Some(progress) = progress {
             progress.report(CodegenProgressEvent {
@@ -430,12 +476,16 @@ pub async fn generate_patch(
             });
         }
 
-        match validate_patch(
+        let validate_start = Instant::now();
+        let validation = validate_patch(
             workspace,
             &formatted_workspace,
             &applied,
             &config.validation,
-        ) {
+        );
+        metrics.record_request(AI_CODEGEN_VALIDATE_METRIC, validate_start.elapsed());
+
+        match validation {
             Ok(()) => {
                 return Ok(CodeGenerationResult {
                     patch,
@@ -1320,6 +1370,84 @@ mod tests {
             .get("Example.java")
             .expect("formatted file");
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn records_metrics_for_codegen_stages_and_repairs() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+
+        let metrics = MetricsRegistry::global();
+        metrics.reset();
+
+        let provider = MockPromptCompletionProvider::new(vec![
+            // First attempt: invalid patch payload forces a repair loop.
+            "not json".to_string(),
+            // Second attempt: valid patch.
+            r#"{
+  "edits": [
+    {
+      "file": "Example.java",
+      "range": { "start": { "line": 0, "character": 48 }, "end": { "line": 0, "character": 50 } },
+      "text": "42"
+    }
+  ]
+}"#
+            .to_string(),
+        ]);
+
+        let before = "public class Example{public int answer(){return 41;}}";
+        let workspace = VirtualWorkspace::new([("Example.java".to_string(), before.to_string())]);
+
+        let config = CodeGenerationConfig {
+            max_repair_attempts: 1,
+            ..CodeGenerationConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Change the answer to 42.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("codegen should succeed after repair");
+
+        let applied = result
+            .applied
+            .workspace
+            .get("Example.java")
+            .expect("patched file");
+        assert!(applied.contains("return 42;"), "{applied}");
+
+        let snap = metrics.snapshot();
+        for (metric, min_count) in [
+            (AI_CODEGEN_BUILD_PROMPT_METRIC, 2),
+            (AI_CODEGEN_MODEL_CALL_METRIC, 2),
+            (AI_CODEGEN_PARSE_PATCH_METRIC, 2),
+            (AI_CODEGEN_APPLY_PATCH_METRIC, 1),
+            (AI_CODEGEN_FORMAT_METRIC, 1),
+            (AI_CODEGEN_VALIDATE_METRIC, 1),
+            (AI_CODEGEN_REPAIR_ATTEMPT_METRIC, 1),
+        ] {
+            let entry = snap
+                .methods
+                .get(metric)
+                .unwrap_or_else(|| panic!("missing metrics entry for {metric}"));
+            assert!(
+                entry.request_count >= min_count,
+                "expected {metric} request_count >= {min_count}, got {}",
+                entry.request_count
+            );
+            assert!(
+                entry.latency_us.max_us > 0,
+                "expected {metric} latency histogram to be non-empty"
+            );
+        }
     }
 
     #[test]

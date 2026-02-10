@@ -3662,6 +3662,7 @@ dependencies = [
  "nova-format",
  "nova-ide",
  "nova-jdk",
+ "nova-metrics",
  "nova-syntax",
  "nova-types",
  "thiserror 1.0.69",

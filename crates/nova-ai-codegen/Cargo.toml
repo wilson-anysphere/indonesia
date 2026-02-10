@@ -21,6 +21,7 @@ nova-db = { path = "../nova-db" }
 nova-format = { path = "../nova-format" }
 nova-ide = { path = "../nova-ide" }
 nova-jdk = { path = "../nova-jdk" }
+nova-metrics = { path = "../nova-metrics" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 
