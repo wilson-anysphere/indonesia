@@ -1390,10 +1390,15 @@ mod embeddings {
         let mut base = endpoint.clone();
         let base_str = base.as_str().trim_end_matches('/').to_string();
         base = Url::parse(&format!("{base_str}/"))?;
+        let base_path = base.path().trim_end_matches('/');
 
-        let mut url = base
-            .join(&format!("openai/deployments/{deployment}/embeddings"))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let join_path = if base_path.ends_with("/openai") {
+            format!("deployments/{deployment}/embeddings")
+        } else {
+            format!("openai/deployments/{deployment}/embeddings")
+        };
+
+        let mut url = base.join(&join_path)?;
         url.query_pairs_mut()
             .append_pair("api-version", api_version);
         Ok(url)

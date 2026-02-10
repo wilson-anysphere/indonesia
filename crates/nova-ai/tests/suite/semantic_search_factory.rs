@@ -474,6 +474,126 @@ fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings
 
 #[cfg(feature = "embeddings")]
 #[test]
+fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings_with_proxy_prefix() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/proxy/openai/deployments/embed-deployment/embeddings")
+            .query_param("api-version", "2024-02-01")
+            .header("api-key", "test-key")
+            .body_contains("\"input\":[");
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
+        }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/example.txt".to_string(),
+        "hello world".to_string(),
+    )]);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
+    let cfg = AiConfig {
+        enabled: true,
+        api_key: Some("test-key".to_string()),
+        privacy: nova_config::AiPrivacyConfig {
+            local_only: false,
+            ..nova_config::AiPrivacyConfig::default()
+        },
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::AzureOpenAi,
+            url: Url::parse(&format!("{}/proxy", server.base_url())).unwrap(),
+            azure_deployment: Some("chat-deployment".to_string()),
+            azure_api_version: None,
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("embed-deployment".to_string()),
+            model_dir,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+
+    mock.assert_hits(2);
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
+fn semantic_search_from_config_provider_backend_supports_azure_openai_embeddings_when_base_includes_openai() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/proxy/openai/deployments/embed-deployment/embeddings")
+            .query_param("api-version", "2024-02-01")
+            .header("api-key", "test-key")
+            .body_contains("\"input\":[");
+        then.status(200).json_body(json!({
+            "data": [{ "index": 0, "embedding": [1.0, 0.0, 0.0] }]
+        }));
+    });
+
+    let db = VirtualWorkspace::new([(
+        "src/example.txt".to_string(),
+        "hello world".to_string(),
+    )]);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_dir = dir.path().join("models").join("embeddings");
+
+    let cfg = AiConfig {
+        enabled: true,
+        api_key: Some("test-key".to_string()),
+        privacy: nova_config::AiPrivacyConfig {
+            local_only: false,
+            ..nova_config::AiPrivacyConfig::default()
+        },
+        provider: nova_config::AiProviderConfig {
+            kind: AiProviderKind::AzureOpenAi,
+            url: Url::parse(&format!("{}/proxy/openai", server.base_url())).unwrap(),
+            azure_deployment: Some("chat-deployment".to_string()),
+            azure_api_version: None,
+            ..nova_config::AiProviderConfig::default()
+        },
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            backend: AiEmbeddingsBackend::Provider,
+            model: Some("embed-deployment".to_string()),
+            model_dir,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut search = semantic_search_from_config(&cfg).expect("semantic search should build");
+    search.index_project(&db);
+    let results = search.search("hello world");
+    assert!(!results.is_empty());
+    assert_eq!(results[0].path, PathBuf::from("src/example.txt"));
+
+    mock.assert_hits(2);
+}
+
+#[cfg(feature = "embeddings")]
+#[test]
 fn semantic_search_from_config_provider_backend_batches_ollama_requests_for_multi_doc_java_files() {
     let server = MockServer::start();
 

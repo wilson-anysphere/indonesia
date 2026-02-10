@@ -12,7 +12,7 @@ use url::Url;
 /// [`crate::EmbeddingSemanticSearch`].
 #[derive(Clone)]
 pub struct AzureOpenAiEmbedder {
-    endpoint: Url,
+    base_url: Url,
     deployment: String,
     api_version: String,
     timeout: Duration,
@@ -22,7 +22,7 @@ pub struct AzureOpenAiEmbedder {
 
 impl AzureOpenAiEmbedder {
     pub fn new(
-        endpoint: Url,
+        base_url: Url,
         api_key: String,
         deployment: String,
         api_version: String,
@@ -42,7 +42,7 @@ impl AzureOpenAiEmbedder {
             .build()?;
 
         Ok(Self {
-            endpoint,
+            base_url,
             deployment,
             api_version,
             timeout,
@@ -51,14 +51,29 @@ impl AzureOpenAiEmbedder {
         })
     }
 
+    fn endpoint(&self, path: &str) -> Result<Url, AiError> {
+        // Accept both:
+        // - http://localhost:8000  (we will append /openai/...)
+        // - http://localhost:8000/openai  (we will append /...)
+        let base_str = self.base_url.as_str().trim_end_matches('/').to_string();
+        let base = Url::parse(&format!("{base_str}/"))?;
+        let base_path = base.path().trim_end_matches('/');
+
+        if base_path.ends_with("/openai") {
+            Ok(base.join(path.trim_start_matches('/'))?)
+        } else {
+            Ok(base.join(&format!(
+                "openai/{}",
+                path.trim_start_matches('/')
+            ))?)
+        }
+    }
+
     fn embeddings_url(&self) -> Result<Url, AiError> {
-        let mut url = self
-            .endpoint
-            .join(&format!(
-                "openai/deployments/{}/embeddings",
-                self.deployment
-            ))
-            .map_err(|e| AiError::InvalidConfig(e.to_string()))?;
+        let mut url = self.endpoint(&format!(
+            "/deployments/{}/embeddings",
+            self.deployment
+        ))?;
         url.query_pairs_mut()
             .append_pair("api-version", &self.api_version);
         Ok(url)
