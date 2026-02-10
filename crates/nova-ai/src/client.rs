@@ -82,6 +82,7 @@ const AI_CHAT_ERROR_UNEXPECTED_RESPONSE_METRIC: &str = "ai/chat/error/unexpected
 /// recorded when the returned stream terminates (success or error) so it captures total stream
 /// duration from `chat_stream()` invocation until termination.
 const AI_CHAT_STREAM_METRIC: &str = "ai/chat_stream";
+const AI_CHAT_STREAM_RETRY_METRIC: &str = "ai/chat_stream/retry";
 const AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC: &str = "ai/chat_stream/error/timeout";
 const AI_CHAT_STREAM_ERROR_CANCELLED_METRIC: &str = "ai/chat_stream/error/cancelled";
 const AI_CHAT_STREAM_ERROR_HTTP_METRIC: &str = "ai/chat_stream/error/http";
@@ -1279,6 +1280,10 @@ impl LlmClient for AiClient {
                 let err = AiError::Timeout;
                 record_failure(&err);
                 return Err(err);
+            }
+
+            if attempt > 0 {
+                metrics.record_request(AI_CHAT_STREAM_RETRY_METRIC, Duration::from_micros(1));
             }
 
             let permit = match tokio::time::timeout(remaining, self.acquire_permit(&cancel)).await
@@ -2817,6 +2822,104 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct EstablishmentFailOnceProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for EstablishmentFailOnceProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Err(AiError::Timeout);
+            }
+            let stream = async_stream::try_stream! {
+                yield "ok".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_retries_increment_retry_metric() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_RETRY_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(EstablishmentFailOnceProvider { calls: calls.clone() }),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig {
+                max_retries: 1,
+                initial_backoff: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+            },
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let stream = client
+            .chat_stream(request, CancellationToken::new())
+            .await
+            .expect("stream starts after retry");
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "expected one retry");
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_RETRY_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_STREAM_RETRY_METRIC} request_count to increment"
+        );
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn chat_stream_success_increments_metrics() {
         let _guard = crate::test_support::metrics_lock()
