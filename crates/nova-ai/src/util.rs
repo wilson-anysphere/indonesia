@@ -4,6 +4,8 @@ use std::time::Duration;
 use futures::future::{select, Either};
 use futures::FutureExt;
 
+pub(crate) mod markdown;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct TimeoutError;
 
