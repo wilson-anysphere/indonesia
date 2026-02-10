@@ -708,7 +708,6 @@ fn looks_like_file_name(token: &str) -> bool {
 
     // Allow suffixes like `Foo.java:123` by only considering the leading alphanumeric run of the
     // extension.
-    let ext_raw = ext_raw.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
     let ext_end = ext_raw
         .as_bytes()
         .iter()

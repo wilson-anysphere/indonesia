@@ -384,6 +384,37 @@ fn related_code_query_skips_stacktrace_filename_only_selections() {
 }
 
 #[test]
+fn related_code_query_does_not_treat_member_access_with_underscore_suffix_as_filename() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = "return config._properties;";
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        query.contains("config") || query.contains("_properties"),
+        "expected member-access identifiers to remain in query, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_skips_obvious_secret_tokens_in_fallback() {
     struct PanicSearch;
 
