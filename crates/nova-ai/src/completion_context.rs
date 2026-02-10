@@ -48,6 +48,17 @@ impl CompletionContextBuilder {
             "Generate multi-token completion suggestions (method chains or small templates).\n",
         );
         prompt.push_str(&format!("Return up to {max_items} suggestions.\n"));
+        prompt.push_str("Rules:\n");
+        prompt.push_str(
+            "- Top-level method calls in insert_text must come from the Available methods list.\n",
+        );
+        prompt.push_str(
+            "- Any additional_edits.add_import must be one of the Importable symbols list.\n",
+        );
+        prompt.push_str(
+            "- insert_text should be the text to insert after the cursor (do not repeat the receiver expression).\n",
+        );
+        prompt.push_str("- Avoid suggesting file paths.\n");
         prompt.push_str("\n");
         prompt.push_str(&format!("Receiver type: {receiver_type}\n"));
         prompt.push_str(&format!("Expected type: {expected_type}\n"));
@@ -100,6 +111,17 @@ mod tests {
         let builder = CompletionContextBuilder::new(10_000);
         let prompt = builder.build_completion_prompt(&ctx, 3);
 
+        assert!(prompt.contains("Rules:\n"));
+        assert!(prompt.contains(
+            "- Top-level method calls in insert_text must come from the Available methods list.\n"
+        ));
+        assert!(prompt.contains(
+            "- Any additional_edits.add_import must be one of the Importable symbols list.\n"
+        ));
+        assert!(prompt.contains(
+            "- insert_text should be the text to insert after the cursor (do not repeat the receiver expression).\n"
+        ));
+        assert!(prompt.contains("- Avoid suggesting file paths.\n"));
         assert!(prompt.contains("Receiver type: java.util.stream.Stream<Person>"));
         assert!(prompt.contains("Expected type: java.util.List<String>"));
         assert!(prompt.contains("- filter"));
