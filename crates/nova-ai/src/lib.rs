@@ -18,6 +18,7 @@ mod completion_context;
 mod completion_filter;
 mod completion_provider;
 mod completion_ranking;
+mod completion_ranking_prompt;
 mod completion_validation;
 mod diff;
 mod error;
@@ -53,6 +54,7 @@ pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
     CompletionRanker, LlmCompletionRanker,
 };
+pub use completion_ranking_prompt::CompletionRankingPromptBuilder;
 pub use completion_validation::validate_multi_token_completion;
 pub use context::{
     BuiltContext, ContextBuilder, ContextDiagnostic, ContextDiagnosticKind,
