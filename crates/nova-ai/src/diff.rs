@@ -611,33 +611,56 @@ fn filter_unified_diff<F>(
 where
     F: Fn(&Path) -> bool,
 {
-    let mut starts = Vec::<usize>::new();
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct UnifiedFileSection {
+        start_line: usize,
+        header_line: usize,
+    }
+
+    let mut sections = Vec::<UnifiedFileSection>::new();
     for idx in 0..lines.len() {
         if is_unified_file_header_at(lines, idx) {
-            starts.push(idx);
+            sections.push(UnifiedFileSection {
+                start_line: unified_diff_section_start(lines, idx),
+                header_line: idx,
+            });
         }
     }
 
-    if starts.is_empty() {
+    if sections.is_empty() {
         return Err(DiffParseError::NoFileSections);
+    }
+
+    sections.sort_by_key(|s| s.start_line);
+
+    // If multiple `---`/`+++` headers map to the same section start, boundaries are ambiguous.
+    for idx in 1..sections.len() {
+        if sections[idx].start_line == sections[idx - 1].start_line {
+            return Err(DiffParseError::InvalidHeader);
+        }
     }
 
     let mut out = String::with_capacity(lines.iter().map(|l| l.len()).sum());
     let mut omitted_any = false;
 
     // Preamble before the first file header.
-    for line in &lines[..starts[0]] {
+    for line in &lines[..sections[0].start_line] {
         out.push_str(line);
     }
 
-    for (section_idx, &start) in starts.iter().enumerate() {
-        let end = starts.get(section_idx + 1).copied().unwrap_or(lines.len());
+    for (section_idx, section) in sections.iter().enumerate() {
+        let start = section.start_line;
+        let header_line = section.header_line;
+        let end = sections
+            .get(section_idx + 1)
+            .map(|next| next.start_line)
+            .unwrap_or(lines.len());
         let old_header = lines
-            .get(start)
+            .get(header_line)
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
         let new_header = lines
-            .get(start + 1)
+            .get(header_line + 1)
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
@@ -709,6 +732,34 @@ fn is_unified_file_header_at(lines: &[&str], idx: usize) -> bool {
         return false;
     };
     next.starts_with("+++ ")
+}
+
+fn unified_diff_section_start(lines: &[&str], header_idx: usize) -> usize {
+    // Common unified diff formats include section delimiters before the `---`/`+++` header lines:
+    //
+    // - diffutils: `diff -u old new`
+    // - SVN diff: `Index: path` + `====...`
+    //
+    // Capture these as part of the file section so excluded paths do not leak via pre-header lines.
+    if header_idx >= 2 {
+        let prev2 = lines[header_idx - 2];
+        let prev1 = lines[header_idx - 1];
+        if prev2.starts_with("Index: ") && is_unified_section_delimiter(prev1) {
+            return header_idx - 2;
+        }
+    }
+    if header_idx >= 1 {
+        let prev = lines[header_idx - 1];
+        if prev.starts_with("Index: ") || prev.starts_with("diff ") {
+            return header_idx - 1;
+        }
+    }
+    header_idx
+}
+
+fn is_unified_section_delimiter(line: &str) -> bool {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    trimmed.len() >= 3 && trimmed.chars().all(|ch| ch == '=')
 }
 
 fn normalize_diff_path(raw: &str, strip_a_b_prefix: bool) -> Option<PathBuf> {
