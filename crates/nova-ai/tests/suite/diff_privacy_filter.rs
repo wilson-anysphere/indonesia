@@ -147,6 +147,42 @@ index 0000000..1111111 100644
 }
 
 #[test]
+fn git_diff_no_prefix_paths_starting_with_a_are_not_stripped_for_exclusion_matching() {
+    // When using `git diff --no-prefix`, paths are not prefixed with `a/` and `b/`. If the real
+    // path itself starts with `a/`, we must not treat it as a pseudo prefix for exclusion checks.
+    let excluded_path = "a/src/secrets/Secret.java";
+
+    let excluded_section = r#"diff --git a/src/secrets/Secret.java a/src/secrets/Secret.java
+index 1111111..2222222 100644
+--- a/src/secrets/Secret.java
++++ a/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++NO_PREFIX_A_DIR_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 0000000..1111111 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 12; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("NO_PREFIX_A_DIR_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_unquoted_paths_with_backslashes_are_not_unescaped() {
     // Some diffs may contain literal backslashes in file names (valid on Unix) when
     // `core.quotePath=false`. These must be treated as literal characters, not C-style escapes.
