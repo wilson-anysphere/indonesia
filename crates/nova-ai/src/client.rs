@@ -689,6 +689,7 @@ impl LlmClient for AiClient {
             return Err(AiError::Cancelled);
         }
 
+        let metrics = MetricsRegistry::global();
         let request = self.sanitize_request(request);
 
         let prompt_for_log = if self.audit_enabled {
@@ -706,6 +707,53 @@ impl LlmClient for AiClient {
         } else {
             None
         };
+
+        let cache_key = self.cache.as_ref().map(|_| self.build_cache_key(&request));
+        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+            match cache.get(key).await {
+                Some(hit) => {
+                    if let Some(prompt) = prompt_for_log.as_deref() {
+                        let started_at = Instant::now();
+                        audit::log_llm_request(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            prompt,
+                            safe_endpoint.as_deref(),
+                            /*attempt=*/ 0,
+                            /*stream=*/ true,
+                        );
+                        audit::log_llm_response(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            safe_endpoint.as_deref(),
+                            &hit,
+                            started_at.elapsed(),
+                            /*retry_count=*/ 0,
+                            /*stream=*/ true,
+                            /*chunk_count=*/ Some(1),
+                        );
+                    } else {
+                        debug!(
+                            provider = self.provider_label,
+                            model = %self.model,
+                            "llm cache hit"
+                        );
+                    }
+
+                    metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
+
+                    let stream = async_stream::try_stream! {
+                        yield hit;
+                    };
+                    return Ok(Box::pin(stream));
+                }
+                None => {
+                    metrics.record_request(AI_CHAT_CACHE_MISS_METRIC, Duration::from_micros(1));
+                }
+            }
+        }
 
         let timeout = self.request_timeout;
         let operation_start = Instant::now();
@@ -832,6 +880,8 @@ impl LlmClient for AiClient {
         // Clone before moving `cancel_for_stream` into the wrapper so it can enforce cancellation
         // even if the provider's stream doesn't poll the token correctly.
         let cancel_for_stream = cancel.clone();
+        let cache_for_stream = self.cache.clone();
+        let cache_key_for_stream = cache_key;
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
@@ -884,6 +934,10 @@ impl LlmClient for AiClient {
                         Err(err)?;
                     }
                 }
+            }
+
+            if let (Some(cache), Some(key)) = (cache_for_stream.as_ref(), cache_key_for_stream) {
+                cache.insert(key, completion.clone()).await;
             }
 
             if audit_enabled {
