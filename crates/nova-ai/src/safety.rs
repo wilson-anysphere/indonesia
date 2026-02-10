@@ -449,7 +449,11 @@ fn validate_path(
     denied_exts: &BTreeSet<String>,
 ) -> Result<(), SafetyError> {
     let path = normalize_patch_path(path);
-    if path.starts_with('/') || path.starts_with('\\') || path.contains('\\') {
+    if path.starts_with('/')
+        || path.starts_with('\\')
+        || path.contains('\\')
+        || has_windows_drive_prefix(path)
+    {
         return Err(SafetyError::NonRelativePath {
             path: path.to_string(),
         });
@@ -530,6 +534,14 @@ fn normalize_patch_path(path: &str) -> &str {
     // to normalize Windows backslashes (`\`) because failing closed is safer than trying to guess
     // intent (e.g. UNC paths like `\\server\\share` or device paths like `\\\\?\\C:\\...`).
     path
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    // `C:foo`, `C:/foo`, and `C:\foo` are all interpreted as drive-qualified paths on Windows.
+    // The `C:foo` form is *not* absolute, but it is relative to the drive's current working
+    // directory, which can point outside the workspace. Reject these forms on all platforms.
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {

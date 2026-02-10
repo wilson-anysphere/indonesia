@@ -61,6 +61,48 @@ fn rejects_windows_drive_forwardslash_paths() {
 }
 
 #[test]
+fn rejects_windows_drive_relative_paths() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "C:evil.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    match err {
+        SafetyError::NonRelativePath { path } => {
+            assert_eq!(path, "C:evil.java");
+        }
+        other => panic!("expected NonRelativePath, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_backslash_separated_relative_paths() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: r"src\Main.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    match err {
+        SafetyError::NonRelativePath { path } => {
+            assert_eq!(path, r"src\Main.java");
+        }
+        other => panic!("expected NonRelativePath, got {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_unc_paths() {
     let workspace = VirtualWorkspace::default();
     let patch = Patch::Json(JsonPatch {
@@ -79,6 +121,71 @@ fn rejects_unc_paths() {
         }
         other => panic!("expected NonRelativePath, got {other:?}"),
     }
+}
+
+#[test]
+fn rejects_windows_drive_forwardslash_paths_in_unified_diff() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
+        files: vec![UnifiedDiffFile {
+            old_path: "C:/Windows/system32/evil.java".to_string(),
+            new_path: "C:/Windows/system32/evil.java".to_string(),
+            hunks: vec![UnifiedDiffHunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 1,
+                new_len: 1,
+                lines: vec![UnifiedDiffLine::Add("x".to_string())],
+            }],
+        }],
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(
+        matches!(err, SafetyError::NonRelativePath { path } if path == "C:/Windows/system32/evil.java")
+    );
+}
+
+#[test]
+fn rejects_unc_paths_in_unified_diff() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
+        files: vec![UnifiedDiffFile {
+            old_path: r"\\server\share\evil.java".to_string(),
+            new_path: r"\\server\share\evil.java".to_string(),
+            hunks: vec![UnifiedDiffHunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 1,
+                new_len: 1,
+                lines: vec![UnifiedDiffLine::Add("x".to_string())],
+            }],
+        }],
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::NonRelativePath { .. }));
+}
+
+#[test]
+fn rejects_backslash_separated_paths_in_unified_diff() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
+        files: vec![UnifiedDiffFile {
+            old_path: r"src\Main.java".to_string(),
+            new_path: r"src\Main.java".to_string(),
+            hunks: vec![UnifiedDiffHunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 1,
+                new_len: 1,
+                lines: vec![UnifiedDiffLine::Add("x".to_string())],
+            }],
+        }],
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::NonRelativePath { .. }));
 }
 
 #[test]
