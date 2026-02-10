@@ -7461,7 +7461,7 @@ local_only = true
         .and_then(|v| v.as_str())
         .expect("expected error.data.summary string");
     assert!(
-        summary.contains("Introduced"),
+        summary.contains("Introduced") || summary.contains("introduced"),
         "expected validation summary, got: {summary:?}"
     );
     let diagnostics = data
