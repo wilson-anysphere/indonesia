@@ -1366,7 +1366,7 @@ expression: schema
           ]
         },
         {
-          "description": "A simple JSON-over-HTTP API (useful for proxies and tests).\n\nRequest body: `{ \"model\": \"...\", \"prompt\": \"...\", \"max_tokens\": 123, \"temperature\": 0.2 }`\n\nResponse body: `{ \"completion\": \"...\" }`",
+          "description": "A simple JSON-over-HTTP API (useful for proxies and tests).\n\nNon-streaming request body: `{ \"model\": \"...\", \"prompt\": \"...\", \"max_tokens\": 123, \"temperature\": 0.2 }`\n\nNon-streaming response body: `{ \"completion\": \"...\" }`\n\nStreaming (`chat_stream()`) request body: `{ \"stream\": true, \"model\": \"...\", \"prompt\": \"...\", \"max_tokens\": 123, \"temperature\": 0.2 }`\n\nStreaming response (optional): providers may reply using Server-Sent Events (SSE) with\n`Content-Type: text/event-stream`.\n\nEach chunk is emitted as:\n`data: {\"completion\":\"...\"}`\n\nThe stream terminates with:\n`data: [DONE]`\n\nFallback: if the response is not SSE, Nova reads a single JSON response body\n(`{ \"completion\": \"...\" }`) and yields it as one chunk.",
           "type": "string",
           "enum": [
             "http"

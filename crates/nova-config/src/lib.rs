@@ -1039,11 +1039,26 @@ pub enum AiProviderKind {
     AzureOpenAi,
     /// A simple JSON-over-HTTP API (useful for proxies and tests).
     ///
-    /// Request body:
+    /// Non-streaming request body:
     /// `{ "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
     ///
-    /// Response body:
+    /// Non-streaming response body:
     /// `{ "completion": "..." }`
+    ///
+    /// Streaming (`chat_stream()`) request body:
+    /// `{ "stream": true, "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
+    ///
+    /// Streaming response (optional): providers may reply using Server-Sent Events (SSE) with
+    /// `Content-Type: text/event-stream`.
+    ///
+    /// Each chunk is emitted as:
+    /// `data: {"completion":"..."}`
+    ///
+    /// The stream terminates with:
+    /// `data: [DONE]`
+    ///
+    /// Fallback: if the response is not SSE, Nova reads a single JSON response body
+    /// (`{ "completion": "..." }`) and yields it as one chunk.
     Http,
 }
 

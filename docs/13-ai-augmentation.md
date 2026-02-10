@@ -504,6 +504,36 @@ retry_max_backoff_ms = 2000
 Note: retries are always bounded by `ai.provider.timeout_ms`—Nova clamps each retry's backoff delay
 to the remaining timeout budget.
 
+#### HTTP provider (`kind = "http"`)
+
+Nova includes a minimal JSON-over-HTTP provider (`kind = "http"`) primarily intended for **proxies**
+and **tests**.
+
+- `chat()` sends a single JSON request body and expects a single JSON response body:
+
+  ```
+  { "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }
+  ```
+
+  ```
+  { "completion": "..." }
+  ```
+
+- `chat_stream()` sends the same request body, but with `"stream": true`:
+
+  ```
+  { "stream": true, "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }
+  ```
+
+  If the server responds with SSE (`Content-Type: text/event-stream`), Nova accepts the following
+  format:
+
+  - `data: {"completion":"..."}` for each chunk
+  - `data: [DONE]` terminator
+
+  If the response is not SSE, Nova falls back to reading a single JSON response body and yields it
+  as one chunk (to preserve compatibility with non-streaming proxies).
+
 ### Semantic search + embeddings configuration
 
 Nova exposes semantic search as an **AI feature flag** (so it can be disabled entirely in
