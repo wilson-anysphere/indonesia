@@ -374,19 +374,6 @@ fn validate_ai(
 
     validate_ai_code_edit_policy(config, out);
 
-    // Multi-token completions are privacy-sensitive because the prompt includes identifier-heavy
-    // symbol lists (available methods + importable symbols). Nova's cloud multi-token completion
-    // provider refuses to call the model when identifier anonymization is enabled, so surface a
-    // configuration warning when the feature is enabled in this mode.
-    if config.ai.features.multi_token_completion
-        && config.ai.privacy.effective_anonymize_identifiers()
-    {
-        out.warnings.push(ConfigWarning::InvalidValue {
-            toml_path: "ai.privacy.anonymize_identifiers".to_string(),
-            message: "multi-token completions are disabled while identifier anonymization is enabled; set ai.privacy.anonymize_identifiers=false".to_string(),
-        });
-    }
-
     if config.ai.provider.timeout_ms == 0 {
         out.errors.push(ConfigValidationError::InvalidValue {
             toml_path: "ai.provider.timeout_ms".to_string(),

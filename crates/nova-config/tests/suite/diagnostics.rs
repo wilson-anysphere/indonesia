@@ -1231,7 +1231,7 @@ allow_code_edits_without_anonymization = true
 }
 
 #[test]
-fn warns_when_multi_token_completion_enabled_with_anonymize_identifiers_enabled() {
+fn does_not_warn_when_multi_token_completion_enabled_with_anonymize_identifiers_enabled() {
     let text = r#"
 [ai]
 enabled = true
@@ -1247,13 +1247,7 @@ multi_token_completion = true
         NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
 
     assert!(diagnostics.errors.is_empty());
-    assert_eq!(
-        diagnostics.warnings,
-        vec![ConfigWarning::InvalidValue {
-            toml_path: "ai.privacy.anonymize_identifiers".to_string(),
-            message: "multi-token completions are disabled while identifier anonymization is enabled; set ai.privacy.anonymize_identifiers=false".to_string(),
-        }]
-    );
+    assert!(diagnostics.warnings.is_empty());
 }
 
 #[test]
