@@ -48,8 +48,25 @@ mod tests {
 
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/");
+
+        // Ensure `From<reqwest::Error>` is timeout-aware so `?` conversions don't misclassify
+        // reqwest timeouts as `AiError::Http`.
         let err = client
-            .get(url)
+            .get(&url)
+            .timeout(Duration::from_millis(50))
+            .send()
+            .await
+            .expect_err("expected request to time out");
+
+        assert!(
+            err.is_timeout(),
+            "expected a reqwest timeout error; got {err:?}"
+        );
+        assert!(matches!(AiError::from(err), AiError::Timeout));
+
+        // Also keep explicit mapping helper behavior stable.
+        let err = client
+            .get(&url)
             .timeout(Duration::from_millis(50))
             .send()
             .await
