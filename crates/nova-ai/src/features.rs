@@ -20,6 +20,10 @@ const AI_ACTION_GENERATE_METHOD_BODY_METRIC: &str = "ai/action/generate_method_b
 const AI_ACTION_GENERATE_TESTS_METRIC: &str = "ai/action/generate_tests";
 const AI_ACTION_CODE_REVIEW_METRIC: &str = "ai/action/code_review";
 
+// Keep this as a benign string literal so identifier anonymization (cloud mode) won't rewrite it
+// when sanitizing prompt context.
+const EXCLUDED_PATHS_OMITTED_PLACEHOLDER: &str = "\"[some context omitted due to excluded_paths]\"";
+
 fn record_action_metrics<T>(metric: &str, duration: Duration, result: &Result<T, AiError>) {
     let registry = MetricsRegistry::global();
     registry.record_request(metric, duration);
@@ -89,9 +93,8 @@ impl NovaAi {
         });
 
         if omitted {
-            ctx.extra_files.push(CodeSnippet::ad_hoc(
-                "[some context omitted due to excluded_paths]",
-            ));
+            ctx.extra_files
+                .push(CodeSnippet::ad_hoc(EXCLUDED_PATHS_OMITTED_PLACEHOLDER));
         }
 
         ctx
@@ -892,6 +895,85 @@ mod tests {
         assert!(
             prompt.contains(&allowed_code),
             "expected allowed code to remain in prompt; got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn excluded_paths_omission_marker_remains_readable_when_identifiers_are_anonymized() {
+        let mut config = AiConfig::default();
+        config.privacy = AiPrivacyConfig {
+            excluded_paths: vec!["src/secrets/**".to_string()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let ai = NovaAi::new(&config).expect("NovaAi should build with dummy config");
+
+        let secret_marker = "VERY_UNIQUE_MARKER_123";
+        let secret_code = format!("class Secret {{ String v = \"{secret_marker}\"; }}");
+        let allowed_marker = "ALLOWED_CONTEXT_MARKER";
+        let allowed_code = format!("class Helper {{ String ok = \"{allowed_marker}\"; }}");
+
+        let ctx = ContextRequest {
+            file_path: Some("src/Main.java".to_string()),
+            focal_code: "class Main {}".to_string(),
+            enclosing_context: None,
+            project_context: None,
+            semantic_context: None,
+            related_symbols: Vec::new(),
+            related_code: vec![
+                RelatedCode {
+                    path: PathBuf::from("src/secrets/Secret.java"),
+                    range: 0..0,
+                    kind: "class".to_string(),
+                    snippet: secret_code.clone(),
+                },
+                RelatedCode {
+                    path: PathBuf::from("src/Helper.java"),
+                    range: 0..0,
+                    kind: "class".to_string(),
+                    snippet: allowed_code.clone(),
+                },
+            ],
+            cursor: None,
+            diagnostics: Vec::new(),
+            extra_files: vec![
+                CodeSnippet::new("src/secrets/Secret.java", secret_code.clone()),
+                CodeSnippet::new("src/Helper.java", allowed_code.clone()),
+            ],
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 10_000,
+            // Cloud-default privacy mode: identifier anonymization + redaction enabled.
+            privacy: PrivacyMode {
+                anonymize_identifiers: true,
+                include_file_paths: false,
+                redaction: RedactionConfig::default(),
+            },
+        };
+
+        let request = ai.explain_error_request("boom", ctx);
+        let prompt = request
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !prompt.contains(secret_marker),
+            "excluded_paths code leaked into prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("[some context omitted due to excluded_paths]"),
+            "expected omission placeholder in prompt; got: {prompt}"
+        );
+        assert!(
+            prompt.contains("excluded_paths"),
+            "expected omission placeholder to remain human-readable; got: {prompt}"
+        );
+        assert!(
+            prompt.contains(allowed_marker),
+            "expected allowed context to remain in prompt; got: {prompt}"
         );
     }
 
