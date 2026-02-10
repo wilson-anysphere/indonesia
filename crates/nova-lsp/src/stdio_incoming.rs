@@ -524,6 +524,7 @@ fn reload_ai_semantic_search_config(state: &mut ServerState) {
     state.semantic_search_workspace_index_cancel.cancel();
 
     state.ai_config = state.config.ai.clone();
+    state.privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&state.ai_config.privacy);
     state.ai_privacy_excluded_matcher =
         Arc::new(ExcludedPathMatcher::from_config(&state.ai_config.privacy));
 
