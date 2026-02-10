@@ -741,7 +741,19 @@ fn build_completion_service(
     let multi_token_enabled = multi_token_enabled && ai_max_items_override.unwrap_or(1) > 0;
 
     let ai_provider = if multi_token_enabled {
-        match AiClient::from_config(ai_config) {
+        // Multi-token completions do their own *reversible* identifier anonymization inside
+        // `CloudMultiTokenCompletionProvider` so that the final completion text can be mapped back
+        // to the user's original identifiers.
+        //
+        // `AiClient` also supports anonymizing identifiers in fenced code blocks when
+        // `ai.privacy.anonymize_identifiers = true`. If both layers run, identifiers are rewritten
+        // twice and the provider's reverse mapping becomes invalid. Override the config for this
+        // client instance to disable identifier anonymization while keeping all other privacy
+        // defaults (cloud redaction, local_only, excluded_paths, etc) intact.
+        let mut client_config = ai_config.clone();
+        client_config.privacy.anonymize_identifiers = Some(false);
+
+        match AiClient::from_config(&client_config) {
             Ok(client) => {
                 let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
                     CloudMultiTokenCompletionProvider::new(Arc::new(client))
