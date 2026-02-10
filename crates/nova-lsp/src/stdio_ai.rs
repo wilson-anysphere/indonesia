@@ -39,6 +39,90 @@ const AI_ERROR_KIND_PATCH_APPLY: &str = "patchApply";
 const AI_ERROR_KIND_VALIDATION: &str = "validation";
 const AI_ERROR_KIND_CANCELLED: &str = "cancelled";
 
+// Keep JSON-RPC error payloads bounded so editor clients can render failures reliably.
+const AI_ERROR_DATA_MAX_DIAGNOSTICS: usize = 20;
+const AI_ERROR_DATA_MAX_PATHS: usize = 50;
+const AI_ERROR_DATA_MAX_STRING_BYTES: usize = 1024;
+const AI_ERROR_DATA_MAX_CONTEXT_BYTES: usize = 2048;
+
+fn truncate_json_string(value: &str, max_bytes: usize) -> String {
+  if value.len() <= max_bytes {
+    return value.to_owned();
+  }
+  if max_bytes == 0 {
+    return String::new();
+  }
+
+  const SUFFIX: &str = "…";
+  if max_bytes <= SUFFIX.len() {
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+      end = end.saturating_sub(1);
+    }
+    return value[..end].to_owned();
+  }
+
+  let max_content = max_bytes.saturating_sub(SUFFIX.len());
+  let mut end = max_content;
+  while end > 0 && !value.is_char_boundary(end) {
+    end = end.saturating_sub(1);
+  }
+
+  let mut out = value[..end].to_owned();
+  out.push_str(SUFFIX);
+  out
+}
+
+fn patch_parse_subkind(err: &nova_ai::patch::PatchParseError) -> &'static str {
+  use nova_ai::patch::PatchParseError as E;
+  match err {
+    E::UnsupportedFormat => "unsupportedFormat",
+    E::InvalidJson(_) => "invalidJson",
+    E::EmptyJsonPatch => "emptyJsonPatch",
+    E::InvalidDiff(_) => "invalidDiff",
+  }
+}
+
+fn patch_apply_subkind(err: &nova_ai::workspace::PatchApplyError) -> &'static str {
+  use nova_ai::workspace::PatchApplyError as E;
+  match err {
+    E::InvalidRange { .. } => "invalidRange",
+    E::OverlappingEdits { .. } => "overlappingEdits",
+    E::MissingFile { .. } => "missingFile",
+    E::NewFileNotAllowed { .. } => "newFileNotAllowed",
+    E::FileAlreadyExists { .. } => "fileAlreadyExists",
+    E::InvalidUnifiedDiff(_) => "invalidUnifiedDiff",
+    E::UnifiedDiffApplyFailed(_) => "unifiedDiffApplyFailed",
+  }
+}
+
+fn patch_safety_subkind(err: &nova_ai::safety::SafetyError) -> &'static str {
+  use nova_ai::safety::SafetyError as E;
+  match err {
+    E::TooManyFiles { .. } => "tooManyFiles",
+    E::TooManyInsertedChars { .. } => "tooManyInsertedChars",
+    E::TooManyDeletedChars { .. } => "tooManyDeletedChars",
+    E::TooManyHunks { .. } => "tooManyHunks",
+    E::EditSpanTooLarge { .. } => "editSpanTooLarge",
+    E::ExcludedPath { .. } => "excludedPath",
+    E::NotAllowedPath { .. } => "notAllowedPath",
+    E::NonRelativePath { .. } => "nonRelativePath",
+    E::DisallowedFileExtension { .. } => "disallowedFileExtension",
+    E::InvalidExcludedGlob { .. } => "invalidExcludedGlob",
+    E::NewFileNotAllowed { .. } => "newFileNotAllowed",
+    E::DeleteNotAllowed { .. } => "deleteNotAllowed",
+    E::RenameNotAllowed { .. } => "renameNotAllowed",
+    E::NewImports { .. } => "newImports",
+    E::EditOutsideAllowedRange { .. } => "editOutsideAllowedRange",
+  }
+}
+
+fn validation_severity_string(severity: &impl std::fmt::Debug) -> String {
+  // `Severity` is an internal enum without a `Serialize`/`Display` impl; use its debug string
+  // and normalize to a predictable lower-case payload.
+  format!("{severity:?}").to_lowercase()
+}
+
 const AI_POLICY_CLOUD_EDITS_DISABLED: &str = "cloudEditsDisabled";
 const AI_POLICY_CLOUD_EDITS_WITH_ANONYMIZATION_ENABLED: &str =
   "cloudEditsWithAnonymizationEnabled";
@@ -104,21 +188,107 @@ fn code_generation_error(code: i32, err: nova_ai_codegen::CodeGenerationError) -
     E::Cancelled => rpc_error_with_kind(-32800, "Request cancelled", AI_ERROR_KIND_CANCELLED),
     E::Policy(policy) => code_edit_policy_error(code, policy),
     E::InvalidPrivacyConfig(_) => (code, err.to_string(), None),
-    E::WorkspaceContainsExcludedPaths { .. } => rpc_error_with_kind(
-      -32600,
-      err.to_string(),
-      AI_ERROR_KIND_EXCLUDED_PATH,
-    ),
+    E::WorkspaceContainsExcludedPaths { paths } => {
+      let total = paths.len();
+      let message = format!(
+        "AI code edits are blocked because the workspace contains files matching ai.privacy.excluded_paths ({total} file(s)). \
+Those files must never be sent to an LLM. Remove them from the workspace snapshot or update ai.privacy.excluded_paths.",
+      );
+
+      let mut capped_paths = paths;
+      capped_paths.sort();
+      capped_paths.truncate(AI_ERROR_DATA_MAX_PATHS);
+      let capped_paths: Vec<String> = capped_paths
+        .into_iter()
+        .map(|p| truncate_json_string(&p, AI_ERROR_DATA_MAX_STRING_BYTES))
+        .collect();
+      let capped_paths_len = capped_paths.len();
+
+      rpc_error_with_data(
+        -32600,
+        message,
+        json!({
+          "kind": AI_ERROR_KIND_EXCLUDED_PATH,
+          "paths": capped_paths,
+          "pathsTotal": total,
+          "pathsTruncated": total > capped_paths_len,
+        }),
+      )
+    }
     E::Provider(provider) => prompt_completion_error(code, provider),
-    E::PatchParse(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_PARSE),
-    E::Safety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
-    E::Apply(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_APPLY),
-    E::EditRangeSafety(_) => rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_PATCH_SAFETY),
+    E::PatchParse(parse_err) => rpc_error_with_data(
+      code,
+      parse_err.to_string(),
+      json!({
+        "kind": AI_ERROR_KIND_PATCH_PARSE,
+        "subkind": patch_parse_subkind(&parse_err),
+        "message": truncate_json_string(&parse_err.to_string(), AI_ERROR_DATA_MAX_STRING_BYTES),
+      }),
+    ),
+    E::Safety(safety_err) => rpc_error_with_data(
+      code,
+      safety_err.to_string(),
+      json!({
+        "kind": AI_ERROR_KIND_PATCH_SAFETY,
+        "subkind": patch_safety_subkind(&safety_err),
+        "message": truncate_json_string(&safety_err.to_string(), AI_ERROR_DATA_MAX_STRING_BYTES),
+      }),
+    ),
+    E::Apply(apply_err) => rpc_error_with_data(
+      code,
+      apply_err.to_string(),
+      json!({
+        "kind": AI_ERROR_KIND_PATCH_APPLY,
+        "subkind": patch_apply_subkind(&apply_err),
+        "message": truncate_json_string(&apply_err.to_string(), AI_ERROR_DATA_MAX_STRING_BYTES),
+      }),
+    ),
+    E::EditRangeSafety(message) => rpc_error_with_data(
+      code,
+      message.clone(),
+      json!({
+        "kind": AI_ERROR_KIND_PATCH_SAFETY,
+        "subkind": "editRangeSafety",
+        "message": truncate_json_string(&message, AI_ERROR_DATA_MAX_STRING_BYTES),
+      }),
+    ),
     E::InvalidInsertRange { .. } => {
       rpc_error_with_kind(-32602, err.to_string(), AI_ERROR_KIND_VALIDATION)
     },
-    E::ValidationFailed { .. } => {
-      rpc_error_with_kind(code, err.to_string(), AI_ERROR_KIND_VALIDATION)
+    E::ValidationFailed { report } => {
+      let diagnostics_total = report.new_diagnostics.len();
+      let diagnostics: Vec<serde_json::Value> = report
+        .new_diagnostics
+        .iter()
+        .take(AI_ERROR_DATA_MAX_DIAGNOSTICS)
+        .map(|diag| {
+          json!({
+            "file": truncate_json_string(&diag.file, AI_ERROR_DATA_MAX_STRING_BYTES),
+            "code": truncate_json_string(diag.diagnostic.code.as_ref(), AI_ERROR_DATA_MAX_STRING_BYTES),
+            "severity": validation_severity_string(&diag.diagnostic.severity),
+            "message": truncate_json_string(&diag.diagnostic.message, AI_ERROR_DATA_MAX_STRING_BYTES),
+            "position": {
+              "line": diag.position.line,
+              "character": diag.position.character,
+            },
+            "context": truncate_json_string(&diag.context, AI_ERROR_DATA_MAX_CONTEXT_BYTES),
+          })
+        })
+        .collect();
+
+      let summary = truncate_json_string(&report.summary, AI_ERROR_DATA_MAX_STRING_BYTES);
+      rpc_error_with_data(
+        code,
+        summary.clone(),
+        json!({
+          "kind": AI_ERROR_KIND_VALIDATION,
+          "subkind": "validationFailed",
+          "summary": summary,
+          "diagnostics": diagnostics,
+          "diagnosticsTotal": diagnostics_total,
+          "diagnosticsTruncated": diagnostics_total > AI_ERROR_DATA_MAX_DIAGNOSTICS,
+        }),
+      )
     }
   }
 }

@@ -7353,6 +7353,72 @@ local_only = true
         "expected error.data.kind == \"validation\", got: {resp:#?}"
     );
 
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .expect("expected error.data object");
+    let summary = data
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .expect("expected error.data.summary string");
+    assert!(
+        summary.contains("Introduced"),
+        "expected validation summary, got: {summary:?}"
+    );
+    let diagnostics = data
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("expected error.data.diagnostics array");
+    assert!(
+        !diagnostics.is_empty(),
+        "expected at least one validation diagnostic, got: {resp:#?}"
+    );
+
+    let first = diagnostics[0]
+        .as_object()
+        .expect("expected diagnostics entries to be objects");
+    assert_eq!(
+        first.get("file").and_then(|v| v.as_str()),
+        Some("Test.java"),
+        "expected diagnostics[0].file to be Test.java, got: {first:#?}"
+    );
+    assert!(
+        first
+            .get("code")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty()),
+        "expected diagnostics[0].code to be a string, got: {first:#?}"
+    );
+    assert!(
+        first
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty()),
+        "expected diagnostics[0].severity to be a string, got: {first:#?}"
+    );
+    assert!(
+        first
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty()),
+        "expected diagnostics[0].message to be a string, got: {first:#?}"
+    );
+    let position = first
+        .get("position")
+        .and_then(|v| v.as_object())
+        .expect("expected diagnostics[0].position object");
+    assert!(
+        position.get("line").and_then(|v| v.as_u64()).is_some(),
+        "expected diagnostics[0].position.line number, got: {position:#?}"
+    );
+    assert!(
+        position
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected diagnostics[0].position.character number, got: {position:#?}"
+    );
+
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
