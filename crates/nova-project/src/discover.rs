@@ -455,14 +455,8 @@ pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
         // Avoid scanning huge directories in this heuristic. We only need enough signal to decide
         // whether `start_dir` looks like a self-contained Java workspace root.
         const MAX_ENTRIES: usize = 256;
-        let mut inspected = 0usize;
 
-        for entry in entries {
-            if inspected >= MAX_ENTRIES {
-                break;
-            }
-            inspected += 1;
-
+        for entry in entries.take(MAX_ENTRIES) {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => continue,
