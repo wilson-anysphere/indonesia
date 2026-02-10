@@ -732,8 +732,25 @@ fn related_code_query_fallback(focal_code: &str) -> String {
     let mut out = String::new();
 
     for tok in redacted.split_whitespace() {
+        let tok = clean_query_word(tok);
+        if tok.is_empty() {
+            continue;
+        }
+
         // Avoid leaking file paths (absolute or relative) via the query text.
         if tok.contains('/') || tok.contains('\\') {
+            continue;
+        }
+
+        let lower = tok.to_ascii_lowercase();
+        if matches!(lower.as_str(), "path" | "redacted") {
+            continue;
+        }
+        if is_semantic_query_stop_word(lower.as_str()) {
+            continue;
+        }
+
+        if looks_like_path_token(tok) || looks_like_file_name(tok) {
             continue;
         }
 
@@ -743,11 +760,7 @@ fn related_code_query_fallback(focal_code: &str) -> String {
     }
 
     let out = out.trim();
-    if out.is_empty() {
-        truncate_utf8_to_bytes(redacted.trim(), RELATED_CODE_QUERY_MAX_BYTES).to_string()
-    } else {
-        out.to_string()
-    }
+    out.to_string()
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
@@ -790,6 +803,12 @@ fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+fn clean_query_word(tok: &str) -> &str {
+    tok.trim_matches(|c: char| {
+        !(c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    })
 }
 
 fn is_semantic_query_stop_word(ident: &str) -> bool {
