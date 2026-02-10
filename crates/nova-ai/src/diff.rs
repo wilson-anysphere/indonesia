@@ -128,9 +128,20 @@ where
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
-        let raw_paths = parse_diff_section_paths(header)
-            .or_else(|| parse_git_section_paths_fallback(section_lines))
-            .ok_or(DiffParseError::InvalidHeader)?;
+        let raw_paths = match parse_diff_section_paths(header) {
+            Some(paths) => paths,
+            None => {
+                // Fail closed for malformed quoted headers (unterminated quotes / invalid escapes).
+                // For unquoted headers, treat parsing failure as ambiguous and allow rename/copy
+                // metadata or unified headers to provide the paths instead.
+                if git_header_looks_quoted(header) {
+                    return Err(DiffParseError::InvalidHeader);
+                }
+
+                parse_git_section_paths_fallback(section_lines)
+                    .ok_or(DiffParseError::InvalidHeader)?
+            }
+        };
         let mut candidates = raw_paths.paths;
 
         // Also consider `rename from/to` and `copy from/to` metadata within the section. This
@@ -774,6 +785,15 @@ pub(crate) fn parse_diff_token(input: &str) -> Option<(String, &str)> {
 
 fn is_git_section_header_line(line: &str) -> bool {
     line.starts_with("diff --git ") || line.starts_with("diff --cc ") || line.starts_with("diff --combined ")
+}
+
+fn git_header_looks_quoted(line: &str) -> bool {
+    for prefix in ["diff --git ", "diff --cc ", "diff --combined "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return rest.trim_start().starts_with('"');
+        }
+    }
+    false
 }
 
 /// Parse bytes using git's C-style escaping rules.

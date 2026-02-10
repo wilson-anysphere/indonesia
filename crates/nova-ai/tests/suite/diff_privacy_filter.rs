@@ -607,6 +607,17 @@ fn parsing_failure_fails_closed_with_single_sentinel_line_and_preserves_newline_
 }
 
 #[test]
+fn malformed_quoted_diff_git_header_fails_closed_even_if_section_contains_paths() {
+    // Malformed quoted header (unterminated quote) should fail closed even if the section contains
+    // rename metadata that could otherwise provide paths.
+    let diff = "diff --git \"a/src/Ok.java b/src/Ok.java\nrename from src/Ok.java\nrename to src/Ok.java\n";
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |_| false);
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+}
+
+#[test]
 fn crlf_newlines_are_preserved_on_successful_filtering() {
     let excluded_path = "src/secrets/Secret.java";
 
