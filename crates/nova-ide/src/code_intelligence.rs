@@ -9647,81 +9647,81 @@ fn parse_source_type_in_context(
     ty
 }
 
+fn ensure_minimal_completion_jdk(types: &mut TypeStore) {
+    // When JDK discovery is disabled (the default for debug/test builds), we only have Nova's
+    // minimal, dependency-free JDK type model. Seed a few extra stubs that are useful for IDE
+    // features without requiring full JDK indexing.
+    //
+    // Keep this intentionally small and deterministic.
+    if JDK_INDEX.as_ref().is_some() {
+        return;
+    }
+
+    // `java.util.stream.Stream` is common in modern Java code. The return type is often inferred
+    // from call chains like `people.stream()`, but the simple display name `Stream` isn't
+    // implicitly imported. Provide a minimal stub so member completion and AI context building can
+    // enumerate common methods even in dependency-free mode.
+    let stream_name = "java.util.stream.Stream";
+    let stream_id = types.intern_class_id(stream_name);
+
+    if types
+        .class(stream_id)
+        .is_some_and(|class_def| class_def.methods.is_empty())
+    {
+        let stream_ty = Type::class(stream_id, vec![]);
+        let object_ty = Type::class(types.well_known().object, vec![]);
+
+        let predicate_ty = types
+            .class_id("java.util.function.Predicate")
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| Type::Named("Predicate".to_string()));
+        let function_ty = types
+            .class_id("java.util.function.Function")
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| Type::Named("Function".to_string()));
+
+        let methods = vec![
+            MethodDef {
+                name: "filter".to_string(),
+                type_params: vec![],
+                params: vec![predicate_ty],
+                return_type: stream_ty.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            },
+            MethodDef {
+                name: "map".to_string(),
+                type_params: vec![],
+                params: vec![function_ty],
+                return_type: stream_ty.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            },
+            MethodDef {
+                name: "collect".to_string(),
+                type_params: vec![],
+                // Keep the parameter type loose: the full `Collector` model isn't present in
+                // Nova's minimal JDK.
+                params: vec![Type::Named("Collector".to_string())],
+                return_type: object_ty,
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            },
+        ];
+
+        if let Some(class_def) = types.class_mut(stream_id) {
+            merge_method_defs(&mut class_def.methods, methods);
+        }
+    }
+}
+
 fn completion_type_store(
     db: &dyn Database,
     file: FileId,
 ) -> (TypeStore, Option<Arc<completion_cache::CompletionEnv>>) {
-    fn ensure_minimal_completion_jdk(types: &mut TypeStore) {
-        // When JDK discovery is disabled (the default for debug/test builds), we only have Nova's
-        // minimal, dependency-free JDK type model. Seed a few extra stubs that are useful for IDE
-        // features without requiring full JDK indexing.
-        //
-        // Keep this intentionally small and deterministic.
-        if JDK_INDEX.as_ref().is_some() {
-            return;
-        }
-
-        // `java.util.stream.Stream` is common in modern Java code. The return type is often
-        // inferred from call chains like `people.stream()`, but the simple display name `Stream`
-        // isn't implicitly imported. Provide a minimal stub so member completion and AI context
-        // building can enumerate common methods even in dependency-free mode.
-        let stream_name = "java.util.stream.Stream";
-        let stream_id = types.intern_class_id(stream_name);
-
-        if types
-            .class(stream_id)
-            .is_some_and(|class_def| class_def.methods.is_empty())
-        {
-            let stream_ty = Type::class(stream_id, vec![]);
-            let object_ty = Type::class(types.well_known().object, vec![]);
-
-            let predicate_ty = types
-                .class_id("java.util.function.Predicate")
-                .map(|id| Type::class(id, vec![]))
-                .unwrap_or_else(|| Type::Named("Predicate".to_string()));
-            let function_ty = types
-                .class_id("java.util.function.Function")
-                .map(|id| Type::class(id, vec![]))
-                .unwrap_or_else(|| Type::Named("Function".to_string()));
-
-            let methods = vec![
-                MethodDef {
-                    name: "filter".to_string(),
-                    type_params: vec![],
-                    params: vec![predicate_ty],
-                    return_type: stream_ty.clone(),
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: true,
-                },
-                MethodDef {
-                    name: "map".to_string(),
-                    type_params: vec![],
-                    params: vec![function_ty],
-                    return_type: stream_ty.clone(),
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: true,
-                },
-                MethodDef {
-                    name: "collect".to_string(),
-                    type_params: vec![],
-                    // Keep the parameter type loose: the full `Collector` model isn't present in
-                    // Nova's minimal JDK.
-                    params: vec![Type::Named("Collector".to_string())],
-                    return_type: object_ty,
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: true,
-                },
-            ];
-
-            if let Some(class_def) = types.class_mut(stream_id) {
-                merge_method_defs(&mut class_def.methods, methods);
-            }
-        }
-    }
-
     // Prefer the cached completion environment so we don't rebuild the expensive workspace type
     // store on every completion request.
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
@@ -10677,6 +10677,7 @@ fn infer_call_return_type(
         source_types.update_file(&mut types, file_path, text);
         types
     };
+    ensure_minimal_completion_jdk(&mut types);
 
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
@@ -10835,7 +10836,11 @@ fn infer_receiver_type_of_expr_ending_at(
 
         // Best-effort: avoid recursive semantic resolution to keep completion fast.
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
-            return Some(Type::Named(ty));
+            let resolved = match ty.as_str() {
+                "Stream" => parse_source_type_in_context(types, file_ctx, "java.util.stream.Stream"),
+                other => parse_source_type_in_context(types, file_ctx, other),
+            };
+            return Some(resolved);
         }
     }
 
@@ -10849,7 +10854,11 @@ fn infer_receiver_type_of_expr_ending_at(
             ));
         }
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
-            return Some(Type::Named(ty));
+            let resolved = match ty.as_str() {
+                "Stream" => parse_source_type_in_context(types, file_ctx, "java.util.stream.Stream"),
+                other => parse_source_type_in_context(types, file_ctx, other),
+            };
+            return Some(resolved);
         }
     }
 
@@ -20352,6 +20361,32 @@ class A {
             .find("stream().")
             .expect("expected `stream().` in fixture")
             + "stream()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("Stream"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_stream_for_chained_filter_call() {
+        let java = r#"
+import java.util.List;
+
+class A {
+  void m() {
+    List<String> people = List.of();
+    people.stream().filter(null).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("filter(null).")
+            .expect("expected `filter(null).` in fixture")
+            + "filter(null)".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert_eq!(ty.as_deref(), Some("Stream"));
