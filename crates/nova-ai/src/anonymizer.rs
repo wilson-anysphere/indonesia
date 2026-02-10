@@ -702,6 +702,10 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "endsWith"
             | "toLowerCase"
             | "toUpperCase"
+            // java.lang.Object
+            | "toString"
+            | "equals"
+            | "hashCode"
     )
 }
 
@@ -835,6 +839,9 @@ class Example {
         boolean hasPrefix = "abc".startsWith("a");
         boolean hasSuffix = "abc".endsWith("c");
         String norm = " Abc ".trim().toLowerCase().toUpperCase();
+        String s = items.toString();
+        boolean eq = "abc".equals("def");
+        int h = items.hashCode();
     }
 }
 "#;
@@ -882,6 +889,11 @@ class Example {
         assert!(out.contains(".endsWith("), "{out}");
         assert!(out.contains(".toLowerCase("), "{out}");
         assert!(out.contains(".toUpperCase("), "{out}");
+
+        // Object methods.
+        assert!(out.contains(".toString("), "{out}");
+        assert!(out.contains(".equals("), "{out}");
+        assert!(out.contains(".hashCode("), "{out}");
     }
 
     #[test]
