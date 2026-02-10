@@ -13,6 +13,7 @@ use std::{
         Arc,
     },
 };
+use std::io;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -306,6 +307,79 @@ async fn chat_stream_retries_before_first_chunk_on_429() {
         request_count.load(Ordering::SeqCst),
         2,
         "expected one retry after the initial 429"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_stream_does_not_retry_after_first_chunk() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_handler = request_count.clone();
+    let handler = move |req: Request<Body>| {
+        let request_count = request_count_for_handler.clone();
+        async move {
+            assert_eq!(req.method(), hyper::Method::POST);
+            assert_eq!(req.uri().path(), "/v1/chat/completions");
+            let _ = hyper::body::to_bytes(req.into_body()).await;
+
+            request_count.fetch_add(1, Ordering::SeqCst);
+
+            // Emit a single valid chunk, then stall forever. This forces a timeout *after* we
+            // yielded partial output; the client must not retry in that case.
+            let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"P\"}}]}\n\n";
+            let body = Body::wrap_stream(async_stream::stream! {
+                yield Ok::<_, io::Error>(sse.to_string());
+                futures::future::pending::<()>().await;
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(body)
+                .expect("response")
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).expect("url");
+
+    let mut cfg = openai_compatible_config(url);
+    cfg.provider.retry_max_retries = 3;
+    cfg.provider.retry_initial_backoff_ms = 1;
+    cfg.provider.retry_max_backoff_ms = 1;
+    // Keep the idle-timeout failure path fast.
+    cfg.provider.timeout_ms = 100;
+
+    let client = AiClient::from_config(&cfg).expect("client");
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("Ping")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("stream starts");
+
+    let first = stream
+        .try_next()
+        .await
+        .expect("stream yields first item")
+        .expect("expected first chunk");
+    assert_eq!(first, "P");
+
+    let err = stream.try_next().await.expect_err("expected stream to error");
+    assert!(
+        matches!(err, AiError::Timeout | AiError::Http(_)),
+        "expected timeout-style error; got {err:?}"
+    );
+
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "expected no retries after streaming has begun"
     );
 
     handle.abort();
