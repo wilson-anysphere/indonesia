@@ -12,6 +12,21 @@ use nova_metrics::MetricsRegistry;
 const AI_SEMANTIC_SEARCH_SEARCH_METRIC: &str = "ai/semantic_search/search";
 const AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC: &str = "ai/semantic_search/index_file";
 
+#[cfg(feature = "embeddings")]
+fn ai_error_is_timeout(err: &AiError) -> bool {
+    matches!(err, AiError::Timeout) || matches!(err, AiError::Http(http_err) if http_err.is_timeout())
+}
+
+#[cfg(feature = "embeddings")]
+fn record_semantic_search_failure(metric: &str, err: &AiError) {
+    let registry = MetricsRegistry::global();
+    if ai_error_is_timeout(err) {
+        registry.record_timeout(metric);
+    } else {
+        registry.record_error(metric);
+    }
+}
+
 struct MetricGuard {
     metric: &'static str,
     started_at: Instant,
@@ -2051,6 +2066,8 @@ mod embeddings {
                             got = embeddings.len(),
                             "embedder returned unexpected batch size; skipping file"
                         );
+                        super::MetricsRegistry::global()
+                            .record_error(super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC);
                         Vec::new()
                     } else {
                         embeddings.into_iter().map(Some).collect::<Vec<_>>()
@@ -2062,6 +2079,10 @@ mod embeddings {
                         path = %path.to_string_lossy(),
                         ?err,
                         "failed to embed extracted docs; skipping failing docs"
+                    );
+                    super::record_semantic_search_failure(
+                        super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC,
+                        &err,
                     );
 
                     // Best-effort fallback: attempt to embed each doc individually so partial
@@ -2191,6 +2212,10 @@ mod embeddings {
                         target = "nova.ai",
                         ?err,
                         "failed to embed query; returning empty results"
+                    );
+                    super::record_semantic_search_failure(
+                        super::AI_SEMANTIC_SEARCH_SEARCH_METRIC,
+                        &err,
                     );
                     return Vec::new();
                 }
