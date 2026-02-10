@@ -340,6 +340,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn fenced_code_blocks_are_anonymized_with_stable_mapping() {
@@ -525,7 +526,7 @@ class Foo {
     }
 
     #[test]
-    fn excluded_paths_relative_patterns_match_absolute_paths() {
+    fn excluded_paths_relative_patterns_match_absolute_paths_via_suffix_logic() {
         let cfg = AiPrivacyConfig {
             excluded_paths: vec!["secret/**".into()],
             ..AiPrivacyConfig::default()
@@ -534,15 +535,29 @@ class Foo {
         let matcher = ExcludedPathMatcher::from_config(&cfg).expect("matcher");
         let filter = PrivacyFilter::new(&cfg).expect("filter");
 
-        let abs = std::env::current_dir()
-            .expect("cwd")
-            .join("secret")
-            .join("file.txt");
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let secret_dir = workspace.join("secret");
+        std::fs::create_dir_all(&secret_dir).expect("create secret dir");
+        let file_path = secret_dir.join("file.txt");
+        std::fs::write(&file_path, "top secret").expect("write temp file");
 
+        // `tempfile` uses symlinks on macOS (e.g. `/var` → `/private/var`), so prefer a
+        // canonical absolute path for stability.
+        let abs = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+        // Ensure this test exercises the suffix logic: `globset` does not match absolute paths
+        // against relative patterns like `secret/**`.
+        let direct_set = GlobSetBuilder::new()
+            .add(Glob::new("secret/**").expect("glob"))
+            .build()
+            .expect("globset");
         assert!(
-            matcher.is_match(&abs),
-            "{abs:?} should match excluded_paths"
+            !direct_set.is_match(&abs),
+            "globset should not match absolute paths against relative patterns: {abs:?}"
         );
+
+        assert!(matcher.is_match(&abs), "{abs:?} should match excluded_paths");
         assert!(
             filter.is_excluded(&abs),
             "{abs:?} should be excluded via PrivacyFilter"
@@ -579,11 +594,57 @@ class Foo {
             "{rel:?} should match excluded_paths"
         );
 
+        // `./secret/file.txt` should be treated the same as `secret/file.txt`.
+        let rel_with_curdir = PathBuf::from(".").join("secret").join("file.txt");
+        assert!(
+            matcher.is_match(&rel_with_curdir),
+            "{rel_with_curdir:?} should match excluded_paths"
+        );
+
+        // `secret/./file.txt` should be treated the same as `secret/file.txt`.
+        let rel_curdir_infix = PathBuf::from("secret").join(".").join("file.txt");
+        assert!(
+            matcher.is_match(&rel_curdir_infix),
+            "{rel_curdir_infix:?} should match excluded_paths"
+        );
+
         // Ensure we don't drop leading `..` segments for relative paths.
         let leading_parent = PathBuf::from("..").join("secret").join("file.txt");
         assert!(
             !matcher.is_match(&leading_parent),
             "{leading_parent:?} should not match secret/**"
+        );
+    }
+
+    #[test]
+    fn excluded_paths_absolute_suffix_scan_does_not_match_empty_suffixes() {
+        // Regression test: suffix scanning for absolute paths should never try matching an empty
+        // suffix (i.e. `PathBuf::new()`), since some patterns can match empty strings.
+        let cfg = AiPrivacyConfig {
+            // An empty glob is accepted by `globset` and only matches an empty path. If we ever
+            // start scanning empty suffixes, *every* absolute path would match this pattern.
+            excluded_paths: vec!["".into()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let matcher = ExcludedPathMatcher::from_config(&cfg).expect("matcher");
+
+        let tmp = TempDir::new().expect("tempdir");
+        let abs = tmp.path().join("workspace").join("file.txt");
+        assert!(abs.is_absolute(), "path should be absolute: {abs:?}");
+
+        // Sanity check: the empty glob matches the empty path. If the matcher ever starts
+        // scanning empty suffixes, any absolute path could match unexpectedly.
+        let direct_set = GlobSetBuilder::new()
+            .add(Glob::new("").expect("glob"))
+            .build()
+            .expect("globset");
+        assert!(direct_set.is_match(Path::new("")), "sanity check");
+        assert!(!direct_set.is_match(Path::new("file.txt")), "sanity check");
+
+        assert!(
+            !matcher.is_match(&abs),
+            "{abs:?} should not match an empty glob via empty-suffix scanning"
         );
     }
 
