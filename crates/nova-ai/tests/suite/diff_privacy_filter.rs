@@ -77,6 +77,76 @@ index 3333333..4444444 100644
 }
 
 #[test]
+fn git_diff_no_prefix_with_spaces_is_filtered_via_unified_headers() {
+    // `git diff --no-prefix` emits `diff --git <path> <path>` without `a/` and `b/`, making the
+    // `diff --git` line ambiguous when paths contain spaces. Git's `---`/`+++` headers are still
+    // parseable thanks to their tab separator.
+    let excluded_path = "src/secrets/secret file.txt";
+
+    let excluded_section = r#"diff --git src/secrets/secret file.txt src/secrets/secret file.txt
+index 1111111..2222222 100644
+--- src/secrets/secret file.txt	
++++ src/secrets/secret file.txt	
+@@ -1 +1 @@
+-old
++NO_PREFIX_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Main.java b/src/Main.java
+index 3333333..4444444 100644
+--- a/src/Main.java
++++ b/src/Main.java
+@@ -1 +1 @@
+-class Main {}
++class Main { /* ok */ }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("NO_PREFIX_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
+fn git_diff_no_prefix_rename_with_spaces_is_filtered_via_rename_headers() {
+    // `git diff --no-prefix --cached` rename-only diffs do not include `---`/`+++` headers; rely
+    // on `rename from` / `rename to` lines for path extraction.
+    let excluded_path = "src/old name.txt";
+
+    let excluded_section = r#"diff --git src/old name.txt src/new name.txt
+similarity index 100%
+rename from src/old name.txt
+rename to src/new name.txt
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 0000000..1111111 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 9; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("old name.txt"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_unquoted_paths_with_backslashes_are_not_unescaped() {
     // Some diffs may contain literal backslashes in file names (valid on Unix) when
     // `core.quotePath=false`. These must be treated as literal characters, not C-style escapes.

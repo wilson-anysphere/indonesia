@@ -103,7 +103,9 @@ where
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
-        let raw_paths = parse_diff_section_paths(header).ok_or(DiffParseError::InvalidHeader)?;
+        let raw_paths = parse_diff_section_paths(header)
+            .or_else(|| parse_git_section_paths_fallback(&lines[start..end]))
+            .ok_or(DiffParseError::InvalidHeader)?;
         let mut any_path = false;
         let mut excluded = false;
         for raw in raw_paths.paths {
@@ -134,6 +136,80 @@ where
         omitted_any,
         parsed: true,
     })
+}
+
+fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths> {
+    let mut rename_from = None::<String>;
+    let mut rename_to = None::<String>;
+    let mut copy_from = None::<String>;
+    let mut copy_to = None::<String>;
+
+    for line in section {
+        if rename_from.is_none() {
+            rename_from = parse_git_trailing_path(line, "rename from ");
+        }
+        if rename_to.is_none() {
+            rename_to = parse_git_trailing_path(line, "rename to ");
+        }
+        if copy_from.is_none() {
+            copy_from = parse_git_trailing_path(line, "copy from ");
+        }
+        if copy_to.is_none() {
+            copy_to = parse_git_trailing_path(line, "copy to ");
+        }
+    }
+
+    if let (Some(old), Some(new)) = (rename_from, rename_to) {
+        return Some(DiffSectionPaths {
+            paths: vec![old, new],
+            strip_a_b_prefix: false,
+        });
+    }
+
+    if let (Some(old), Some(new)) = (copy_from, copy_to) {
+        return Some(DiffSectionPaths {
+            paths: vec![old, new],
+            strip_a_b_prefix: false,
+        });
+    }
+
+    // Fall back to parsing the unified `---` / `+++` header pair within the section. This handles
+    // `git diff --no-prefix`, where `diff --git` headers are ambiguous for paths containing
+    // spaces (and may not include `a/` / `b/` markers).
+    for idx in 0..section.len().saturating_sub(1) {
+        let old_line = section.get(idx)?;
+        let new_line = section.get(idx + 1)?;
+        if !old_line.starts_with("--- ") || !new_line.starts_with("+++ ") {
+            continue;
+        }
+
+        let old_raw = parse_file_header_path(old_line, "--- ")?;
+        let new_raw = parse_file_header_path(new_line, "+++ ")?;
+        return Some(DiffSectionPaths {
+            paths: vec![old_raw, new_raw],
+            strip_a_b_prefix: true,
+        });
+    }
+
+    None
+}
+
+fn parse_git_trailing_path(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.strip_prefix(prefix)?;
+    let rest = rest.trim_end_matches(&['\r', '\n'][..]);
+    if rest.is_empty() {
+        return None;
+    }
+
+    if rest.trim_start().starts_with('"') {
+        let (token, remaining) = parse_diff_token(rest)?;
+        if !remaining.trim().is_empty() {
+            return None;
+        }
+        return Some(token);
+    }
+
+    Some(rest.to_string())
 }
 
 fn filter_unified_diff<F>(
