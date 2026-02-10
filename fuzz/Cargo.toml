@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lsp-types = "0.97"
+nova-ai = { path = "../crates/nova-ai" }
 nova-archive = { path = "../crates/nova-archive" }
 nova-classfile = { path = "../crates/nova-classfile" }
 nova-decompile = { path = "../crates/nova-decompile" }
@@ -151,6 +152,20 @@ bench = false
 [[bin]]
 name = "fuzz_archive_read"
 path = "fuzz_targets/fuzz_archive_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ai_patch_parse"
+path = "fuzz_targets/fuzz_ai_patch_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ai_diff_filter"
+path = "fuzz_targets/fuzz_ai_diff_filter.rs"
 test = false
 doc = false
 bench = false

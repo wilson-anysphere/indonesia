@@ -1,0 +1,13 @@
+diff --git "a/secret/very secret.txt" "b/secret/very secret.txt"
+index 0000000..1111111 100644
+--- "a/secret/very secret.txt"
++++ "b/secret/very secret.txt"
+@@ -0,0 +1,1 @@
++TOP SECRET
+diff --git "a/src/hello world.java" "b/src/hello world.java"
+index 0000000..1111111 100644
+--- "a/src/hello world.java"
++++ "b/src/hello world.java"
+@@ -0,0 +1,1 @@
++class HelloWorld {}
+

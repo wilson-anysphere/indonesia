@@ -1,0 +1,8 @@
+not a patch
+{this is: [not, valid, json]}
+diff --git a/??? b/???
+--- a/file
++++ b/file
+@@ -1,2 +3,4 @@
+@@@
+

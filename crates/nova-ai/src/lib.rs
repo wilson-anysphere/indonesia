@@ -20,7 +20,8 @@ mod completion_provider;
 mod completion_ranking;
 mod completion_ranking_prompt;
 mod completion_validation;
-mod diff;
+#[doc(hidden)]
+pub mod diff;
 mod error;
 #[cfg(feature = "embeddings")]
 mod embedders;

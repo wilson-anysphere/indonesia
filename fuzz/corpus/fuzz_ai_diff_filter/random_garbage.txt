@@ -1,0 +1,6 @@
+definitely not a diff
+diff --git a/secret/keys.txt b/secret/keys.txt
+--- a/secret/keys.txt
++++ b/secret/keys.txt
+@@ -nope,nope +nope,nope @@
+

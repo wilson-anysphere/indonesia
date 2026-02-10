@@ -10,8 +10,9 @@ pub(crate) const DIFF_OMITTED_PLACEHOLDER: &str = "\"[diff omitted due to exclud
 // human-readable placeholder above (also kept as a string literal for the same reason).
 const DIFF_OMITTED_SENTINEL: &str = "\"__NOVA_AI_DIFF_OMITTED__\"";
 
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FilteredDiff {
+pub struct FilteredDiff {
     /// Diff text with omitted file sections replaced by [`DIFF_OMITTED_SENTINEL`].
     pub(crate) text: String,
     pub(crate) omitted_any: bool,
@@ -27,7 +28,7 @@ pub(crate) fn replace_omission_sentinels(text: &str) -> String {
 /// Parsing is intentionally lightweight: we only identify file boundaries and paths, not hunks.
 /// If file boundaries cannot be determined reliably, this function fails closed by omitting the
 /// entire diff and returning a single omission sentinel line.
-pub(crate) fn filter_diff_for_excluded_paths<F>(diff: &str, is_excluded: F) -> FilteredDiff
+pub fn filter_diff_for_excluded_paths<F>(diff: &str, is_excluded: F) -> FilteredDiff
 where
     F: Fn(&Path) -> bool,
 {

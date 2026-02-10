@@ -1,0 +1,9 @@
+# Keep the checked-in seed corpus small.
+#
+# libFuzzer will write new corpus entries directly into the corpus directory.
+*
+!*.diff
+!*.json
+!*.txt
+!.gitignore
+

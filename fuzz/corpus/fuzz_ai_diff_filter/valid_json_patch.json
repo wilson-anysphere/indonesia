@@ -1,0 +1,7 @@
+{
+  "ops": [
+    { "op": "create", "file": "secret/keys.txt", "text": "API_KEY=sk-123\\n" },
+    { "op": "create", "file": "src/Main.java", "text": "class Main {}\\n" }
+  ]
+}
+
