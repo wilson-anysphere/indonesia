@@ -18063,7 +18063,90 @@ fn infer_receiver(
     receiver: &str,
     offset: usize,
 ) -> (Type, CallKind) {
-    fn in_scope_field<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> Option<&'a FieldDecl> {
+    fn in_scope_field_ty(
+        types: &mut TypeStore,
+        analysis: &Analysis,
+        file_ctx: &CompletionResolveCtx,
+        name: &str,
+        offset: usize,
+    ) -> Option<Type> {
+        fn semantic_field_type_for_class(
+            types: &mut TypeStore,
+            analysis: &Analysis,
+            class: &ClassDecl,
+            field_name: &str,
+        ) -> Option<Type> {
+            let class_id =
+                types.class_id(&class.name).unwrap_or_else(|| ensure_local_class_id(types, analysis, class));
+
+            // Traverse the class hierarchy, using the nearest field declaration (Java field hiding
+            // rules) and collecting interfaces so we can search for inherited interface constants
+            // (fields are implicitly `static final` in interfaces).
+            let mut interfaces = Vec::<Type>::new();
+            let mut current = Some(class_id);
+            let mut seen = HashSet::<ClassId>::new();
+
+            while let Some(class_id) = current.take() {
+                if !seen.insert(class_id) {
+                    break;
+                }
+
+                let class_ty = Type::class(class_id, vec![]);
+                ensure_type_fields_loaded(types, &class_ty);
+
+                let (field_ty, super_ty, ifaces) = {
+                    let class_def = types.class(class_id)?;
+                    (
+                        class_def
+                            .fields
+                            .iter()
+                            .find(|field| field.name == field_name)
+                            .map(|field| field.ty.clone()),
+                        class_def.super_class.clone(),
+                        class_def.interfaces.clone(),
+                    )
+                };
+
+                if let Some(field_ty) = field_ty {
+                    return Some(field_ty);
+                }
+
+                interfaces.extend(ifaces);
+                current = super_ty
+                    .as_ref()
+                    .and_then(|ty| class_id_of_type(types, ty));
+            }
+
+            let mut queue: VecDeque<Type> = interfaces.into();
+            let mut seen_ifaces = HashSet::<ClassId>::new();
+            while let Some(iface_ty) = queue.pop_front() {
+                let Some(iface_id) = class_id_of_type(types, &iface_ty) else {
+                    continue;
+                };
+                if !seen_ifaces.insert(iface_id) {
+                    continue;
+                }
+
+                let iface_class_ty = Type::class(iface_id, vec![]);
+                ensure_type_fields_loaded(types, &iface_class_ty);
+
+                let iface_def = types.class(iface_id)?;
+                if let Some(field) = iface_def
+                    .fields
+                    .iter()
+                    .find(|field| field.name == field_name && field.is_static)
+                {
+                    return Some(field.ty.clone());
+                }
+
+                for super_iface in &iface_def.interfaces {
+                    queue.push_back(super_iface.clone());
+                }
+            }
+
+            None
+        }
+
         // Best-effort field lookup for value receivers.
         //
         // We must avoid treating *unrelated* fields from other top-level classes as in-scope (which
@@ -18080,28 +18163,19 @@ fn infer_receiver(
             .collect();
         enclosing.sort_by_key(|c| c.span.len());
 
-        let mut seen = HashSet::<Span>::new();
         for class in enclosing {
-            let mut current = Some(class);
-            while let Some(class) = current {
-                if !seen.insert(class.name_span) {
-                    break;
-                }
+            let field = analysis.fields.iter().find(|field| {
+                field.name == name
+                    && span_within(field.name_span, class.body_span)
+                    && enclosing_class(analysis, field.name_span.start)
+                        .is_some_and(|owner| owner.name_span == class.name_span)
+            });
+            if let Some(field) = field {
+                return Some(parse_source_type_in_context(types, file_ctx, &field.ty));
+            }
 
-                let field = analysis.fields.iter().find(|field| {
-                    field.name == name
-                        && span_within(field.name_span, class.body_span)
-                        && enclosing_class(analysis, field.name_span.start)
-                            .is_some_and(|owner| owner.name_span == class.name_span)
-                });
-                if field.is_some() {
-                    return field;
-                }
-
-                let Some(extends) = class.extends.as_deref() else {
-                    break;
-                };
-                current = analysis.classes.iter().find(|c| c.name == extends);
+            if let Some(ty) = semantic_field_type_for_class(types, analysis, class, name) {
+                return Some(ty);
             }
         }
 
@@ -18161,11 +18235,8 @@ fn infer_receiver(
             );
         }
 
-        if let Some(field) = in_scope_field(analysis, receiver, offset) {
-            return (
-                parse_source_type_in_context(types, file_ctx, &field.ty),
-                CallKind::Instance,
-            );
+        if let Some(field_ty) = in_scope_field_ty(types, analysis, file_ctx, receiver, offset) {
+            return (field_ty, CallKind::Instance);
         }
 
         // Allow `Foo.bar()` / `Foo.<cursor>` to treat `Foo` as a type reference.
@@ -18175,11 +18246,8 @@ fn infer_receiver(
         );
     }
 
-    if let Some(field) = in_scope_field(analysis, receiver, offset) {
-        return (
-            parse_source_type_in_context(types, file_ctx, &field.ty),
-            CallKind::Instance,
-        );
+    if let Some(field_ty) = in_scope_field_ty(types, analysis, file_ctx, receiver, offset) {
+        return (field_ty, CallKind::Instance);
     }
 
     // Best-effort fallback: if we can't find an enclosing method (e.g. cursor is outside a method

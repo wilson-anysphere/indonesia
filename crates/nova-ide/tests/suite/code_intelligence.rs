@@ -851,6 +851,34 @@ class Outer {
 }
 
 #[test]
+fn completion_resolves_interface_constant_as_value_receiver() {
+    let a_path = PathBuf::from("/workspace/src/main/java/A.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
+
+    let a_text = r#"
+class A implements I {
+  void m() {
+    S.<|>
+  }
+}
+"#;
+    let i_text = r#"
+interface I {
+  String S = "x";
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(a_path, a_text, vec![(i_path, i_text)]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for interface constant receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"
