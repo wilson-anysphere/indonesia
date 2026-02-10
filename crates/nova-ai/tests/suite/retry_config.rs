@@ -383,3 +383,68 @@ async fn chat_stream_does_not_retry_after_first_chunk() {
 
     handle.abort();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_stream_max_retries_zero_disables_retries() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_handler = request_count.clone();
+    let handler = move |req: Request<Body>| {
+        let request_count = request_count_for_handler.clone();
+        async move {
+            assert_eq!(req.method(), hyper::Method::POST);
+            assert_eq!(req.uri().path(), "/v1/chat/completions");
+            let _ = hyper::body::to_bytes(req.into_body()).await;
+
+            let call = request_count.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("boom"))
+                    .expect("response")
+            } else {
+                let sse = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Pong\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                );
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .expect("response")
+            }
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).expect("url");
+
+    let mut cfg = openai_compatible_config(url);
+    cfg.provider.retry_max_retries = 0;
+    cfg.provider.retry_initial_backoff_ms = 1;
+    cfg.provider.retry_max_backoff_ms = 1;
+
+    let client = AiClient::from_config(&cfg).expect("client");
+    let err = match client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("Ping")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+    {
+        Ok(_) => panic!("expected stream to fail without retries"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, AiError::Http(_)), "unexpected error: {err:?}");
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "expected a single request when retries are disabled"
+    );
+
+    handle.abort();
+}
