@@ -1,6 +1,9 @@
 use crate::{
     http::map_reqwest_error,
     providers::LlmProvider,
+    stream_decode::{
+        ensure_max_stream_frame_size, trim_ascii_whitespace, MAX_STREAM_FRAME_BYTES,
+    },
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
 };
@@ -149,24 +152,30 @@ impl LlmProvider for OllamaProvider {
 
                 let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(map_reqwest_error)?;
+                // Validate the next chunk before buffering it, using the amount of data already
+                // buffered for the current (incomplete) JSONL frame.
+                ensure_max_stream_frame_size(
+                    buffer.len().saturating_sub(cursor),
+                    chunk.as_ref(),
+                    MAX_STREAM_FRAME_BYTES,
+                )?;
                 buffer.extend_from_slice(&chunk);
 
                 while let Some(rel_pos) = buffer[cursor..].iter().position(|&b| b == b'\n') {
                     let line_end = cursor + rel_pos;
-                    let line_bytes = &buffer[cursor..line_end];
+                    let mut line_bytes = &buffer[cursor..line_end];
                     cursor = line_end + 1;
 
-                    let line = std::str::from_utf8(line_bytes).map_err(|err| {
-                        AiError::UnexpectedResponse(format!(
-                            "ollama stream returned invalid utf-8: {err}"
-                        ))
-                    })?;
-                    let line = line.trim();
-                    if line.is_empty() {
+                    // Handle CRLF line endings.
+                    if let Some(stripped) = line_bytes.strip_suffix(b"\r") {
+                        line_bytes = stripped;
+                    }
+                    let line_bytes = trim_ascii_whitespace(line_bytes);
+                    if line_bytes.is_empty() {
                         continue;
                     }
 
-                    let parsed: OllamaChatResponse = serde_json::from_str(line)?;
+                    let parsed: OllamaChatResponse = serde_json::from_slice(line_bytes)?;
                     if let Some(message) = parsed.message {
                         if !message.content.is_empty() {
                             yield message.content;

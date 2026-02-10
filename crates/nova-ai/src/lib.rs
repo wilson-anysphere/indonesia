@@ -31,6 +31,7 @@ mod llm_privacy;
 mod project_database;
 mod providers;
 mod semantic_search;
+mod stream_decode;
 mod types;
 mod util;
 

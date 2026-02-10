@@ -1,4 +1,7 @@
 use crate::providers::LlmProvider;
+use crate::stream_decode::{
+    ensure_max_stream_frame_size, stream_frame_too_large_error, MAX_STREAM_FRAME_BYTES,
+};
 use crate::types::{AiStream, ChatMessage, ChatRequest, ChatRole};
 use crate::AiError;
 use crate::http::map_reqwest_error;
@@ -416,7 +419,7 @@ impl LlmProvider for GeminiProvider {
 
                 // NDJSON or misconfigured content-type. Parse line-by-line, and accept SSE `data:`
                 // frames if present.
-                line_buf.push(&chunk);
+                line_buf.push(&chunk)?;
                 while let Some(line) = line_buf.next_line()? {
                     let line = line.trim();
                     if line.is_empty() {
@@ -1204,6 +1207,7 @@ impl SseDecoder {
     }
 
     fn push(&mut self, chunk: &[u8], out: &mut Vec<SseEvent>) -> Result<(), AiError> {
+        ensure_max_stream_frame_size(self.buffer.len(), chunk, MAX_STREAM_FRAME_BYTES)?;
         self.buffer.extend_from_slice(chunk);
         while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
             let rest = self.buffer.split_off(pos + 1);
@@ -1272,6 +1276,19 @@ impl SseDecoder {
 
         if let Some(rest) = line.strip_prefix(b"data:") {
             let rest = trim_sse_value(rest);
+            let extra = if self.current_data.is_empty() {
+                rest.len()
+            } else {
+                // We insert a newline between successive `data:` fields (per the SSE spec).
+                1usize.saturating_add(rest.len())
+            };
+            let attempted_len = self.current_data.len().saturating_add(extra);
+            if attempted_len > MAX_STREAM_FRAME_BYTES {
+                return Err(stream_frame_too_large_error(
+                    attempted_len,
+                    MAX_STREAM_FRAME_BYTES,
+                ));
+            }
             if !self.current_data.is_empty() {
                 self.current_data.push(b'\n');
             }
@@ -1314,7 +1331,8 @@ impl LineDecoder {
         Self::default()
     }
 
-    fn push(&mut self, chunk: &[u8]) {
+    fn push(&mut self, chunk: &[u8]) -> Result<(), AiError> {
+        ensure_max_stream_frame_size(self.buffer.len(), chunk, MAX_STREAM_FRAME_BYTES)?;
         self.buffer.extend_from_slice(chunk);
         while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
             let rest = self.buffer.split_off(pos + 1);
@@ -1330,6 +1348,7 @@ impl LineDecoder {
 
             self.lines.push_back(line);
         }
+        Ok(())
     }
 
     fn next_line(&mut self) -> Result<Option<String>, AiError> {
@@ -1376,6 +1395,67 @@ mod tests {
     };
     use std::convert::Infallible;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn sse_decoder_errors_on_oversized_line_without_newline() {
+        let mut decoder = SseDecoder::new();
+        let mut events = Vec::new();
+        let chunk = vec![b'a'; crate::stream_decode::MAX_STREAM_FRAME_BYTES + 1];
+        let err = decoder
+            .push(&chunk, &mut events)
+            .expect_err("expected frame-too-large error");
+        match err {
+            AiError::UnexpectedResponse(msg) => assert!(
+                msg.contains("stream frame too large"),
+                "unexpected error message: {msg}"
+            ),
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sse_decoder_errors_on_oversized_event_data_across_multiple_data_fields() {
+        let mut decoder = SseDecoder::new();
+        let mut events = Vec::new();
+
+        let max = crate::stream_decode::MAX_STREAM_FRAME_BYTES;
+        let half = max / 2;
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(b"data: ");
+        chunk.extend(std::iter::repeat(b'a').take(half));
+        chunk.extend_from_slice(b"\n");
+        chunk.extend_from_slice(b"data: ");
+        // This pushes the total event payload over `max` once we include the inserted `\n`.
+        chunk.extend(std::iter::repeat(b'b').take(half + 16));
+        chunk.extend_from_slice(b"\n");
+
+        let err = decoder
+            .push(&chunk, &mut events)
+            .expect_err("expected frame-too-large error");
+        match err {
+            AiError::UnexpectedResponse(msg) => assert!(
+                msg.contains("stream frame too large"),
+                "unexpected error message: {msg}"
+            ),
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn line_decoder_errors_on_oversized_line_without_newline() {
+        let mut decoder = LineDecoder::new();
+        let chunk = vec![b'a'; crate::stream_decode::MAX_STREAM_FRAME_BYTES + 1];
+        let err = decoder
+            .push(&chunk)
+            .expect_err("expected frame-too-large error");
+        match err {
+            AiError::UnexpectedResponse(msg) => assert!(
+                msg.contains("stream frame too large"),
+                "unexpected error message: {msg}"
+            ),
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
 
     fn spawn_server<F>(handler: F) -> (Url, oneshot::Sender<()>)
     where

@@ -1,6 +1,9 @@
 use crate::{
     http::map_reqwest_error,
     providers::LlmProvider,
+    stream_decode::{
+        ensure_max_stream_frame_size, trim_ascii_whitespace, MAX_STREAM_FRAME_BYTES,
+    },
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
 };
@@ -173,24 +176,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         line.truncate(line.len() - 1);
                     }
 
-                    let line = std::str::from_utf8(&line).map_err(|e| {
-                        AiError::UnexpectedResponse(format!("invalid UTF-8 in SSE stream: {e}"))
-                    })?;
-
-                    let line = line.trim();
+                    let line = trim_ascii_whitespace(&line);
                     if line.is_empty() {
                         continue;
                     }
 
-                    let Some(data) = line.strip_prefix("data:") else {
+                    let Some(data) = line.strip_prefix(b"data:") else {
                         continue;
                     };
-                    let data = data.trim();
-                    if data == "[DONE]" {
+                    let data = trim_ascii_whitespace(data);
+                    if data == b"[DONE]" {
                         return;
                     }
 
-                    let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_str(data)?;
+                    let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_slice(data)?;
                     for choice in parsed.choices {
                         if let Some(content) = choice.delta.content {
                             if !content.is_empty() {
@@ -214,6 +213,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
                 let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(map_reqwest_error)?;
+                // At this point the buffer contains only a single partial line (no '\n'), so its
+                // length is the current frame size. Validate the next chunk before buffering it to
+                // prevent unbounded growth if the server never sends delimiters.
+                ensure_max_stream_frame_size(buffer.len(), chunk.as_ref(), MAX_STREAM_FRAME_BYTES)?;
                 buffer.extend_from_slice(&chunk);
             }
         };
