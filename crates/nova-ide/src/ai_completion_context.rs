@@ -87,10 +87,9 @@ fn receiver_at_offset(
         {
             // Guard against the semantic inference helper treating `this.foo` / `super.foo` as a
             // type reference and returning it verbatim as the "type". This can happen when the
-            // dotted-chain resolution logic fails (or the receiver contains whitespace).
-            //
-            // In that case, prefer the lightweight lexical inference which consults the
-            // completion-context analysis fields.
+            // receiver contains whitespace (e.g. `this . foo`) which prevents dotted-chain
+            // resolution. In that case, retry with whitespace removed; if that still fails, fall
+            // back to lexical inference.
             let trimmed = ty.trim();
             let receiver_trimmed = receiver.trim();
             let is_suspicious_lowercase_type_ref = kind == CallKind::Static
@@ -114,6 +113,23 @@ fn receiver_at_offset(
             if is_suspicious_lowercase_type_ref {
                 if let Some(field_ty) = call_chain_field_access_type(db, file, text, dot_offset) {
                     return (Some(receiver), Some(field_ty), Some(CallKind::Instance));
+                }
+            }
+
+            if receiver.chars().any(|ch| ch.is_ascii_whitespace()) {
+                let normalized: String = receiver
+                    .chars()
+                    .filter(|ch| !ch.is_ascii_whitespace())
+                    .collect();
+                if normalized != receiver {
+                    if let Some((ty, kind)) =
+                        infer_receiver_type_for_member_access(db, file, &normalized, dot_offset)
+                    {
+                        let trimmed = ty.trim();
+                        if !trimmed.starts_with("this.") && !trimmed.starts_with("super.") {
+                            return (Some(receiver), Some(ty), Some(kind));
+                        }
+                    }
                 }
             }
         }
