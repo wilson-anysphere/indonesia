@@ -183,7 +183,8 @@ fn provider_semantic_search_embeddings_redact_privacy_patterns_before_sending_to
     search.index_project(&db);
     let _results = search.search("supersecret");
 
-    leak_mock.assert_hits(0);
+    let leak_hits = leak_mock.hits();
+    assert_eq!(leak_hits, 0, "unsanitized embedding text leaked");
 
     let hits = redacted_mock.hits();
     assert!(
