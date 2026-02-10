@@ -163,9 +163,15 @@ impl PrivacyFilter {
         let excluded_paths = ExcludedPathMatcher::from_config(config)?;
 
         let mut redact_patterns = Vec::new();
-        for pattern in &config.redact_patterns {
+        for (idx, pattern) in config.redact_patterns.iter().enumerate() {
             let re = Regex::new(pattern).map_err(|err| {
-                AiError::InvalidConfig(format!("invalid redact_patterns regex {pattern:?}: {err}"))
+                // Do not echo the raw regex back into the error string: users may add secrets to
+                // `ai.privacy.redact_patterns` and `AiError::to_string()` can be surfaced to end
+                // users or logged via non-audit logs.
+                AiError::InvalidConfig(format!(
+                    "invalid ai.privacy.redact_patterns[{idx}] regex: {}",
+                    summarize_regex_error(&err)
+                ))
             })?;
             redact_patterns.push(re);
         }
@@ -243,6 +249,25 @@ impl PrivacyFilter {
             output = re.replace_all(&output, "[REDACTED]").into_owned();
         }
         output
+    }
+}
+
+fn summarize_regex_error(err: &regex::Error) -> String {
+    match err {
+        regex::Error::Syntax(message) => message
+            .lines()
+            .rev()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("error:")
+                    .map(|rest| rest.trim())
+                    .filter(|rest| !rest.is_empty())
+            })
+            .unwrap_or_else(|| message.trim())
+            .to_string(),
+        regex::Error::CompiledTooBig(size) => format!("compiled regex too big ({size} bytes)"),
+        _ => "unknown error".to_string(),
     }
 }
 
@@ -385,6 +410,30 @@ mod tests {
         assert!(out.contains("SecretService"), "{out}");
         assert!(!out.contains("id_0"), "{out}");
         assert!(!out.contains("sk-verysecret"), "{out}");
+    }
+
+    #[test]
+    fn invalid_redact_patterns_do_not_echo_pattern_values_in_errors() {
+        let secret = "super-secret-api-key";
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            redact_patterns: vec![format!("{secret}(")],
+            ..AiPrivacyConfig::default()
+        };
+
+        let err = match PrivacyFilter::new(&cfg) {
+            Ok(_) => panic!("expected invalid regex to fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "PrivacyFilter error leaked redact_patterns value: {message}"
+        );
+        assert!(
+            message.contains("ai.privacy.redact_patterns[0]"),
+            "PrivacyFilter error should include the failing index: {message}"
+        );
     }
 
     #[test]
