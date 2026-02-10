@@ -291,6 +291,9 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
         if let Some(out) = truncate_git_diff_by_file_sections(&text, total_chars, max_chars) {
             return out;
         }
+        if let Some(out) = truncate_git_diff_by_hunk_boundaries(&text, total_chars, max_chars) {
+            return out;
+        }
     }
 
     truncate_by_lines_with_marker(&text, total_chars, max_chars)
@@ -424,6 +427,149 @@ fn truncate_git_diff_by_file_sections(
     if max_chars <= marker.chars().count() {
         return Some(truncate_prefix_chars(&marker, max_chars).to_string());
     }
+
+    let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
+    for line in &lines[..head_end_line] {
+        out.push_str(line);
+    }
+    out.push_str(&marker);
+    for line in &lines[tail_start_line..] {
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+#[derive(Debug, Clone)]
+struct DiffHunkChunk {
+    start_line: usize,
+    end_line: usize,
+    chars: usize,
+}
+
+/// Best-effort hunk-aware truncation for *single-file* git diffs.
+///
+/// When a diff contains only one `diff --git` section but many hunks, file-section truncation can't
+/// apply. This tries to omit whole hunks (as chunk units) so truncation boundaries land between
+/// hunks, preserving diff structure.
+fn truncate_git_diff_by_hunk_boundaries(
+    text: &str,
+    total_chars: usize,
+    max_chars: usize,
+) -> Option<String> {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    let mut line_prefix_sum = vec![0usize; lines.len() + 1];
+    for (idx, len) in line_chars.iter().enumerate() {
+        line_prefix_sum[idx + 1] = line_prefix_sum[idx] + len;
+    }
+
+    let mut diff_starts = Vec::<usize>::new();
+    let mut hunk_starts = Vec::<usize>::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") {
+            diff_starts.push(idx);
+        }
+        if line.starts_with("@@") {
+            hunk_starts.push(idx);
+        }
+    }
+
+    // Only handle the single-file case here; multi-file diffs are handled by file-section
+    // truncation above (and fall back to line-based truncation if whole-file preservation doesn't
+    // fit the limit).
+    if diff_starts.len() != 1 {
+        return None;
+    }
+    let file_start = diff_starts[0];
+
+    // Need enough hunks to omit something while keeping both ends.
+    if hunk_starts.len() < 2 {
+        return None;
+    }
+
+    let preamble_chars = line_prefix_sum[file_start];
+    if preamble_chars >= max_chars {
+        return None;
+    }
+
+    // Chunk boundaries: file start, each hunk start, and end of diff.
+    let mut boundaries = Vec::<usize>::with_capacity(hunk_starts.len() + 2);
+    boundaries.push(file_start);
+    for idx in hunk_starts {
+        if idx > file_start {
+            boundaries.push(idx);
+        }
+    }
+    boundaries.push(lines.len());
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut chunks = Vec::<DiffHunkChunk>::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+        let chars = line_prefix_sum[end] - line_prefix_sum[start];
+        chunks.push(DiffHunkChunk {
+            start_line: start,
+            end_line: end,
+            chars,
+        });
+    }
+
+    if chunks.len() < 3 {
+        return None;
+    }
+
+    let chunk_chars = chunks.iter().map(|chunk| chunk.chars).collect::<Vec<_>>();
+
+    // Iterate until the marker length stabilizes (it depends on the omitted count's digit count).
+    let mut marker_len = 0usize;
+    let mut marker = String::new();
+    for _ in 0..8 {
+        let available_total = max_chars.saturating_sub(marker_len);
+        if available_total <= preamble_chars {
+            return None;
+        }
+        let available_chunks = available_total - preamble_chars;
+        let (_prefix_chunks, _suffix_chunks, kept_chunk_chars) =
+            select_prefix_suffix_lines(&chunk_chars, available_chunks);
+        let kept_total_chars = preamble_chars + kept_chunk_chars;
+        let omitted = total_chars.saturating_sub(kept_total_chars);
+        let next_marker = truncation_marker(omitted);
+        let next_len = next_marker.chars().count();
+        marker = next_marker;
+        if next_len == marker_len {
+            break;
+        }
+        marker_len = next_len;
+    }
+
+    let marker_len = marker.chars().count();
+    if max_chars <= marker_len {
+        return Some(truncate_prefix_chars(&marker, max_chars).to_string());
+    }
+
+    let available_total = max_chars - marker_len;
+    if available_total <= preamble_chars {
+        return None;
+    }
+    let available_chunks = available_total - preamble_chars;
+    let (prefix_chunks, suffix_chunks, _kept_chunk_chars) =
+        select_prefix_suffix_lines(&chunk_chars, available_chunks);
+    if prefix_chunks == 0 || suffix_chunks == 0 || prefix_chunks + suffix_chunks >= chunks.len() {
+        return None;
+    }
+
+    let head_end_line = chunks[prefix_chunks - 1].end_line;
+    let tail_start_line = chunks[chunks.len().saturating_sub(suffix_chunks)].start_line;
 
     let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
     for line in &lines[..head_end_line] {

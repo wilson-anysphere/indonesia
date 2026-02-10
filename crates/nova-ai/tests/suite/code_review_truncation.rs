@@ -232,6 +232,85 @@ diff --git a/src/C.java b/src/C.java\n\
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn code_review_truncates_single_file_diffs_at_hunk_boundaries() {
+    let limit = 600usize;
+
+    let mut diff = "\
+diff --git a/src/Main.java b/src/Main.java\n\
+--- a/src/Main.java\n\
++++ b/src/Main.java\n"
+    .to_string();
+
+    for idx in 0..20usize {
+        diff.push_str(&format!(
+            "@@ -{idx},1 +{idx},1 @@\n\
+-OLD_{idx}_{}\n\
++NEW_{idx}_{}\n",
+            "X".repeat(40),
+            "Y".repeat(40)
+        ));
+    }
+
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("body bytes");
+        let json: Value = serde_json::from_slice(&bytes).expect("json body");
+
+        let user = json["messages"][1]["content"]
+            .as_str()
+            .expect("messages[1].content string");
+        let diff_part = extract_diff_block(user).expect("diff fenced block present");
+
+        let marker_count = diff_part.matches("[diff truncated: omitted ").count();
+        assert_eq!(
+            marker_count, 1,
+            "expected exactly one truncation marker; got {marker_count} in: {diff_part}"
+        );
+
+        let marker_start = diff_part
+            .find("\"[diff truncated: omitted ")
+            .expect("marker present");
+        let after_marker = &diff_part[marker_start..];
+        let marker_end = after_marker
+            .find(" chars]\"\n")
+            .expect("marker end present");
+        let after_marker = &after_marker[marker_end + " chars]\"\n".len()..];
+        assert!(
+            after_marker.starts_with("@@"),
+            "expected truncation to resume at a hunk header; got: {after_marker}"
+        );
+
+        assert!(
+            diff_part.starts_with("diff --git a/src/Main.java b/src/Main.java\n"),
+            "expected diff to keep beginning; got: {diff_part}"
+        );
+        assert!(
+            diff_part.chars().count() <= limit,
+            "expected diff part <= {limit} chars; got {} chars",
+            diff_part.chars().count()
+        );
+
+        Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+
+    let mut cfg = base_config(Url::parse(&format!("http://{addr}")).unwrap());
+    cfg.features.code_review_max_diff_chars = limit;
+
+    let ai = NovaAi::new(&cfg).expect("NovaAi builds");
+    let out = ai
+        .code_review(&diff, CancellationToken::new())
+        .await
+        .expect("code_review succeeds");
+    assert_eq!(out, "ok");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_does_not_change_small_diffs() {
     let limit = 1_000usize;
     let diff = "diff --git a/src/Main.java b/src/Main.java\n+class Main {}\n";
