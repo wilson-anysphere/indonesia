@@ -76,6 +76,19 @@ const AI_CHAT_ERROR_URL_METRIC: &str = "ai/chat/error/url";
 const AI_CHAT_ERROR_INVALID_CONFIG_METRIC: &str = "ai/chat/error/invalid_config";
 const AI_CHAT_ERROR_UNEXPECTED_RESPONSE_METRIC: &str = "ai/chat/error/unexpected_response";
 
+/// Records end-to-end latency for streaming chat requests. Unlike `ai/chat`, this metric is
+/// recorded when the returned stream terminates (success or error) so it captures total stream
+/// duration from `chat_stream()` invocation until termination.
+const AI_CHAT_STREAM_METRIC: &str = "ai/chat_stream";
+const AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC: &str = "ai/chat_stream/error/timeout";
+const AI_CHAT_STREAM_ERROR_CANCELLED_METRIC: &str = "ai/chat_stream/error/cancelled";
+const AI_CHAT_STREAM_ERROR_HTTP_METRIC: &str = "ai/chat_stream/error/http";
+const AI_CHAT_STREAM_ERROR_JSON_METRIC: &str = "ai/chat_stream/error/json";
+const AI_CHAT_STREAM_ERROR_URL_METRIC: &str = "ai/chat_stream/error/url";
+const AI_CHAT_STREAM_ERROR_INVALID_CONFIG_METRIC: &str = "ai/chat_stream/error/invalid_config";
+const AI_CHAT_STREAM_ERROR_UNEXPECTED_RESPONSE_METRIC: &str =
+    "ai/chat_stream/error/unexpected_response";
+
 fn record_chat_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
     match err {
         AiError::Timeout => {
@@ -112,6 +125,39 @@ fn record_chat_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
         AiError::UnexpectedResponse(_) => {
             metrics.record_error(AI_CHAT_METRIC);
             metrics.record_error(AI_CHAT_ERROR_UNEXPECTED_RESPONSE_METRIC);
+        }
+    }
+}
+
+fn record_chat_stream_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
+    match err {
+        AiError::Timeout => {
+            metrics.record_timeout(AI_CHAT_STREAM_METRIC);
+            metrics.record_timeout(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC);
+        }
+        AiError::Cancelled => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC);
+        }
+        AiError::Http(_) => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_HTTP_METRIC);
+        }
+        AiError::Json(_) => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_JSON_METRIC);
+        }
+        AiError::Url(_) => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_URL_METRIC);
+        }
+        AiError::InvalidConfig(_) => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_INVALID_CONFIG_METRIC);
+        }
+        AiError::UnexpectedResponse(_) => {
+            metrics.record_error(AI_CHAT_STREAM_METRIC);
+            metrics.record_error(AI_CHAT_STREAM_ERROR_UNEXPECTED_RESPONSE_METRIC);
         }
     }
 }
@@ -1013,11 +1059,19 @@ impl LlmClient for AiClient {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
+        let metrics = MetricsRegistry::global();
+        let metrics_start = Instant::now();
+        let record_failure = |err: &AiError| {
+            metrics.record_request(AI_CHAT_STREAM_METRIC, metrics_start.elapsed());
+            record_chat_stream_error_metrics(metrics, err);
+        };
+
         if cancel.is_cancelled() {
-            return Err(AiError::Cancelled);
+            let err = AiError::Cancelled;
+            record_failure(&err);
+            return Err(err);
         }
 
-        let metrics = MetricsRegistry::global();
         let request = self.sanitize_request(request);
 
         let prompt_for_log = if self.audit_enabled {
@@ -1072,8 +1126,13 @@ impl LlmClient for AiClient {
 
                     metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
 
+                    let metrics_start_for_stream = metrics_start;
                     let stream = async_stream::try_stream! {
                         yield hit;
+                        metrics.record_request(
+                            AI_CHAT_STREAM_METRIC,
+                            metrics_start_for_stream.elapsed(),
+                        );
                     };
                     return Ok(Box::pin(stream));
                 }
@@ -1092,24 +1151,40 @@ impl LlmClient for AiClient {
 
         let (permit, inner, started_at, retry_count) = loop {
             if cancel.is_cancelled() {
-                return Err(AiError::Cancelled);
+                let err = AiError::Cancelled;
+                record_failure(&err);
+                return Err(err);
             }
 
             let remaining = timeout.saturating_sub(operation_start.elapsed());
             if remaining == Duration::ZERO {
-                return Err(AiError::Timeout);
+                let err = AiError::Timeout;
+                record_failure(&err);
+                return Err(err);
             }
 
-            let permit =
-                match tokio::time::timeout(remaining, self.acquire_permit(&cancel)).await {
-                    Ok(permit) => permit?,
-                    Err(_) => return Err(AiError::Timeout),
-                };
+            let permit = match tokio::time::timeout(remaining, self.acquire_permit(&cancel)).await
+            {
+                Ok(result) => match result {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        record_failure(&err);
+                        return Err(err);
+                    }
+                },
+                Err(_) => {
+                    let err = AiError::Timeout;
+                    record_failure(&err);
+                    return Err(err);
+                }
+            };
 
             let remaining = timeout.saturating_sub(operation_start.elapsed());
             if remaining == Duration::ZERO {
                 drop(permit);
-                return Err(AiError::Timeout);
+                let err = AiError::Timeout;
+                record_failure(&err);
+                return Err(err);
             }
 
             let started_at = Instant::now();
@@ -1161,7 +1236,9 @@ impl LlmClient for AiClient {
                     drop(permit);
                     let remaining = timeout.saturating_sub(operation_start.elapsed());
                     if remaining == Duration::ZERO {
-                        return Err(AiError::Timeout);
+                        let err = AiError::Timeout;
+                        record_failure(&err);
+                        return Err(err);
                     }
                     if let Err(err) = self.backoff_sleep(attempt, remaining, &cancel).await {
                         if self.audit_enabled {
@@ -1175,6 +1252,7 @@ impl LlmClient for AiClient {
                                 /*stream=*/ true,
                             );
                         }
+                        record_failure(&err);
                         return Err(err);
                     }
                 }
@@ -1191,6 +1269,7 @@ impl LlmClient for AiClient {
                         );
                     }
                     drop(permit);
+                    record_failure(&err);
                     return Err(err);
                 }
             }
@@ -1210,13 +1289,14 @@ impl LlmClient for AiClient {
         let cancel_for_stream = cancel.clone();
         let cache_for_stream = self.cache.clone();
         let cache_key_for_stream = cache_key;
+        let metrics_start_for_stream = metrics_start;
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
             let mut inner = inner;
             let mut completion = String::new();
             let mut chunk_count = 0usize;
-            loop {
+            let stream_result: Result<(), AiError> = loop {
                 let item = tokio::select! {
                     biased;
                     _ = cancel_for_stream.cancelled() => Err(AiError::Cancelled),
@@ -1244,9 +1324,9 @@ impl LlmClient for AiClient {
                                 /*stream=*/ true,
                             );
                         }
-                        Err(err)?;
+                        break Err(err);
                     }
-                    Ok(None) => break,
+                    Ok(None) => break Ok(()),
                     Err(err) => {
                         if audit_enabled {
                             audit::log_llm_error(
@@ -1259,28 +1339,38 @@ impl LlmClient for AiClient {
                                 /*stream=*/ true,
                             );
                         }
-                        Err(err)?;
+                        break Err(err);
                     }
+                }
+            };
+
+            if stream_result.is_ok() {
+                if let (Some(cache), Some(key)) =
+                    (cache_for_stream.as_ref(), cache_key_for_stream)
+                {
+                    cache.insert(key, completion.clone()).await;
+                }
+
+                if audit_enabled {
+                    audit::log_llm_response(
+                        request_id_for_stream,
+                        provider_label,
+                        &model,
+                        safe_endpoint_for_stream.as_deref(),
+                        &completion,
+                        started_at_for_stream.elapsed(),
+                        retry_count_for_stream,
+                        /*stream=*/ true,
+                        Some(chunk_count),
+                    );
                 }
             }
 
-            if let (Some(cache), Some(key)) = (cache_for_stream.as_ref(), cache_key_for_stream) {
-                cache.insert(key, completion.clone()).await;
+            metrics.record_request(AI_CHAT_STREAM_METRIC, metrics_start_for_stream.elapsed());
+            if let Err(err) = &stream_result {
+                record_chat_stream_error_metrics(metrics, err);
             }
-
-            if audit_enabled {
-                audit::log_llm_response(
-                    request_id_for_stream,
-                    provider_label,
-                    &model,
-                    safe_endpoint_for_stream.as_deref(),
-                    &completion,
-                    started_at_for_stream.elapsed(),
-                    retry_count_for_stream,
-                    /*stream=*/ true,
-                    Some(chunk_count),
-                );
-            }
+            stream_result?;
         };
 
         Ok(Box::pin(stream))
@@ -2258,5 +2348,267 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = server_handle.await;
+    }
+
+    #[derive(Clone, Default)]
+    struct OkStreamProvider;
+
+    #[async_trait]
+    impl LlmProvider for OkStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let stream = async_stream::try_stream! {
+                yield "ok".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct TimeoutStreamProvider;
+
+    #[async_trait]
+    impl LlmProvider for TimeoutStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let stream =
+                futures::stream::once(async { Err::<String, AiError>(AiError::Timeout) });
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CancelledStreamProvider;
+
+    #[async_trait]
+    impl LlmProvider for CancelledStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let stream =
+                futures::stream::once(async { Err::<String, AiError>(AiError::Cancelled) });
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_success_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(OkStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let stream = client
+            .chat_stream(request, CancellationToken::new())
+            .await
+            .expect("stream starts");
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "ok");
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} request_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_timeout_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(TimeoutStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let stream = client
+            .chat_stream(request, CancellationToken::new())
+            .await
+            .expect("stream starts");
+        let err = stream
+            .try_collect::<Vec<String>>()
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, AiError::Timeout));
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.timeout_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} timeout_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_cancelled_increments_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+        let before = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(CancelledStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let stream = client
+            .chat_stream(request, CancellationToken::new())
+            .await
+            .expect("stream starts");
+        let err = stream
+            .try_collect::<Vec<String>>()
+            .await
+            .expect_err("expected cancellation");
+        assert!(matches!(err, AiError::Cancelled));
+
+        let after = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        assert!(
+            after >= before.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
+        );
     }
 }
