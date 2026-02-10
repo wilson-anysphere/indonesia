@@ -706,6 +706,23 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "toString"
             | "equals"
             | "hashCode"
+            // java.util.Optional
+            | "ofNullable"
+            | "orElse"
+            | "orElseGet"
+            | "orElseThrow"
+            | "isPresent"
+            | "ifPresent"
+            | "ifPresentOrElse"
+            // Common collection helpers
+            | "get"
+            | "put"
+            | "add"
+            | "remove"
+            | "contains"
+            | "containsKey"
+            | "size"
+            | "asList"
     )
 }
 
@@ -842,6 +859,28 @@ class Example {
         String s = items.toString();
         boolean eq = "abc".equals("def");
         int h = items.hashCode();
+
+        int n = items.size();
+        boolean has = items.contains("x");
+        items.add("x");
+        items.remove("x");
+        String first = items.get(0);
+
+        Map<String, String> m = new HashMap<>();
+        m.put("a", "b");
+        m.get("a");
+        m.containsKey("a");
+        m.remove("a");
+
+        Arrays.asList("a", "b");
+
+        Optional<String> opt = Optional.ofNullable(first);
+        opt.isPresent();
+        opt.orElse("fallback");
+        opt.orElseGet(() -> "fallback");
+        opt.orElseThrow();
+        opt.ifPresent(System.out::println);
+        opt.ifPresentOrElse(System.out::println, () -> {});
     }
 }
 "#;
@@ -894,6 +933,25 @@ class Example {
         assert!(out.contains(".toString("), "{out}");
         assert!(out.contains(".equals("), "{out}");
         assert!(out.contains(".hashCode("), "{out}");
+
+        // Common collection methods/utilities.
+        assert!(out.contains(".size("), "{out}");
+        assert!(out.contains(".contains("), "{out}");
+        assert!(out.contains(".add("), "{out}");
+        assert!(out.contains(".remove("), "{out}");
+        assert!(out.contains(".get("), "{out}");
+        assert!(out.contains(".put("), "{out}");
+        assert!(out.contains(".containsKey("), "{out}");
+        assert!(out.contains("Arrays.asList"), "{out}");
+
+        // Optional methods.
+        assert!(out.contains(".ofNullable("), "{out}");
+        assert!(out.contains(".isPresent("), "{out}");
+        assert!(out.contains(".orElse("), "{out}");
+        assert!(out.contains(".orElseGet("), "{out}");
+        assert!(out.contains(".orElseThrow("), "{out}");
+        assert!(out.contains(".ifPresent("), "{out}");
+        assert!(out.contains(".ifPresentOrElse("), "{out}");
     }
 
     #[test]
