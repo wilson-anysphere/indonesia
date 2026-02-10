@@ -716,7 +716,9 @@ fn validate_ai_privacy_patterns(config: &NovaConfig, out: &mut ValidationDiagnos
         if let Err(err) = globset::Glob::new(pattern) {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: format!("ai.privacy.excluded_paths[{idx}]"),
-                message: format!("invalid glob pattern: {err}"),
+                // Avoid echoing the raw pattern back into diagnostics: users may put secrets in
+                // `excluded_paths` and share config diagnostics/logs.
+                message: format!("invalid glob pattern: {}", summarize_glob_error(&err)),
             });
         }
     }
@@ -758,6 +760,27 @@ fn summarize_regex_error(err: &regex::Error) -> String {
         regex::Error::CompiledTooBig(size) => format!("compiled regex too big ({size} bytes)"),
         _ => "unknown error".to_string(),
     }
+}
+
+fn summarize_glob_error(err: &globset::Error) -> String {
+    // `globset` includes the raw pattern in its `Display` output, e.g.
+    // `error parsing glob '<pattern>': <reason>`.
+    //
+    // The pattern itself may contain sensitive path segments, so strip it and keep the reason.
+    let message = err.to_string();
+    if let Some(pos) = message.find("':") {
+        return message[pos + 2..]
+            .trim_start_matches(':')
+            .trim()
+            .to_string();
+    }
+    if let Some(pos) = message.find("\":") {
+        return message[pos + 2..]
+            .trim_start_matches(':')
+            .trim()
+            .to_string();
+    }
+    message
 }
 
 fn validate_ai_code_edit_policy(config: &NovaConfig, out: &mut ValidationDiagnostics) {

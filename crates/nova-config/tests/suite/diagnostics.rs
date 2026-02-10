@@ -525,6 +525,39 @@ excluded_paths = ["["]
 }
 
 #[test]
+fn validates_ai_privacy_excluded_paths_do_not_echo_pattern_values() {
+    let secret = "super-secret-excluded-path";
+    let text = format!(
+        r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+excluded_paths = ["{secret}["]
+"#,
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    match &diagnostics.errors[0] {
+        ConfigValidationError::InvalidValue { toml_path, message } => {
+            assert_eq!(toml_path, "ai.privacy.excluded_paths[0]");
+            assert!(
+                message.starts_with("invalid glob pattern:"),
+                "unexpected message: {message}"
+            );
+            assert!(
+                !message.contains(secret),
+                "invalid glob diagnostics should not echo the raw pattern value: {message}"
+            );
+        }
+        other => panic!("expected InvalidValue error, got {other:?}"),
+    }
+}
+
+#[test]
 fn validates_ai_privacy_redact_patterns_are_valid_regexes() {
     let text = r#"
 [ai]
