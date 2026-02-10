@@ -385,7 +385,7 @@ enabled = true
 semantic_search = true
 
 [ai.provider]
-kind = "open_ai"
+concurrency = 0
 "#,
     )
     .expect("write nova.toml");

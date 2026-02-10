@@ -579,6 +579,22 @@ high-level **action** metrics so consumers can attribute LLM traffic to specific
 - `ai/action/generate_tests`
 - `ai/action/code_review`
 
+Nova also records semantic-search metrics (used for semantic search itself and for AI context
+building). These are recorded even when semantic search is using the offline trigram fallback
+backend.
+
+- `ai/semantic_search/index_file` — semantic-search file updates (one per `index_file()` call)
+- `ai/semantic_search/search` — semantic-search query execution (one per `search()` call)
+
+The stdio server additionally records workspace-indexing metrics for best-effort background
+workspace indexing (see `nova/semanticSearch/indexStatus`):
+
+- `lsp/semantic_search/workspace_index` — end-to-end workspace indexing run duration
+- `lsp/semantic_search/workspace_index/file` — per-file indexing work (requestCount roughly equals files indexed)
+- `lsp/semantic_search/workspace_index/skipped_safe_mode` — indexing was gated by safe-mode
+- `lsp/semantic_search/workspace_index/skipped_missing_workspace_root` — indexing was gated by missing/invalid root
+- `lsp/semantic_search/workspace_index/skipped_runtime_unavailable` — indexing was gated by missing AI runtime
+
 Error kind breakdown (counts are recorded under `errorCount` unless otherwise noted):
 
 - `ai/chat/error/timeout` (`timeoutCount`)

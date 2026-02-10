@@ -382,4 +382,54 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].path, PathBuf::from("src/A.java"));
     }
+
+    #[test]
+    fn semantic_search_records_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+
+        let before_snapshot = metrics.snapshot();
+        let before_index = before_snapshot
+            .methods
+            .get("ai/semantic_search/index_file")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_search = before_snapshot
+            .methods
+            .get("ai/semantic_search/search")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+
+        let db = VirtualWorkspace::new([
+            ("src/A.java".to_string(), "class A { void hello() {} }".to_string()),
+            ("src/B.java".to_string(), "class B { void goodbye() {} }".to_string()),
+        ]);
+
+        let mut search = TrigramSemanticSearch::new();
+        search.index_project(&db);
+        let _results = search.search("hello");
+
+        let after_snapshot = metrics.snapshot();
+        let after_index = after_snapshot
+            .methods
+            .get("ai/semantic_search/index_file")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_search = after_snapshot
+            .methods
+            .get("ai/semantic_search/search")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_index >= before_index.saturating_add(2),
+            "expected ai/semantic_search/index_file to record at least one update per indexed file"
+        );
+        assert!(
+            after_search >= before_search.saturating_add(1),
+            "expected ai/semantic_search/search to record requests"
+        );
+    }
 }
