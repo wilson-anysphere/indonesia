@@ -344,6 +344,10 @@ async fn deanonymization_does_not_rewrite_inside_strings_or_comments() {
 
     assert_eq!(out.len(), 1);
     assert_eq!(
+        out[0].label, "getSecretToken",
+        "expected label to be de-anonymized"
+    );
+    assert_eq!(
         out[0].insert_text,
         format!(
             r#"char q = '\''; String s = "a\"{method_token}\""; // {method_token}
