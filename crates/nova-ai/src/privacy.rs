@@ -92,7 +92,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // Note: Java commonly emits `file:/...` for absolute file URIs (single slash), while other
         // tooling emits `file:///...`. We treat any `file:` token with an immediate, non-delimited
         // payload as a potential path leak.
-        Regex::new(r#"(?mi)(?P<path>\bfile:[^\s"'<>)\]}]+)"#).expect("valid file uri regex")
+        Regex::new(r#"(?mi)(?P<path>\bfile:[^\r\n"'<>)\]}]+)"#).expect("valid file uri regex")
     });
 
     // UNC paths / network shares (e.g. `\\server\share\path\file.txt`), including the escaped form
@@ -100,9 +100,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     static WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Require 2+ characters for the server/share segments to avoid accidentally matching common
         // escape sequences in code (e.g. `\\n\\t`).
-        Regex::new(
-            r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$-]{2,}\\+[A-Za-z0-9._$-]{2,}(?:\\+[A-Za-z0-9._$-]+)*)",
-        )
+        Regex::new(r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$-]{2,}\\+[A-Za-z0-9._$-]{2,}(?:\\+[A-Za-z0-9._$()-]+(?: [A-Za-z0-9._$()-]+)*)*)")
             .expect("valid windows UNC path regex")
     });
 
@@ -110,12 +108,17 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     //
     // These show up in Windows APIs, Java/Rust stack traces, and some build tooling.
     static WINDOWS_DEVICE_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?m)(?P<path>\\{2,}[?.]\\+[^\s"'<>)\]}]+)"#)
+        Regex::new(r#"(?m)(?P<path>\\{2,}[?.]\\+[^\r\n"'<>)\]}]+)"#)
             .expect("valid windows device path regex")
     });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
+        // Allow spaces inside directory segments (common in macOS/Windows-y projects), but keep the
+        // final path segment space-free so we don't greedily consume non-path prose following the
+        // path token.
+        Regex::new(
+            r"(?m)(?P<path>/(?:[A-Za-z0-9._()\\-]+(?: [A-Za-z0-9._()\\-]+)*/)+[A-Za-z0-9._()\\-]+)",
+        )
             .expect("valid unix path regex")
     });
     // Basic Windows drive paths (e.g. `C:\Users\alice\file.txt`).
@@ -126,7 +129,9 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     static WINDOWS_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Also match the forward-slash form (`C:/Users/alice/file.txt`) which is common in some
         // toolchains and cross-platform logs.
-        Regex::new(r"(?m)(?P<path>[A-Za-z]:[\\/]+[A-Za-z0-9._\\-\\\\/]+)")
+        Regex::new(
+            r"(?m)(?P<path>[A-Za-z]:[\\/]+(?:[A-Za-z0-9._$()\\-]+(?: [A-Za-z0-9._$()\\-]+)*[\\/]+)*[A-Za-z0-9._$()\\-]+)",
+        )
             .expect("valid windows path regex")
     });
 
@@ -321,5 +326,37 @@ mod tests {
         assert!(!out.contains(r"\\?\UNC\server123\share456"), "{out}");
         assert!(!out.contains("server123"), "{out}");
         assert!(!out.contains("share456"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_paths_with_spaces_and_parentheses() {
+        let prompt = r#"opening C:\Program Files (x86)\Acme\secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"C:\Program Files (x86)\Acme\secret.txt"), "{out}");
+        assert!(!out.contains("Program Files"), "{out}");
+        assert!(!out.contains("Acme"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unix_paths_with_spaces_in_segments() {
+        let prompt = r#"opening /Users/alice/My Project/secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("/Users/alice/My Project/secret.txt"), "{out}");
+        assert!(!out.contains("My Project"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_device_paths_with_spaces() {
+        let prompt = r#"opening \\?\C:\Program Files\Acme\secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"\\?\C:\Program Files\Acme\secret.txt"), "{out}");
+        assert!(!out.contains("Program Files"), "{out}");
+        assert!(!out.contains("Acme"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
     }
 }
