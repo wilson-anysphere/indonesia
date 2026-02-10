@@ -103,6 +103,14 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         )
             .expect("valid windows UNC path regex")
     });
+
+    // Windows "device" path prefixes like `\\?\C:\...`, `\\?\UNC\server\share\...`, or `\\.\pipe\...`.
+    //
+    // These show up in Windows APIs, Java/Rust stack traces, and some build tooling.
+    static WINDOWS_DEVICE_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?m)(?P<path>\\{2,}[?.]\\+[^\s"'<>)\]}]+)"#)
+            .expect("valid windows device path regex")
+    });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?m)(?P<path>/[A-Za-z0-9._\\-]+(?:/[A-Za-z0-9._\\-]+)+)")
@@ -121,6 +129,7 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     });
 
     let out = FILE_URI_RE.replace_all(text, "[PATH]").into_owned();
+    let out = WINDOWS_DEVICE_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     let out = WINDOWS_UNC_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     let out = UNIX_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
@@ -223,6 +232,14 @@ mod tests {
     }
 
     #[test]
+    fn redact_file_paths_rewrites_windows_absolute_paths_with_forward_slashes() {
+        let prompt = r#"log("opening C:/Users/alice/secret.txt")"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("C:/Users/alice/secret.txt"), "{out}");
+    }
+
+    #[test]
     fn redact_file_paths_rewrites_unix_file_uris() {
         let prompt = r#"opening file:///home/alice/project/Secret.java"#;
         let out = redact_file_paths(prompt);
@@ -257,9 +274,25 @@ mod tests {
 
     #[test]
     fn redact_file_paths_rewrites_unc_paths() {
-        let prompt = r#"opening \\server\share\Users\alice\secret.txt"#;
+        let prompt = r#"opening \\server123\share456\Users\alice\secret.txt"#;
         let out = redact_file_paths(prompt);
         assert!(out.contains("[PATH]"), "{out}");
-        assert!(!out.contains(r"\\server\share\Users\alice\secret.txt"), "{out}");
+        assert!(
+            !out.contains(r"\\server123\share456\Users\alice\secret.txt"),
+            "{out}"
+        );
+        assert!(!out.contains("server123"), "{out}");
+        assert!(!out.contains("share456"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_windows_device_paths() {
+        let prompt = r#"opening \\?\UNC\server123\share456\Users\alice\secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"\\?\UNC\server123\share456"), "{out}");
+        assert!(!out.contains("server123"), "{out}");
+        assert!(!out.contains("share456"), "{out}");
     }
 }
