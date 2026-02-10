@@ -143,23 +143,33 @@ where
             }
         };
         let mut candidates = raw_paths.paths;
+        let header_pair = if candidates.len() == 2 {
+            Some((candidates[0].clone(), candidates[1].clone()))
+        } else {
+            None
+        };
+
+        // Also consider `rename from/to` and `copy from/to` metadata within the section. This
+        // prevents bypasses where the `diff --git` header paths are truncated or inconsistent
+        // with the rest of the section.
+        let metadata_paths = extract_git_section_metadata_paths(section_lines)?;
+        candidates.extend(metadata_paths.iter().cloned());
 
         // Git diffs support `--src-prefix` / `--dst-prefix`, which can change the default `a/` and
         // `b/` pseudo prefixes to arbitrary strings. These prefixes are not typically part of the
         // repository-relative path patterns used by `excluded_paths`.
         //
-        // Best-effort: if we have both an old and new path, also consider their common suffix
-        // (split on `/`) as an exclusion match candidate.
-        if candidates.len() == 2 {
-            if let Some(suffix) = common_path_suffix(&candidates[0], &candidates[1]) {
-                candidates.push(suffix);
+        // Best-effort: if we have both an old and new path *and* we did not see rename/copy
+        // metadata, also consider their common suffix (split on `/`) as an exclusion match
+        // candidate. (For rename/copy, the metadata already provides reliable repo-relative
+        // paths, and a suffix-only candidate like `foo.txt` could lead to over-exclusion.)
+        if metadata_paths.is_empty() {
+            if let Some((old, new)) = header_pair {
+                if let Some(suffix) = common_path_suffix(&old, &new) {
+                    candidates.push(suffix);
+                }
             }
         }
-
-        // Also consider `rename from/to` and `copy from/to` metadata within the section. This
-        // prevents bypasses where the `diff --git` header paths are truncated or inconsistent
-        // with the rest of the section.
-        candidates.extend(extract_git_section_metadata_paths(section_lines)?);
 
         // If the section includes a unified header pair, treat those paths as candidates too.
         // This prevents bypasses where the `diff --git` header points at an allowed path but the

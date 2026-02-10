@@ -219,6 +219,26 @@ index 2222222..3333333 100644
 }
 
 #[test]
+fn git_diff_rename_does_not_use_suffix_only_candidate_for_exclusion() {
+    // Regression test: for rename/copy diffs, suffix-only candidates like `foo.txt` are too
+    // ambiguous; rely on `rename from/to` metadata instead.
+    let excluded_path = "foo.txt";
+
+    let diff = r#"diff --git old/src/foo.txt new/other/foo.txt
+similarity index 100%
+rename from src/foo.txt
+rename to other/foo.txt
+"#;
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    assert_eq!(filtered, diff);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 0);
+}
+
+#[test]
 fn git_diff_unquoted_paths_with_backslashes_are_not_unescaped() {
     // Some diffs may contain literal backslashes in file names (valid on Unix) when
     // `core.quotePath=false`. These must be treated as literal characters, not C-style escapes.
