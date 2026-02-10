@@ -879,6 +879,90 @@ interface I {
 }
 
 #[test]
+fn completion_resolves_nested_class_field_in_member_access() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  class Inner {
+    String t = "x";
+
+    void m() {
+      t.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for nested class field receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_interface_constant_in_package_as_value_receiver() {
+    let a_path = PathBuf::from("/workspace/src/main/java/p/A.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/p/I.java");
+
+    let a_text = r#"
+package p;
+class A implements I {
+  void m() {
+    S.<|>
+  }
+}
+"#;
+    let i_text = r#"
+package p;
+interface I {
+  String S = "x";
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(a_path, a_text, vec![(i_path, i_text)]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for packaged interface constant receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_inherited_field_in_package_as_value_receiver() {
+    let a_path = PathBuf::from("/workspace/src/main/java/p/A.java");
+    let base_path = PathBuf::from("/workspace/src/main/java/p/Base.java");
+
+    let a_text = r#"
+package p;
+class A extends Base {
+  void m() {
+    s.<|>
+  }
+}
+"#;
+    let base_text = r#"
+package p;
+class Base {
+  String s = "x";
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(a_path, a_text, vec![(base_path, base_text)]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for packaged inherited field receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"

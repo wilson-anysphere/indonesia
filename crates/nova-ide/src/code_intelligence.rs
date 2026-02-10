@@ -18073,11 +18073,54 @@ fn infer_receiver(
         fn semantic_field_type_for_class(
             types: &mut TypeStore,
             analysis: &Analysis,
+            file_ctx: &CompletionResolveCtx,
             class: &ClassDecl,
             field_name: &str,
         ) -> Option<Type> {
-            let class_id =
-                types.class_id(&class.name).unwrap_or_else(|| ensure_local_class_id(types, analysis, class));
+            fn binary_name_for_class_decl(
+                analysis: &Analysis,
+                file_ctx: &CompletionResolveCtx,
+                class: &ClassDecl,
+            ) -> String {
+                // Mirror `java_semantics::source_types::binary_name` so we can look up workspace
+                // types in the `TypeStore` using their fully-qualified binary names.
+                //
+                // For nested classes, `SourceTypeProvider` registers them as `Outer$Inner` (with an
+                // optional `package.` prefix). `analysis.classes` only records the simple name, so
+                // we reconstruct the binary name using lexical containment.
+                let mut chain: Vec<&ClassDecl> = analysis
+                    .classes
+                    .iter()
+                    .filter(|c| span_contains(c.span, class.name_span.start))
+                    .collect();
+                // Outermost class has the longest span; build from outer → inner.
+                chain.sort_by_key(|c| c.span.len());
+                chain.reverse();
+
+                let mut out = String::new();
+                if let Some(pkg) = file_ctx.package.as_deref().filter(|pkg| !pkg.is_empty()) {
+                    out.push_str(pkg);
+                    out.push('.');
+                }
+
+                if let Some((outer, nested)) = chain.split_first() {
+                    out.push_str(&outer.name);
+                    for cls in nested {
+                        out.push('$');
+                        out.push_str(&cls.name);
+                    }
+                } else {
+                    out.push_str(&class.name);
+                }
+
+                out
+            }
+
+            let binary_name = binary_name_for_class_decl(analysis, file_ctx, class);
+            let class_id = types
+                .class_id(&binary_name)
+                .or_else(|| types.class_id(&class.name))
+                .unwrap_or_else(|| ensure_local_class_id(types, analysis, class));
 
             // Traverse the class hierarchy, using the nearest field declaration (Java field hiding
             // rules) and collecting interfaces so we can search for inherited interface constants
@@ -18174,7 +18217,7 @@ fn infer_receiver(
                 return Some(parse_source_type_in_context(types, file_ctx, &field.ty));
             }
 
-            if let Some(ty) = semantic_field_type_for_class(types, analysis, class, name) {
+            if let Some(ty) = semantic_field_type_for_class(types, analysis, file_ctx, class, name) {
                 return Some(ty);
             }
         }
