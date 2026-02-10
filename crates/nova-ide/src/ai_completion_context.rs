@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use lsp_types::Position;
 use nova_ai::MultiTokenCompletionContext;
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
@@ -59,8 +57,13 @@ pub fn multi_token_completion_context(
     let analysis = analyze_for_completion_context(text);
 
     let (_, receiver_type) = receiver_at_offset(text, offset, &analysis);
-    let available_methods = available_methods_for_receiver(receiver_type.as_deref(), &analysis);
-    let importable_paths = importable_paths_for_receiver(receiver_type.as_deref());
+    let available_methods = normalize_completion_items(available_methods_for_receiver(
+        receiver_type.as_deref(),
+        &analysis,
+    ));
+    let importable_paths = normalize_importable_paths(importable_paths_for_receiver(
+        receiver_type.as_deref(),
+    ));
 
     let surrounding_code = surrounding_code_window(text, &index, position, offset, 10);
 
@@ -178,19 +181,24 @@ fn available_methods_for_receiver(
             .iter()
             .map(|(name, _)| (*name).to_string())
             .collect(),
-        _ => dedup_preserve_order(analysis.methods.clone()),
+        _ => analysis.methods.clone(),
     }
 }
 
-fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for item in items {
-        if seen.insert(item.clone()) {
-            out.push(item);
-        }
-    }
-    out
+fn normalize_completion_items(mut items: Vec<String>) -> Vec<String> {
+    items.retain(|item| !item.trim().is_empty());
+    items.sort_unstable();
+    items.dedup();
+    items.truncate(MultiTokenCompletionContext::MAX_AVAILABLE_METHODS);
+    items
+}
+
+fn normalize_importable_paths(mut items: Vec<String>) -> Vec<String> {
+    items.retain(|item| !item.trim().is_empty());
+    items.sort_unstable();
+    items.dedup();
+    items.truncate(MultiTokenCompletionContext::MAX_IMPORTABLE_PATHS);
+    items
 }
 
 fn importable_paths_for_receiver(receiver_type: Option<&str>) -> Vec<String> {

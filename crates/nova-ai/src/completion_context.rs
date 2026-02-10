@@ -11,6 +11,19 @@ pub struct MultiTokenCompletionContext {
     pub importable_paths: Vec<String>,
 }
 
+impl MultiTokenCompletionContext {
+    /// Maximum number of method names included in prompts (and typically in the IDE-side context).
+    ///
+    /// Keeping this bounded ensures prompts remain stable and fit within
+    /// [`CompletionContextBuilder::max_prompt_chars`] without needing to hard-truncate the prompt
+    /// mid-line.
+    pub const MAX_AVAILABLE_METHODS: usize = 200;
+
+    /// Maximum number of importable paths included in prompts (and typically in the IDE-side
+    /// context).
+    pub const MAX_IMPORTABLE_PATHS: usize = 50;
+}
+
 /// A deterministic prompt builder for multi-token completions.
 #[derive(Clone, Debug, Default)]
 pub struct CompletionContextBuilder {
@@ -105,7 +118,11 @@ impl CompletionContextBuilder {
         prompt.push_str(&format!("Expected type: {}\n", expected_type.as_ref()));
         prompt.push_str("\n");
         prompt.push_str("Available methods:\n");
-        for method in &ctx.available_methods {
+        for method in ctx
+            .available_methods
+            .iter()
+            .take(MultiTokenCompletionContext::MAX_AVAILABLE_METHODS)
+        {
             prompt.push_str("- ");
             prompt.push_str(escape_markdown_fence_payload(method).as_ref());
             prompt.push('\n');
@@ -113,7 +130,11 @@ impl CompletionContextBuilder {
         if !ctx.importable_paths.is_empty() {
             prompt.push('\n');
             prompt.push_str("Importable symbols:\n");
-            for path in &ctx.importable_paths {
+            for path in ctx
+                .importable_paths
+                .iter()
+                .take(MultiTokenCompletionContext::MAX_IMPORTABLE_PATHS)
+            {
                 prompt.push_str("- ");
                 prompt.push_str(escape_markdown_fence_payload(path).as_ref());
                 prompt.push('\n');
@@ -212,5 +233,43 @@ mod tests {
 
         assert_eq!(truncated.len(), emoji_idx);
         assert!(!truncated.contains('😀'));
+    }
+
+    #[test]
+    fn prompt_truncates_available_methods_deterministically() {
+        let max = MultiTokenCompletionContext::MAX_AVAILABLE_METHODS;
+        let methods = (0..(max + 10))
+            .map(|idx| format!("method{idx:04}"))
+            .collect::<Vec<_>>();
+
+        let ctx = MultiTokenCompletionContext {
+            receiver_type: Some("Foo".into()),
+            expected_type: Some("Bar".into()),
+            surrounding_code: "foo.".into(),
+            available_methods: methods.clone(),
+            importable_paths: vec![],
+        };
+
+        let builder = CompletionContextBuilder::new(100_000);
+        let prompt = builder.build_completion_prompt(&ctx, 1);
+
+        let mut lines = prompt.lines();
+        while let Some(line) = lines.next() {
+            if line == "Available methods:" {
+                break;
+            }
+        }
+
+        let prompt_methods = lines
+            .take_while(|line| !line.is_empty())
+            .map(|line| line.strip_prefix("- ").expect("method bullet"))
+            .collect::<Vec<_>>();
+
+        let expected = methods.iter().take(max).map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(prompt_methods, expected);
+        assert!(
+            !prompt.contains(&format!("- {}\n", methods[max])),
+            "expected methods past the cap to be omitted from the prompt"
+        );
     }
 }
