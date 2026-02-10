@@ -10412,23 +10412,95 @@ pub(crate) fn field_type_for_receiver_type(
         return Some("int".to_string());
     }
 
-    ensure_type_fields_loaded(&mut types, &receiver_ty);
-    let class_id = class_id_of_type(&mut types, &receiver_ty)?;
-    let class_def = types.class(class_id)?;
+    // Arrays only expose `length` (handled above).
+    if matches!(receiver_ty, Type::Array(_)) {
+        return None;
+    }
 
-    // Prefer instance fields, but allow accessing static fields through an instance (legal Java).
-    let field = class_def
-        .fields
-        .iter()
-        .find(|field| field.name == field_name && !field.is_static)
-        .or_else(|| {
-            class_def
+    let class_id = class_id_of_type(&mut types, &receiver_ty)?;
+
+    // Traverse the class hierarchy, preferring instance fields, but falling back to static fields
+    // (Java allows accessing static fields through instances).
+    let mut instance_match: Option<Type> = None;
+    let mut static_match: Option<Type> = None;
+    let mut interfaces = Vec::<Type>::new();
+    let mut current = Some(class_id);
+    let mut seen = HashSet::<ClassId>::new();
+    while let Some(id) = current.take() {
+        if !seen.insert(id) {
+            break;
+        }
+
+        let class_ty = Type::class(id, vec![]);
+        ensure_type_fields_loaded(&mut types, &class_ty);
+
+        let Some(class_def) = types.class(id) else {
+            break;
+        };
+
+        interfaces.extend(class_def.interfaces.clone());
+
+        if instance_match.is_none() {
+            if let Some(field) = class_def
+                .fields
+                .iter()
+                .find(|field| field.name == field_name && !field.is_static)
+            {
+                instance_match = Some(field.ty.clone());
+            }
+        }
+
+        if static_match.is_none() {
+            if let Some(field) = class_def
                 .fields
                 .iter()
                 .find(|field| field.name == field_name && field.is_static)
-        })?;
+            {
+                static_match = Some(field.ty.clone());
+            }
+        }
 
-    Some(format_type_fully_qualified(&types, &field.ty))
+        let super_ty = class_def.super_class.clone();
+        current = super_ty
+            .as_ref()
+            .and_then(|ty| class_id_of_type(&mut types, ty));
+    }
+
+    if let Some(ty) = instance_match.or(static_match) {
+        return Some(format_type_fully_qualified(&types, &ty));
+    }
+
+    // Interface fields (constants) are inherited. Search implemented interfaces (and their
+    // super-interfaces) for static fields.
+    let mut queue: VecDeque<Type> = interfaces.into();
+    let mut seen_ifaces = HashSet::<ClassId>::new();
+    while let Some(iface_ty) = queue.pop_front() {
+        ensure_type_fields_loaded(&mut types, &iface_ty);
+        let Some(iface_id) = class_id_of_type(&mut types, &iface_ty) else {
+            continue;
+        };
+        if !seen_ifaces.insert(iface_id) {
+            continue;
+        }
+
+        let Some(class_def) = types.class(iface_id) else {
+            continue;
+        };
+
+        if let Some(field) = class_def
+            .fields
+            .iter()
+            .find(|field| field.name == field_name && field.is_static)
+        {
+            return Some(format_type_fully_qualified(&types, &field.ty));
+        }
+
+        for super_iface in &class_def.interfaces {
+            queue.push_back(super_iface.clone());
+        }
+    }
+
+    None
 }
 
 #[cfg(any(feature = "ai", test))]
