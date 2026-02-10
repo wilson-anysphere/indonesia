@@ -8,14 +8,16 @@ use crate::{
     AiError,
 };
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use nova_config::{AiConfig, AiProviderKind};
 use nova_metrics::MetricsRegistry;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::Path,
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex as TokioMutex, Notify, Semaphore};
@@ -216,6 +218,68 @@ fn record_list_models_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
             metrics.record_error(AI_LIST_MODELS_METRIC);
             metrics.record_error(AI_LIST_MODELS_ERROR_UNEXPECTED_RESPONSE_METRIC);
         }
+    }
+}
+
+struct ChatStreamMetricsStream {
+    inner: AiStream,
+    metrics: &'static MetricsRegistry,
+    start: Instant,
+    recorded: bool,
+}
+
+impl ChatStreamMetricsStream {
+    fn new(inner: AiStream, metrics: &'static MetricsRegistry, start: Instant) -> Self {
+        Self {
+            inner,
+            metrics,
+            start,
+            recorded: false,
+        }
+    }
+
+    fn record(&mut self, err: Option<&AiError>) {
+        if self.recorded {
+            return;
+        }
+
+        self.metrics
+            .record_request(AI_CHAT_STREAM_METRIC, self.start.elapsed());
+        if let Some(err) = err {
+            record_chat_stream_error_metrics(self.metrics, err);
+        }
+        self.recorded = true;
+    }
+}
+
+impl Stream for ChatStreamMetricsStream {
+    type Item = Result<String, AiError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
+            Poll::Ready(Some(Err(err))) => {
+                this.record(Some(&err));
+                Poll::Ready(Some(Err(err)))
+            }
+            Poll::Ready(None) => {
+                this.record(None);
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for ChatStreamMetricsStream {
+    fn drop(&mut self) {
+        if self.recorded {
+            return;
+        }
+
+        let err = AiError::Cancelled;
+        self.record(Some(&err));
     }
 }
 
@@ -1183,14 +1247,11 @@ impl LlmClient for AiClient {
 
                     metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
 
-                    let metrics_start_for_stream = metrics_start;
                     let stream = async_stream::try_stream! {
                         yield hit;
-                        metrics.record_request(
-                            AI_CHAT_STREAM_METRIC,
-                            metrics_start_for_stream.elapsed(),
-                        );
                     };
+                    let stream: AiStream = Box::pin(stream);
+                    let stream = ChatStreamMetricsStream::new(stream, metrics, metrics_start);
                     return Ok(Box::pin(stream));
                 }
                 None => {
@@ -1346,7 +1407,6 @@ impl LlmClient for AiClient {
         let cancel_for_stream = cancel.clone();
         let cache_for_stream = self.cache.clone();
         let cache_key_for_stream = cache_key;
-        let metrics_start_for_stream = metrics_start;
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
@@ -1423,13 +1483,11 @@ impl LlmClient for AiClient {
                 }
             }
 
-            metrics.record_request(AI_CHAT_STREAM_METRIC, metrics_start_for_stream.elapsed());
-            if let Err(err) = &stream_result {
-                record_chat_stream_error_metrics(metrics, err);
-            }
             stream_result?;
         };
 
+        let stream: AiStream = Box::pin(stream);
+        let stream = ChatStreamMetricsStream::new(stream, metrics, metrics_start);
         Ok(Box::pin(stream))
     }
 
@@ -2616,6 +2674,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct NeverEndingStreamProvider;
+
+    #[async_trait]
+    impl LlmProvider for NeverEndingStreamProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            let stream = async_stream::try_stream! {
+                yield "chunk".to_string();
+                futures::future::pending::<()>().await;
+                yield "never".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn chat_stream_success_increments_metrics() {
         let _guard = crate::test_support::metrics_lock()
@@ -2793,6 +2882,103 @@ mod tests {
         assert!(
             after >= before.saturating_add(1),
             "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_drop_early_records_cancelled_metrics() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let metrics = nova_metrics::MetricsRegistry::global();
+        metrics.reset();
+
+        let before_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let before_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let before_cancelled = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: Arc::new(NeverEndingStreamProvider),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig::default(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let mut stream = client
+            .chat_stream(request, CancellationToken::new())
+            .await
+            .expect("stream starts");
+        let first = stream
+            .next()
+            .await
+            .expect("stream yields")
+            .expect("chunk ok");
+        assert_eq!(first, "chunk");
+        drop(stream);
+
+        let after_requests = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.request_count)
+            .unwrap_or(0);
+        let after_errors = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        let after_cancelled = metrics
+            .snapshot()
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+
+        assert!(
+            after_requests >= before_requests.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} request_count to increment"
+        );
+        assert!(
+            after_errors >= before_errors.saturating_add(1),
+            "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
+        );
+        assert!(
+            after_cancelled >= before_cancelled.saturating_add(1),
+            "expected {AI_CHAT_STREAM_ERROR_CANCELLED_METRIC} error_count to increment"
         );
     }
 
