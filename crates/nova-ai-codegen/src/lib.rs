@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -143,6 +144,16 @@ pub struct ErrorReport {
     pub summary: String,
 }
 
+const ERROR_REPORT_MAX_FILES_IN_SUMMARY: usize = 8;
+const ERROR_REPORT_MIN_DIAGNOSTICS_IN_REPORT: usize = 10;
+const ERROR_REPORT_DIAGNOSTICS_SLACK: usize = 5;
+const ERROR_REPORT_MAX_DIAGNOSTICS_IN_REPORT: usize = 50;
+const ERROR_REPORT_MAX_CONTEXT_SNIPPET_BYTES: usize = 1200;
+const ERROR_REPORT_MAX_CONTEXT_LINE_BYTES: usize = 240;
+const ERROR_REPORT_MAX_CARET_COLUMN: usize = 120;
+const ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES: usize = 16 * 1024;
+const ERROR_REPORT_PROMPT_BLOCK_MAX_DIAGNOSTICS: usize = 50;
+
 #[derive(Debug, Clone)]
 pub struct DiagnosticWithContext {
     pub file: String,
@@ -154,27 +165,136 @@ pub struct DiagnosticWithContext {
 impl ErrorReport {
     pub fn to_prompt_block(&self) -> String {
         let mut out = String::new();
-        out.push_str(&self.summary);
+
+        // Deterministic, size-bounded output for both model repair prompts and user-facing
+        // diagnostics. We defensively clamp both diagnostic count and total bytes.
+        push_truncated_with_notice(
+            &mut out,
+            &self.summary,
+            ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES,
+            "\n... (summary truncated)",
+        );
         out.push('\n');
-        for diag in &self.new_diagnostics {
-            out.push_str(&format!(
-                "{}:{}:{}: {} [{}]: {}\n",
+
+        let mut included = 0usize;
+        let max_diags = self
+            .new_diagnostics
+            .len()
+            .min(ERROR_REPORT_PROMPT_BLOCK_MAX_DIAGNOSTICS);
+
+        for diag in self.new_diagnostics.iter().take(max_diags) {
+            let severity = match diag.diagnostic.severity {
+                NovaSeverity::Error => "error",
+                NovaSeverity::Warning => "warning",
+                NovaSeverity::Info => "info",
+            };
+            let bucket = match diagnostic_bucket(&diag.diagnostic) {
+                ValidationBucket::Syntax => "syntax",
+                ValidationBucket::Type => "type",
+            };
+
+            // Render each diagnostic entry into a temporary buffer so we can reason about the
+            // size impact before appending.
+            let mut entry = String::new();
+            entry.push_str(&format!(
+                "{}:{}:{}: {severity} ({bucket}) [{}]: {}\n",
                 diag.file,
                 diag.position.line + 1,
                 diag.position.character + 1,
-                match diag.diagnostic.severity {
-                    NovaSeverity::Error => "error",
-                    NovaSeverity::Warning => "warning",
-                    NovaSeverity::Info => "info",
-                },
                 diag.diagnostic.code,
                 diag.diagnostic.message
             ));
-            out.push_str(&diag.context);
-            out.push('\n');
+            let context = truncate_str_with_notice(
+                &diag.context,
+                ERROR_REPORT_MAX_CONTEXT_SNIPPET_BYTES,
+                "\n... (context truncated)\n",
+            );
+            entry.push_str(&context);
+            if !entry.ends_with('\n') {
+                entry.push('\n');
+            }
+            entry.push('\n');
+
+            if out.len().saturating_add(entry.len()) > ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES {
+                break;
+            }
+
+            out.push_str(&entry);
+            included += 1;
         }
+
+        let omitted = self.new_diagnostics.len().saturating_sub(included);
+        if omitted > 0 {
+            let notice = format!("... ({omitted} more diagnostics omitted)\n");
+            let remaining = ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES.saturating_sub(out.len());
+            if remaining > 0 {
+                push_truncated_with_notice(
+                    &mut out,
+                    &notice,
+                    remaining,
+                    "...",
+                );
+            }
+        }
+
+        truncate_string_to_char_boundary(&mut out, ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES);
         out
     }
+}
+
+impl fmt::Display for ErrorReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
+
+fn truncate_string_to_char_boundary(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+
+    let mut cut = max_bytes.min(s.len());
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
+}
+
+fn truncate_str_with_notice(s: &str, max_bytes: usize, notice: &str) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let notice_bytes = notice.len().min(max_bytes);
+    let mut cut = max_bytes.saturating_sub(notice_bytes);
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::new();
+    out.push_str(&s[..cut]);
+    // Ensure the notice itself doesn't violate the overall byte cap.
+    let mut notice_cut = notice_bytes;
+    while notice_cut > 0 && !notice.is_char_boundary(notice_cut) {
+        notice_cut -= 1;
+    }
+    out.push_str(&notice[..notice_cut]);
+    out
+}
+
+fn push_truncated_with_notice(out: &mut String, text: &str, max_bytes: usize, notice: &str) {
+    if max_bytes == 0 {
+        return;
+    }
+    if text.len() <= max_bytes {
+        out.push_str(text);
+        return;
+    }
+
+    out.push_str(&truncate_str_with_notice(text, max_bytes, notice));
 }
 
 #[derive(Debug, Clone)]
@@ -272,7 +392,7 @@ This usually means the editor selection is out of date. Re-run the code action."
     InvalidInsertRange { file: String, range: String },
     #[error("patch edited outside the allowed range: {0}")]
     EditRangeSafety(String),
-    #[error("validation failed: {report:?}")]
+    #[error("{report}")]
     ValidationFailed { report: ErrorReport },
 }
 
@@ -896,7 +1016,15 @@ fn validate_patch(
     let before_db = diagnostics_db_from_workspace(before);
     let after_db = diagnostics_db_from_workspace(after);
 
-    let mut new_diagnostics = Vec::new();
+    #[derive(Debug, Clone)]
+    struct DiagnosticStub {
+        file: String,
+        diagnostic: NovaDiagnostic,
+        position: nova_core::Position,
+        range: TextRange,
+    }
+
+    let mut stubs: Vec<DiagnosticStub> = Vec::new();
     let mut new_syntax_errors = 0usize;
     let mut new_type_errors = 0usize;
 
@@ -917,11 +1045,11 @@ fn validate_patch(
                 ValidationBucket::Syntax => {
                     new_syntax_errors += 1;
                     let (position, range) = diagnostic_position_and_range(after_text, &diag);
-                    new_diagnostics.push(DiagnosticWithContext {
+                    stubs.push(DiagnosticStub {
                         file: file.clone(),
-                        context: render_context(after_text, range, config.context_lines),
-                        position,
                         diagnostic: diag,
+                        position,
+                        range,
                     });
                 }
                 ValidationBucket::Type => {
@@ -941,11 +1069,11 @@ fn validate_patch(
 
                     if intersects {
                         new_type_errors += 1;
-                        new_diagnostics.push(DiagnosticWithContext {
+                        stubs.push(DiagnosticStub {
                             file: file.clone(),
-                            context: render_context(after_text, range, config.context_lines),
-                            position,
                             diagnostic: diag,
+                            position,
+                            range,
                         });
                     }
                 }
@@ -953,7 +1081,7 @@ fn validate_patch(
         }
     }
 
-    new_diagnostics.sort_by(|a, b| {
+    stubs.sort_by(|a, b| {
         let (a_start, a_end) = diagnostic_span_bounds(&a.diagnostic);
         let (b_start, b_end) = diagnostic_span_bounds(&b.diagnostic);
         (
@@ -975,15 +1103,106 @@ fn validate_patch(
     if new_syntax_errors > config.max_new_syntax_errors
         || new_type_errors > config.max_new_type_errors
     {
+        let total_new_errors = new_syntax_errors.saturating_add(new_type_errors);
+        let diagnostic_limit = validation_error_report_diagnostic_limit(config);
+        let shown = stubs.len().min(diagnostic_limit);
+        let omitted = stubs.len().saturating_sub(shown);
+
+        let mut new_diagnostics = Vec::with_capacity(shown);
+        for stub in stubs.into_iter().take(shown) {
+            let after_text = after.get(&stub.file).unwrap_or_default();
+            new_diagnostics.push(DiagnosticWithContext {
+                file: stub.file,
+                diagnostic: stub.diagnostic,
+                position: stub.position,
+                context: render_context(after_text, stub.range, config.context_lines),
+            });
+        }
+
+        let touched_files: Vec<String> = applied.touched_ranges.keys().cloned().collect();
+        let summary = validation_error_summary(
+            new_syntax_errors,
+            new_type_errors,
+            config,
+            &touched_files,
+            shown,
+            omitted,
+            total_new_errors,
+        );
+
         return Err(ErrorReport {
-            summary: format!(
-                "Introduced {new_syntax_errors} syntax errors and {new_type_errors} type errors.",
-            ),
+            summary,
             new_diagnostics,
         });
     }
 
     Ok(())
+}
+
+fn validation_error_report_diagnostic_limit(config: &ValidationConfig) -> usize {
+    // The validation thresholds already form a soft cap, but we always enforce a hard upper bound
+    // so error feedback stays prompt-friendly even if a patch introduces hundreds of errors.
+    let requested = config
+        .max_new_syntax_errors
+        .saturating_add(config.max_new_type_errors)
+        .saturating_add(ERROR_REPORT_DIAGNOSTICS_SLACK);
+    requested.clamp(
+        ERROR_REPORT_MIN_DIAGNOSTICS_IN_REPORT,
+        ERROR_REPORT_MAX_DIAGNOSTICS_IN_REPORT,
+    )
+}
+
+fn capped_file_list(files: &[String], cap: usize) -> (String, usize) {
+    if files.is_empty() {
+        return (String::new(), 0);
+    }
+
+    let shown = files.len().min(cap);
+    let omitted = files.len().saturating_sub(shown);
+    let mut out = files
+        .iter()
+        .take(shown)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if omitted > 0 {
+        out.push_str(&format!(", ... (+{omitted} more)"));
+    }
+    (out, omitted)
+}
+
+fn validation_error_summary(
+    new_syntax_errors: usize,
+    new_type_errors: usize,
+    config: &ValidationConfig,
+    touched_files: &[String],
+    shown_diagnostics: usize,
+    omitted_diagnostics: usize,
+    total_new_errors: usize,
+) -> String {
+    let (files, _omitted_files) = capped_file_list(touched_files, ERROR_REPORT_MAX_FILES_IN_SUMMARY);
+
+    let mut summary = String::new();
+    summary.push_str("Validation failed: introduced new compiler errors.\n");
+    summary.push_str(&format!(
+        "New errors: syntax={new_syntax_errors} (allowed {max_syntax}), type={new_type_errors} (allowed {max_type}).\n",
+        max_syntax = config.max_new_syntax_errors,
+        max_type = config.max_new_type_errors,
+    ));
+    summary.push_str(&format!(
+        "Touched files ({}): {}\n",
+        touched_files.len(),
+        if files.is_empty() { "<none>" } else { &files }
+    ));
+    if omitted_diagnostics > 0 {
+        summary.push_str(&format!(
+            "Showing {shown_diagnostics} of {total_new_errors} new errors.\n"
+        ));
+    }
+    summary.push_str(
+        "Next steps: fix syntax errors first (they can cause cascades), then resolve missing symbols/imports; regenerate with a smaller patch if needed.",
+    );
+    summary
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1160,17 +1379,26 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
 
     let mut out = String::new();
     for (idx, line) in lines.iter().enumerate().take(to).skip(from) {
-        out.push_str(&format!("{:>4} | {}\n", idx + 1, line));
+        let rendered_line =
+            truncate_str_with_notice(line, ERROR_REPORT_MAX_CONTEXT_LINE_BYTES, "...");
+        out.push_str(&format!("{:>4} | {}\n", idx + 1, rendered_line));
         if idx == start_line {
             let mut caret = String::new();
             caret.push_str("     | ");
-            caret.push_str(&" ".repeat(pos.character as usize));
+            let caret_col = (pos.character as usize)
+                .min(ERROR_REPORT_MAX_CARET_COLUMN)
+                .min(rendered_line.len());
+            caret.push_str(&" ".repeat(caret_col));
             caret.push('^');
             out.push_str(&caret);
             out.push('\n');
         }
     }
-    out
+    truncate_str_with_notice(
+        &out,
+        ERROR_REPORT_MAX_CONTEXT_SNIPPET_BYTES,
+        "\n... (context truncated)\n",
+    )
 }
 
 #[cfg(test)]
@@ -1553,7 +1781,7 @@ mod tests {
         };
 
         assert!(
-            report.summary.contains("Introduced 0 syntax errors"),
+            report.summary.contains("syntax=0"),
             "expected syntactically valid file, got: {report:?}"
         );
         assert!(
@@ -1855,6 +2083,71 @@ mod tests {
         assert!(
             prompt.contains("patch inserts too many characters"),
             "expected safety violation message in prompt:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn error_report_prompt_block_is_size_bounded_and_summary_has_counts() {
+        let config = ValidationConfig::default();
+        let touched_files: Vec<String> = (0..20)
+            .map(|idx| format!("src/File{idx}.java"))
+            .collect();
+
+        let new_syntax_errors = 120usize;
+        let new_type_errors = 80usize;
+        let total_new_errors = new_syntax_errors + new_type_errors;
+
+        // Mirror the production truncation logic: only a bounded set of diagnostics is expected
+        // to be shown in prompts.
+        let shown = ERROR_REPORT_MAX_DIAGNOSTICS_IN_REPORT;
+        let omitted = total_new_errors.saturating_sub(shown);
+        let summary = validation_error_summary(
+            new_syntax_errors,
+            new_type_errors,
+            &config,
+            &touched_files,
+            shown,
+            omitted,
+            total_new_errors,
+        );
+
+        assert!(
+            summary.contains("syntax=120"),
+            "expected syntax count in summary, got: {summary}"
+        );
+        assert!(
+            summary.contains("type=80"),
+            "expected type count in summary, got: {summary}"
+        );
+
+        let mut new_diagnostics = Vec::new();
+        for idx in 0..total_new_errors {
+            let is_syntax = idx < new_syntax_errors;
+            let code = if is_syntax { "SYNTAX" } else { "UNRESOLVED_REFERENCE" };
+            let diagnostic =
+                NovaDiagnostic::error(code, format!("synthetic diagnostic {idx}"), None);
+            new_diagnostics.push(DiagnosticWithContext {
+                file: touched_files[idx % touched_files.len()].clone(),
+                diagnostic,
+                position: nova_core::Position::new(idx as u32, 0),
+                context: "x".repeat(20_000),
+            });
+        }
+
+        let report = ErrorReport {
+            new_diagnostics,
+            summary,
+        };
+
+        let block = report.to_prompt_block();
+        assert!(
+            block.len() <= ERROR_REPORT_PROMPT_BLOCK_MAX_BYTES,
+            "prompt block exceeded size cap: {} bytes\n{block}",
+            block.len()
+        );
+        assert!(
+            block.contains("syntax=120") && block.contains("type=80"),
+            "expected counts in prompt block, got:\n{block}"
         );
     }
 
