@@ -304,6 +304,7 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
 
 const TRUNCATION_MARKER_PREFIX: &str = "\n\"[diff truncated: omitted ";
 const TRUNCATION_MARKER_SUFFIX: &str = " chars]\"\n";
+const TRUNCATION_MARKER_FALLBACK_INNER: &str = "[diff truncated]";
 
 fn truncation_marker(omitted: usize) -> String {
     // Keep the marker as a benign string literal so identifier anonymization (cloud mode)
@@ -315,6 +316,27 @@ fn truncation_marker_len(omitted: usize) -> usize {
     TRUNCATION_MARKER_PREFIX.chars().count()
         + digit_count(omitted)
         + TRUNCATION_MARKER_SUFFIX.chars().count()
+}
+
+fn marker_only_within_limit(marker: &str, max_chars: usize) -> String {
+    if marker.chars().count() <= max_chars {
+        return marker.to_string();
+    }
+
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    // With a 1-character budget, we cannot produce a well-formed string literal (it needs both an
+    // opening and closing quote). Return a best-effort hint that the marker is meant to be a
+    // string literal so cloud-mode anonymization won't treat the marker contents as identifiers.
+    if max_chars == 1 {
+        return "\"".to_string();
+    }
+
+    let inner_budget = max_chars.saturating_sub(2);
+    let inner = truncate_prefix_chars(TRUNCATION_MARKER_FALLBACK_INNER, inner_budget);
+    format!("\"{inner}\"")
 }
 
 fn digit_count(mut n: usize) -> usize {
@@ -445,7 +467,7 @@ fn truncate_git_diff_by_file_sections(
     let omitted = total_chars - kept_chars;
     let marker = truncation_marker(omitted);
     if max_chars <= marker.chars().count() {
-        return Some(truncate_prefix_chars(&marker, max_chars).to_string());
+        return Some(marker_only_within_limit(&marker, max_chars));
     }
 
     let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
@@ -574,7 +596,7 @@ fn truncate_git_diff_by_hunk_boundaries(
 
     let marker_len = marker.chars().count();
     if max_chars <= marker_len {
-        return Some(truncate_prefix_chars(&marker, max_chars).to_string());
+        return Some(marker_only_within_limit(&marker, max_chars));
     }
 
     let available_total = max_chars - marker_len;
@@ -635,7 +657,7 @@ fn truncate_by_lines_with_marker(text: &str, total_chars: usize, max_chars: usiz
 
     let marker_len = marker.chars().count();
     if max_chars <= marker_len {
-        return truncate_prefix_chars(&marker, max_chars).to_string();
+        return marker_only_within_limit(&marker, max_chars);
     }
 
     // Recompute selection with the stabilized marker length to ensure we stay within max_chars.
@@ -742,7 +764,7 @@ fn truncate_chars_with_marker(text: &str, total_chars: usize, max_chars: usize) 
 
     let marker_len = marker.chars().count();
     if max_chars <= marker_len {
-        return truncate_prefix_chars(&marker, max_chars).to_string();
+        return marker_only_within_limit(&marker, max_chars);
     }
 
     let available = max_chars - marker_len;
@@ -810,6 +832,21 @@ mod tests {
             token_budget: 10_000,
             privacy: PrivacyMode::default(),
         }
+    }
+
+    #[test]
+    fn truncation_marker_remains_string_literal_when_budget_is_tiny() {
+        let diff = format!(
+            "diff --git a/src/Main.java b/src/Main.java\n{}\n",
+            "A".repeat(256)
+        );
+
+        let out = truncate_middle_with_marker(diff.clone(), 2);
+        assert_eq!(out, "\"\"");
+
+        let out = truncate_middle_with_marker(diff, 3);
+        assert!(out.starts_with('"') && out.ends_with('"'), "{out}");
+        assert!(out.chars().count() <= 3, "{out}");
     }
 
     #[test]
