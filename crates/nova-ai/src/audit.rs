@@ -95,6 +95,60 @@ fn sanitize_text(text: &str) -> String {
     out
 }
 
+/// Sanitize an error string for non-audit tracing logs.
+///
+/// Some providers embed credentials in request URLs (notably Gemini's `?key=` query parameter).
+/// `reqwest::Error`'s `Display` output can include the full URL, so emitting `%err` directly can
+/// leak API keys into normal tracing logs.
+///
+/// This helper is intentionally conservative:
+/// - Strips URL userinfo (`user:pass@`).
+/// - Strips URL query + fragments (drops *all* query params, not just known keys).
+/// - Redacts common secret/token patterns via the same rules as audit log sanitization.
+pub(crate) fn sanitize_error_for_tracing(error: &str) -> String {
+    sanitize_text(&sanitize_urls_for_tracing(error))
+}
+
+fn sanitize_urls_for_tracing(text: &str) -> String {
+    static URL_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s]+").expect("valid regex"));
+
+    URL_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let matched = &caps[0];
+
+            // `reqwest` error strings often wrap URLs in parentheses, e.g.
+            // "... for url (https://...?...)".
+            //
+            // Our regex intentionally includes trailing punctuation like ')', which makes
+            // `Url::parse` fail. Trim common trailing punctuation and re-add it after
+            // sanitizing.
+            let mut end = matched.len();
+            while end > 0 {
+                let byte = matched.as_bytes()[end - 1];
+                match byte {
+                    b')' | b']' | b'}' | b',' | b'.' | b';' | b':' | b'"' | b'\'' | b'>' => {
+                        end -= 1;
+                    }
+                    _ => break,
+                }
+            }
+
+            let (url_part, suffix) = matched.split_at(end);
+            match url::Url::parse(url_part) {
+                Ok(mut url) => {
+                    url.set_query(None);
+                    url.set_fragment(None);
+                    let _ = url.set_username("");
+                    let _ = url.set_password(None);
+                    format!("{}{}", url.as_str(), suffix)
+                }
+                Err(_) => matched.to_string(),
+            }
+        })
+        .into_owned()
+}
+
 pub(crate) fn sanitize_url_for_log(url: &url::Url) -> String {
     let mut safe = url.clone();
     safe.set_query(None);

@@ -132,10 +132,11 @@ where
             Ok(out) => return Ok(out),
             Err(err) if attempt < retry.max_retries && should_retry(&err) => {
                 attempt += 1;
+                let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                 tracing::warn!(
                     provider = provider_label,
                     attempt,
-                    error = %err,
+                    error = %sanitized_error,
                     "embeddings request failed, retrying"
                 );
 
@@ -158,11 +159,13 @@ pub(super) fn provider_embeddings_client_from_config(
         match &config.provider.kind {
             AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
                 if let Err(err) = validate_local_only_url(&config.provider.url) {
+                    let sanitized_url = audit::sanitize_url_for_log(&config.provider.url);
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
                         provider_kind = ?config.provider.kind,
-                        url = %audit::sanitize_url_for_log(&config.provider.url),
-                        ?err,
+                        url = %sanitized_url,
+                        err = %sanitized_error,
                         "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -258,9 +261,10 @@ pub(super) fn provider_embeddings_client_from_config(
             ) {
                 Ok(base) => base,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to build Azure OpenAI embeddings client; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -270,9 +274,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let endpoint_id = match base.endpoint_id() {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute Azure OpenAI embeddings endpoint id; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -282,9 +287,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let model_id = match cached_model_id_for_azure(config) {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute Azure OpenAI embeddings cache key; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -322,9 +328,10 @@ pub(super) fn provider_embeddings_client_from_config(
             ) {
                 Ok(base) => base,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to build OpenAI embeddings client; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -334,9 +341,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let endpoint_id = match base.embeddings_endpoint_id() {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute OpenAI embeddings endpoint id; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -366,9 +374,10 @@ pub(super) fn provider_embeddings_client_from_config(
             ) {
                 Ok(base) => base,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to build embeddings client; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -378,9 +387,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let endpoint_id = match base.embeddings_endpoint_id() {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute embeddings endpoint id; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -410,9 +420,10 @@ pub(super) fn provider_embeddings_client_from_config(
             ) {
                 Ok(base) => base,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to build HTTP embeddings client; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -422,9 +433,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let endpoint_id = match base.embeddings_endpoint_id() {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute HTTP embeddings endpoint id; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -453,9 +465,10 @@ pub(super) fn provider_embeddings_client_from_config(
             ) {
                 Ok(base) => base,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to build Ollama embeddings client; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -465,9 +478,10 @@ pub(super) fn provider_embeddings_client_from_config(
             let endpoint_id = match base.endpoint_id() {
                 Ok(id) => id,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to compute Ollama embeddings endpoint id; falling back to hash embeddings"
                     );
                     return Ok(Box::new(super::LocalEmbeddingsClient::new(max_memory_bytes)));
@@ -1278,9 +1292,10 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
                         return Err(err);
                     }
 
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "Ollama /api/embed failed; falling back to /api/embeddings"
                     );
 
@@ -1339,9 +1354,10 @@ impl EmbeddingsClient for OllamaEmbeddingsClient {
                                     return Err(err);
                                 }
 
+                                let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                                 tracing::warn!(
                                     target = "nova.ai",
-                                    ?err,
+                                    err = %sanitized_error,
                                     "Ollama /api/embed failed; falling back to /api/embeddings"
                                 );
 
@@ -1408,4 +1424,160 @@ impl OllamaEmbedResponse {
 struct OllamaEmbeddingsResponse {
     #[serde(default)]
     embedding: Vec<f32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tracing::{field::Visit, Event};
+    use tracing_subscriber::{layer::Context, prelude::*, Layer};
+
+    #[derive(Debug, Clone)]
+    struct CapturedEvent {
+        fields: HashMap<String, String>,
+    }
+
+    #[derive(Clone)]
+    struct CapturingLayer {
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+    }
+
+    impl<S> Layer<S> for CapturingLayer
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+
+            let captured = CapturedEvent {
+                fields: visitor.fields,
+            };
+            self.events
+                .lock()
+                .expect("events mutex poisoned")
+                .push(captured);
+        }
+    }
+
+    #[derive(Default)]
+    struct FieldVisitor {
+        fields: HashMap<String, String>,
+    }
+
+    impl Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retry_warn_logs_sanitize_provider_errors() {
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let secret = "sk-verysecret-012345678901234567890123456789";
+
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/boom");
+            then.status(500).body("boom");
+        });
+
+        let url = {
+            let base = server.url("/boom");
+            let with_userinfo = base.replacen("http://", "http://user:pass@", 1);
+            format!("{with_userinfo}?key={secret}")
+        };
+
+        let retry = RetryConfig {
+            max_retries: 1,
+            initial_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let cancel = CancellationToken::new();
+        let client = reqwest::Client::new();
+
+        let mut first_call = true;
+        with_retry(
+            "test_provider",
+            Duration::from_secs(5),
+            &retry,
+            &cancel,
+            |timeout| {
+                let is_first = std::mem::replace(&mut first_call, false);
+                let client = client.clone();
+                let url = url.clone();
+                async move {
+                    if !is_first {
+                        return Ok(());
+                    }
+
+                    let response = client.get(&url).timeout(timeout).send().await?;
+                    let err = response.error_for_status().expect_err("expected 500 error");
+                    assert!(
+                        err.to_string().contains(secret),
+                        "expected reqwest error display to include the secret query param"
+                    );
+                    Err(err.into())
+                }
+            },
+        )
+        .await
+        .expect("retry wrapper should succeed after retry");
+
+        let events = events.lock().expect("events mutex poisoned");
+        let warn = events
+            .iter()
+            .find(|event| {
+                event
+                    .fields
+                    .get("message")
+                    .map(String::as_str)
+                    == Some("embeddings request failed, retrying")
+            })
+            .expect("expected retry warning log to be emitted");
+
+        for value in warn.fields.values() {
+            assert!(
+                !value.contains(secret),
+                "expected tracing log fields to redact the secret"
+            );
+        }
+        let error = warn.fields.get("error").expect("error field present");
+        assert!(!error.contains("user:pass@"));
+        assert!(!error.contains("?key="));
+        assert!(
+            error.contains("http error"),
+            "expected a useful high-level error message, got: {error}"
+        );
+    }
 }

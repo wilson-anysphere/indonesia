@@ -942,10 +942,12 @@ impl LlmClient for AiClient {
                                     }
 
                                     attempt += 1;
+                                    let sanitized_error =
+                                        audit::sanitize_error_for_tracing(&err.to_string());
                                     warn!(
                                         provider = ?provider_kind,
                                         attempt,
-                                        error = %err,
+                                        error = %sanitized_error,
                                         "llm request failed, retrying"
                                     );
 
@@ -1124,10 +1126,11 @@ impl LlmClient for AiClient {
                         }
 
                         attempt += 1;
+                        let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                         warn!(
                             provider = ?self.provider_kind,
                             attempt,
-                            error = %err,
+                            error = %sanitized_error,
                             "llm request failed, retrying"
                         );
 
@@ -1349,10 +1352,11 @@ impl LlmClient for AiClient {
                     }
 
                     attempt += 1;
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     warn!(
                         provider = ?self.provider_kind,
                         attempt,
-                        error = %err,
+                        error = %sanitized_error,
                         "llm stream request failed, retrying"
                     );
 
@@ -1648,6 +1652,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::TryStreamExt;
+    use httpmock::prelude::*;
     use nova_config::AiPrivacyConfig;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2047,6 +2052,146 @@ mod tests {
         assert!(
             !completion.contains(secret),
             "expected secret to be removed from audit completion"
+        );
+    }
+
+    #[derive(Clone)]
+    struct FlakyHttpErrorProvider {
+        url: String,
+        secret: String,
+        calls: Arc<AtomicUsize>,
+        client: reqwest::Client,
+    }
+
+    #[async_trait]
+    impl LlmProvider for FlakyHttpErrorProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                let response = self.client.get(&self.url).send().await?;
+                let err = response.error_for_status().expect_err("expected 500 error");
+                assert!(
+                    err.to_string().contains(&self.secret),
+                    "expected reqwest error display to include the secret query param"
+                );
+                return Err(err.into());
+            }
+
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            Err(AiError::UnexpectedResponse(
+                "FlakyHttpErrorProvider does not support streaming".to_string(),
+            ))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retry_warn_logs_sanitize_provider_errors() {
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let secret = "sk-verysecret-012345678901234567890123456789";
+
+        let server = MockServer::start();
+        let _mock = server.mock(|when, then| {
+            when.method(GET).path("/boom");
+            then.status(500).body("boom");
+        });
+
+        let url = {
+            let base = server.url("/boom");
+            let with_userinfo = base.replacen("http://", "http://user:pass@", 1);
+            format!("{with_userinfo}?key={secret}")
+        };
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(FlakyHttpErrorProvider {
+            url,
+            secret: secret.to_string(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            client: reqwest::Client::new(),
+        });
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client = AiClient {
+            provider_kind: AiProviderKind::Gemini,
+            provider,
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 16,
+            default_temperature: None,
+            request_timeout: Duration::from_secs(5),
+            audit_enabled: false,
+            provider_label: "gemini",
+            model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
+            cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
+            retry: RetryConfig {
+                max_retries: 1,
+                initial_backoff: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+            },
+        };
+
+        let out = client
+            .chat(
+                ChatRequest {
+                    messages: vec![crate::types::ChatMessage::user("hello".to_string())],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("chat should succeed after retry");
+
+        assert_eq!(out, "ok");
+
+        let events = events.lock().expect("events mutex poisoned");
+        let warn = events
+            .iter()
+            .find(|event| {
+                event
+                    .fields
+                    .get("message")
+                    .map(String::as_str)
+                    == Some("llm request failed, retrying")
+            })
+            .expect("expected retry warning log to be emitted");
+
+        for value in warn.fields.values() {
+            assert!(
+                !value.contains(secret),
+                "expected tracing log fields to redact the secret"
+            );
+        }
+
+        let error = warn.fields.get("error").expect("error field present");
+        assert!(!error.contains("user:pass@"));
+        assert!(!error.contains("?key="));
+        assert!(
+            error.contains("http error"),
+            "expected a useful high-level error message, got: {error}"
         );
     }
 
