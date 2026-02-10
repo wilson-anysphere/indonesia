@@ -45,7 +45,11 @@ impl MetricGuard {
 
 impl Drop for MetricGuard {
     fn drop(&mut self) {
-        MetricsRegistry::global().record_request(self.metric, self.started_at.elapsed());
+        let metrics = MetricsRegistry::global();
+        metrics.record_request(self.metric, self.started_at.elapsed());
+        if std::thread::panicking() {
+            metrics.record_panic(self.metric);
+        }
     }
 }
 
