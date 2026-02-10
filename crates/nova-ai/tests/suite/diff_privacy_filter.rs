@@ -219,6 +219,40 @@ index 2222222..3333333 100644
 }
 
 #[test]
+fn git_diff_custom_prefixes_with_spaces_are_filtered() {
+    let excluded_path = "src/secrets/secret file.txt";
+
+    let excluded_section = r#"diff --git old/src/secrets/secret file.txt new/src/secrets/secret file.txt
+index 1111111..2222222 100644
+--- old/src/secrets/secret file.txt	
++++ new/src/secrets/secret file.txt	
+@@ -1 +1 @@
+-old
++CUSTOM_PREFIX_SPACE_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 14; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("CUSTOM_PREFIX_SPACE_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_rename_does_not_use_suffix_only_candidate_for_exclusion() {
     // Regression test: for rename/copy diffs, suffix-only candidates like `foo.txt` are too
     // ambiguous; rely on `rename from/to` metadata instead.
