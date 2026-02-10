@@ -719,6 +719,13 @@ async fn http_provider_streaming_parsing_and_request_format() {
                     .unwrap();
             }
 
+            let accept = req
+                .headers()
+                .get(hyper::header::ACCEPT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            assert_eq!(accept, "text/event-stream");
+
             let bytes = hyper::body::to_bytes(req.into_body())
                 .await
                 .expect("read body");
@@ -786,6 +793,13 @@ async fn http_provider_streaming_falls_back_to_json_body_when_response_is_not_ss
                 .body(Body::empty())
                 .unwrap();
         }
+
+        let accept = req
+            .headers()
+            .get(hyper::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(accept, "text/event-stream");
 
         let _ = hyper::body::to_bytes(req.into_body())
             .await
