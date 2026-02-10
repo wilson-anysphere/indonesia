@@ -173,6 +173,10 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
         "prompt should not contain raw method identifier\n{captured}"
     );
     assert!(
+        captured.contains("- filter"),
+        "expected common JDK method identifier to remain readable in Available methods list\n{captured}"
+    );
+    assert!(
         !captured.contains("com.example.SecretTokenProvider"),
         "prompt should not contain raw import identifier\n{captured}"
     );
