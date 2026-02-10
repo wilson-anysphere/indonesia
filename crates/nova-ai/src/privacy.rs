@@ -98,6 +98,15 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         Regex::new(r#"(?mi)(?P<path>\bfile:[^\r\n"'<>)\]}]+)"#).expect("valid file uri regex")
     });
 
+    // Editor / tooling URIs that commonly embed filesystem paths.
+    //
+    // These are not `file:` URIs, but they often leak both hostnames and absolute paths (e.g.
+    // VS Code remote workspaces).
+    static EMBEDDED_PATH_URI_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?mi)(?P<path>\b(?:vscode-remote|vscode)://[^\r\n"'<>)\]}]+)"#)
+            .expect("valid embedded path uri regex")
+    });
+
     // UNC paths / network shares (e.g. `\\server\share\path\file.txt`), including the escaped form
     // that appears in serialized strings (`\\\\server\\\\share\\\\path`).
     static WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
@@ -193,6 +202,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // This function is on the prompt-building hot path. Use `Cow` so we only allocate when a
     // replacement actually occurs, rather than allocating once per regex stage.
     let mut out = Cow::Borrowed(text);
+
+    let replaced = EMBEDDED_PATH_URI_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
 
     let replaced = FILE_URI_RE.replace_all(out.as_ref(), "[PATH]");
     if let Cow::Owned(s) = replaced {
@@ -343,6 +357,17 @@ mod tests {
         assert!(!out.contains("id_rsa"), "{out}");
         assert!(!out.contains("~alice/project/secret.txt"), "{out}");
         assert!(!out.contains("secret.txt"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_vscode_remote_uris() {
+        let prompt =
+            r#"opening vscode-remote://ssh-remote+host/home/alice/project/Secret.java"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("vscode-remote://"), "{out}");
+        assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
+        assert!(!out.contains("ssh-remote+host"), "{out}");
     }
 
     #[test]
