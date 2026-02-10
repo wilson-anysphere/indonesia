@@ -8779,7 +8779,7 @@ async fn rerank_lsp_completions_with_ai(
     let mut core_items = Vec::with_capacity(baseline.len());
     for item in baseline {
         let kind = ai_kind_from_lsp(item.kind);
-        let detail = item.detail.as_deref().and_then(sanitize_ai_completion_detail);
+        let detail = completion_item_detail_for_ai(&item);
         core_items.push(AiCompletionItem {
             label: item.label.clone(),
             kind,
@@ -8850,20 +8850,48 @@ fn ai_kind_from_lsp(kind: Option<CompletionItemKind>) -> AiCompletionItemKind {
     }
 }
 
-#[cfg(feature = "ai")]
-fn sanitize_ai_completion_detail(detail: &str) -> Option<String> {
-    let detail = detail.trim();
-    if detail.is_empty() {
-        return None;
+#[cfg(any(test, feature = "ai"))]
+fn completion_item_detail_for_ai(item: &CompletionItem) -> Option<String> {
+    fn sanitize_detail_part(detail: &str) -> Option<&str> {
+        let detail = detail.trim();
+        if detail.is_empty() {
+            return None;
+        }
+
+        // LSP servers occasionally include file system paths in `.detail` or related label detail
+        // fields (e.g. for import candidates). Never forward those to the ranking prompt.
+        if detail.contains('/') || detail.contains('\\') {
+            return None;
+        }
+
+        Some(detail)
     }
 
-    // LSP servers occasionally include file system paths in `.detail` (e.g. for import candidates).
-    // Never forward those to the ranking prompt.
-    if detail.contains('/') || detail.contains('\\') {
-        return None;
-    }
+    let detail = item.detail.as_deref().and_then(sanitize_detail_part);
+    let label_detail = item
+        .label_details
+        .as_ref()
+        .and_then(|d| d.detail.as_deref())
+        .and_then(sanitize_detail_part);
 
-    Some(detail.to_string())
+    match (detail, label_detail) {
+        (None, None) => None,
+        (Some(detail), None) => Some(detail.to_string()),
+        (None, Some(label_detail)) => Some(label_detail.to_string()),
+        (Some(detail), Some(label_detail)) => {
+            if detail == label_detail {
+                return Some(detail.to_string());
+            }
+            if detail.contains(label_detail) {
+                return Some(detail.to_string());
+            }
+            if label_detail.contains(detail) {
+                return Some(label_detail.to_string());
+            }
+
+            Some(format!("{detail} {label_detail}"))
+        }
+    }
 }
 
 #[cfg(feature = "ai")]
@@ -20226,13 +20254,21 @@ mod tests {
             CompletionItem {
                 label: "print".to_string(),
                 kind: Some(CompletionItemKind::METHOD),
-                detail: Some("print(String value)".to_string()),
+                detail: Some("void".to_string()),
+                label_details: Some(lsp_types::CompletionItemLabelDetails {
+                    detail: Some("(String value)".to_string()),
+                    description: None,
+                }),
                 ..Default::default()
             },
             CompletionItem {
                 label: "print".to_string(),
                 kind: Some(CompletionItemKind::METHOD),
-                detail: Some("print(int v)".to_string()),
+                detail: None,
+                label_details: Some(lsp_types::CompletionItemLabelDetails {
+                    detail: Some("(int v)".to_string()),
+                    description: None,
+                }),
                 ..Default::default()
             },
             CompletionItem {
@@ -20240,26 +20276,37 @@ mod tests {
                 kind: Some(CompletionItemKind::CLASS),
                 // Should never appear in the prompt.
                 detail: Some("/home/alice/project/Foo.java".to_string()),
+                label_details: Some(lsp_types::CompletionItemLabelDetails {
+                    detail: Some("(should keep)".to_string()),
+                    description: None,
+                }),
                 ..Default::default()
             },
         ];
 
         let candidates = lsp_items
             .into_iter()
-            .map(|item| nova_core::CompletionItem {
-                label: item.label,
-                kind: nova_core::CompletionItemKind::Other,
-                detail: item.detail,
+            .map(|item| {
+                let detail = completion_item_detail_for_ai(&item);
+                nova_core::CompletionItem {
+                    label: item.label,
+                    kind: nova_core::CompletionItemKind::Other,
+                    detail,
+                }
             })
             .collect::<Vec<_>>();
 
         let prompt =
             nova_ai::CompletionRankingPromptBuilder::new(0).build_prompt(&ctx, &candidates);
-        assert!(prompt.contains("print(String value)"), "{prompt}");
-        assert!(prompt.contains("print(int v)"), "{prompt}");
+        assert!(prompt.contains("void (String value)"), "{prompt}");
+        assert!(prompt.contains("(int v)"), "{prompt}");
         assert!(
             !prompt.contains("/home/alice/project/Foo.java"),
             "expected prompt to omit file paths from candidate detail: {prompt}"
+        );
+        assert!(
+            prompt.contains("(should keep)"),
+            "expected non-path label_details.detail to still be included: {prompt}"
         );
     }
 
