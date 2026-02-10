@@ -48,7 +48,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - AI features are opt-in and mostly wired through the `nova-lsp` binary, not the incremental query engine.
-  - Embeddings-backed semantic search is feature-gated (`embeddings`) and still experimental.
+  - Embeddings-backed semantic search is feature-gated (`nova-ai/embeddings`, plus `nova-ai/embeddings-local` for `backend="local"`) and still experimental.
 
 ### `nova-ai-codegen`
 - **Purpose:** AI “code edit/codegen” pipeline: parse a structured patch response, enforce safety policies, apply edits to a virtual workspace, format touched files, validate (syntax/type) diagnostics, and optionally attempt repair before returning a patch.

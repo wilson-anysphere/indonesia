@@ -730,10 +730,11 @@ are not supported for the selected `ai.provider.kind`, Nova will log a warning a
   providers). Misconfigured endpoints are rejected by config validation and/or will fall back to
   deterministic `backend="hash"` embeddings at runtime.
 - **Provider embeddings do not send raw file paths to cloud providers by default.** In cloud mode
-  (`ai.privacy.local_only = false`), Nova redacts absolute paths (e.g. `/home/alice/...`,
-  `C:\\Users\\...`) in embedding inputs before sending them to the provider (they are rewritten as
-  `[PATH]`). This happens even if semantic-search embedding inputs include path metadata. (This is
-  independent of `ai.privacy.include_file_paths`, which governs LLM prompt/context path metadata.)
+  (`ai.privacy.local_only = false`) with the default `ai.privacy.include_file_paths = false`, Nova
+  redacts absolute paths (e.g. `/home/alice/...`, `C:\\Users\\...`) in embedding inputs before
+  sending them to the provider (they are rewritten as `[PATH]`). This applies both to indexing and
+  to user queries. If you explicitly opt in with `ai.privacy.include_file_paths = true`, Nova will
+  stop redacting absolute paths for provider embeddings and may send them as-is.
 - **`ai.privacy.excluded_paths` applies to semantic search.** Excluded files are not embedded/indexed
   and therefore cannot appear in semantic-search results or be surfaced as related-code context.
 
@@ -843,9 +844,11 @@ Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never 
 By default (`ai.privacy.include_file_paths = false`), Nova does **not** include filesystem paths in
 prompts/context sent to an LLM.
 
-Separately, when using **provider-backed embeddings** in cloud mode (`ai.privacy.local_only = false`),
-Nova also redacts absolute filesystem paths from embedding inputs before sending them to the provider
-(rewriting them as `[PATH]`).
+Separately, `ai.privacy.include_file_paths` also controls absolute-path redaction for
+**provider-backed embeddings** in cloud mode (`ai.privacy.local_only = false`). When
+`include_file_paths = false` (default), Nova redacts absolute filesystem paths in embedding inputs
+before sending them to the provider (rewriting them as `[PATH]`). When `include_file_paths = true`,
+Nova does not redact absolute paths for provider embeddings and may send them as-is.
 
 Paths can leak sensitive metadata such as user names, organization names, and internal directory
 structure.
