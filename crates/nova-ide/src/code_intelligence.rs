@@ -10363,6 +10363,75 @@ pub(crate) fn member_completions_for_receiver_type(
 }
 
 #[cfg(any(feature = "ai", test))]
+pub(crate) fn field_type_for_receiver_type(
+    db: &dyn Database,
+    file: FileId,
+    receiver_type: &str,
+    field_name: &str,
+) -> Option<String> {
+    let receiver_type = receiver_type.trim();
+    let field_name = field_name.trim();
+    if receiver_type.is_empty() || field_name.is_empty() {
+        return None;
+    }
+
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let (mut types, env) = completion_type_store(db, file);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
+
+    let mut receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    // Preserve the same Stream recovery used by `member_completions_for_receiver_type` so that
+    // field chains that flow through Stream stubs continue to resolve without requiring an
+    // explicit import.
+    if class_id_of_type(&mut types, &receiver_ty).is_none() {
+        if matches!(&receiver_ty, Type::Named(name) if name == "Stream") {
+            let stream_ty =
+                parse_source_type_in_context(&mut types, &file_ctx, "java.util.stream.Stream");
+            if class_id_of_type(&mut types, &stream_ty).is_some() {
+                receiver_ty = stream_ty;
+            }
+        }
+    }
+
+    let receiver_ty = maybe_load_external_type_for_member_completion(
+        db,
+        file,
+        &mut types,
+        &file_ctx,
+        receiver_ty,
+    );
+
+    // Java arrays have a special pseudo-field `length` (no parens, always `int`).
+    if matches!(receiver_ty, Type::Array(_)) && field_name == "length" {
+        return Some("int".to_string());
+    }
+
+    ensure_type_fields_loaded(&mut types, &receiver_ty);
+    let class_id = class_id_of_type(&mut types, &receiver_ty)?;
+    let class_def = types.class(class_id)?;
+
+    // Prefer instance fields, but allow accessing static fields through an instance (legal Java).
+    let field = class_def
+        .fields
+        .iter()
+        .find(|field| field.name == field_name && !field.is_static)
+        .or_else(|| {
+            class_def
+                .fields
+                .iter()
+                .find(|field| field.name == field_name && field.is_static)
+        })?;
+
+    Some(format_type_fully_qualified(&types, &field.ty))
+}
+
+#[cfg(any(feature = "ai", test))]
 pub(crate) fn member_method_names_for_receiver_type(
     db: &dyn Database,
     file: FileId,

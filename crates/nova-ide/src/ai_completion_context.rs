@@ -1,4 +1,4 @@
-use lsp_types::{CompletionItemKind, Position};
+use lsp_types::Position;
 use nova_ai::MultiTokenCompletionContext;
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_db::{Database, FileId};
@@ -6,7 +6,7 @@ use nova_types::CallKind;
 
 use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
-    infer_receiver_type_for_member_access, member_completions_for_receiver_type,
+    field_type_for_receiver_type, infer_receiver_type_for_member_access,
     member_method_names_for_receiver_type_with_call_kind, receiver_before_dot,
     skip_whitespace_backwards, CompletionContextAnalysis,
 };
@@ -255,11 +255,7 @@ fn call_chain_field_access_type(
 
     let mut receiver_ty = infer_receiver_type_before_dot(db, file, dot_before_chain)?;
     for segment in segments.drain(..) {
-        let items = member_completions_for_receiver_type(db, file, &receiver_ty, "");
-        let item = items.into_iter().find(|item| {
-            item.kind == Some(CompletionItemKind::FIELD) && item.label == segment
-        })?;
-        receiver_ty = item.detail?;
+        receiver_ty = field_type_for_receiver_type(db, file, &receiver_ty, &segment)?;
     }
 
     Some(receiver_ty)
@@ -628,6 +624,33 @@ class A {
 
   void m() {
     b().s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn call_chain_static_field_access_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  static String S = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().S.<cursor>
   }
 }
 "#,
