@@ -2,7 +2,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use nova_ai::context::RELATED_CODE_QUERY_MAX_BYTES;
-use nova_ai::{ContextRequest, PrivacyMode, SearchResult, SemanticSearch, TrigramSemanticSearch, VirtualWorkspace};
+use nova_ai::{
+    ContextRequest, PrivacyMode, SearchResult, SemanticSearch, TrigramSemanticSearch,
+    VirtualWorkspace,
+};
 
 fn base_request(focal_code: &str) -> ContextRequest {
     ContextRequest {
@@ -138,9 +141,7 @@ fn related_code_query_avoids_path_segments() {
 
     let search = CapturingSearch::default();
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    let focal_code = format!(
-        "/home/{private_segment}/project/secret.txt\nreturn foo.bar();\n"
-    );
+    let focal_code = format!("/home/{private_segment}/project/secret.txt\nreturn foo.bar();\n");
 
     let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
     let query = search
@@ -270,5 +271,45 @@ fn related_code_query_skips_low_signal_focal_code() {
     assert!(
         req.related_code.is_empty(),
         "expected no related code for stop-word-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_ignores_java_text_blocks() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = r#"
+        String sql = """
+          SELECT user_id FROM users WHERE email = ?
+        """;
+        return userRepository.findByEmail(email);
+    "#;
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.contains("SELECT") && !query.to_ascii_lowercase().contains("users"),
+        "expected query to ignore text block contents, got: {query}"
+    );
+    assert!(
+        query.contains("userRepository") || query.contains("findByEmail"),
+        "expected query to retain identifier tokens, got: {query}"
     );
 }

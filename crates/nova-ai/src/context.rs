@@ -538,6 +538,7 @@ enum FocalScanState {
     LineComment,
     BlockComment,
     String,
+    TextBlock,
     Char,
 }
 
@@ -561,9 +562,7 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
             continue;
         }
 
-        let keep_short = tok
-            .bytes()
-            .any(|b| (b as char).is_ascii_uppercase());
+        let keep_short = tok.bytes().any(|b| (b as char).is_ascii_uppercase());
         if tok.len() < 3 && !keep_short {
             continue;
         }
@@ -602,11 +601,7 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     let mut selected: Vec<Scored<'_>> = scored.into_iter().take(MAX_TOKENS).collect();
     // Preserve source order for better lexical substring matches in the trigram fallback while
     // still choosing the highest-scoring tokens.
-    selected.sort_by(|a, b| {
-        a.first_pos
-            .cmp(&b.first_pos)
-            .then_with(|| a.tok.cmp(b.tok))
-    });
+    selected.sort_by(|a, b| a.first_pos.cmp(&b.first_pos).then_with(|| a.tok.cmp(b.tok)));
 
     let mut out = String::new();
     for cand in selected {
@@ -671,10 +666,7 @@ fn find_path_like_spans(text: &str) -> Vec<Range<usize>> {
 fn looks_like_path_token(token: &str) -> bool {
     // If there are any path separators in the whitespace-delimited token, treat it as a path when
     // it resembles a multi-segment filesystem/URI path (to avoid leaking usernames/dirs).
-    let sep_count = token
-        .bytes()
-        .filter(|b| *b == b'/' || *b == b'\\')
-        .count();
+    let sep_count = token.bytes().filter(|b| *b == b'/' || *b == b'\\').count();
 
     if sep_count > 0 {
         // Keep this conservative: any whitespace token containing a path separator could leak
@@ -689,7 +681,17 @@ fn looks_like_path_token(token: &str) -> bool {
 fn looks_like_file_name(token: &str) -> bool {
     // Keep this conservative: only treat well-known source/doc extensions as file paths.
     const EXTENSIONS: &[&str] = &[
-        "java", "kt", "kts", "md", "gradle", "xml", "json", "toml", "yml", "yaml", "txt",
+        "java",
+        "kt",
+        "kts",
+        "md",
+        "gradle",
+        "xml",
+        "json",
+        "toml",
+        "yml",
+        "yaml",
+        "txt",
         "properties",
     ];
 
@@ -799,9 +801,7 @@ fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> &str {
 }
 
 fn clean_query_word(tok: &str) -> &str {
-    tok.trim_matches(|c: char| {
-        !(c.is_ascii_alphanumeric() || c == '_' || c == '$')
-    })
+    tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
 }
 
 fn is_semantic_query_stop_word(ident: &str) -> bool {
@@ -877,9 +877,7 @@ fn semantic_query_token_score(tok: &str) -> i32 {
     let mut score = len;
 
     let bytes = tok.as_bytes();
-    let starts_upper = bytes
-        .first()
-        .is_some_and(|b| b.is_ascii_uppercase());
+    let starts_upper = bytes.first().is_some_and(|b| b.is_ascii_uppercase());
     let has_lower = bytes.iter().any(|b| b.is_ascii_lowercase());
     let has_upper = bytes.iter().any(|b| b.is_ascii_uppercase());
     let internal_upper = bytes.iter().skip(1).any(|b| b.is_ascii_uppercase());
@@ -930,8 +928,16 @@ fn extract_identifier_candidates(text: &str) -> Vec<IdentCandidate<'_>> {
 
                 // Strings/chars.
                 if bytes[i] == b'"' {
-                    state = FocalScanState::String;
-                    i += 1;
+                    if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                        // Java text blocks (`""" ... """`) can contain large SQL/JSON snippets that
+                        // are usually low-signal for semantic code search. Treat them like string
+                        // literals so we don't accidentally flood the query with their contents.
+                        state = FocalScanState::TextBlock;
+                        i += 3;
+                    } else {
+                        state = FocalScanState::String;
+                        i += 1;
+                    }
                     continue;
                 }
                 if bytes[i] == b'\'' {
@@ -978,6 +984,18 @@ fn extract_identifier_candidates(text: &str) -> Vec<IdentCandidate<'_>> {
                 }
                 if bytes[i] == b'"' {
                     state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+            FocalScanState::TextBlock => {
+                if bytes[i] == b'"'
+                    && i + 2 < bytes.len()
+                    && bytes[i + 1] == b'"'
+                    && bytes[i + 2] == b'"'
+                {
+                    state = FocalScanState::Normal;
+                    i += 3;
+                    continue;
                 }
                 i += 1;
             }
