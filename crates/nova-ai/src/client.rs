@@ -135,6 +135,12 @@ fn record_chat_stream_error_metrics(metrics: &MetricsRegistry, err: &AiError) {
             metrics.record_timeout(AI_CHAT_STREAM_METRIC);
             metrics.record_timeout(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC);
         }
+        // Defensive: streaming providers may still surface timeouts as `reqwest::Error` wrapped
+        // inside `AiError::Http`. Classify these as timeouts so metrics remain consistent.
+        AiError::Http(err) if err.is_timeout() => {
+            metrics.record_timeout(AI_CHAT_STREAM_METRIC);
+            metrics.record_timeout(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC);
+        }
         AiError::Cancelled => {
             metrics.record_error(AI_CHAT_STREAM_METRIC);
             metrics.record_error(AI_CHAT_STREAM_ERROR_CANCELLED_METRIC);
@@ -2613,5 +2619,76 @@ mod tests {
             after >= before.saturating_add(1),
             "expected {AI_CHAT_STREAM_METRIC} error_count to increment"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_timeout_wrapped_as_http_is_classified_as_timeout_in_stream_metrics() {
+        use hyper::service::{make_service_fn, service_fn};
+        use hyper::{Body, Response, Server};
+        use std::convert::Infallible;
+        use std::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        // Use a standalone metrics registry to avoid cross-test interference.
+        let metrics = MetricsRegistry::default();
+
+        // Create a real `reqwest::Error` with `is_timeout() == true`.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("listener addr");
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+
+        let make_svc = make_service_fn(|_conn| async {
+            Ok::<_, Infallible>(service_fn(|_req| async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<_, Infallible>(Response::new(Body::from("ok")))
+            }))
+        });
+
+        let server = Server::from_tcp(listener)
+            .expect("server from_tcp")
+            .serve(make_svc);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_handle = tokio::spawn(server.with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        }));
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/");
+        let timeout_err = client
+            .get(url)
+            .timeout(Duration::from_millis(50))
+            .send()
+            .await
+            .expect_err("expected timeout");
+        assert!(timeout_err.is_timeout(), "expected reqwest timeout error");
+
+        let err = AiError::from(timeout_err);
+        record_chat_stream_error_metrics(&metrics, &err);
+
+        let snap = metrics.snapshot();
+        let stream = snap
+            .methods
+            .get(AI_CHAT_STREAM_METRIC)
+            .expect("expected ai/chat_stream metric");
+        assert_eq!(stream.timeout_count, 1);
+        assert_eq!(stream.error_count, 0);
+
+        let timeout_metric = snap
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_TIMEOUT_METRIC)
+            .expect("expected ai/chat_stream/error/timeout metric");
+        assert_eq!(timeout_metric.timeout_count, 1);
+
+        let http_errors = snap
+            .methods
+            .get(AI_CHAT_STREAM_ERROR_HTTP_METRIC)
+            .map(|m| m.error_count)
+            .unwrap_or(0);
+        assert_eq!(http_errors, 0);
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
     }
 }
