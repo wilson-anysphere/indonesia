@@ -79,14 +79,6 @@ fn receiver_at_offset(
     let dot_offset = before - 1;
     let receiver = receiver_before_dot(text, dot_offset);
     if !receiver.is_empty() {
-        // `infer_receiver_type_for_member_access` currently treats `this.foo` / `super.foo` as
-        // type references (yielding `this.foo` as the "type"). Prefer lexical inference so we can
-        // recover field types from the lightweight completion-context analysis.
-        if receiver.starts_with("this.") || receiver.starts_with("super.") {
-            let ty = infer_receiver_type_lexical(receiver.as_str(), analysis);
-            return (Some(receiver), ty);
-        }
-
         let ty = infer_receiver_type_for_member_access(db, file, receiver.as_str(), dot_offset)
             .or_else(|| infer_receiver_type_lexical(receiver.as_str(), analysis));
         return (Some(receiver), ty);
@@ -173,15 +165,30 @@ fn normalize_importable_paths(mut items: Vec<String>) -> Vec<String> {
 }
 
 fn importable_paths_for_receiver(receiver_type: Option<&str>) -> Vec<String> {
-    match receiver_type.and_then(simple_type_name) {
-        Some("Stream") => vec!["java.util.stream.Collectors".to_string()],
-        _ => Vec::new(),
+    if receiver_type.is_some_and(is_java_stream_type) {
+        return vec!["java.util.stream.Collectors".to_string()];
     }
+
+    Vec::new()
 }
 
-fn simple_type_name(ty: &str) -> Option<&str> {
-    let erased = ty.split('<').next().unwrap_or(ty);
-    Some(erased.rsplit('.').next().unwrap_or(erased).trim())
+fn is_java_stream_type(receiver_type: &str) -> bool {
+    // Strip generics: `java.util.stream.Stream<T>` -> `java.util.stream.Stream`.
+    let base = receiver_type
+        .split('<')
+        .next()
+        .unwrap_or(receiver_type)
+        .trim()
+        .trim_end_matches("[]")
+        .trim();
+    let simple = base.rsplit('.').next().unwrap_or(base);
+    if simple != "Stream" {
+        return false;
+    }
+
+    // If we have a qualified name, only treat the JDK Stream as a signal. Unqualified `Stream`
+    // still counts (it's a common output of heuristic type formatting).
+    !base.contains('.') || base == "java.util.stream.Stream"
 }
 
 fn surrounding_code_window(
@@ -338,5 +345,32 @@ class A {
             .importable_paths
             .iter()
             .any(|path| path == "java.util.stream.Collectors"));
+    }
+
+    #[test]
+    fn dotted_field_chain_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    this.b.s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
     }
 }

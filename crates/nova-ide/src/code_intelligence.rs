@@ -10493,8 +10493,71 @@ pub(crate) fn infer_receiver_type_for_member_access(
     let (mut types, env) = completion_type_store(db, file);
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
-    let (receiver_ty, _call_kind) =
+    let (mut receiver_ty, _call_kind) =
         infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
+    receiver_ty = ensure_local_class_receiver(&mut types, &analysis, receiver_ty);
+
+    // Best-effort support for dotted field chains like `this.foo.bar` / `obj.field` which
+    // `infer_receiver` treats as a type reference. This helps AI completion context building in
+    // common Java code where property chains appear frequently.
+    if receiver.contains('.')
+        && receiver
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+        && class_id_of_type(&mut types, &receiver_ty).is_none()
+    {
+        let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
+        if parts.len() >= 2 {
+            let (mut ty, mut kind) =
+                infer_receiver(&mut types, &analysis, &file_ctx, parts[0], receiver_offset);
+            ty = ensure_local_class_receiver(&mut types, &analysis, ty);
+            if !matches!(ty, Type::Unknown | Type::Error) {
+                let mut ok = true;
+                for part in parts.into_iter().skip(1) {
+                    ensure_type_fields_loaded(&mut types, &ty);
+                    let Some(class_id) = class_id_of_type(&mut types, &ty) else {
+                        ok = false;
+                        break;
+                    };
+                    let Some(class_def) = types.class(class_id) else {
+                        ok = false;
+                        break;
+                    };
+
+                    let mut field = class_def.fields.iter().find(|field| {
+                        field.name == part
+                            && match kind {
+                                CallKind::Static => field.is_static,
+                                CallKind::Instance => !field.is_static,
+                            }
+                    });
+
+                    // Java allows accessing static fields through an instance. If we can't find an
+                    // instance field, fall back to a static one.
+                    if field.is_none() && kind == CallKind::Instance {
+                        field = class_def
+                            .fields
+                            .iter()
+                            .find(|field| field.name == part && field.is_static);
+                    }
+
+                    let Some(field) = field else {
+                        ok = false;
+                        break;
+                    };
+
+                    ty = field.ty.clone();
+                    kind = CallKind::Instance;
+                    ty = ensure_local_class_receiver(&mut types, &analysis, ty);
+                }
+
+                if ok && !matches!(ty, Type::Unknown | Type::Error) {
+                    receiver_ty = ty;
+                }
+            }
+        }
+    }
+
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
